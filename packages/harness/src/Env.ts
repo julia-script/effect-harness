@@ -11,6 +11,7 @@ import * as Semaphore from 'effect/Semaphore'
 import type * as Stream from 'effect/Stream'
 import { ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
 import * as Decode from './env/Decode.ts'
+import * as AtomicWrite from './env/AtomicWrite.ts'
 import * as Exec from './env/Exec.ts'
 import * as Watch from './env/Watch.ts'
 
@@ -330,7 +331,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     yield* Effect.addFinalizer(() => close)
     return { readLine, close }
   })
-  const write = (value: string, content: string | Uint8Array, append: boolean) =>
+  const append = (value: string, content: string | Uint8Array) =>
     io(value, (resolved) =>
       Effect.uninterruptible(
         fs
@@ -338,8 +339,8 @@ export const make = Effect.fnUntraced(function* (options: Options) {
           .pipe(
             Effect.andThen(
               typeof content === 'string'
-                ? fs.writeFileString(resolved, content, { flag: append ? 'a' : 'w' })
-                : fs.writeFile(resolved, content, { flag: append ? 'a' : 'w' }),
+                ? fs.writeFileString(resolved, content, { flag: 'a' })
+                : fs.writeFile(resolved, content, { flag: 'a' }),
             ),
           ),
       ),
@@ -378,8 +379,11 @@ export const make = Effect.fnUntraced(function* (options: Options) {
           return lines
         }),
       ),
-    writeFile: (value, content) => write(value, content, false),
-    appendFile: (value, content) => write(value, content, true),
+    writeFile: (value, content) =>
+      at(value, (resolved) =>
+        Effect.uninterruptible(AtomicWrite.write(fs, path, native, resolved, content)),
+      ),
+    appendFile: append,
     truncateFile: (value, size) =>
       !Number.isSafeInteger(size) || size < 0
         ? Effect.fail(

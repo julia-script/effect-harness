@@ -215,8 +215,11 @@ export function messageChanges(
   before: Prompt.AssistantMessage,
   message: Prompt.AssistantMessage,
 ): ReadonlyArray<MessageChange> {
-  const changes: MessageChange[] = []
+  // Coalesce paths against the complete committed values. Keep the first-touch
+  // order, but decide every block fallback before publishing any narrow delta.
+  const touched = new Map<number, Map<string, View.Path>>()
   const whole = new Set<number>()
+  const starts = new Set<number>()
   for (const op of ops) {
     if (op[0] === 'replace') return [{ type: 'message', message }]
     const path = op[1]
@@ -232,66 +235,85 @@ export function messageChanges(
       for (let index = 0; index < message.content.length; index++) {
         const block = message.content[index]
         if (block === undefined || same(block, before.content[index])) continue
-        let type: 'text_start' | 'thinking_start' | 'toolcall_start' = 'toolcall_start'
-        if (block.type === 'text') type = 'text_start'
-        else if (block.type === 'reasoning') type = 'thinking_start'
-        changes.push(
-          index >= before.content.length &&
-            (block.type === 'text' || block.type === 'reasoning' || block.type === 'tool-call')
-            ? { type, contentIndex: index, block }
-            : { type: 'block', contentIndex: index, block },
-        )
+        if (!touched.has(index)) touched.set(index, new Map())
         whole.add(index)
+        if (index >= before.content.length) starts.add(index)
       }
       continue
     }
     const index = rest[1]
-    if (typeof index !== 'number' || whole.has(index)) continue
+    if (typeof index !== 'number') continue
+    if (message.content[index] === undefined) return [{ type: 'message', message }]
+    let paths = touched.get(index)
+    if (paths === undefined) {
+      paths = new Map()
+      touched.set(index, paths)
+    }
+    const tail = rest.slice(2)
+    paths.set(JSON.stringify(tail), tail)
+    if (op[0] !== 'set') whole.add(index)
+  }
+  const changes: MessageChange[] = []
+  const at = (value: unknown, path: View.Path): unknown => {
+    for (const segment of path)
+      value =
+        value !== null && typeof value === 'object' && Object.hasOwn(value, segment)
+          ? Reflect.get(value, segment)
+          : undefined
+    return value
+  }
+  for (const [index, paths] of touched) {
     const block = message.content[index]
     const previous = before.content[index]
     if (block === undefined) return [{ type: 'message', message }]
-    if (
-      rest.length === 3 &&
-      rest[2] === 'text' &&
-      previous !== undefined &&
-      'text' in previous &&
-      'text' in block &&
-      block.text.startsWith(previous.text)
-    ) {
-      changes.push({
-        type: block.type === 'reasoning' ? 'thinking_delta' : 'text_delta',
-        contentIndex: index,
-        delta: block.text.slice(previous.text.length),
-      })
-    } else if (
-      rest[2] === 'params' &&
-      op[0] === 'set' &&
-      typeof op[2] === 'string' &&
-      previous?.type === 'tool-call'
-    ) {
-      let previousValue: unknown = previous.params
-      for (const segment of rest.slice(3))
-        previousValue =
-          previousValue !== null &&
-          typeof previousValue === 'object' &&
-          Object.hasOwn(previousValue, segment)
-            ? Reflect.get(previousValue, segment)
-            : undefined
-      if (typeof previousValue === 'string' && op[2].startsWith(previousValue))
-        changes.push({
-          type: 'toolcall_delta',
+    const deltas: MessageChange[] = []
+    for (const path of paths.values()) {
+      if (
+        path.length === 1 &&
+        path[0] === 'text' &&
+        (block.type === 'text' || block.type === 'reasoning') &&
+        previous?.type === block.type &&
+        'text' in previous &&
+        block.text.startsWith(previous.text)
+      ) {
+        deltas.push({
+          type: block.type === 'reasoning' ? 'thinking_delta' : 'text_delta',
           contentIndex: index,
-          path: rest.slice(3),
-          delta: op[2].slice(previousValue.length),
+          delta: block.text.slice(previous.text.length),
         })
-      else {
-        whole.add(index)
-        changes.push({ type: 'block', contentIndex: index, block })
-      }
-    } else {
-      whole.add(index)
-      changes.push({ type: 'block', contentIndex: index, block })
+      } else if (
+        path[0] === 'params' &&
+        block.type === 'tool-call' &&
+        previous?.type === 'tool-call'
+      ) {
+        const paramPath = path.slice(1)
+        const previousValue = at(previous.params, paramPath)
+        const finalValue = at(block.params, paramPath)
+        if (
+          typeof previousValue === 'string' &&
+          typeof finalValue === 'string' &&
+          finalValue.startsWith(previousValue)
+        )
+          deltas.push({
+            type: 'toolcall_delta',
+            contentIndex: index,
+            path: paramPath,
+            delta: finalValue.slice(previousValue.length),
+          })
+        else whole.add(index)
+      } else whole.add(index)
     }
+    if (whole.has(index)) {
+      let type: 'text_start' | 'thinking_start' | 'toolcall_start' = 'toolcall_start'
+      if (block.type === 'text') type = 'text_start'
+      else if (block.type === 'reasoning') type = 'thinking_start'
+      changes.push(
+        starts.has(index) &&
+          (block.type === 'text' || block.type === 'reasoning' || block.type === 'tool-call')
+          ? { type, contentIndex: index, block }
+          : { type: 'block', contentIndex: index, block },
+      )
+    } else changes.push(...deltas)
   }
   return changes.length === 0 && !same(before.content, message.content)
     ? [{ type: 'message', message }]

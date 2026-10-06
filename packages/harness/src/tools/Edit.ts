@@ -84,20 +84,13 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
       const original = yield* env.readTextFile(absolute)
       const { bom, text } = Diff.stripBom(original)
       const ending = Diff.detectLineEnding(text)
-      const changed = yield* Effect.try({
-        try: () =>
-          Diff.applyEditsToNormalizedContent(
-            Diff.normalizeToLF(text),
-            [...input.edits],
-            input.path,
-          ),
-        catch: (cause) =>
-          new ToolError({
-            name: 'edit',
-            reason: 'execution',
-            message: cause instanceof Error ? cause.message : String(cause),
-          }),
-      })
+      const changed = yield* Effect.fromResult(
+        Diff.applyEditsToNormalizedContent(Diff.normalizeToLF(text), input.edits, input.path),
+      ).pipe(
+        Effect.mapError(
+          (cause) => new ToolError({ name: 'edit', reason: 'execution', message: cause.message }),
+        ),
+      )
       yield* env.writeFile(absolute, bom + Diff.restoreLineEndings(changed.newContent, ending))
       const display = Diff.generateDiffString(changed.baseContent, changed.newContent)
       return {

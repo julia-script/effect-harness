@@ -7,6 +7,7 @@ import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
+import * as AiError from 'effect/ai/AiError'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Response from 'effect/ai/Response'
 import * as AiTool from 'effect/ai/Tool'
@@ -672,6 +673,57 @@ describe('native AI executor intent/request boundaries', () => {
       }).pipe(Effect.provideService(Invocation, quiet)),
   )
   it.effect(
+    'response classification preserves typed reasons instead of retrying diagnostic text',
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* runtime()
+        const prepared = yield* executor.prepare({
+          state,
+          settings,
+          view: ConversationContext.empty(),
+        })
+        const errors = [
+          new AiError.AiError({
+            module: 'provider',
+            method: 'response',
+            reason: new AiError.AuthenticationError({
+              kind: 'InvalidKey',
+              description: '503 overloaded rate limit; please retry your request',
+            }),
+          }),
+          new AiError.AiError({
+            module: 'provider',
+            method: 'response',
+            reason: new AiError.RateLimitError({
+              metadata: { provider: { diagnostic: 'billing context_length_exceeded' } },
+            }),
+          }),
+        ]
+        for (const error of errors) {
+          const disposition = yield* executor.classifyResponse(prepared.request, prepared.agent, [
+            Response.makePart('error', { error }),
+            Response.makePart('finish', { reason: 'error', usage: nativeUsage }),
+          ])
+          assert.strictEqual(disposition.type, 'failure')
+          if (disposition.type !== 'failure') return yield* Effect.die('Expected failure')
+          assert.strictEqual(disposition.retryable, error.isRetryable)
+          assert.strictEqual(disposition.overflow, false)
+          assert.deepStrictEqual(yield* executor.classifyFailure(prepared.request, error), {
+            retryable: error.isRetryable,
+            overflow: false,
+          })
+        }
+        const mixed = yield* executor.classifyResponse(
+          prepared.request,
+          prepared.agent,
+          errors.map((error) => Response.makePart('error', { error })),
+        )
+        if (mixed.type !== 'failure') return yield* Effect.die('Expected mixed failure')
+        assert.strictEqual(mixed.retryable, false)
+      }).pipe(Effect.provideService(Invocation, quiet)),
+  )
+
+  it.effect(
     'deferred adapters pin options, skip response hooks until terminal, fetch and cancel without a scheduler',
     () =>
       Effect.gen(function* () {
@@ -750,6 +802,19 @@ describe('native AI executor intent/request boundaries', () => {
       overflow: true,
     })
     assert.strictEqual(Model.classify('stream ended without a terminal event').retryable, true)
+    assert.strictEqual(Model.classify('unclassified diagnostic').retryable, false)
+    const sdk = new AiError.AiError({
+      module: 'SDK',
+      method: 'request',
+      reason: new AiError.InvalidRequestError({ description: 'prompt too long' }),
+    })
+    assert.deepStrictEqual(Model.classify(sdk), { retryable: false, overflow: true })
+    const unknown = new AiError.AiError({
+      module: 'SDK',
+      method: 'stream',
+      reason: new AiError.UnknownError({ description: 'stream ended before message_stop' }),
+    })
+    assert.strictEqual(Model.providerError(unknown).reason._tag, 'InternalProviderError')
     assert.strictEqual(Model.pollAt(100, undefined, -10), 90)
     assert.strictEqual(Model.pollAt(100, 200, -10), 201)
   })

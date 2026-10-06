@@ -2,6 +2,7 @@ import { AuthError, type OAuth } from '@effect-harness/auth/Credential'
 import { assert, describe, it } from '@effect/vitest'
 import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
@@ -28,7 +29,7 @@ const credential: OAuth = {
   expiresAt: 3600000,
   scopes: [ChatGpt.directScope],
 }
-const makeFixture = (address = '127.0.0.1:43210') => {
+const makeFixture = (address = '127.0.0.1:43210', exchange?: Effect.Effect<OAuth, AuthError>) => {
   let handler:
     | Effect.Effect<
         HttpServerResponse.HttpServerResponse,
@@ -71,11 +72,17 @@ const makeFixture = (address = '127.0.0.1:43210') => {
         completed++
         return url
       }).pipe(
-        Effect.flatMap((url) =>
-          url.includes('error=')
+        Effect.flatMap((url) => {
+          if (exchange !== undefined)
+            return completed === 1
+              ? exchange
+              : Effect.fail(
+                  new AuthError({ reason: 'callback', message: 'Consumed authorization state' }),
+                )
+          return url.includes('error=')
             ? Effect.fail(new AuthError({ reason: 'denied', message: 'Private server diagnostic' }))
-            : Effect.succeed(credential),
-        ),
+            : Effect.succeed(credential)
+        }),
       ),
     refresh: () => Effect.succeed(credential),
     accessToken: () => Effect.succeed(credential.accessToken),
@@ -150,6 +157,35 @@ describe('scoped callback receiver', () => {
         assert.strictEqual(f.cancelled(), 1)
       })
     },
+  )
+
+  it.effect(
+    'duplicate matching callbacks share the claimed exchange and cannot overwrite its result',
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const f = makeFixture(
+          undefined,
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as(credential),
+          ),
+        )
+        const receiver = Context.get(yield* Layer.build(f.layer), Callback.Callback)
+        const url = 'http://127.0.0.1:43210/auth/callback?state=expected&code=secret'
+        const first = yield* Effect.forkChild(f.request(url))
+        yield* Deferred.await(started)
+        const duplicate = yield* Effect.forkChild(f.request(url))
+        yield* Effect.yieldNow
+        yield* Deferred.succeed(release, undefined)
+        assert.strictEqual((yield* Fiber.join(first)).status, 200)
+        const owner = yield* receiver.await.pipe(Effect.result)
+        assert.strictEqual(owner._tag, 'Success')
+        assert.strictEqual((yield* Fiber.join(duplicate)).status, 200)
+        assert.strictEqual(f.completed(), 1)
+        assert.deepStrictEqual(yield* receiver.await, credential)
+      }),
   )
 
   it.effect('returns sanitized failure to browser and typed denial to owner', () => {

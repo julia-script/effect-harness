@@ -6,7 +6,14 @@ import * as Fiber from 'effect/Fiber'
 import * as Path from 'effect/Path'
 import * as Ref from 'effect/Ref'
 import * as Stream from 'effect/Stream'
-import { Env, FileError, ExecutionError, NativeFiles, type BinaryReader } from '../../src/Env.ts'
+import {
+  Env,
+  FileError,
+  ExecutionError,
+  NativeFiles,
+  fromPlatform,
+  type BinaryReader,
+} from '../../src/Env.ts'
 import * as NodeEnv from '../../src/env/Node.ts'
 import * as Watch from '../../src/env/Watch.ts'
 import * as Mutation from '../../src/tools/Mutation.ts'
@@ -65,6 +72,12 @@ describe('boundary race and failure regressions', () => {
       withEnv(
         Effect.gen(function* () {
           const real = yield* Env
+          const fs = yield* FileSystem.FileSystem
+          // Simulate an external in-place writer; Env.writeFile now atomically replaces the inode.
+          const overwrite = (path: string, content: string) =>
+            fs
+              .writeFileString(path, content)
+              .pipe(Effect.mapError((error) => fromPlatform(error, path)))
           yield* real.writeFile('file', 'original')
           const calls = yield* Ref.make(0)
           const saved = yield* Ref.make<BinaryReader | undefined>(undefined)
@@ -76,7 +89,7 @@ describe('boundary race and failure regressions', () => {
                   ...reader,
                   info: Effect.gen(function* () {
                     const count = yield* Ref.updateAndGet(calls, (n) => n + 1)
-                    if (count === 2) yield* real.writeFile(path, 'new')
+                    if (count === 2) yield* overwrite(path, 'new')
                     return yield* reader.info
                   }),
                 })),
@@ -104,8 +117,8 @@ describe('boundary race and failure regressions', () => {
                   ...reader,
                   info: Effect.gen(function* () {
                     const count = yield* Ref.updateAndGet(calls, (n) => n + 1)
-                    if (count === 2) yield* real.writeFile(path, 'four')
-                    if (count === 4) yield* real.writeFile(path, 'x')
+                    if (count === 2) yield* overwrite(path, 'four')
+                    if (count === 4) yield* overwrite(path, 'x')
                     return yield* reader.info
                   }),
                 })),

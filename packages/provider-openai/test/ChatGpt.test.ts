@@ -10,6 +10,7 @@ import * as Option from 'effect/Option'
 import * as Redacted from 'effect/Redacted'
 import * as Stream from 'effect/Stream'
 import * as NativeLanguageModel from 'effect/ai/LanguageModel'
+import * as AiError from 'effect/ai/AiError'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
@@ -49,6 +50,8 @@ const makeFixture = () => {
     clientId: 'issued-1',
     stream: sse('response.completed'),
     refreshIdToken: true,
+    expiresIn: 3600,
+    earliestRefreshAt: undefined as number | undefined,
   }
   let tokenRequests = 0
   const http = HttpClient.make((request) => {
@@ -63,7 +66,10 @@ const makeFixture = () => {
         access_token: `access-${tokenRequests}`,
         refresh_token: `refresh-${tokenRequests}`,
         ...(options.refreshIdToken ? { id_token: 'id-token' } : {}),
-        expires_in: 3600,
+        expires_in: options.expiresIn,
+        ...(options.earliestRefreshAt === undefined
+          ? {}
+          : { earliest_refresh_at: options.earliestRefreshAt }),
         token_type: 'Bearer',
         scope: options.scopes,
       }
@@ -480,6 +486,202 @@ describe('ChatGPT account', () => {
         assert.strictEqual(failure._tag, 'AiError')
       }).pipe(Effect.provide(f.layer))
     })
+
+  for (const field of ['expiresIn', 'earliestRefreshAt'] as const) {
+    it.effect(
+      `rejects derived ${field} overflow before sign-in or refresh can write a grant`,
+      () => {
+        const f = makeFixture()
+        return Effect.gen(function* () {
+          const auth = yield* ChatGpt.ChatGpt
+          const store = yield* Store.CredentialStore
+          f.options[field] = Number.MAX_VALUE
+          const invalid = yield* login().pipe(Effect.flip)
+          assert.strictEqual(invalid.reason, 'protocol')
+          assert.isFalse(JSON.stringify(invalid).includes('access-'))
+          assert.deepStrictEqual(yield* store.list, [])
+          f.options.expiresIn = 3600
+          f.options.earliestRefreshAt = undefined
+          const credential = yield* login()
+          const key = accountKey(credential)
+          const previous = yield* store.get(key)
+          f.options[field] = Number.MAX_VALUE
+          assert.strictEqual(
+            (yield* auth.refresh(key, { force: true }).pipe(Effect.flip)).reason,
+            'protocol',
+          )
+          assert.deepStrictEqual(yield* store.get(key), previous)
+        }).pipe(Effect.provide(f.layer))
+      },
+    )
+  }
+  it.effect('accepts finite fractional derived timestamps using the persisted OAuth policy', () => {
+    const f = makeFixture()
+    f.options.expiresIn = 0.00025
+    f.options.earliestRefreshAt = 0.00025
+    return Effect.gen(function* () {
+      const credential = yield* login()
+      assert.strictEqual(credential.expiresAt % 1, 0.25)
+      assert.strictEqual(credential.earliestRefreshAt, 0.25)
+      assert.strictEqual(
+        (yield* (yield* Store.CredentialStore).get(accountKey(credential)))._tag,
+        'Some',
+      )
+    }).pipe(Effect.provide(f.layer))
+  })
+
+  for (const [reason, status, expected, retryable] of [
+    ['network', undefined, 'NetworkError', true],
+    ['token', 429, 'RateLimitError', true],
+    ['token', 503, 'InternalProviderError', true],
+    ['busy', undefined, 'InternalProviderError', true],
+    ['identity', undefined, 'AuthenticationError', false],
+    ['permission', 403, 'AuthenticationError', false],
+  ] as const) {
+    it.effect(
+      `preserves ${reason}/${status ?? 'none'} inference refresh semantics in generation and streaming`,
+      () => {
+        const f = makeFixture()
+        return Effect.gen(function* () {
+          const auth = yield* ChatGpt.ChatGpt
+          const failing = Layer.succeed(ChatGpt.ChatGpt, {
+            ...auth,
+            accessToken: () =>
+              Effect.fail(
+                new AuthError({ reason, status, message: 'Sanitized credential failure' }),
+              ),
+          })
+          const layer = Provider.layerChatGpt({ account: 'selected', model: 'account-model' }).pipe(
+            Layer.provide(failing),
+          )
+          for (const effect of [
+            NativeLanguageModel.generateText({ prompt: 'Hello' }).pipe(Effect.asVoid),
+            NativeLanguageModel.streamText({ prompt: 'Hello' }).pipe(Stream.runDrain),
+          ]) {
+            const failure = yield* effect.pipe(Effect.provide(layer), Effect.flip)
+            assert.strictEqual(failure.reason._tag, expected)
+            assert.strictEqual(failure.isRetryable, retryable)
+            if (failure.reason._tag === 'NetworkError') {
+              assert.deepStrictEqual(failure.reason.request.headers, {})
+              assert.deepStrictEqual(failure.reason.request.urlParams, [])
+            }
+            assert.isFalse(JSON.stringify(failure).includes('refresh-'))
+          }
+        }).pipe(Effect.provide(f.layer))
+      },
+    )
+  }
+
+  for (const [event, expected, retryable, code] of [
+    [
+      { type: 'error', code: 'insufficient_quota', message: 'billing diagnostic', param: null },
+      'QuotaExhaustedError',
+      false,
+      'insufficient_quota',
+    ],
+    [
+      {
+        type: 'error',
+        error: { code: 'rate_limit_exceeded', message: 'throttle diagnostic', param: null },
+      },
+      'RateLimitError',
+      true,
+      'rate_limit_exceeded',
+    ],
+    [
+      {
+        type: 'response.failed',
+        response: {
+          ...responseBody,
+          error: { code: 'insufficient_quota', message: 'quota diagnostic' },
+        },
+      },
+      'QuotaExhaustedError',
+      false,
+      'insufficient_quota',
+    ],
+    [
+      {
+        type: 'response.failed',
+        response: {
+          ...responseBody,
+          error: { code: 'context_length_exceeded', message: 'context diagnostic' },
+        },
+      },
+      'InvalidRequestError',
+      false,
+      'context_length_exceeded',
+    ],
+    [
+      {
+        type: 'response.failed',
+        response: {
+          ...responseBody,
+          error: { code: 'server_error', message: 'server diagnostic' },
+        },
+      },
+      'InternalProviderError',
+      true,
+      'server_error',
+    ],
+    [
+      {
+        type: 'response.incomplete',
+        response: { ...responseBody, incomplete_details: { reason: 'content_filter' } },
+      },
+      'ContentPolicyError',
+      false,
+      null,
+    ],
+    [
+      {
+        type: 'response.incomplete',
+        response: { ...responseBody, incomplete_details: { reason: 'max_output_tokens' } },
+      },
+      'InvalidRequestError',
+      false,
+      null,
+    ],
+    [
+      {
+        type: 'response.failed',
+        response: {
+          ...responseBody,
+          error: { code: 'new_provider_code', message: 'original diagnostic' },
+        },
+      },
+      'UnknownError',
+      false,
+      'new_provider_code',
+    ],
+  ] as const) {
+    it.effect(
+      `retains semantic ${event.type}/${code ?? expected} SSE diagnostics for generation and streaming`,
+      () => {
+        const f = makeFixture()
+        f.options.stream = `data: ${JSON.stringify(event)}\n\n`
+        return Effect.gen(function* () {
+          const credential = yield* login()
+          const layer = Provider.layerChatGpt({
+            account: accountKey(credential),
+            model: 'account-model',
+          })
+          for (const effect of [
+            NativeLanguageModel.generateText({ prompt: 'Hello' }).pipe(Effect.asVoid),
+            NativeLanguageModel.streamText({ prompt: 'Hello' }).pipe(Stream.runDrain),
+          ]) {
+            const failure = yield* effect.pipe(Effect.provide(layer), Effect.flip)
+            assert.isTrue(AiError.isAiError(failure))
+            assert.strictEqual(failure.reason._tag, expected)
+            assert.strictEqual(failure.isRetryable, retryable)
+            if ('metadata' in failure.reason)
+              assert.propertyVal(failure.reason.metadata.openai, 'code', code)
+            assert.isFalse(failure.message.includes('without a completed response'))
+          }
+        }).pipe(Effect.provide(f.layer))
+      },
+    )
+  }
 
   it.effect('API-key provider remains a standard native model layer', () => {
     const requests: Array<HttpClientRequest.HttpClientRequest> = []

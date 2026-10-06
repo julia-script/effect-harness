@@ -297,13 +297,17 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           usage,
           calls,
         }
-      const errors = parts.flatMap((part) =>
-        part.type === 'error' ? [Model.errorText(part.error)] : [],
-      )
+      const errors = parts.flatMap((part) => (part.type === 'error' ? [part.error] : []))
       const message =
-        errors.join('\n') || `Model finished with ${finish?.reason ?? 'no finish part'}`
-      const policy =
-        descriptor.classify?.(message) ?? Model.classify(message, request.model.provider)
+        errors.map(Model.errorText).join('\n') ||
+        `Model finished with ${finish?.reason ?? 'no finish part'}`
+      const policies = errors.map(
+        (error) => descriptor.classify?.(error) ?? Model.classify(error, request.model.provider),
+      )
+      const policy = {
+        overflow: policies.some((value) => value.overflow),
+        retryable: policies.length > 0 && policies.every((value) => value.retryable),
+      }
       return { type: 'failure', prompt, usage, message, ...policy }
     })
     const prepareTool = Effect.fnUntraced(function* (

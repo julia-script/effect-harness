@@ -16,6 +16,7 @@ import * as Tools from '../../src/tools/index.ts'
 import * as Read from '../../src/tools/Read.ts'
 import * as Write from '../../src/tools/Write.ts'
 import * as Edit from '../../src/tools/Edit.ts'
+import * as Result from 'effect/Result'
 import * as EditDiff from '../../src/tools/EditDiff.ts'
 import * as Bash from '../../src/tools/Bash.ts'
 import * as Truncate from '../../src/tools/Truncate.ts'
@@ -270,10 +271,12 @@ describe('native coding tools', () => {
   )
   it('fuzzy replacements preserve unrelated original line blocks and line-numbered diff context', () => {
     const original = 'unchanged — curly   \n“target”\nkeep\u00a0space  \nlast'
-    const changed = EditDiff.applyEditsToNormalizedContent(
-      original,
-      [{ oldText: '"target"', newText: 'new' }],
-      'file',
+    const changed = Result.getOrThrow(
+      EditDiff.applyEditsToNormalizedContent(
+        original,
+        [{ oldText: '"target"', newText: 'new' }],
+        'file',
+      ),
     )
     assert.strictEqual(changed.newContent, 'unchanged — curly   \nnew\nkeep\u00a0space  \nlast')
     assert.match(

@@ -4,9 +4,21 @@
  */
 
 import * as Diff from 'diff'
+import * as Option from 'effect/Option'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+
+export class EditError extends Schema.TaggedError<EditError>()('EditError', {
+  code: Schema.Literals(['empty', 'not_found', 'duplicate', 'overlap', 'no_change', 'range']),
+  message: Schema.String,
+}) {}
+const editError = (code: EditError['code'], message: string): EditError =>
+  new EditError({ code, message })
 function at<A>(values: ReadonlyArray<A>, index: number): A {
   const value = values[index]
-  if (value === undefined) throw new RangeError('Invalid internal diff position')
+  // Every caller bounds the index to a dense array constructed in this module.
+  if (value === undefined)
+    throw new Error('BUG: Invalid internal diff position; please report an issue')
   return value
 }
 
@@ -83,7 +95,17 @@ function getLineSpans(content: string): LineSpan[] {
   })
 }
 
-function getReplacementLineRange(lines: LineSpan[], replacement: TextReplacement) {
+function getReplacementLineRange(
+  lines: LineSpan[],
+  replacement: TextReplacement,
+): Result.Result<{ startLine: number; endLine: number }, EditError> {
+  if (
+    !Number.isSafeInteger(replacement.matchIndex) ||
+    !Number.isSafeInteger(replacement.matchLength) ||
+    replacement.matchIndex < 0 ||
+    replacement.matchLength <= 0
+  )
+    return Result.fail(editError('range', 'Replacement range is outside the base content.'))
   const replacementStart = replacement.matchIndex
   const replacementEnd = replacement.matchIndex + replacement.matchLength
 
@@ -96,7 +118,7 @@ function getReplacementLineRange(lines: LineSpan[], replacement: TextReplacement
     }
   }
   if (startLine === -1) {
-    throw new Error('Replacement range is outside the base content.')
+    return Result.fail(editError('range', 'Replacement range is outside the base content.'))
   }
 
   let endLine = startLine
@@ -104,10 +126,10 @@ function getReplacementLineRange(lines: LineSpan[], replacement: TextReplacement
     endLine++
   }
   if (endLine >= lines.length) {
-    throw new Error('Replacement range is outside the base content.')
+    return Result.fail(editError('range', 'Replacement range is outside the base content.'))
   }
 
-  return { startLine, endLine: endLine + 1 }
+  return Result.succeed({ startLine, endLine: endLine + 1 })
 }
 
 function applyReplacements(content: string, replacements: TextReplacement[], offset = 0): string {
@@ -136,51 +158,59 @@ function applyReplacements(content: string, replacements: TextReplacement[], off
 export function applyReplacementsPreservingUnchangedLines(
   originalContent: string,
   baseContent: string,
-  replacements: TextReplacement[],
-): string {
-  const originalLines = splitLinesWithEndings(originalContent)
-  const baseLines = getLineSpans(baseContent)
-  if (originalLines.length !== baseLines.length) {
-    throw new Error(
-      'Cannot preserve unchanged lines because the base content has a different line count.',
-    )
-  }
-
-  const groups: Array<{ startLine: number; endLine: number; replacements: TextReplacement[] }> = []
-  const sortedReplacements = [...replacements].sort((a, b) => a.matchIndex - b.matchIndex)
-  for (const replacement of sortedReplacements) {
-    const range = getReplacementLineRange(baseLines, replacement)
-    const current = groups[groups.length - 1]
-    if (current && range.startLine < current.endLine) {
-      current.endLine = Math.max(current.endLine, range.endLine)
-      current.replacements.push(replacement)
-      continue
+  replacements: ReadonlyArray<TextReplacement>,
+): Result.Result<string, EditError> {
+  return Result.gen(function* () {
+    const originalLines = splitLinesWithEndings(originalContent)
+    const baseLines = getLineSpans(baseContent)
+    if (originalLines.length !== baseLines.length) {
+      return yield* Result.fail(
+        editError(
+          'range',
+          'Cannot preserve unchanged lines because the base content has a different line count.',
+        ),
+      )
     }
-    groups.push({ ...range, replacements: [replacement] })
-  }
 
-  let originalLineIndex = 0
-  let result = ''
-  for (const group of groups) {
-    result += originalLines.slice(originalLineIndex, group.startLine).join('')
+    const groups: Array<{ startLine: number; endLine: number; replacements: TextReplacement[] }> =
+      []
+    const sortedReplacements = [...replacements].sort((a, b) => a.matchIndex - b.matchIndex)
+    let previousEnd = -1
+    for (const replacement of sortedReplacements) {
+      const range = yield* getReplacementLineRange(baseLines, replacement)
+      if (replacement.matchIndex < previousEnd)
+        return yield* Result.fail(editError('overlap', 'Replacement ranges overlap.'))
+      previousEnd = replacement.matchIndex + replacement.matchLength
+      const current = groups[groups.length - 1]
+      if (current && range.startLine < current.endLine) {
+        current.endLine = Math.max(current.endLine, range.endLine)
+        current.replacements.push(replacement)
+        continue
+      }
+      groups.push({ ...range, replacements: [replacement] })
+    }
 
-    const groupStartOffset = at(baseLines, group.startLine).start
-    const groupEndOffset = at(baseLines, group.endLine - 1).end
-    result += applyReplacements(
-      baseContent.slice(groupStartOffset, groupEndOffset),
-      group.replacements,
-      groupStartOffset,
-    )
-    originalLineIndex = group.endLine
-  }
-  result += originalLines.slice(originalLineIndex).join('')
+    let originalLineIndex = 0
+    let result = ''
+    for (const group of groups) {
+      result += originalLines.slice(originalLineIndex, group.startLine).join('')
 
-  return result
+      const groupStartOffset = at(baseLines, group.startLine).start
+      const groupEndOffset = at(baseLines, group.endLine - 1).end
+      result += applyReplacements(
+        baseContent.slice(groupStartOffset, groupEndOffset),
+        group.replacements,
+        groupStartOffset,
+      )
+      originalLineIndex = group.endLine
+    }
+    result += originalLines.slice(originalLineIndex).join('')
+
+    return result
+  })
 }
 
 export interface FuzzyMatchResult {
-  /** Whether a match was found */
-  found: boolean
   /** The index where the match starts (in the content that should be used for replacement) */
   index: number
   /** Length of the matched text */
@@ -210,17 +240,17 @@ export interface AppliedEditsResult {
  * fuzzy-normalized version of the content (trailing whitespace stripped,
  * Unicode quotes/dashes normalized to ASCII).
  */
-export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
+export function fuzzyFindText(content: string, oldText: string): Option.Option<FuzzyMatchResult> {
+  if (normalizeForFuzzyMatch(oldText).length === 0) return Option.none()
   // Try exact match first
   const exactIndex = content.indexOf(oldText)
   if (exactIndex !== -1) {
-    return {
-      found: true,
+    return Option.some({
       index: exactIndex,
       matchLength: oldText.length,
       usedFuzzyMatch: false,
       contentForReplacement: content,
-    }
+    })
   }
 
   // Try fuzzy match - work entirely in normalized space
@@ -228,26 +258,17 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
   const fuzzyOldText = normalizeForFuzzyMatch(oldText)
   const fuzzyIndex = fuzzyContent.indexOf(fuzzyOldText)
 
-  if (fuzzyIndex === -1) {
-    return {
-      found: false,
-      index: -1,
-      matchLength: 0,
-      usedFuzzyMatch: false,
-      contentForReplacement: content,
-    }
-  }
+  if (fuzzyIndex === -1) return Option.none()
 
   // When fuzzy matching, return offsets in normalized space. Callers can use
   // the normalized content to compute replacements, then decide how much of
   // that normalized output should be written back.
-  return {
-    found: true,
+  return Option.some({
     index: fuzzyIndex,
     matchLength: fuzzyOldText.length,
     usedFuzzyMatch: true,
     contentForReplacement: fuzzyContent,
-  }
+  })
 }
 
 /** Strip UTF-8 BOM if present, return both the BOM (if any) and the text without it */
@@ -260,16 +281,26 @@ export function stripBom(content: string): { bom: string; text: string } {
 function countOccurrences(content: string, oldText: string): number {
   const fuzzyContent = normalizeForFuzzyMatch(content)
   const fuzzyOldText = normalizeForFuzzyMatch(oldText)
-  return fuzzyContent.split(fuzzyOldText).length - 1
+  if (fuzzyOldText.length === 0) return 0
+  let count = 0
+  let offset = 0
+  while (true) {
+    const index = fuzzyContent.indexOf(fuzzyOldText, offset)
+    if (index === -1) return count
+    count++
+    offset = index + 1
+  }
 }
 
-function getNotFoundError(path: string, editIndex: number, totalEdits: number): Error {
+function getNotFoundError(path: string, editIndex: number, totalEdits: number): EditError {
   if (totalEdits === 1) {
-    return new Error(
+    return editError(
+      'not_found',
       `Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
     )
   }
-  return new Error(
+  return editError(
+    'not_found',
     `Could not find edits[${editIndex}] in ${path}. The oldText must match exactly including all whitespace and newlines.`,
   )
 }
@@ -279,31 +310,37 @@ function getDuplicateError(
   editIndex: number,
   totalEdits: number,
   occurrences: number,
-): Error {
+): EditError {
   if (totalEdits === 1) {
-    return new Error(
+    return editError(
+      'duplicate',
       `Found ${occurrences} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`,
     )
   }
-  return new Error(
+  return editError(
+    'duplicate',
     `Found ${occurrences} occurrences of edits[${editIndex}] in ${path}. Each oldText must be unique. Please provide more context to make it unique.`,
   )
 }
 
-function getEmptyOldTextError(path: string, editIndex: number, totalEdits: number): Error {
+function getEmptyOldTextError(path: string, editIndex: number, totalEdits: number): EditError {
   if (totalEdits === 1) {
-    return new Error(`oldText must not be empty in ${path}.`)
+    return editError('empty', `oldText must not be empty in ${path}.`)
   }
-  return new Error(`edits[${editIndex}].oldText must not be empty in ${path}.`)
+  return editError('empty', `edits[${editIndex}].oldText must not be empty in ${path}.`)
 }
 
-function getNoChangeError(path: string, totalEdits: number): Error {
+function getNoChangeError(path: string, totalEdits: number): EditError {
   if (totalEdits === 1) {
-    return new Error(
+    return editError(
+      'no_change',
       `No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`,
     )
   }
-  return new Error(`No changes made to ${path}. The replacements produced identical content.`)
+  return editError(
+    'no_change',
+    `No changes made to ${path}. The replacements produced identical content.`,
+  )
 }
 
 /**
@@ -317,74 +354,83 @@ function getNoChangeError(path: string, totalEdits: number): Error {
  */
 export function applyEditsToNormalizedContent(
   normalizedContent: string,
-  edits: Edit[],
+  edits: ReadonlyArray<Edit>,
   path: string,
-): AppliedEditsResult {
-  const normalizedEdits = edits.map((edit) => ({
-    oldText: normalizeToLF(edit.oldText),
-    newText: normalizeToLF(edit.newText),
-  }))
+): Result.Result<AppliedEditsResult, EditError> {
+  return Result.gen(function* () {
+    if (edits.length === 0)
+      return yield* Result.fail(editError('empty', 'edits must contain at least one replacement'))
+    const normalizedEdits = edits.map((edit) => ({
+      oldText: normalizeToLF(edit.oldText),
+      newText: normalizeToLF(edit.newText),
+    }))
 
-  for (let i = 0; i < normalizedEdits.length; i++) {
-    if (at(normalizedEdits, i).oldText.length === 0) {
-      throw getEmptyOldTextError(path, i, normalizedEdits.length)
-    }
-  }
-
-  const initialMatches = normalizedEdits.map((edit) =>
-    fuzzyFindText(normalizedContent, edit.oldText),
-  )
-  const usedFuzzyMatch = initialMatches.some((match) => match.usedFuzzyMatch)
-  const replacementBaseContent = usedFuzzyMatch
-    ? normalizeForFuzzyMatch(normalizedContent)
-    : normalizedContent
-
-  const matchedEdits: MatchedEdit[] = []
-  for (let i = 0; i < normalizedEdits.length; i++) {
-    const edit = at(normalizedEdits, i)
-    const matchResult = fuzzyFindText(replacementBaseContent, edit.oldText)
-    if (!matchResult.found) {
-      throw getNotFoundError(path, i, normalizedEdits.length)
+    for (let i = 0; i < normalizedEdits.length; i++) {
+      if (normalizeForFuzzyMatch(at(normalizedEdits, i).oldText).length === 0) {
+        return yield* Result.fail(getEmptyOldTextError(path, i, normalizedEdits.length))
+      }
     }
 
-    const occurrences = countOccurrences(replacementBaseContent, edit.oldText)
-    if (occurrences > 1) {
-      throw getDuplicateError(path, i, normalizedEdits.length, occurrences)
+    const initialMatches = normalizedEdits.map((edit) =>
+      fuzzyFindText(normalizedContent, edit.oldText),
+    )
+    const usedFuzzyMatch = initialMatches.some(
+      (match) => Option.isSome(match) && match.value.usedFuzzyMatch,
+    )
+    const replacementBaseContent = usedFuzzyMatch
+      ? normalizeForFuzzyMatch(normalizedContent)
+      : normalizedContent
+
+    const matchedEdits: MatchedEdit[] = []
+    for (let i = 0; i < normalizedEdits.length; i++) {
+      const edit = at(normalizedEdits, i)
+      const matchResult = fuzzyFindText(replacementBaseContent, edit.oldText)
+      if (Option.isNone(matchResult)) {
+        return yield* Result.fail(getNotFoundError(path, i, normalizedEdits.length))
+      }
+
+      const occurrences = countOccurrences(replacementBaseContent, edit.oldText)
+      if (occurrences > 1) {
+        return yield* Result.fail(getDuplicateError(path, i, normalizedEdits.length, occurrences))
+      }
+
+      matchedEdits.push({
+        editIndex: i,
+        matchIndex: matchResult.value.index,
+        matchLength: matchResult.value.matchLength,
+        newText: edit.newText,
+      })
     }
 
-    matchedEdits.push({
-      editIndex: i,
-      matchIndex: matchResult.index,
-      matchLength: matchResult.matchLength,
-      newText: edit.newText,
-    })
-  }
-
-  matchedEdits.sort((a, b) => a.matchIndex - b.matchIndex)
-  for (let i = 1; i < matchedEdits.length; i++) {
-    const previous = at(matchedEdits, i - 1)
-    const current = at(matchedEdits, i)
-    if (previous.matchIndex + previous.matchLength > current.matchIndex) {
-      throw new Error(
-        `edits[${previous.editIndex}] and edits[${current.editIndex}] overlap in ${path}. Merge them into one edit or target disjoint regions.`,
-      )
+    matchedEdits.sort((a, b) => a.matchIndex - b.matchIndex)
+    for (let i = 1; i < matchedEdits.length; i++) {
+      const previous = at(matchedEdits, i - 1)
+      const current = at(matchedEdits, i)
+      if (previous.matchIndex + previous.matchLength > current.matchIndex) {
+        return yield* Result.fail(
+          editError(
+            'overlap',
+            `edits[${previous.editIndex}] and edits[${current.editIndex}] overlap in ${path}. Merge them into one edit or target disjoint regions.`,
+          ),
+        )
+      }
     }
-  }
 
-  const baseContent = normalizedContent
-  const newContent = usedFuzzyMatch
-    ? applyReplacementsPreservingUnchangedLines(
-        normalizedContent,
-        replacementBaseContent,
-        matchedEdits,
-      )
-    : applyReplacements(replacementBaseContent, matchedEdits)
+    const baseContent = normalizedContent
+    const newContent = usedFuzzyMatch
+      ? yield* applyReplacementsPreservingUnchangedLines(
+          normalizedContent,
+          replacementBaseContent,
+          matchedEdits,
+        )
+      : applyReplacements(replacementBaseContent, matchedEdits)
 
-  if (baseContent === newContent) {
-    throw getNoChangeError(path, normalizedEdits.length)
-  }
+    if (baseContent === newContent) {
+      return yield* Result.fail(getNoChangeError(path, normalizedEdits.length))
+    }
 
-  return { baseContent, newContent }
+    return { baseContent, newContent }
+  })
 }
 
 /** Generate a standard unified patch. */

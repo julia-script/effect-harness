@@ -1,9 +1,4 @@
-import {
-  AuthError,
-  accountKey,
-  type OAuth,
-  type Registration,
-} from '@effect-harness/auth/Credential'
+import { AuthError, accountKey, OAuth, type Registration } from '@effect-harness/auth/Credential'
 import { CredentialStore } from '@effect-harness/auth/CredentialStore'
 import { Jwt } from '@effect-harness/auth/Jwt'
 import * as Pkce from '@effect-harness/auth/Pkce'
@@ -86,6 +81,33 @@ const requireDirect = (scopes: ReadonlyArray<string>) =>
     : Effect.fail(
         new AuthError({ reason: 'permission', message: 'ChatGPT plan permission was not granted' }),
       )
+
+/** Validate arithmetic against the same finite timestamp codecs used by persisted OAuth grants. */
+const deadlines = (
+  now: number,
+  token: { readonly expires_in: number; readonly earliest_refresh_at?: number | undefined },
+) =>
+  Schema.decodeEffect(
+    Schema.Struct({
+      expiresAt: OAuth.fields.expiresAt,
+      earliestRefreshAt: OAuth.fields.earliestRefreshAt,
+    }),
+  )({
+    expiresAt: now + token.expires_in * 1000,
+    ...(token.earliest_refresh_at === undefined
+      ? {}
+      : { earliestRefreshAt: token.earliest_refresh_at * 1000 }),
+  }).pipe(
+    Effect.map((value) => ({
+      expiresAt: value.expiresAt,
+      ...(value.earliestRefreshAt === undefined
+        ? {}
+        : { earliestRefreshAt: value.earliestRefreshAt }),
+    })),
+    Effect.mapError(
+      () => new AuthError({ reason: 'protocol', message: 'Invalid ChatGPT token lifetime' }),
+    ),
+  )
 
 export const layer = (options: {
   readonly appName: string
@@ -190,10 +212,7 @@ export const layer = (options: {
               refreshToken: token.refresh_token,
               idToken: token.id_token ?? credential.idToken,
               scopes,
-              expiresAt: now + token.expires_in * 1000,
-              ...(token.earliest_refresh_at === undefined
-                ? {}
-                : { earliestRefreshAt: token.earliest_refresh_at * 1000 }),
+              ...(yield* deadlines(now, token)),
             }
           }),
         )
@@ -385,10 +404,7 @@ export const layer = (options: {
             refreshToken: token.refresh_token,
             idToken: token.id_token,
             scopes,
-            expiresAt: now + token.expires_in * 1000,
-            ...(token.earliest_refresh_at === undefined
-              ? {}
-              : { earliestRefreshAt: token.earliest_refresh_at * 1000 }),
+            ...(yield* deadlines(now, token)),
           }
           yield* store.set(accountKey(credential), credential)
           return credential

@@ -125,6 +125,7 @@ export const make = Effect.fnUntraced(function* () {
       return yield* rejected('Receipt index differs from authoritative state', 'corrupt')
     return { state, frames }
   }).pipe(
+    sql.withTransaction,
     Effect.mapError((cause) =>
       cause instanceof StorageError ? cause : rejected('Cannot read durable storage', 'io', cause),
     ),

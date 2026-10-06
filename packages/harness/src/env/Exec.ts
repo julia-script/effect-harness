@@ -5,6 +5,7 @@ import * as Deferred from 'effect/Deferred'
 import * as Fiber from 'effect/Fiber'
 import type * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
+import * as Pull from 'effect/Pull'
 import type * as Path from 'effect/Path'
 import * as Stream from 'effect/Stream'
 import * as ChildProcess from 'effect/process/ChildProcess'
@@ -125,7 +126,6 @@ export const make = Effect.fnUntraced(function* (
           readonly bytes: Uint8Array
           readonly stream: 'stdout' | 'stderr'
         }) {
-          lastAt = yield* Clock.currentTimeMillis
           bytes += chunk.bytes.length
           for (const byte of chunk.bytes) if (byte === 10) newlines++
           if (chunk.bytes.length > 0) lastByte = chunk.bytes[chunk.bytes.length - 1] ?? 0
@@ -174,9 +174,38 @@ export const make = Effect.fnUntraced(function* (
         )
         const run = Effect.gen(function* () {
           const failed = yield* Deferred.make<never, ExecutionError>()
-          const reading = yield* output.pipe(
-            Stream.mapError(spillError),
-            Stream.runForEach(processChunk),
+          const pull = yield* Stream.toPull(output.pipe(Stream.mapError(spillError)))
+          let waiting:
+            | Fiber.Fiber<
+                Option.Option<
+                  ReadonlyArray<{
+                    readonly bytes: Uint8Array
+                    readonly stream: 'stdout' | 'stderr'
+                  }>
+                >,
+                ExecutionError
+              >
+            | undefined
+          let idleClosed = false
+          const reading = yield* Effect.gen(function* () {
+            while (!idleClosed) {
+              lastAt = yield* Clock.currentTimeMillis
+              waiting = yield* pull.pipe(
+                Effect.asSome,
+                Pull.catchDone(() => Effect.succeedNone),
+                Effect.forkChild,
+              )
+              const batch = yield* Fiber.join(waiting)
+              waiting = undefined
+              if (Option.isNone(batch)) return
+              // Every pulled chunk is admitted, including the rest of this batch.
+              for (const chunk of batch.value) yield* processChunk(chunk)
+            }
+          }).pipe(
+            Effect.catchCauseIf(
+              (cause) => idleClosed && Cause.hasInterrupts(cause),
+              () => Effect.void,
+            ),
             Effect.tapError((error) => Deferred.fail(failed, error)),
             Effect.forkScoped,
           )
@@ -188,8 +217,11 @@ export const make = Effect.fnUntraced(function* (
             const joined = yield* Fiber.join(reading).pipe(Effect.timeoutOption(100))
             if (Option.isSome(joined)) break
             const now = yield* Clock.currentTimeMillis
-            if (now - lastAt >= 100) {
-              yield* Fiber.interrupt(reading)
+            if (waiting !== undefined && now - lastAt >= 100) {
+              idleClosed = true
+              // Interrupt only the pending pull, never the admitted consumer.
+              yield* Fiber.interrupt(waiting)
+              yield* Fiber.join(reading)
               break
             }
           }

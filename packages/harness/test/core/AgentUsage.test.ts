@@ -3,6 +3,9 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Response from 'effect/ai/Response'
 import * as Agent from '../../src/Agent.ts'
+import * as Model from '../../src/Model.ts'
+import { ModelError } from '../../src/Error.ts'
+import * as AiError from 'effect/ai/AiError'
 import * as Usage from '../../src/Usage.ts'
 
 describe('agent stored configuration and accounting', () => {
@@ -45,6 +48,37 @@ describe('agent stored configuration and accounting', () => {
       [2000, 4000, 8000, 60000],
     )
     assert.strictEqual(Agent.shouldRetry(Agent.defaultRetry, 1, false), false)
+  })
+  it('retry decisions honor typed provider and harness reasons despite misleading messages', () => {
+    const permanent = new AiError.AiError({
+      module: 'Provider',
+      method: 'request',
+      reason: new AiError.AuthenticationError({
+        kind: 'InvalidKey',
+        description: '503 overloaded; please retry your request',
+      }),
+    })
+    const transient = new AiError.AiError({
+      module: 'Provider',
+      method: 'request',
+      reason: new AiError.InternalProviderError({ description: 'billing diagnostic' }),
+    })
+    const local = new ModelError({
+      reason: 'unsupported',
+      message: 'Network error retry delay is unsupported',
+    })
+    assert.strictEqual(
+      Agent.shouldRetry(Agent.defaultRetry, 1, Model.classify(permanent).retryable),
+      false,
+    )
+    assert.strictEqual(
+      Agent.shouldRetry(Agent.defaultRetry, 1, Model.classify(transient).retryable),
+      true,
+    )
+    assert.strictEqual(
+      Agent.shouldRetry(Agent.defaultRetry, 1, Model.classify(local).retryable),
+      false,
+    )
   })
   it('own-key ledgers preserve proto names, optional counters and immutable revisions', () => {
     const value = {

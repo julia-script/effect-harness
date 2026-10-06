@@ -9,6 +9,9 @@ import * as Pkce from '@effect-harness/auth/Pkce'
 import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
 import * as HttpServer from 'effect/http/HttpServer'
+import * as HttpServerRequest from 'effect/http/HttpServerRequest'
+import type * as HttpServerResponse from 'effect/http/HttpServerResponse'
+import type * as Scope from 'effect/Scope'
 import * as NetAddress from 'effect/net/NetAddress'
 import * as Crypto from 'effect/Crypto'
 import * as Deferred from 'effect/Deferred'
@@ -298,6 +301,68 @@ describe('Pi-compatible Anthropic consent', () => {
       ).pipe(Effect.provide(f.layer))
     },
   )
+  it.effect('duplicate browser callbacks await the original in-flight exchange', () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const f = fixture((request) =>
+        Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.as(HttpClientResponse.fromWeb(request, Response.json(token))),
+        ),
+      )
+      let handler:
+        | Effect.Effect<
+            HttpServerResponse.HttpServerResponse,
+            never,
+            HttpServerRequest.HttpServerRequest | Scope.Scope
+          >
+        | undefined
+      const server = HttpServer.make({
+        address: Result.getOrThrow(NetAddress.inetAddressV4(NetAddress.ipv4Loopback, 53692)),
+        // Native HttpServer boundary erases the application error channel.
+        // oxlint-disable effecttsgo/any-unknown-in-error-context
+        serve: (effect) =>
+          Effect.sync(() => {
+            handler = effect.pipe(Effect.orDie)
+          }),
+        // oxlint-enable effecttsgo/any-unknown-in-error-context
+      })
+      yield* Effect.gen(function* () {
+        const callback = Context.get(
+          yield* Layer.build(
+            OAuth.layerCallback({ account: 'browser-key' }).pipe(
+              Layer.provide(Layer.succeed(HttpServer.HttpServer, server)),
+            ),
+          ),
+          OAuth.Callback,
+        )
+        const request = Effect.suspend(() => {
+          if (handler === undefined) return Effect.die('Callback was not started')
+          const url = `${OAuth.browserRedirectUri}?code=c&state=${Redacted.value(callback.authorization.state)}`
+          return handler.pipe(
+            Effect.provideService(
+              HttpServerRequest.HttpServerRequest,
+              HttpServerRequest.fromWeb(new Request(url)),
+            ),
+          )
+        })
+        const first = yield* Effect.forkChild(request)
+        yield* Deferred.await(started)
+        const duplicate = yield* Effect.forkChild(request)
+        yield* Effect.yieldNow
+        yield* Deferred.succeed(release, undefined)
+        assert.strictEqual((yield* Fiber.join(first)).status, 200)
+        const owner = yield* callback.await.pipe(Effect.result)
+        assert.strictEqual(owner._tag, 'Success')
+        assert.strictEqual((yield* Fiber.join(duplicate)).status, 200)
+        assert.strictEqual((yield* callback.await).kind, 'opaqueOAuth')
+        assert.strictEqual(f.requests.length, 1)
+        assert.isTrue(Option.isSome(yield* (yield* CredentialStore).get('browser-key')))
+      }).pipe(Effect.provide(f.layer))
+    }),
+  )
+
   it.effect(
     'callback rejects an incorrect bind address and pending browser wait expires with native Clock',
     () => {

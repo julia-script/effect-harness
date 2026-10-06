@@ -7,6 +7,7 @@ import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
 import * as Deferred from 'effect/Deferred'
 import * as Exit from 'effect/Exit'
+import * as Ref from 'effect/Ref'
 import * as HttpServer from 'effect/http/HttpServer'
 import * as HttpServerRequest from 'effect/http/HttpServerRequest'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
@@ -329,6 +330,7 @@ export const layerCallback = (options: { readonly account: string }) =>
         )
       const auth = yield* OAuth
       const result = yield* Deferred.make<OpaqueOAuth, AuthError>()
+      const claimed = yield* Ref.make(false)
       const authorization = yield* auth.begin({ account: options.account, method: 'browser' })
       yield* Effect.addFinalizer(() => auth.cancel(authorization.state))
       yield* server.serve(
@@ -346,10 +348,18 @@ export const layerCallback = (options: { readonly account: string }) =>
             return HttpServerResponse.empty({ status: 404 })
           if (parsed.value.searchParams.get('state') !== Redacted.value(authorization.state))
             return HttpServerResponse.text('Invalid sign-in attempt', { status: 400 })
-          const exit = yield* auth
-            .complete(authorization.state, parsed.value.href)
-            .pipe(Effect.exit)
-          yield* Deferred.done(result, exit)
+          const exit = yield* Effect.uninterruptibleMask((restore) =>
+            Ref.getAndSet(claimed, true).pipe(
+              Effect.flatMap((alreadyClaimed) =>
+                alreadyClaimed
+                  ? restore(Deferred.await(result)).pipe(Effect.exit)
+                  : restore(auth.complete(authorization.state, parsed.value.href)).pipe(
+                      Effect.exit,
+                      Effect.tap((exit) => Deferred.done(result, exit)),
+                    ),
+              ),
+            ),
+          )
           return HttpServerResponse.text(
             Exit.isSuccess(exit)
               ? 'Sign-in complete. You may close this window.'

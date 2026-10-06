@@ -160,7 +160,7 @@ const nonRetryable = new RegExp(
   ].join('|'),
   'i',
 )
-const retryable = new RegExp(
+const foreignTransient = new RegExp(
   [
     // Generic provider load, HTTP status, and server-side transient failures.
     'overloaded',
@@ -247,20 +247,67 @@ export function errorText(error: unknown): string {
   if (typeof error === 'string') return error
   return JSON.stringify(error) ?? String(error)
 }
-export function classify(
-  error: unknown,
-  provider?: string,
-): { readonly retryable: boolean; readonly overflow: boolean } {
-  const text = errorText(error)
+/** Converts SDK invalid-request diagnostics and otherwise unclassified foreign sentinels once at the model boundary. */
+export function providerError(error: unknown, provider?: string): AiError.AiError {
+  if (error instanceof ModelError)
+    return new AiError.AiError({
+      module: 'Harness',
+      method: 'model',
+      reason: new AiError.InvalidRequestError({
+        description: error.message,
+        metadata: { harness: { reason: error.reason } },
+      }),
+    })
+  const native = AiError.isAiError(error) ? error : undefined
+  if (
+    native !== undefined &&
+    native.reason._tag !== 'UnknownError' &&
+    native.reason._tag !== 'InvalidRequestError'
+  )
+    return native
+  let text = errorText(error)
+  if (native !== undefined && 'description' in native.reason)
+    text = native.reason.description ?? native.message
+  const metadata =
+    native !== undefined && 'metadata' in native.reason
+      ? native.reason.metadata
+      : { [provider ?? 'foreign']: { message: text } }
+  const http = native !== undefined && 'http' in native.reason ? native.reason.http : undefined
   const overflow =
     !nonOverflowPatterns.some((pattern) => pattern.test(text)) &&
     (overflowPatterns.some((pattern) => pattern.test(text)) ||
       (provider === 'cerebras' && /^4(?:00|13)\s*(?:status code)?\s*\(no body\)/i.test(text)))
+  let reason: AiError.AiErrorReason
+  if (overflow)
+    reason = new AiError.InvalidRequestError({
+      description: text,
+      parameter: 'context_window',
+      metadata,
+      http,
+    })
+  else if (native !== undefined && native.reason._tag === 'InvalidRequestError') return native
+  else if (nonRetryable.test(text)) reason = new AiError.QuotaExhaustedError({ metadata })
+  else if (/rate.?limit|too many requests|\b429\b|ResourceExhausted/i.test(text))
+    reason = new AiError.RateLimitError({ metadata })
+  else if (foreignTransient.test(text))
+    reason = new AiError.InternalProviderError({ description: text, metadata })
+  else if (native !== undefined) return native
+  else reason = new AiError.UnknownError({ description: text, metadata })
+  return new AiError.AiError({
+    module: native?.module ?? provider ?? 'ForeignProvider',
+    method: native?.method ?? 'response',
+    reason,
+  })
+}
+
+export function classify(
+  error: unknown,
+  provider?: string,
+): { readonly retryable: boolean; readonly overflow: boolean } {
+  const typed = providerError(error, provider)
   return {
-    overflow,
-    retryable:
-      !overflow &&
-      !nonRetryable.test(text) &&
-      ((AiError.isAiError(error) && error.isRetryable) || retryable.test(text)),
+    overflow:
+      typed.reason._tag === 'InvalidRequestError' && typed.reason.parameter === 'context_window',
+    retryable: typed.isRetryable,
   }
 }

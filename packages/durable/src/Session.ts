@@ -6,6 +6,7 @@ import * as Scope from 'effect/Scope'
 import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
+import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 import * as Document from './Document.ts'
 import { address, typed } from './Document.ts'
@@ -524,6 +525,7 @@ export const make = Effect.fnUntraced(function* () {
           let active = true
           let tableWritten = false
           let nextId = original.nextId
+          const mintPermit = yield* Semaphore.make(1)
           const writes: Array<Record.Write> = []
           const acquired = new Map<string, Acquired>()
           const forkDocuments = new Set<Record.DocumentId>()
@@ -575,7 +577,7 @@ export const make = Effect.fnUntraced(function* () {
             const id = yield* validate(schema, nextId)
             nextId++
             return id
-          })
+          }, Semaphore.withPermit(mintPermit))
           const write = Effect.fnUntraced(function* (value: Record.Write) {
             yield* open
             let valid = yield* validate(Record.Write, value)
