@@ -176,8 +176,8 @@ describe('Anthropic native catalogue', () => {
         ]
         for (const request of negatives)
           assert.strictEqual(
-            (yield* descriptor.configure(request).pipe(Effect.flip)).reason,
-            'unsupported',
+            (yield* descriptor.configure(request).pipe(Effect.flip)).reason._tag,
+            'ModelUnsupported',
           )
         assert.strictEqual(f.requests.length, 0)
         const budget = yield* Catalog.descriptor({
@@ -187,8 +187,8 @@ describe('Anthropic native catalogue', () => {
         assert.strictEqual(
           (yield* budget
             .configure({ thinking: 'high', options: {}, maxTokens: 8000 })
-            .pipe(Effect.flip)).reason,
-          'unsupported',
+            .pipe(Effect.flip)).reason._tag,
+          'ModelUnsupported',
         )
       }).pipe(Effect.provide(f.layer))
     },
@@ -277,8 +277,8 @@ describe('Anthropic native catalogue', () => {
         )
         assert.strictEqual(
           (yield* Catalog.descriptor({ ...entry, config: { max_tokens: 32001 } }).pipe(Effect.flip))
-            .reason,
-          'unsupported',
+            .reason._tag,
+          'ModelUnsupported',
         )
       }).pipe(Effect.provide(f.layer))
     },

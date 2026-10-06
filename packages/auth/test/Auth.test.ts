@@ -15,7 +15,7 @@ import * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import { exportJWK, generateKeyPair, SignJWT } from 'jose'
-import { AuthError, Credential } from '../src/Credential.ts'
+import { AuthIdentityError, AuthNetworkError, AuthError, Credential } from '../src/Credential.ts'
 import * as Store from '../src/CredentialStore.ts'
 import * as Jwt from '../src/Jwt.ts'
 import * as Pkce from '../src/Pkce.ts'
@@ -60,9 +60,11 @@ describe('auth', () => {
         yield* store.set('key', value)
         assert.strictEqual(yield* store.hostId('openai'), yield* store.hostId('openai'))
         const failure = yield* store
-          .modify('key', () => Effect.fail(new AuthError({ reason: 'network', message: 'test' })))
+          .modify('key', () =>
+            Effect.fail(new AuthError({ reason: new AuthNetworkError({ message: 'test' }) })),
+          )
           .pipe(Effect.flip)
-        assert.strictEqual(failure.reason, 'network')
+        assert.strictEqual(failure.code, 'network')
         assert.deepStrictEqual(yield* store.get('key'), Option.some(value))
         yield* store.remove('key')
         assert.isTrue(Option.isNone(yield* store.get('key')))
@@ -92,12 +94,14 @@ describe('auth', () => {
         assert.isTrue(Option.isSome(read))
         yield* reopened
           .modify('key', () =>
-            Effect.fail(new AuthError({ reason: 'identity', message: 'bad identity' })),
+            Effect.fail(
+              new AuthError({ reason: new AuthIdentityError({ message: 'bad identity' }) }),
+            ),
           )
           .pipe(Effect.flip)
         assert.deepStrictEqual(yield* reopened.get('key'), read)
         yield* fs.chmod(path, 0o644)
-        assert.strictEqual((yield* reopened.get('key').pipe(Effect.flip)).reason, 'storage')
+        assert.strictEqual((yield* reopened.get('key').pipe(Effect.flip)).code, 'storage')
       }),
     ).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer, BunCrypto.layer))),
   )
@@ -181,7 +185,7 @@ describe('auth', () => {
           assert.strictEqual(
             (yield* second
               .set('key', { ...previous, apiKey: Redacted.make('contender') })
-              .pipe(Effect.flip)).reason,
+              .pipe(Effect.flip)).code,
             'busy',
           )
           yield* Fiber.interrupt(owner)
@@ -210,17 +214,17 @@ describe('auth', () => {
           )
           yield* fs.writeFileString(path, 'private malformed document', { mode: 0o600 })
           const corrupt = yield* store.get('key').pipe(Effect.flip)
-          assert.strictEqual(corrupt.reason, 'storage')
+          assert.strictEqual(corrupt.code, 'storage')
           assert.isFalse(JSON.stringify(corrupt).includes('private malformed document'))
           yield* fs.remove(path)
           yield* fs.symlink(`${directory}/missing-target`, path)
-          assert.strictEqual((yield* store.get('key').pipe(Effect.flip)).reason, 'storage')
+          assert.strictEqual((yield* store.get('key').pipe(Effect.flip)).code, 'storage')
           const publicDirectory = `${directory}/public`
           yield* fs.makeDirectory(publicDirectory, { mode: 0o755 })
           assert.strictEqual(
             (yield* Layer.build(
               Store.layerProtectedFile({ path: `${publicDirectory}/credentials.json` }),
-            ).pipe(Effect.flip)).reason,
+            ).pipe(Effect.flip)).code,
             'storage',
           )
           assert.strictEqual((yield* fs.stat(publicDirectory)).mode & 0o777, 0o755)
@@ -229,7 +233,7 @@ describe('auth', () => {
           assert.strictEqual(
             (yield* Layer.build(
               Store.layerProtectedFile({ path: `${link}/credentials.json` }),
-            ).pipe(Effect.flip)).reason,
+            ).pipe(Effect.flip)).code,
             'storage',
           )
         }),
@@ -277,18 +281,18 @@ describe('auth', () => {
           { ...options, audience: 'wrong' },
         ])
           assert.strictEqual(
-            (yield* verifier.verify(signed, bad).pipe(Effect.flip)).reason,
+            (yield* verifier.verify(signed, bad).pipe(Effect.flip)).code,
             'identity',
           )
         const missing = Redacted.make(yield* sign({ sub: '' }))
         assert.strictEqual(
-          (yield* verifier.verify(missing, options).pipe(Effect.flip)).reason,
+          (yield* verifier.verify(missing, options).pipe(Effect.flip)).code,
           'identity',
         )
         const segments = Redacted.value(signed).split('.')
         const tampered = Redacted.make(`${segments[0]}.${segments[1]}.bad-signature`)
         assert.strictEqual(
-          (yield* verifier.verify(tampered, options).pipe(Effect.flip)).reason,
+          (yield* verifier.verify(tampered, options).pipe(Effect.flip)).code,
           'identity',
         )
         const expired = Redacted.make(
@@ -302,7 +306,7 @@ describe('auth', () => {
           ),
         )
         assert.strictEqual(
-          (yield* verifier.verify(expired, options).pipe(Effect.flip)).reason,
+          (yield* verifier.verify(expired, options).pipe(Effect.flip)).code,
           'identity',
         )
       }),

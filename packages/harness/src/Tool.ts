@@ -7,11 +7,18 @@ import * as AiTool from 'effect/ai/Tool'
 import type * as Toolkit from 'effect/ai/Toolkit'
 import type * as AiError from 'effect/ai/AiError'
 import * as Prompt from 'effect/ai/Prompt'
-import { ToolError } from './Error.ts'
+import {
+  ToolError,
+  ToolUnavailable,
+  ToolInvalidParameters,
+  ToolInvalidResult,
+  ToolExecution,
+} from './Error.ts'
 import { Invocation, ToolCall, Result, type ToolResult } from './Invocation.ts'
 import type * as ContextView from './Context.ts'
 import * as Output from './Output.ts'
 import * as Hook from './Hook.ts'
+import * as Serialization from './Serialization.ts'
 
 export interface Metadata {
   readonly replay?: 'safe' | 'unsafe' | undefined
@@ -44,11 +51,13 @@ export interface Registration {
     id: string,
   ) => Effect.Effect<NativeResult, ToolError, Invocation | ToolCall>
 }
-const error = (tool: AiTool.Any, reason: ToolError['reason'], cause: unknown): ToolError =>
+const error = (
+  tool: AiTool.Any,
+  Reason: typeof ToolInvalidParameters | typeof ToolInvalidResult | typeof ToolExecution,
+  cause: unknown,
+): ToolError =>
   new ToolError({
-    name: tool.name,
-    reason,
-    message: cause instanceof Error ? cause.message : String(cause),
+    reason: new Reason({ name: tool.name, message: Serialization.errorText(cause), cause }),
   })
 /** Bind ordinary Toolkit.toLayer handlers and codec services. Dynamic lookup erases generic tool names only at this boundary. */
 type Captured<Tools extends Record<string, AiTool.Any>, RequestServices = never> =
@@ -91,9 +100,10 @@ export const bind = <Tools extends Record<string, AiTool.Any>, RequestServices =
         handler: () =>
           Effect.fail(
             new ToolError({
-              name: tool.name,
-              reason: 'unavailable',
-              message: 'Provider-defined tool has no local handler',
+              reason: new ToolUnavailable({
+                name: tool.name,
+                message: 'Provider-defined tool has no local handler',
+              }),
             }),
           ),
       }))
@@ -121,9 +131,10 @@ export const bind = <Tools extends Record<string, AiTool.Any>, RequestServices =
               if (!current.mapUnsafe.has(service.key))
                 return Effect.fail(
                   new ToolError({
-                    name: tool.name,
-                    reason: 'unavailable',
-                    message: `Request service ${service.key} is absent`,
+                    reason: new ToolUnavailable({
+                      name: tool.name,
+                      message: `Request service ${service.key} is absent`,
+                    }),
                   }),
                 )
             // R was erased by Tool.Any. bind's Captured requirements plus native handler context satisfy codec services;
@@ -138,12 +149,12 @@ export const bind = <Tools extends Record<string, AiTool.Any>, RequestServices =
         )
       const decode = (args: unknown) =>
         provide(Schema.decodeUnknownEffect(parameters)(args)).pipe(
-          Effect.mapError((cause) => error(tool, 'invalid_parameters', cause)),
+          Effect.mapError((cause) => error(tool, ToolInvalidParameters, cause)),
         )
       const encodeArgs = (args: unknown) =>
         provide(Schema.encodeEffect(parameters)(args as Parameters)).pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(Schema.Json)),
-          Effect.mapError((cause) => error(tool, 'invalid_parameters', cause)),
+          Effect.mapError((cause) => error(tool, ToolInvalidParameters, cause)),
         )
       const execute = Effect.fnUntraced(function* (args: unknown, id: string) {
         const invocation = yield* Invocation
@@ -151,7 +162,7 @@ export const bind = <Tools extends Record<string, AiTool.Any>, RequestServices =
         const api = yield* ToolCall
         const preliminary = (result: unknown): Effect.Effect<void> =>
           provide(Schema.encodeEffect(success)(result)).pipe(
-            Effect.mapError((cause) => error(tool, 'invalid_result', cause)),
+            Effect.mapError((cause) => error(tool, ToolInvalidResult, cause)),
             Effect.map((encoded) => projected(result, encoded, false)),
             Effect.flatMap((value) =>
               api.preliminary === undefined
@@ -179,12 +190,12 @@ export const bind = <Tools extends Record<string, AiTool.Any>, RequestServices =
           Effect.catch((cause) =>
             tool.failureMode === 'return'
               ? Effect.succeed({ result: cause, encoded: undefined, isFailure: true })
-              : Effect.fail(error(tool, 'execution', cause)),
+              : Effect.fail(error(tool, ToolExecution, cause)),
           ),
         )
         const schema = native.isFailure ? failure : success
         const encoded = yield* provide(Schema.encodeEffect(schema)(native.result)).pipe(
-          Effect.mapError((cause) => error(tool, 'invalid_result', cause)),
+          Effect.mapError((cause) => error(tool, ToolInvalidResult, cause)),
         )
         return { ...native, encoded }
       })
@@ -196,7 +207,7 @@ export function defaultProject(_result: unknown, encoded: unknown, isFailure: bo
   return {
     content: [
       Prompt.textPart({
-        text: typeof encoded === 'string' ? encoded : (JSON.stringify(encoded) ?? ''),
+        text: Serialization.display(encoded),
       }),
     ],
     isError: isFailure,
@@ -241,7 +252,7 @@ export const makeIntent = Effect.fnUntraced(function* (
   encoded?: Schema.Json,
 ) {
   const args = yield* Schema.decodeUnknownEffect(Schema.Json)(decoded).pipe(
-    Effect.mapError((cause) => error(registration.tool, 'invalid_parameters', cause)),
+    Effect.mapError((cause) => error(registration.tool, ToolInvalidParameters, cause)),
   )
   return {
     id,
@@ -279,11 +290,11 @@ export const settleFailure = (
         isError: true,
         diagnostics: [
           ...(partial.diagnostics ?? []),
-          { kind: 'tool_error', message: String(Cause.squash(cause)) },
+          { kind: 'tool_error', message: Serialization.errorText(Cause.squash(cause)) },
         ],
         details: {
           reason: 'execution',
-          error: String(Cause.squash(cause)),
+          error: Serialization.errorText(Cause.squash(cause)),
           partial: partial.details ?? null,
         },
       })

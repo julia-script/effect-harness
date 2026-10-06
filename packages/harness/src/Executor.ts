@@ -1,3 +1,4 @@
+import * as Serialization from './Serialization.ts'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -13,7 +14,18 @@ import type * as Toolkit from 'effect/ai/Toolkit'
 import * as Agent from './Agent.ts'
 import * as Compaction from './Compaction.ts'
 import * as ConversationContext from './Context.ts'
-import { ModelError, ToolError } from './Error.ts'
+import {
+  ModelError,
+  ToolError,
+  ModelInvalidResponse,
+  ModelNoModel,
+  ModelUnsupported,
+  ToolBlocked,
+  ToolExecution,
+  ToolInvalidParameters,
+  ToolInvalidResult,
+  ToolUnavailable,
+} from './Error.ts'
 import * as Hook from './Hook.ts'
 import { Invocation, ToolCall, Result, type ToolResult, type Diagnostic } from './Invocation.ts'
 import * as Model from './Model.ts'
@@ -155,7 +167,9 @@ export class Executor extends Context.Service<
 >()('@effect-harness/harness/Executor') {}
 const requireModel = (state: Agent.State): Effect.Effect<Agent.ModelRef, ModelError> =>
   state.model === undefined
-    ? Effect.fail(new ModelError({ reason: 'no_model', message: 'No model is configured' }))
+    ? Effect.fail(
+        new ModelError({ reason: new ModelNoModel({ message: 'No model is configured' }) }),
+      )
     : Effect.succeed(state.model)
 /** Definitions-only toolkit: native AI validates/declaratively offers tools but never executes them in this boundary. */
 function nativeDeclaration(declaration: Request['tools'][number]) {
@@ -252,8 +266,9 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           const descriptor = yield* catalog.resolve(request.model)
           if (descriptor.deferred === undefined)
             return yield* new ModelError({
-              reason: 'unsupported',
-              message: 'This model does not support deferred fetch',
+              reason: new ModelUnsupported({
+                message: 'This model does not support deferred fetch',
+              }),
             })
           return descriptor.deferred.fetch(handle, request.options)
         }),
@@ -262,8 +277,9 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       const descriptor = yield* catalog.resolve(request.model)
       if (descriptor.deferred === undefined)
         return yield* new ModelError({
-          reason: 'unsupported',
-          message: 'This model does not support deferred cancellation',
+          reason: new ModelUnsupported({
+            message: 'This model does not support deferred cancellation',
+          }),
         })
       yield* descriptor.deferred.cancel(handle, request.options)
     })
@@ -317,9 +333,10 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       const registration = agent.tools.find((tool) => tool.tool.name === input.name)
       if (registration === undefined)
         return yield* new ToolError({
-          reason: 'unavailable',
-          name: input.name,
-          message: `Tool ${input.name} is not available`,
+          reason: new ToolUnavailable({
+            name: input.name,
+            message: `Tool ${input.name} is not available`,
+          }),
         })
       let args = input.args
       if (registration.metadata.repair !== undefined)
@@ -329,9 +346,11 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           Effect.mapError(
             (cause) =>
               new ToolError({
-                reason: 'invalid_parameters',
-                name: input.name,
-                message: String(cause),
+                reason: new ToolInvalidParameters({
+                  name: input.name,
+                  message: Serialization.errorText(cause),
+                  cause: cause,
+                }),
               }),
           ),
         )
@@ -351,18 +370,18 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
                 )
               : Effect.fail(
                   new ToolError({
-                    reason: 'blocked',
-                    name: input.name,
-                    message: String(Cause.squash(cause)),
+                    reason: new ToolBlocked({
+                      name: input.name,
+                      message: Serialization.errorText(Cause.squash(cause)),
+                      cause: cause,
+                    }),
                   }),
                 ),
           ),
         )
         if (decision !== undefined && 'block' in decision)
           return yield* new ToolError({
-            reason: 'blocked',
-            name: input.name,
-            message: decision.block,
+            reason: new ToolBlocked({ name: input.name, message: decision.block }),
           })
         if (decision !== undefined) args = decision.args
       }
@@ -444,9 +463,10 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           ended
             ? Effect.fail(
                 new ToolError({
-                  name: intent.name,
-                  reason: 'execution',
-                  message: `Tool call ${intent.id} has settled`,
+                  reason: new ToolExecution({
+                    name: intent.name,
+                    message: `Tool call ${intent.id} has settled`,
+                  }),
                 }),
               )
             : effect,
@@ -460,9 +480,11 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
               Effect.mapError(
                 (cause) =>
                   new ToolError({
-                    name: intent.name,
-                    reason: 'invalid_result',
-                    message: cause.message,
+                    reason: new ToolInvalidResult({
+                      name: intent.name,
+                      message: cause.message,
+                      cause: cause,
+                    }),
                   }),
               ),
               Effect.flatMap((checked) =>
@@ -478,9 +500,11 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
                     Effect.mapError(
                       (cause) =>
                         new ToolError({
-                          name: intent.name,
-                          reason: 'execution',
-                          message: cause.message,
+                          reason: new ToolExecution({
+                            name: intent.name,
+                            message: cause.message,
+                            cause: cause,
+                          }),
                         }),
                     ),
                   )
@@ -507,7 +531,13 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
             Output.push(buffer, chunk, skipped).pipe(
               Effect.mapError(
                 (error) =>
-                  new ToolError({ name: intent.name, reason: 'execution', message: error.message }),
+                  new ToolError({
+                    reason: new ToolExecution({
+                      name: intent.name,
+                      message: error.message,
+                      cause: error,
+                    }),
+                  }),
               ),
               Effect.andThen(progress.mark),
             ),
@@ -518,9 +548,11 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
               Effect.mapError(
                 (cause) =>
                   new ToolError({
-                    name: intent.name,
-                    reason: 'invalid_result',
-                    message: cause.message,
+                    reason: new ToolInvalidResult({
+                      name: intent.name,
+                      message: cause.message,
+                      cause: cause,
+                    }),
                   }),
               ),
               Effect.flatMap((checked) => Ref.set(details, structuredClone(checked))),
@@ -676,16 +708,17 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         response.text.trim() === ''
       )
         return yield* new ModelError({
-          reason: 'invalid_response',
-          usage:
-            descriptor.usage?.(
-              response.usage,
-              response.content.find((part) => part.type === 'finish')?.metadata ?? {},
-            ) ?? Usage.fromResponse(response.usage),
-          message:
-            response.finishReason === 'length'
-              ? 'Summarization hit the token limit; the summary is incomplete'
-              : 'Summarization did not produce a clean nonempty text response',
+          reason: new ModelInvalidResponse({
+            usage:
+              descriptor.usage?.(
+                response.usage,
+                response.content.find((part) => part.type === 'finish')?.metadata ?? {},
+              ) ?? Usage.fromResponse(response.usage),
+            message:
+              response.finishReason === 'length'
+                ? 'Summarization hit the token limit; the summary is incomplete'
+                : 'Summarization did not produce a clean nonempty text response',
+          }),
         })
       const finish = response.content.find((part) => part.type === 'finish')
       return {

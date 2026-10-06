@@ -35,27 +35,31 @@ const document = (
   fork: 'asOf',
   ...extra,
 })
-const counter = Document.define({
+const counter = Document.defineUnsafe({
   kind: 'counter',
   version: 1,
   scope: 'session',
   schema: Schema.Struct({ count: Schema.Finite.pipe(Schema.mutableKey) }),
   initial: () => ({ count: 0 }),
 })
-const historical = Document.define({
+const historical = Document.defineUnsafe({
   ...counter.definition,
   kind: 'history',
   scope: 'conversation',
   history: 'rewindable',
   fork: 'asOf',
 })
-const current = Document.define({
+const current = Document.defineUnsafe({
   ...historical.definition,
   kind: 'current',
   history: 'latest',
   fork: 'current',
 })
-const initial = Document.define({ ...historical.definition, kind: 'initial', fork: 'initial' })
+const initial = Document.defineUnsafe({
+  ...historical.definition,
+  kind: 'initial',
+  fork: 'initial',
+})
 const failure = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.flip, Effect.orDie)
 
 /** Storage semantics shared by every backend, independent from the selected test runner. */
@@ -130,17 +134,19 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
       const store = yield* Store
       const session = yield* Session.Session
       yield* session.root()
-      const data = JSON.parse('{"__proto__":{"bad":1},"constructor":[1,2],"prototype":"ok"}')
+      const fixture = '{"__proto__":{"bad":1},"constructor":[1,2],"prototype":"ok"}'
+      const parse = Effect.try({
+        try: () => JSON.parse(fixture),
+        catch: (cause) => rejected('Invalid conformance JSON fixture', undefined, cause),
+      })
+      const data = yield* parse
       yield* store.commit([
         { type: 'entry', value: { id: eid(2), conversationId: root, kind: 'data', data } },
       ])
       data.constructor.push(3)
       const first = yield* session.entry(eid(2))
       assert.ok(first)
-      assert.deepStrictEqual(
-        first.entry.data,
-        JSON.parse('{"__proto__":{"bad":1},"constructor":[1,2],"prototype":"ok"}'),
-      )
+      assert.deepStrictEqual(first.entry.data, yield* parse)
       assert.strictEqual(Object.getPrototypeOf(first.entry.data), Object.prototype)
       const state = yield* store.read
       Reflect.set(state.entries[0]?.entry ?? {}, 'kind', 'mutated')
@@ -695,7 +701,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
           }),
         ),
       )
-      assert.strictEqual(error.reason, 'read_after_write')
+      assert.strictEqual(error.reason._tag, 'ReadAfterWrite')
       assert.strictEqual((yield* session.scanEntries({ conversationId: root }, 10)).items.length, 0)
     }),
   )
@@ -727,8 +733,8 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
             key: 'stable\ud800',
             fingerprint: 'other',
           }),
-        )).reason,
-        'conflict',
+        )).reason._tag,
+        'Conflict',
       )
       assert.strictEqual((yield* session.snapshot(counter))?.value.count, 1)
     }),
@@ -739,7 +745,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
       const store = yield* Store
       const session = yield* Session.Session
       yield* session.transaction((tx) => tx.doc(counter).pipe(Effect.as(null)))
-      const newer = Document.define({
+      const newer = Document.defineUnsafe({
         ...counter.definition,
         version: 2,
         migrate: (value) => ({ count: Number(value.count) + 1 }),
@@ -817,7 +823,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
       yield* session.root()
       const { id: _id, ...taskInput } = pending(tid(100))
       const task = yield* session.transaction((tx) => tx.createTask(taskInput))
-      const token = Document.define({ ...counter.definition, kind: 'taskdoc', scope: 'task' })
+      const token = Document.defineUnsafe({ ...counter.definition, kind: 'taskdoc', scope: 'task' })
       yield* session.transaction((tx) => tx.doc(token, { owner: task }).pipe(Effect.as(null)))
       yield* failure(
         session.transaction(
@@ -865,7 +871,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
         session.conversation(root).pipe(Effect.as(null)),
         store.journal(0).pipe(Effect.as(null)),
       ])
-        assert.strictEqual((yield* failure(operation)).reason, 'closed')
+        assert.strictEqual((yield* failure(operation)).reason._tag, 'Closed')
     }),
   )
   return cases

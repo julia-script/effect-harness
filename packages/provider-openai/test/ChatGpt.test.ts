@@ -1,6 +1,12 @@
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
-import { AuthError, accountKey } from '@effect-harness/auth/Credential'
+import {
+  AuthIdentityError,
+  AuthNetworkError,
+  makeAuthErrorReason,
+  AuthError,
+  accountKey,
+} from '@effect-harness/auth/Credential'
 import * as Store from '@effect-harness/auth/CredentialStore'
 import { Jwt } from '@effect-harness/auth/Jwt'
 import { assert, describe, it } from '@effect/vitest'
@@ -104,7 +110,9 @@ const makeFixture = () => {
     verify: (_token, verifyOptions) => {
       jwtOptions.push(verifyOptions)
       if (verifyOptions.audience !== options.clientId)
-        return Effect.fail(new AuthError({ reason: 'identity', message: 'audience mismatch' }))
+        return Effect.fail(
+          new AuthError({ reason: new AuthIdentityError({ message: 'audience mismatch' }) }),
+        )
       return Effect.succeed({
         sub: options.subject,
         iss: verifyOptions.issuer,
@@ -149,6 +157,40 @@ describe('ChatGPT account', () => {
     },
   )
   it.effect(
+    'raw native account HTTP client preserves the exact AuthError inside TransportError',
+    () => {
+      const f = makeFixture()
+      return Effect.gen(function* () {
+        const original = new AuthError({
+          reason: new AuthNetworkError({
+            message: 'Sanitized credential failure',
+            cause: new Error('private-token-diagnostic'),
+          }),
+        })
+        const auth = yield* ChatGpt.ChatGpt
+        const client = yield* OpenAiClient.OpenAiClient.pipe(
+          Effect.provide(
+            Provider.layerChatGptClient({ account: 'selected-account' }).pipe(
+              Layer.provide(
+                Layer.succeed(ChatGpt.ChatGpt, {
+                  ...auth,
+                  accessToken: () => Effect.fail(original),
+                }),
+              ),
+            ),
+          ),
+        )
+        const error = yield* client.client.get('/models').pipe(Effect.flip)
+        assert.strictEqual(error.reason._tag, 'TransportError')
+        assert.strictEqual(error.reason.cause, original)
+        assert.strictEqual(original.cause instanceof Error, true)
+        assert.isFalse(JSON.stringify(error).includes('private-token-diagnostic'))
+        assert.strictEqual(f.requests.length, 0)
+      }).pipe(Effect.provide(f.layer))
+    },
+  )
+
+  it.effect(
     'registers dynamically, exchanges issued ID, validates nonce and persists separate identity',
     () => {
       const f = makeFixture()
@@ -181,7 +223,7 @@ describe('ChatGPT account', () => {
         )
         assert.strictEqual(f.tokenRequests(), 1)
         assert.strictEqual(
-          (yield* auth.complete(callback(authorization, 'issued-1')).pipe(Effect.flip)).reason,
+          (yield* auth.complete(callback(authorization, 'issued-1')).pipe(Effect.flip)).code,
           'callback',
         )
       }).pipe(Effect.provide(f.layer))
@@ -199,7 +241,7 @@ describe('ChatGPT account', () => {
             .complete(
               'http://127.0.0.1:12345/auth/callback?state=invalid&code=x&client_id=issued-1',
             )
-            .pipe(Effect.flip)).reason,
+            .pipe(Effect.flip)).code,
           'callback',
         )
         const a = yield* auth.begin({ redirectUri: 'http://127.0.0.1:12345/auth/callback' })
@@ -208,7 +250,7 @@ describe('ChatGPT account', () => {
           `${callback(a, 'issued-1')}&state=duplicate`,
           callback(a, 'dynamic_agent_client'),
         ])
-          assert.strictEqual((yield* auth.complete(invalid).pipe(Effect.flip)).reason, 'callback')
+          assert.strictEqual((yield* auth.complete(invalid).pipe(Effect.flip)).code, 'callback')
         assert.strictEqual(f.tokenRequests(), 0)
       }).pipe(Effect.provide(f.layer))
     },
@@ -222,13 +264,13 @@ describe('ChatGPT account', () => {
       assert.strictEqual(
         (yield* auth
           .complete(`${denied.redirectUri}?state=${denied.state}&error=access_denied`)
-          .pipe(Effect.flip)).reason,
+          .pipe(Effect.flip)).code,
         'denied',
       )
       const expired = yield* auth.begin({ redirectUri: 'http://127.0.0.1:12345/auth/callback' })
       yield* TestClock.adjust('11 minutes')
       assert.strictEqual(
-        (yield* auth.complete(callback(expired, 'issued-1')).pipe(Effect.flip)).reason,
+        (yield* auth.complete(callback(expired, 'issued-1')).pipe(Effect.flip)).code,
         'expired',
       )
       assert.strictEqual(f.tokenRequests(), 0)
@@ -246,12 +288,12 @@ describe('ChatGPT account', () => {
         'http://127.0.0.1/auth/callback?q=x',
       ])
         assert.strictEqual(
-          (yield* auth.begin({ redirectUri }).pipe(Effect.flip)).reason,
+          (yield* auth.begin({ redirectUri }).pipe(Effect.flip)).code,
           'configuration',
         )
       const missing = yield* auth.begin({ redirectUri: 'http://127.0.0.1:12345/auth/callback' })
       assert.strictEqual(
-        (yield* auth.complete(callback(missing)).pipe(Effect.flip)).reason,
+        (yield* auth.complete(callback(missing)).pipe(Effect.flip)).code,
         'callback',
       )
       assert.strictEqual(f.tokenRequests(), 0)
@@ -265,7 +307,7 @@ describe('ChatGPT account', () => {
       const auth = yield* ChatGpt.ChatGpt
       const a = yield* auth.begin({ redirectUri: 'http://127.0.0.1:12345/auth/callback' })
       assert.strictEqual(
-        (yield* auth.complete(callback(a, 'issued-1')).pipe(Effect.flip)).reason,
+        (yield* auth.complete(callback(a, 'issued-1')).pipe(Effect.flip)).code,
         'permission',
       )
       assert.deepStrictEqual(yield* (yield* Store.CredentialStore).list, [])
@@ -291,7 +333,7 @@ describe('ChatGPT account', () => {
         assert.strictEqual(query.get('ext_agent_host_id'), credential.hostId)
         assert.isFalse(JSON.stringify(returning).includes('id-token'))
         assert.strictEqual(
-          (yield* auth.complete(callback(returning, 'different')).pipe(Effect.flip)).reason,
+          (yield* auth.complete(callback(returning, 'different')).pipe(Effect.flip)).code,
           'identity',
         )
         const second = yield* auth.begin({
@@ -300,7 +342,7 @@ describe('ChatGPT account', () => {
         })
         f.options.subject = 'other-account'
         assert.strictEqual(
-          (yield* auth.complete(callback(second)).pipe(Effect.flip)).reason,
+          (yield* auth.complete(callback(second)).pipe(Effect.flip)).code,
           'identity',
         )
         assert.deepStrictEqual(
@@ -335,14 +377,14 @@ describe('ChatGPT account', () => {
         const previous = yield* store.get(key)
         f.options.tokenStatus = 500
         assert.strictEqual(
-          (yield* auth.refresh(key, { force: true }).pipe(Effect.flip)).reason,
+          (yield* auth.refresh(key, { force: true }).pipe(Effect.flip)).code,
           'token',
         )
         assert.deepStrictEqual(yield* store.get(key), previous)
         f.options.tokenStatus = 200
         f.options.subject = 'other-account'
         assert.strictEqual(
-          (yield* auth.refresh(key, { force: true }).pipe(Effect.flip)).reason,
+          (yield* auth.refresh(key, { force: true }).pipe(Effect.flip)).code,
           'identity',
         )
         assert.deepStrictEqual(yield* store.get(key), previous)
@@ -383,7 +425,7 @@ describe('ChatGPT account', () => {
         const registration = yield* (yield* Store.CredentialStore).get(key)
         assert.isTrue(Option.isSome(registration))
         if (Option.isSome(registration)) assert.strictEqual(registration.value.kind, 'registration')
-        assert.strictEqual((yield* auth.accessToken(key).pipe(Effect.flip)).reason, 'missing')
+        assert.strictEqual((yield* auth.accessToken(key).pipe(Effect.flip)).code, 'missing')
         const a = yield* auth.begin({
           account: key,
           redirectUri: 'http://127.0.0.1:12346/auth/callback',
@@ -497,7 +539,7 @@ describe('ChatGPT account', () => {
           const store = yield* Store.CredentialStore
           f.options[field] = Number.MAX_VALUE
           const invalid = yield* login().pipe(Effect.flip)
-          assert.strictEqual(invalid.reason, 'protocol')
+          assert.strictEqual(invalid.code, 'protocol')
           assert.isFalse(JSON.stringify(invalid).includes('access-'))
           assert.deepStrictEqual(yield* store.list, [])
           f.options.expiresIn = 3600
@@ -507,7 +549,7 @@ describe('ChatGPT account', () => {
           const previous = yield* store.get(key)
           f.options[field] = Number.MAX_VALUE
           assert.strictEqual(
-            (yield* auth.refresh(key, { force: true }).pipe(Effect.flip)).reason,
+            (yield* auth.refresh(key, { force: true }).pipe(Effect.flip)).code,
             'protocol',
           )
           assert.deepStrictEqual(yield* store.get(key), previous)
@@ -537,6 +579,10 @@ describe('ChatGPT account', () => {
     ['busy', undefined, 'InternalProviderError', true],
     ['identity', undefined, 'AuthenticationError', false],
     ['permission', 403, 'AuthenticationError', false],
+    ['permission', 503, 'AuthenticationError', false],
+    ['storage', 503, 'AuthenticationError', false],
+    ['token', 401, 'AuthenticationError', false],
+    ['token', 600, 'AuthenticationError', false],
   ] as const) {
     it.effect(
       `preserves ${reason}/${status ?? 'none'} inference refresh semantics in generation and streaming`,
@@ -548,7 +594,13 @@ describe('ChatGPT account', () => {
             ...auth,
             accessToken: () =>
               Effect.fail(
-                new AuthError({ reason, status, message: 'Sanitized credential failure' }),
+                new AuthError({
+                  reason: makeAuthErrorReason({
+                    reason,
+                    status,
+                    message: 'Sanitized credential failure',
+                  }),
+                }),
               ),
           })
           const layer = Provider.layerChatGpt({ account: 'selected', model: 'account-model' }).pipe(

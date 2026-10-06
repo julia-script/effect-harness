@@ -22,7 +22,14 @@ import * as Usage from '../Usage.ts'
 import { Compaction, Result } from './Compaction.ts'
 import * as Cancellation from './Cancellation.ts'
 import * as Structured from './Structured.ts'
-import { ExecutionError } from './ExecutionError.ts'
+import {
+  ExecutionError,
+  InvalidState,
+  Aborted,
+  ExecutionErrorCodec,
+  NoModel,
+  ModelError,
+} from './ExecutionError.ts'
 import { Submission, EntryDraft } from './Submission.ts'
 import * as SubmissionExecutor from './SubmissionExecutor.ts'
 
@@ -55,8 +62,13 @@ const Attempt = Schema.Union([
 ])
 const domainError = (error: import('../StorageError.ts').StorageError | ExecutionError) =>
   error._tag === 'StorageError' ? SubmissionExecutor.storageError(error) : error
-const invalid = () =>
-  new ExecutionError({ reason: 'invalid_state', message: 'Invalid compaction state' })
+const invalid = (cause?: unknown) =>
+  new ExecutionError({
+    reason: new InvalidState({
+      message: 'Invalid compaction state',
+      ...(cause === undefined ? {} : { cause }),
+    }),
+  })
 
 /** Creates the domain projection and returns an ordinary Compaction Workflow payload. */
 export const create = Effect.fnUntraced(function* (
@@ -70,7 +82,9 @@ export const create = Effect.fnUntraced(function* (
   if (owner !== undefined) {
     const task = yield* tx.task(owner)
     if (task === undefined || task.abortRequested || task.state.status === 'terminal')
-      return yield* new ExecutionError({ reason: 'aborted', message: 'Compaction owner has ended' })
+      return yield* new ExecutionError({
+        reason: new Aborted({ message: 'Compaction owner has ended' }),
+      })
   }
   const taskId = yield* tx.mint(Record.TaskId)
   const payload = {
@@ -139,7 +153,9 @@ export const layer: Layer.Layer<
         .pipe(Effect.mapError(SubmissionExecutor.storageError))
       if (task === undefined) return yield* invalid()
       if (task.abortRequested || task.state.status === 'terminal')
-        return yield* new ExecutionError({ reason: 'aborted', message: 'Compaction has ended' })
+        return yield* new ExecutionError({
+          reason: new Aborted({ message: 'Compaction has ended' }),
+        })
       return task
     })
     const removeStatus = (live: Document.Draft<Inbox.LiveState>) => {
@@ -153,7 +169,7 @@ export const layer: Layer.Layer<
       const settlement = yield* Activity.make({
         name: 'placement',
         success: Settlement,
-        error: ExecutionError,
+        error: ExecutionErrorCodec,
         execute: session
           .transaction(
             Effect.fnUntraced(function* (tx) {
@@ -162,8 +178,7 @@ export const layer: Layer.Layer<
               if (task === undefined) return yield* invalid()
               if (task.abortRequested)
                 return yield* new ExecutionError({
-                  reason: 'aborted',
-                  message: 'Compaction aborted',
+                  reason: new Aborted({ message: 'Compaction aborted' }),
                 })
               const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
               let result: typeof Result.Type = {}
@@ -225,7 +240,7 @@ export const layer: Layer.Layer<
       const prepared = yield* Activity.make({
         name: 'selection',
         success: Prepared,
-        error: ExecutionError,
+        error: ExecutionErrorCodec,
         execute: Cancellation.activity(
           payload,
           session,
@@ -248,8 +263,9 @@ export const layer: Layer.Layer<
             }
             if (provider === undefined || provider.value.sessionId === '')
               return yield* new ExecutionError({
-                reason: 'invalid_state',
-                message: 'Provider identity requires Conversation.layerCreation',
+                reason: new InvalidState({
+                  message: 'Provider identity requires Conversation.layerCreation',
+                }),
               })
             const view = yield* Conversation.context(session, payload.conversationId).pipe(
               Effect.mapError(domainError),
@@ -271,11 +287,9 @@ export const layer: Layer.Layer<
                 Effect.mapError(
                   (error) =>
                     new ExecutionError({
-                      reason:
-                        'reason' in error && error.reason === 'no_model'
-                          ? 'no_model'
-                          : 'model_error',
-                      message: error.message,
+                      reason: new ('reason' in error && error.reason._tag === 'ModelNoModel'
+                        ? NoModel
+                        : ModelError)({ message: error.message, cause: error }),
                     }),
                 ),
               )
@@ -291,7 +305,7 @@ export const layer: Layer.Layer<
         const response = yield* Activity.make({
           name: `summary/${attempt}`,
           success: Attempt,
-          error: ExecutionError,
+          error: ExecutionErrorCodec,
           execute: Cancellation.activity(
             payload,
             session,
@@ -303,8 +317,7 @@ export const layer: Layer.Layer<
                     const task = yield* tx.task(payload.taskId)
                     if (task === undefined || task.abortRequested)
                       return yield* new ExecutionError({
-                        reason: 'aborted',
-                        message: 'Compaction aborted',
+                        reason: new Aborted({ message: 'Compaction aborted' }),
                       })
                     const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
                     const status = live.compactions?.find(
@@ -332,8 +345,9 @@ export const layer: Layer.Layer<
                   Effect.mapError(
                     (failure) =>
                       new ExecutionError({
-                        reason: failure.reason === 'no_model' ? 'no_model' : 'model_error',
-                        message: failure.message,
+                        reason: new (failure.reason._tag === 'ModelNoModel' ? NoModel : ModelError)(
+                          { message: failure.message, cause: failure },
+                        ),
                       }),
                   ),
                 )).retryable,
@@ -345,15 +359,14 @@ export const layer: Layer.Layer<
         const decision = yield* Activity.make({
           name: `usage/${attempt}`,
           success: Schema.Struct({ at: Schema.Finite, retry: Schema.Boolean }),
-          error: ExecutionError,
+          error: ExecutionErrorCodec,
           execute: session
             .transaction(
               Effect.fnUntraced(function* (tx) {
                 const task = yield* tx.task(payload.taskId)
                 if (task === undefined || task.abortRequested)
                   return yield* new ExecutionError({
-                    reason: 'aborted',
-                    message: 'Compaction aborted',
+                    reason: new Aborted({ message: 'Compaction aborted' }),
                   })
                 const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
                 const usage = response.type === 'summary' ? response.summary.usage : response.usage
@@ -388,7 +401,9 @@ export const layer: Layer.Layer<
             text: response.summary.summary,
           })
         if (!decision.retry)
-          return yield* new ExecutionError({ reason: 'model_error', message: response.message })
+          return yield* new ExecutionError({
+            reason: new ModelError({ message: response.message, cause: response }),
+          })
         yield* DurableClock.sleep({
           name: `retry/${attempt}`,
           duration: Math.max(0, decision.at - (yield* Clock.currentTimeMillis)),
@@ -401,7 +416,7 @@ export const layer: Layer.Layer<
       Effect.tapError((error) =>
         Activity.make({
           name: 'failed',
-          error: ExecutionError,
+          error: ExecutionErrorCodec,
           execute: session
             .transaction(
               Effect.fnUntraced(function* (tx) {
@@ -418,9 +433,9 @@ export const layer: Layer.Layer<
                   tx,
                   task,
                   {
-                    status: error.reason === 'aborted' ? 'aborted' : 'failed',
+                    status: error.reason._tag === 'Aborted' ? 'aborted' : 'failed',
                     message: error.message,
-                    reason: error.reason,
+                    reason: error.code,
                   },
                   graph,
                 )

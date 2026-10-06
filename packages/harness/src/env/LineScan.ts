@@ -1,6 +1,7 @@
 // Adapted from pi-durable (MIT), pinned 636703a0; see ../LICENSE.pi.txt.
 import { rangeDecoder, startsWithBom } from './Decode.ts'
-import type { LineScan } from '../Env.ts'
+import { FileError, FileInvalid, type LineScan } from '../Env.ts'
+import * as Result from 'effect/Result'
 const NEWLINE = 10
 const encoder = new TextEncoder()
 const decodedBytes = (text: string): number => encoder.encode(text).length
@@ -21,14 +22,16 @@ export interface State {
   head: number[] | undefined
   bom: boolean
 }
-export function make(startLine: number, endLine = Infinity): State {
+export function make(startLine: number, endLine = Infinity): Result.Result<State, FileError> {
   if (
     !Number.isSafeInteger(startLine) ||
     startLine < 0 ||
     !(endLine > startLine) ||
     (endLine !== Infinity && !Number.isSafeInteger(endLine))
   )
-    throw new RangeError('Invalid line range')
+    return Result.fail(
+      new FileError({ reason: new FileInvalid({ message: 'Invalid line range' }) }),
+    )
   const state: State = {
     startLine,
     endLine,
@@ -47,7 +50,7 @@ export function make(startLine: number, endLine = Infinity): State {
     bom: false,
   }
   if (startLine === 0) begin(state, 0)
-  return state
+  return Result.succeed(state)
 }
 export function push(state: State, chunk: Uint8Array): void {
   if (state.head !== undefined) {

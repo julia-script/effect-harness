@@ -111,7 +111,7 @@ describe('committed conversation mounts', () => {
         assert.strictEqual(frames[1]?.value.docs, frames[0]?.value.docs)
         let replay = initial
         for (const frame of frames) {
-          replay = View.apply(replay, frame.ops)
+          replay = yield* Effect.fromResult(View.apply(replay, frame.ops))
           assert.deepStrictEqual(replay, frame.value)
         }
         const late = yield* views.watch(root.id)
@@ -186,7 +186,7 @@ describe('committed conversation mounts', () => {
         Effect.gen(function* () {
           const { session, views, root } = yield* initialize
           const watch = yield* views.watch(root.id)
-          const other = Document.define({
+          const other = Document.defineUnsafe({
             kind: 'app.other',
             version: 1,
             scope: 'session',

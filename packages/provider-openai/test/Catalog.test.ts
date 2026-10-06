@@ -123,15 +123,15 @@ describe('OpenAI native catalogue', () => {
       ]
       for (const request of negatives)
         assert.strictEqual(
-          (yield* descriptor.configure(request).pipe(Effect.flip)).reason,
-          'unsupported',
+          (yield* descriptor.configure(request).pipe(Effect.flip)).reason._tag,
+          'ModelUnsupported',
         )
       assert.strictEqual(f.requests.length, 0)
       assert.strictEqual(
         (yield* Model.Catalog.use((catalog) =>
           catalog.resolve({ provider: 'other', modelId: entry.modelId }),
-        ).pipe(Effect.flip)).reason,
-        'no_model',
+        ).pipe(Effect.flip)).reason._tag,
+        'ModelNoModel',
       )
     }).pipe(Effect.provide(fixtureLayer())),
   )
@@ -200,19 +200,19 @@ describe('OpenAI native catalogue', () => {
           (yield* Catalog.descriptor({
             ...entry,
             config: { max_output_tokens: entry.maxOutputTokens + 1 },
-          }).pipe(Effect.flip)).reason,
-          'unsupported',
+          }).pipe(Effect.flip)).reason._tag,
+          'ModelUnsupported',
         )
         assert.strictEqual(
-          (yield* Catalog.descriptor({ ...entry, contextWindow: 0 }).pipe(Effect.flip)).reason,
-          'unsupported',
+          (yield* Catalog.descriptor({ ...entry, contextWindow: 0 }).pipe(Effect.flip)).reason._tag,
+          'ModelUnsupported',
         )
         assert.strictEqual(
           (yield* Catalog.descriptor({
             ...entry,
             prices: { input: -1, output: 0, cacheRead: 0, cacheWrite: 0 },
-          }).pipe(Effect.flip)).reason,
-          'unsupported',
+          }).pipe(Effect.flip)).reason._tag,
+          'ModelUnsupported',
         )
       }).pipe(Effect.provide(fixtureLayer())),
   )
@@ -265,8 +265,8 @@ describe('OpenAI native catalogue', () => {
           assert.strictEqual(
             (yield* descriptor
               .configure({ thinking: 'off', options: { store: true }, sessionId })
-              .pipe(Effect.flip)).reason,
-            'unsupported',
+              .pipe(Effect.flip)).reason._tag,
+            'ModelUnsupported',
           )
           assert.isDefined(yield* OpenAiClient.OpenAiClient)
         }).pipe(Effect.provide(layer))

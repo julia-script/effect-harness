@@ -2,7 +2,7 @@ import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
 import * as Generated from '@effect/ai-anthropic/Generated'
 import * as Model from '@effect-harness/harness/Model'
-import { ModelError } from '@effect-harness/harness/Error'
+import { ModelError, ModelNoModel, ModelUnsupported } from '@effect-harness/harness/Error'
 import * as Usage from '@effect-harness/harness/Usage'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -34,7 +34,10 @@ export interface Entry {
   readonly config?: Omit<typeof AnthropicLanguageModel.Config.Service, 'model'> | undefined
   readonly prices?: Prices | undefined
 }
-const fail = (message: string) => new ModelError({ reason: 'unsupported', message })
+const fail = (message: string, cause?: unknown) =>
+  new ModelError({
+    reason: new ModelUnsupported({ message, ...(cause === undefined ? {} : { cause }) }),
+  })
 const fields = Generated.BetaCreateMessageParams.fields
 const Options = Schema.Struct({
   metadata: fields.metadata,
@@ -67,7 +70,9 @@ const decode = (value: unknown) =>
           ),
         )
       : value,
-  ).pipe(Effect.mapError(() => fail('Unsupported or invalid Anthropic request options')))
+  ).pipe(
+    Effect.mapError((cause) => fail('Unsupported or invalid Anthropic request options', cause)),
+  )
 const positive = (value: number) => Number.isSafeInteger(value) && value > 0
 const session = Schema.String.check(Schema.isUUID(7))
 const cacheMetadata = Schema.Struct({
@@ -166,7 +171,7 @@ export const descriptor = (entry: Entry, provider = 'anthropic') =>
     const configure = Effect.fnUntraced(function* (request: Model.RequestOptions) {
       if (request.sessionId !== undefined)
         yield* Schema.decodeEffect(session)(request.sessionId).pipe(
-          Effect.mapError(() => fail('Conversation sessionId must be UUID7')),
+          Effect.mapError((cause) => fail('Conversation sessionId must be UUID7', cause)),
         )
       const supplied = yield* decode(request.options)
       const merged = { ...defaults, ...supplied }
@@ -191,8 +196,8 @@ export const descriptor = (entry: Entry, provider = 'anthropic') =>
           const decoded = yield* Schema.decodeUnknownEffect(
             Schema.Literals(['low', 'medium', 'high']),
           )(request.thinking).pipe(
-            Effect.mapError(() =>
-              fail('Adaptive effort is unsupported by the installed native provider'),
+            Effect.mapError((cause) =>
+              fail('Adaptive effort is unsupported by the installed native provider', cause),
             ),
           )
           if (
@@ -286,8 +291,9 @@ export const layer = (options: {
             ? Effect.succeed(found)
             : Effect.fail(
                 new ModelError({
-                  reason: 'no_model',
-                  message: 'Anthropic model is not available in this catalogue',
+                  reason: new ModelNoModel({
+                    message: 'Anthropic model is not available in this catalogue',
+                  }),
                 }),
               )
         },

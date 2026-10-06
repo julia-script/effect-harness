@@ -22,7 +22,7 @@ import {
   Disposition,
 } from '../../src/Executor.ts'
 import type * as Extension from '../../src/Extension.ts'
-import { HookError, ToolError } from '../../src/Error.ts'
+import { HookError, ToolError, HookFailure, ToolExecution } from '../../src/Error.ts'
 import { Invocation, ToolCall, Result } from '../../src/Invocation.ts'
 import * as Model from '../../src/Model.ts'
 import * as Registry from '../../src/Registry.ts'
@@ -223,7 +223,10 @@ describe('native AI executor intent/request boundaries', () => {
             hooks: [
               {
                 operation: 'tool',
-                handlers: { beforeTool: () => Effect.fail(new HookError({ message: 'blocked' })) },
+                handlers: {
+                  beforeTool: () =>
+                    Effect.fail(new HookError({ reason: new HookFailure({ message: 'blocked' }) })),
+                },
               },
               { operation: 'tool', handlers: { beforeTool: () => Effect.die('must not run') } },
             ],
@@ -233,11 +236,11 @@ describe('native AI executor intent/request boundaries', () => {
         const blocked = yield* Effect.flip(
           executor.prepareTool(agent, { id: 'c', name: 'echo', args: { n: '1' } }),
         )
-        assert.strictEqual(blocked.reason, 'blocked')
+        assert.strictEqual(blocked.reason._tag, 'ToolBlocked')
         const invalid = yield* Effect.flip(
           executor.prepareTool(agent, { id: 'c', name: 'echo', args: { n: 'NaN' } }),
         )
-        assert.strictEqual(invalid.reason, 'invalid_parameters')
+        assert.strictEqual(invalid.reason._tag, 'ToolInvalidParameters')
       }).pipe(Effect.provideService(Invocation, quiet)),
   )
   it.effect(
@@ -254,7 +257,9 @@ describe('native AI executor intent/request boundaries', () => {
             replay: 'safe',
             repair: () =>
               Effect.fail(
-                new ToolError({ name: 'echo', reason: 'execution', message: 'must not repair' }),
+                new ToolError({
+                  reason: new ToolExecution({ name: 'echo', message: 'must not repair' }),
+                }),
               ),
           },
         )
@@ -331,7 +336,9 @@ describe('native AI executor intent/request boundaries', () => {
         const tools = yield* binding(() =>
           Effect.gen(function* () {
             yield* (yield* ToolCall).output('partial')
-            return yield* new ToolError({ name: 'echo', reason: 'execution', message: 'boom' })
+            return yield* new ToolError({
+              reason: new ToolExecution({ name: 'echo', message: 'boom' }),
+            })
           }),
         )
         const executor = yield* runtime([
@@ -443,9 +450,8 @@ describe('native AI executor intent/request boundaries', () => {
           yield* model([{ type: 'text', text: 'partial' }, finish('length')]),
         )
         const failure = yield* Effect.flip(invalid.compact(selected.request))
-        assert.strictEqual(failure._tag, '@effect-harness/harness/ModelError')
-        if (failure._tag === '@effect-harness/harness/ModelError')
-          assert.strictEqual(failure.usage?.totalTokens, 15)
+        assert.strictEqual(failure._tag, 'ModelError')
+        if (failure._tag === 'ModelError') assert.strictEqual(failure.usage?.totalTokens, 15)
       }).pipe(Effect.provideService(Invocation, quiet)),
   )
   it.effect(
@@ -491,9 +497,9 @@ describe('native AI executor intent/request boundaries', () => {
   it.effect('unsupported options and missing catalog model produce typed capability errors', () =>
     Effect.gen(function* () {
       const failure = yield* Effect.flip(Model.noOptions({ thinking: 'high', options: {} }))
-      assert.strictEqual(failure.reason, 'unsupported')
+      assert.strictEqual(failure.reason._tag, 'ModelUnsupported')
       const catalog = yield* Model.Catalog.pipe(Effect.provide(Model.layer([])))
-      assert.strictEqual((yield* Effect.flip(catalog.resolve(ref))).reason, 'no_model')
+      assert.strictEqual((yield* Effect.flip(catalog.resolve(ref))).reason._tag, 'ModelNoModel')
     }),
   )
   it.effect(
@@ -777,14 +783,14 @@ describe('native AI executor intent/request boundaries', () => {
         })
         const unsupported = yield* runtime()
         assert.strictEqual(
-          (yield* Effect.flip(unsupported.cancelDeferred(prepared.request, null))).reason,
-          'unsupported',
+          (yield* Effect.flip(unsupported.cancelDeferred(prepared.request, null))).reason._tag,
+          'ModelUnsupported',
         )
         assert.strictEqual(
           (yield* Effect.flip(
             unsupported.fetchDeferred(prepared.request, null).pipe(Stream.runDrain),
-          )).reason,
-          'unsupported',
+          )).reason._tag,
+          'ModelUnsupported',
         )
       }).pipe(Effect.provideService(Invocation, quiet)),
   )

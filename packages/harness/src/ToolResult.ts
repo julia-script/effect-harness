@@ -2,6 +2,7 @@ import * as Effect from 'effect/Effect'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
 import type { Diagnostic, ToolResult } from './Invocation.ts'
+import * as Serialization from './Serialization.ts'
 
 /** Canonical model-visible tool content. Providers translate this value at their native client boundary. */
 export const Envelope = Schema.TaggedStruct('@effect-harness/ToolContent', {
@@ -17,7 +18,7 @@ export function renderDiagnostics(diagnostics: ReadonlyArray<Diagnostic>): strin
         diagnostic.severity ?? (diagnostic.kind === 'tool_error' ? 'error' : 'warning')
       const message =
         diagnostic.message ??
-        `${diagnostic.kind}${diagnostic.detail === undefined ? '' : `: ${JSON.stringify(diagnostic.detail)}`}`
+        `${diagnostic.kind}${diagnostic.detail === undefined ? '' : `: ${Serialization.display(diagnostic.detail)}`}`
       return `[${severity}] ${message}`
     })
     .join('\n')}\n</harness>`

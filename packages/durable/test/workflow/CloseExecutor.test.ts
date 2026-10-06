@@ -20,7 +20,11 @@ import * as Session from '../../src/Session.ts'
 import * as Record from '../../src/Record.ts'
 import * as View from '../../src/View.ts'
 import * as Memory from '../../src/storage/Memory.ts'
-import { ExecutionError } from '../../src/workflow/ExecutionError.ts'
+import {
+  ExecutionError,
+  ExecutionErrorCodec,
+  InvalidState,
+} from '../../src/workflow/ExecutionError.ts'
 
 describe('public observer/native compensation lifetime', () => {
   it.live('View, Event and document watches end while Session cleanup is still blocked', () =>
@@ -132,7 +136,7 @@ describe('public observer/native compensation lifetime', () => {
           const task = Workflow.make('test/native-compensation/v1', {
             payload: { key: Schema.String },
             success: Schema.String,
-            error: ExecutionError,
+            error: ExecutionErrorCodec,
             idempotencyKey: ({ key }) => key,
           })
           const executor = task.toLayer(() =>
@@ -143,8 +147,7 @@ describe('public observer/native compensation lifetime', () => {
                 execute: Effect.succeed('resource'),
               }).pipe(task.withCompensation((value) => Ref.update(calls, (old) => [...old, value])))
               return yield* new ExecutionError({
-                reason: 'invalid_state',
-                message: 'native failure',
+                reason: new InvalidState({ message: 'native failure' }),
               })
             }),
           )

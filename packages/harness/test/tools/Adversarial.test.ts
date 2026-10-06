@@ -13,6 +13,9 @@ import {
   NativeFiles,
   fromPlatform,
   type BinaryReader,
+  ExecutionTimeout,
+  FileInvalid,
+  FileNotSupported,
 } from '../../src/Env.ts'
 import * as NodeEnv from '../../src/env/Node.ts'
 import * as Watch from '../../src/env/Watch.ts'
@@ -212,7 +215,7 @@ describe('boundary race and failure regressions', () => {
         yield* Fiber.join(first)
         yield* Mutation.withFile(
           real.path.join(real.cwd, 'file'),
-          Effect.fail(new FileError({ code: 'invalid', message: 'failed' })),
+          Effect.fail(new FileError({ reason: new FileInvalid({ message: 'failed' }) })),
         ).pipe(Effect.exit)
         yield* Write.handler({ path: 'file', content: 'next' })
         assert.strictEqual(yield* real.readTextFile('file'), 'next')
@@ -257,7 +260,9 @@ describe('boundary race and failure regressions', () => {
           const unavailable: NativeFiles['Service'] = {
             ...native,
             watchDirectory: () =>
-              Effect.fail(new FileError({ code: 'not_supported', message: 'No native watcher' })),
+              Effect.fail(
+                new FileError({ reason: new FileNotSupported({ message: 'No native watcher' }) }),
+              ),
           }
           const watcher = yield* Watch.make(fs, path, unavailable, [{ path: env.cwd }], {
             pollIntervalMs: 10,
@@ -330,9 +335,10 @@ describe('boundary race and failure regressions', () => {
                   if (early && options?.onSpill !== undefined)
                     yield* options.onSpill('/remote/output.log')
                   return yield* new ExecutionError({
-                    code: 'timeout',
-                    message: 'remote timeout',
-                    spillPath: '/remote/output.log',
+                    reason: new ExecutionTimeout({
+                      message: 'remote timeout',
+                      spillPath: '/remote/output.log',
+                    }),
                   })
                 }),
             }

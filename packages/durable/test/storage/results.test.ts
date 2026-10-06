@@ -11,7 +11,7 @@ import * as Memory from '../../src/storage/Memory.ts'
 import * as Sqlite from '../../src/storage/Sqlite.ts'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { sessionLayer } from '../../src/testing/Storage.ts'
-const token = Document.define({
+const token = Document.defineUnsafe({
   kind: 'ids',
   version: 1,
   scope: 'session',
@@ -77,7 +77,7 @@ for (const backend of [
           )
           const error = yield* rejected.pipe(Effect.flip, Effect.orDie)
           assert.ok(error instanceof StorageError)
-          assert.strictEqual(error.reason, 'invalid')
+          assert.strictEqual(error.reason._tag, 'Invalid')
           assert.deepStrictEqual(yield* store.read, before)
           const classReceipt: Effect.Effect<unknown, StorageError> = session.transaction(
             // @ts-expect-error Class instances cannot satisfy the JSON receipt result contract.
@@ -85,8 +85,8 @@ for (const backend of [
             { key: 'date' },
           )
           assert.strictEqual(
-            (yield* classReceipt.pipe(Effect.flip, Effect.orDie)).reason,
-            'invalid',
+            (yield* classReceipt.pipe(Effect.flip, Effect.orDie)).reason._tag,
+            'Invalid',
           )
         }).pipe(Effect.provide(sessionLayer(backend))),
       ),

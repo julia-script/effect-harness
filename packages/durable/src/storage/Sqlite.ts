@@ -4,7 +4,7 @@ import * as Layer from 'effect/Layer'
 import * as SqlError from 'effect/sql/SqlError'
 import * as SqlClient from 'effect/sql/SqlClient'
 import * as Record from '../Record.ts'
-import { rejected, StorageError, uncertain } from '../StorageError.ts'
+import { rejected, StorageError, uncertain, Corrupt, Io } from '../StorageError.ts'
 import { Store } from '../Store.ts'
 import * as Backend from './Backend.ts'
 import { validate, validateState } from './State.ts'
@@ -50,9 +50,9 @@ export const migrate = Effect.fnUntraced(function* (
           version: number
         }>`SELECT version FROM durable_schema WHERE singleton=1`
         const version = rows[0]?.version
-        if (version === undefined) return yield* rejected('Schema metadata is missing', 'corrupt')
+        if (version === undefined) return yield* rejected('Schema metadata is missing', Corrupt)
         if (version > (migrations.at(-1)?.version ?? 0))
-          return yield* rejected('Schema is newer than supported', 'corrupt')
+          return yield* rejected('Schema is newer than supported', Corrupt)
         for (const migration of migrations) {
           if (migration.version <= version) continue
           for (const statement of migration.statements) yield* sql.unsafe(statement)
@@ -64,7 +64,7 @@ export const migrate = Effect.fnUntraced(function* (
     )
     .pipe(
       Effect.mapError((cause) =>
-        cause instanceof StorageError ? cause : rejected('Schema migration failed', 'io', cause),
+        cause instanceof StorageError ? cause : rejected('Schema migration failed', Io, cause),
       ),
     )
 })
@@ -78,14 +78,14 @@ export const make = Effect.fnUntraced(function* () {
       format: number
     }>`SELECT state,CAST(next_seq AS TEXT) AS next_seq,format FROM durable_state WHERE singleton=1`
     const row = rows[0]
-    if (row === undefined) return yield* rejected('Durable metadata is missing', 'corrupt')
+    if (row === undefined) return yield* rejected('Durable metadata is missing', Corrupt)
     const parsed = yield* Effect.try({
       try: () => JSON.parse(row.state),
-      catch: (cause) => rejected('Invalid persisted state JSON', 'corrupt', cause),
+      catch: (cause) => rejected('Invalid persisted state JSON', Corrupt, cause),
     })
     const state = yield* validateState(parsed)
     if (row.format !== 1 || Number(row.next_seq) !== state.nextSeq)
-      return yield* rejected('Durable metadata is corrupt', 'corrupt')
+      return yield* rejected('Durable metadata is corrupt', Corrupt)
     const journals = yield* sql<{
       seq: number
       frame: string
@@ -94,11 +94,11 @@ export const make = Effect.fnUntraced(function* () {
     for (const journal of journals) {
       const value = yield* Effect.try({
         try: () => JSON.parse(journal.frame),
-        catch: (cause) => rejected('Invalid journal JSON', 'corrupt', cause),
+        catch: (cause) => rejected('Invalid journal JSON', Corrupt, cause),
       })
       const frame = yield* validate(Record.Frame, value)
       if (frame.seq !== journal.seq || frame.seq >= state.nextSeq)
-        return yield* rejected('Journal sequence is corrupt', 'corrupt')
+        return yield* rejected('Journal sequence is corrupt', Corrupt)
       frames.push(frame)
     }
     const receipts = yield* sql<{
@@ -122,12 +122,12 @@ export const make = Effect.fnUntraced(function* () {
           ),
       )
     )
-      return yield* rejected('Receipt index differs from authoritative state', 'corrupt')
+      return yield* rejected('Receipt index differs from authoritative state', Corrupt)
     return { state, frames }
   }).pipe(
     sql.withTransaction,
     Effect.mapError((cause) =>
-      cause instanceof StorageError ? cause : rejected('Cannot read durable storage', 'io', cause),
+      cause instanceof StorageError ? cause : rejected('Cannot read durable storage', Io, cause),
     ),
   )
   // Removing the native dynamic transaction service makes this read lease the physical connection.
@@ -138,7 +138,7 @@ export const make = Effect.fnUntraced(function* () {
       Effect.mapError((cause) =>
         cause instanceof StorageError
           ? cause
-          : rejected('Cannot read committed SQL state', 'io', cause),
+          : rejected('Cannot read committed SQL state', Io, cause),
       ),
     ),
   )
@@ -156,7 +156,7 @@ export const make = Effect.fnUntraced(function* () {
         yield* sql`INSERT OR IGNORE INTO durable_receipt(key,fingerprint,result,seq,is_void) VALUES(${JSON.stringify(receipt.key)},${JSON.stringify(receipt.fingerprint)},${JSON.stringify(receipt.result)},${receipt.seq},${receipt.resultIsVoid === true ? 1 : 0})`
     },
     Effect.mapError((cause) =>
-      rejected('Domain SQL write was rejected before transaction settlement', 'io', cause),
+      rejected('Domain SQL write was rejected before transaction settlement', Io, cause),
     ),
   )
   yield* load

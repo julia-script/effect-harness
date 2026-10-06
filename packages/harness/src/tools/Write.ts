@@ -3,7 +3,7 @@ import * as Schema from 'effect/Schema'
 import * as AiTool from 'effect/ai/Tool'
 import * as Prompt from 'effect/ai/Prompt'
 import { Env } from '../Env.ts'
-import { ToolError } from '../Error.ts'
+import { ToolError, ToolExecution } from '../Error.ts'
 import { Invocation, Result } from '../Invocation.ts'
 import * as Metadata from '../Tool.ts'
 import * as Mutation from './Mutation.ts'
@@ -27,7 +27,10 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
   const env = yield* Env
   const absolute = yield* Path.resolve(input.path).pipe(
     Effect.mapError(
-      (cause) => new ToolError({ name: 'write', reason: 'execution', message: cause.message }),
+      (cause) =>
+        new ToolError({
+          reason: new ToolExecution({ name: 'write', message: cause.message, cause: cause }),
+        }),
     ),
   )
   return yield* Mutation.withFile(
@@ -39,7 +42,10 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
       ),
   ).pipe(
     Effect.mapError(
-      (cause) => new ToolError({ name: 'write', reason: 'execution', message: cause.message }),
+      (cause) =>
+        new ToolError({
+          reason: new ToolExecution({ name: 'write', message: cause.message, cause: cause }),
+        }),
     ),
   )
 })

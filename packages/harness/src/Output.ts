@@ -1,7 +1,7 @@
 // Output slicing adapted from pi-durable (MIT), pinned 636703a0.
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import { OutputError } from './Error.ts'
+import { OutputError, OutputFailure } from './Error.ts'
 
 /** Retention limits of one tool's output. */
 export const Limits = Schema.Struct({
@@ -165,7 +165,9 @@ export const push = Effect.fnUntraced(function* (
   skipped?: Skip,
 ) {
   if (skipped !== undefined && buffer.limits.retain !== 'tail')
-    return yield* new OutputError({ message: 'Skipped output requires tail retention' })
+    return yield* new OutputError({
+      reason: new OutputFailure({ message: 'Skipped output requires tail retention' }),
+    })
   const pending = typeof chunk === 'string' || skipped !== undefined ? buffer.decoder.decode() : ''
   let text = typeof chunk === 'string' ? chunk : buffer.decoder.decode(chunk, { stream: true })
   const first = !buffer.started && pending === '' && skipped === undefined

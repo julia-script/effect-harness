@@ -1,3 +1,4 @@
+import * as Serialization from '../Serialization.ts'
 import * as Cause from 'effect/Cause'
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
@@ -15,6 +16,10 @@ import {
   type Options,
   type ShellExecOptions,
   type ShellExecResult,
+  ExecutionCallbackError,
+  ExecutionSpawnError,
+  ExecutionTimeout,
+  ExecutionUnknown,
 } from '../Env.ts'
 import * as Decode from './Decode.ts'
 
@@ -32,14 +37,18 @@ export const make = Effect.fnUntraced(function* (
     Effect.scoped(
       Effect.gen(function* () {
         if (typeof command !== 'string' && command.length === 0)
-          return yield* new ExecutionError({ code: 'spawn_error', message: 'Empty argv' })
+          return yield* new ExecutionError({
+            reason: new ExecutionSpawnError({ message: 'Empty argv' }),
+          })
         if (
           options.timeout !== undefined &&
           (!Number.isFinite(options.timeout) ||
             options.timeout <= 0 ||
             options.timeout > 2147483.647)
         )
-          return yield* new ExecutionError({ code: 'timeout', message: 'Invalid timeout' })
+          return yield* new ExecutionError({
+            reason: new ExecutionTimeout({ message: 'Invalid timeout' }),
+          })
         if (
           options.spill !== undefined &&
           (!Number.isSafeInteger(options.spill.afterBytes) ||
@@ -47,7 +56,9 @@ export const make = Effect.fnUntraced(function* (
             !Number.isSafeInteger(options.spill.afterLines) ||
             options.spill.afterLines < 0)
         )
-          return yield* new ExecutionError({ code: 'unknown', message: 'Invalid spill threshold' })
+          return yield* new ExecutionError({
+            reason: new ExecutionUnknown({ message: 'Invalid spill threshold' }),
+          })
         const nativeOptions = {
           cwd: path.resolve(defaults.cwd, options.cwd ?? defaults.cwd),
           env:
@@ -55,13 +66,14 @@ export const make = Effect.fnUntraced(function* (
           extendEnv: options.inheritEnv !== false,
           forceKillAfter: 1000,
         }
-        yield* fs
-          .access(nativeOptions.cwd)
-          .pipe(
-            Effect.mapError(
-              (error) => new ExecutionError({ code: 'spawn_error', message: error.message }),
-            ),
-          )
+        yield* fs.access(nativeOptions.cwd).pipe(
+          Effect.mapError(
+            (error) =>
+              new ExecutionError({
+                reason: new ExecutionSpawnError({ message: error.message, cause: error }),
+              }),
+          ),
+        )
         let instruction: ChildProcess.StandardCommand
         if (typeof command === 'string') {
           const shell =
@@ -80,13 +92,14 @@ export const make = Effect.fnUntraced(function* (
           )
         } else instruction = ChildProcess.make(command[0] ?? '', command.slice(1), nativeOptions)
 
-        const handle = yield* spawner
-          .spawn(instruction)
-          .pipe(
-            Effect.mapError(
-              (error) => new ExecutionError({ code: 'spawn_error', message: error.message }),
-            ),
-          )
+        const handle = yield* spawner.spawn(instruction).pipe(
+          Effect.mapError(
+            (error) =>
+              new ExecutionError({
+                reason: new ExecutionSpawnError({ message: error.message, cause: error }),
+              }),
+          ),
+        )
         active.add(handle)
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
@@ -102,9 +115,11 @@ export const make = Effect.fnUntraced(function* (
         const decoders = { stdout: Decode.make(), stderr: Decode.make() }
         const spillError = (error: { readonly message: string }) =>
           new ExecutionError({
-            code: 'unknown',
-            message: error.message,
-            ...(spillPath === undefined ? {} : { spillPath }),
+            reason: new ExecutionUnknown({
+              message: error.message,
+              ...(spillPath === undefined ? {} : { spillPath }),
+              cause: error,
+            }),
           })
         const callback = (operation: () => Effect.Effect<void, ExecutionError>) =>
           Effect.suspend(operation).pipe(
@@ -115,9 +130,11 @@ export const make = Effect.fnUntraced(function* (
                   )
                 : Effect.fail(
                     new ExecutionError({
-                      code: 'callback_error',
-                      message: String(Cause.squash(cause)),
-                      ...(spillPath === undefined ? {} : { spillPath }),
+                      reason: new ExecutionCallbackError({
+                        message: Serialization.errorText(Cause.squash(cause)),
+                        ...(spillPath === undefined ? {} : { spillPath }),
+                        cause: cause,
+                      }),
                     }),
                   ),
             ),
@@ -241,9 +258,10 @@ export const make = Effect.fnUntraced(function* (
                   orElse: () =>
                     Effect.fail(
                       new ExecutionError({
-                        code: 'timeout',
-                        message: `Command timed out after ${options.timeout} seconds`,
-                        ...(spillPath === undefined ? {} : { spillPath }),
+                        reason: new ExecutionTimeout({
+                          message: `Command timed out after ${options.timeout} seconds`,
+                          ...(spillPath === undefined ? {} : { spillPath }),
+                        }),
                       }),
                     ),
                 }),

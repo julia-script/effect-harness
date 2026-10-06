@@ -22,9 +22,14 @@ import * as Structured from '../../src/workflow/Structured.ts'
 import { Generation } from '../../src/workflow/Generation.ts'
 import { ToolCall } from '../../src/workflow/ToolCall.ts'
 import { Compaction } from '../../src/workflow/Compaction.ts'
-import { ExecutionError } from '../../src/workflow/ExecutionError.ts'
+import {
+  ExecutionError,
+  ExecutionErrorCodec,
+  Storage,
+  InvalidArguments,
+} from '../../src/workflow/ExecutionError.ts'
 
-const Notes = Document.define({
+const Notes = Document.defineUnsafe({
   kind: 'test/owned-notes',
   version: 1,
   scope: 'task',
@@ -40,7 +45,7 @@ const Node = Workflow.make('test/ordinary-owned-work', {
     name: Schema.String,
   },
   success: Schema.Json,
-  error: ExecutionError,
+  error: ExecutionErrorCodec,
   idempotencyKey: ({ taskId }) => String(taskId),
 })
 type Payload = typeof Node.payloadSchema.Type
@@ -111,14 +116,16 @@ const setup = (behaviors: ReadonlyMap<string, Behavior>) => {
         return yield* Structured.complete(session, payload.taskId, outcome, payload.sessionId).pipe(
           Effect.mapError((error) =>
             error._tag === 'StorageError'
-              ? new ExecutionError({ reason: 'storage', message: error.message })
+              ? new ExecutionError({
+                  reason: new Storage({ message: error.message, cause: error }),
+                })
               : error,
           ),
         )
       },
       Effect.mapError((error) =>
         error._tag === 'StorageError'
-          ? new ExecutionError({ reason: 'storage', message: error.message })
+          ? new ExecutionError({ reason: new Storage({ message: error.message, cause: error }) })
           : error,
       ),
     ),
@@ -927,7 +934,7 @@ describe('native structured ownership', () => {
       const Custom = Workflow.make('test/custom-native-author', {
         payload: Node.payloadSchema,
         success: Schema.Json,
-        error: ExecutionError,
+        error: ExecutionErrorCodec,
         idempotencyKey: ({ taskId }) => String(taskId),
       })
       const custom = Custom.toLayer(
@@ -936,7 +943,9 @@ describe('native structured ownership', () => {
           const body =
             payload.name === 'completed'
               ? Effect.succeed('value')
-              : Effect.fail(new ExecutionError({ reason: 'invalid_arguments', message: 'bad' }))
+              : Effect.fail(
+                  new ExecutionError({ reason: new InvalidArguments({ message: 'bad' }) }),
+                )
           return yield* Structured.evaluate(
             payload,
             session,
@@ -944,7 +953,9 @@ describe('native structured ownership', () => {
           ).pipe(
             Effect.mapError((error) =>
               error._tag === 'StorageError'
-                ? new ExecutionError({ reason: 'storage', message: error.message })
+                ? new ExecutionError({
+                    reason: new Storage({ message: error.message, cause: error }),
+                  })
                 : error,
             ),
           )
@@ -1246,7 +1257,9 @@ describe('native structured ownership', () => {
             ).pipe(
               Effect.mapError((error) =>
                 error._tag === 'StorageError'
-                  ? new ExecutionError({ reason: 'storage', message: error.message })
+                  ? new ExecutionError({
+                      reason: new Storage({ message: error.message, cause: error }),
+                    })
                   : error,
               ),
             ),
@@ -1287,7 +1300,7 @@ describe('native structured ownership', () => {
     const Incomplete = Workflow.make('test/incomplete-native-child', {
       payload: Node.payloadSchema,
       success: Schema.Json,
-      error: ExecutionError,
+      error: ExecutionErrorCodec,
       idempotencyKey: ({ taskId }) => String(taskId),
     })
     const incomplete = Incomplete.toLayer(() =>
@@ -1325,8 +1338,8 @@ describe('native structured ownership', () => {
         if (result._tag === 'Failure') {
           assert.strictEqual(result.failure._tag, 'ExecutionError')
           assert.strictEqual(
-            result.failure._tag === 'ExecutionError' ? result.failure.reason : undefined,
-            'invalid_state',
+            result.failure._tag === 'ExecutionError' ? result.failure.reason._tag : undefined,
+            'InvalidState',
           )
           assert.match(result.failure.message, /ended before its domain projection settled/)
         }

@@ -8,7 +8,7 @@ import * as Stream from 'effect/Stream'
 import * as AiTool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
 import * as AiPrompt from 'effect/ai/Prompt'
-import { HookError } from '../../src/Error.ts'
+import { HookError, HookFailure } from '../../src/Error.ts'
 import * as Agent from '../../src/Agent.ts'
 import * as Hook from '../../src/Hook.ts'
 import { Invocation } from '../../src/Invocation.ts'
@@ -176,7 +176,13 @@ describe('atomic registry and selected code', () => {
         {
           name: 'bad',
           toolWraps: [
-            { name: 'test', wrap: () => Effect.fail(new HookError({ message: 'wrap failure' })) },
+            {
+              name: 'test',
+              wrap: () =>
+                Effect.fail(
+                  new HookError({ reason: new HookFailure({ message: 'wrap failure' }) }),
+                ),
+            },
           ],
         },
         {
@@ -231,7 +237,11 @@ describe('atomic registry and selected code', () => {
           {
             name: 'a',
             sections: [
-              { key: 'broken', render: () => Effect.fail(new HookError({ message: 'error' })) },
+              {
+                key: 'broken',
+                render: () =>
+                  Effect.fail(new HookError({ reason: new HookFailure({ message: 'error' }) })),
+              },
               { key: 'omit', render: () => Effect.as(Effect.void, undefined) },
             ],
           },
@@ -271,7 +281,10 @@ describe('atomic registry and selected code', () => {
         }
         const prompt = yield* Hook.beforeRequest(
           [
-            { beforeRequest: () => Effect.fail(new HookError({ message: 'ignored' })) },
+            {
+              beforeRequest: () =>
+                Effect.fail(new HookError({ reason: new HookFailure({ message: 'ignored' }) })),
+            },
             marker,
             { beforeRequest: () => Effect.as(Effect.void, undefined) },
           ],
@@ -280,7 +293,10 @@ describe('atomic registry and selected code', () => {
         assert.deepStrictEqual(prompt.content, AiPrompt.make('replacement').content)
         const decision = yield* Hook.beforeCompact(
           [
-            { beforeCompact: () => Effect.fail(new HookError({ message: 'ignored' })) },
+            {
+              beforeCompact: () =>
+                Effect.fail(new HookError({ reason: new HookFailure({ message: 'ignored' }) })),
+            },
             { beforeCompact: () => Effect.succeed({ decline: true }) },
             { beforeCompact: () => Effect.die('must not run') },
           ],

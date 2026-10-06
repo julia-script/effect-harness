@@ -9,7 +9,7 @@ import * as Agent from '../../src/Agent.ts'
 import * as Response from '../../src/Response.ts'
 import * as Tool from '../../src/Tool.ts'
 import { Invocation, ToolCall } from '../../src/Invocation.ts'
-import { ToolError } from '../../src/Error.ts'
+import { ToolError, ToolExecution } from '../../src/Error.ts'
 
 describe('native response reduction and tool controls', () => {
   it('partial copies, tool argument fragments, final block order and final native Prompt', () => {
@@ -153,7 +153,9 @@ describe('native response reduction and tool controls', () => {
             kit.toLayer({
               failure: () =>
                 Effect.fail(
-                  new ToolError({ name: 'failure', reason: 'execution', message: 'expected' }),
+                  new ToolError({
+                    reason: new ToolExecution({ name: 'failure', message: 'expected' }),
+                  }),
                 ),
             }),
           ),

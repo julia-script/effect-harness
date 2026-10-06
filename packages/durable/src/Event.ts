@@ -10,7 +10,7 @@ import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
 import * as Inbox from './Inbox.ts'
 import * as Record from './Record.ts'
-import { rejected, type StorageError } from './StorageError.ts'
+import { rejected, type StorageError, Corrupt } from './StorageError.ts'
 import * as View from './View.ts'
 
 export type QueuedItem = { readonly id: Record.SubmissionId; readonly mode: Inbox.Item['mode'] }
@@ -125,7 +125,7 @@ export class Event extends Context.Service<Event, Service>()('@effect-harness/du
 
 const decode = <S extends Schema.Constraint>(schema: S, value: unknown) =>
   Schema.decodeUnknownEffect(schema)(value).pipe(
-    Effect.mapError((cause) => rejected('Invalid committed event payload', 'corrupt', cause)),
+    Effect.mapError((cause) => rejected('Invalid committed event payload', Corrupt, cause)),
   )
 const messageCodec = Schema.toCodecJson(Prompt.Message)
 const assistantCodec = Schema.toCodecJson(Prompt.AssistantMessage)
@@ -583,8 +583,7 @@ export const make = (views: View.Service): Service => ({
         return [yield* snapshot(value)]
       }),
     })
-    if (initial === undefined)
-      return yield* rejected('Event snapshot was not initialized', 'corrupt')
+    if (initial === undefined) return yield* rejected('Event snapshot was not initialized', Corrupt)
     return {
       get value() {
         return subscription.value

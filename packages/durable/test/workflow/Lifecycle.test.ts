@@ -14,7 +14,7 @@ import * as Model from '@effect-harness/harness/Model'
 import * as Registry from '@effect-harness/harness/Registry'
 import * as Tool from '@effect-harness/harness/Tool'
 import * as Invocation from '@effect-harness/harness/Invocation'
-import { ToolError } from '@effect-harness/harness/Error'
+import { ToolError, ToolExecution } from '@effect-harness/harness/Error'
 import * as NativeModel from 'effect/ai/LanguageModel'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Response from 'effect/ai/Response'
@@ -52,7 +52,7 @@ import * as Document from '../../src/Document.ts'
 import { rejected } from '../../src/StorageError.ts'
 import * as Cancellation from '../../src/workflow/Cancellation.ts'
 import * as Structured from '../../src/workflow/Structured.ts'
-import { ExecutionError } from '../../src/workflow/ExecutionError.ts'
+import { ExecutionError, ExecutionErrorCodec, Storage } from '../../src/workflow/ExecutionError.ts'
 
 const User = Workflow.make('test/session-lifecycle/v1', {
   payload: {
@@ -61,7 +61,7 @@ const User = Workflow.make('test/session-lifecycle/v1', {
     taskId: Record.TaskId,
   },
   success: Schema.Json,
-  error: ExecutionError,
+  error: ExecutionErrorCodec,
   idempotencyKey: ({ taskId }) => String(taskId),
 })
 const persisted = Effect.sync(() => {
@@ -119,7 +119,7 @@ describe('Session and native invocation lifecycle', () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const token = Document.define({
+          const token = Document.defineUnsafe({
             kind: 'lifecycle.recover',
             version: 1,
             scope: 'conversation',
@@ -162,7 +162,8 @@ describe('Session and native invocation lifecycle', () => {
             .initialize(Record.ConversationId.make(999))
             .pipe(Effect.result)
           assert.strictEqual(missing._tag, 'Failure')
-          if (missing._tag === 'Failure') assert.strictEqual(missing.failure.reason, 'not_found')
+          if (missing._tag === 'Failure')
+            assert.strictEqual(missing.failure.reason._tag, 'NotFound')
           assert.deepStrictEqual(yield* storage.state, recovered)
           yield* restored.close
           const failing = yield* storage.open.pipe(
@@ -195,7 +196,7 @@ describe('Session and native invocation lifecycle', () => {
             const first = yield* storage.open
             yield* first.root()
             const payload = yield* reserve(first)
-            const token = Document.define({
+            const token = Document.defineUnsafe({
               kind: 'lifecycle.observed',
               version: 1,
               scope: 'conversation',
@@ -240,11 +241,13 @@ describe('Session and native invocation lifecycle', () => {
                   ? Activity.make({
                       name: 'body',
                       success: Schema.Json,
-                      error: ExecutionError,
+                      error: ExecutionErrorCodec,
                       execute: Cancellation.activity(identity, session, work).pipe(
                         Effect.mapError(
                           (error) =>
-                            new ExecutionError({ reason: 'storage', message: error.message }),
+                            new ExecutionError({
+                              reason: new Storage({ message: error.message, cause: error }),
+                            }),
                         ),
                       ),
                     })
@@ -253,7 +256,9 @@ describe('Session and native invocation lifecycle', () => {
               }).pipe(
                 Effect.mapError((error) =>
                   error._tag === 'StorageError'
-                    ? new ExecutionError({ reason: 'storage', message: error.message })
+                    ? new ExecutionError({
+                        reason: new Storage({ message: error.message, cause: error }),
+                      })
                     : error,
                 ),
               ),
@@ -477,9 +482,11 @@ describe('Session and native invocation lifecycle', () => {
                         Effect.mapError(
                           (error) =>
                             new ToolError({
-                              name: 'work',
-                              reason: 'execution',
-                              message: error.message,
+                              reason: new ToolExecution({
+                                name: 'work',
+                                message: error.message,
+                                cause: error,
+                              }),
                             }),
                         ),
                       ),
@@ -716,11 +723,13 @@ describe('Session and native invocation lifecycle', () => {
                   const activity = Activity.make({
                     name: 'SQL body',
                     success: Schema.Json,
-                    error: ExecutionError,
+                    error: ExecutionErrorCodec,
                     execute: Cancellation.activity(identity, session, work).pipe(
                       Effect.mapError(
                         (error) =>
-                          new ExecutionError({ reason: 'storage', message: error.message }),
+                          new ExecutionError({
+                            reason: new Storage({ message: error.message, cause: error }),
+                          }),
                       ),
                     ),
                   })
@@ -734,7 +743,9 @@ describe('Session and native invocation lifecycle', () => {
                 }).pipe(
                   Effect.mapError((error) =>
                     error._tag === 'StorageError'
-                      ? new ExecutionError({ reason: 'storage', message: error.message })
+                      ? new ExecutionError({
+                          reason: new Storage({ message: error.message, cause: error }),
+                        })
                       : error,
                   ),
                 ),
@@ -863,7 +874,7 @@ describe('Session and native invocation lifecycle', () => {
           yield* Fiber.join(cancelWaiter)
           const result = yield* Fiber.join(running)
           assert.strictEqual(result._tag, 'Failure')
-          if (result._tag === 'Failure') assert.strictEqual(result.failure.reason, 'aborted')
+          if (result._tag === 'Failure') assert.strictEqual(result.failure.reason._tag, 'Aborted')
           assert.strictEqual((yield* session.task(payload.taskId))?.abortRequested, true)
           assert.strictEqual(yield* session.isClosed, false)
         }).pipe(

@@ -1,3 +1,4 @@
+import * as Serialization from '../Serialization.ts'
 /** Node adapter for native capabilities missing from Effect FileSystem. Portable Env never imports this module. */
 import * as Fs from 'node:fs'
 import * as Fsp from 'node:fs/promises'
@@ -17,13 +18,15 @@ import {
   type FileInfo,
   type Options,
   layer as environmentLayer,
+  ExecutionShellUnavailable,
+  FileInvalid,
+  fileReason,
 } from '../Env.ts'
 import * as LineScan from './LineScan.ts'
 
 export function fileError(error: unknown, path: string): FileError {
   if (error instanceof FileError) return error
-  const code =
-    typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : ''
+  const code = Serialization.stringProperty(error, 'code') ?? ''
   let mapped: FileError['code'] = 'unknown'
   switch (code) {
     case 'ABORT_ERR':
@@ -53,9 +56,7 @@ export function fileError(error: unknown, path: string): FileError {
   }
 
   return new FileError({
-    code: mapped,
-    message: error instanceof Error ? error.message : String(error),
-    path,
+    reason: fileReason(mapped, { message: Serialization.errorText(error), path, cause: error }),
   })
 }
 function info(path: string, stat: Fs.Stats): FileInfo {
@@ -63,7 +64,10 @@ function info(path: string, stat: Fs.Stats): FileInfo {
   if (stat.isFile()) kind = 'file'
   else if (stat.isDirectory()) kind = 'directory'
   else if (stat.isSymbolicLink()) kind = 'symlink'
-  else throw new FileError({ code: 'invalid', message: 'Path is not a supported file kind', path })
+  else
+    throw new FileError({
+      reason: new FileInvalid({ message: 'Path is not a supported file kind', path }),
+    })
   return {
     name: NodePath.basename(path),
     path,
@@ -93,9 +97,7 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
         const before = yield* io(path, () => Fsp.lstat(path))
         if (before.isSymbolicLink())
           return yield* new FileError({
-            code: 'invalid',
-            message: 'Final symlink is forbidden',
-            path,
+            reason: new FileInvalid({ message: 'Final symlink is forbidden', path }),
           })
       }
       const file = yield* Effect.acquireRelease(
@@ -126,15 +128,18 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
       if (!stat.isFile()) {
         yield* close
         return yield* new FileError({
-          code: stat.isDirectory() ? 'is_directory' : 'invalid',
-          message: 'Reader requires a regular file',
-          path,
+          reason: fileReason(stat.isDirectory() ? 'is_directory' : 'invalid', {
+            message: 'Reader requires a regular file',
+            path,
+          }),
         })
       }
       const live = <A>(effect: Effect.Effect<A, FileError>): Effect.Effect<A, FileError> =>
         Effect.suspend(() =>
           closed
-            ? Effect.fail(new FileError({ code: 'invalid', message: 'Reader is closed', path }))
+            ? Effect.fail(
+                new FileError({ reason: new FileInvalid({ message: 'Reader is closed', path }) }),
+              )
             : effect,
         )
       const read = (offset: number, length: number) =>
@@ -148,9 +153,7 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
                 length < 0
               )
                 return yield* new FileError({
-                  code: 'invalid',
-                  message: 'Invalid byte range',
-                  path,
+                  reason: new FileInvalid({ message: 'Invalid byte range', path }),
                 })
               const chunks: Uint8Array[] = []
               let count = 0
@@ -174,11 +177,13 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
                   }
                   return bytes
                 },
-                catch: () =>
+                catch: (cause) =>
                   new FileError({
-                    code: 'invalid',
-                    message: 'Read result cannot be allocated',
-                    path,
+                    reason: new FileInvalid({
+                      message: 'Read result cannot be allocated',
+                      path,
+                      cause,
+                    }),
                   }),
               })
             }),
@@ -202,10 +207,14 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
         close,
         scanLines: (options) =>
           Effect.gen(function* () {
-            const scanner = yield* Effect.try({
-              try: () => LineScan.make(options.startLine, options.endLine),
-              catch: () => new FileError({ code: 'invalid', message: 'Invalid line range', path }),
-            })
+            const scanner = yield* Effect.fromResult(
+              LineScan.make(options.startLine, options.endLine),
+            ).pipe(
+              Effect.mapError(
+                (error) =>
+                  new FileError({ reason: new FileInvalid({ message: error.message, path }) }),
+              ),
+            )
             let offset = 0
             while (true) {
               const bytes = yield* read(offset, 65536)
@@ -255,9 +264,10 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
             Effect.gen(function* () {
               if (closed || !Number.isSafeInteger(maxEntries) || maxEntries <= 0)
                 return yield* new FileError({
-                  code: 'invalid',
-                  message: closed ? 'Directory reader is closed' : 'Invalid page size',
-                  path,
+                  reason: new FileInvalid({
+                    message: closed ? 'Directory reader is closed' : 'Invalid page size',
+                    path,
+                  }),
                 })
               const entries: FileInfo[] = []
               while (entries.length < maxEntries && !done) {
@@ -303,8 +313,10 @@ const resolveShell = (custom?: string): Effect.Effect<ShellConfiguration, Execut
     const exists = (value: string) =>
       Effect.tryPromise({
         try: () => Fsp.access(value).then(() => true),
-        catch: () =>
-          new ExecutionError({ code: 'shell_unavailable', message: `Shell not found: ${value}` }),
+        catch: (cause) =>
+          new ExecutionError({
+            reason: new ExecutionShellUnavailable({ message: `Shell not found: ${value}`, cause }),
+          }),
       }).pipe(Effect.orElseSucceed(() => false))
     const configuration = (program: string): ShellConfiguration => {
       const normalized = program.replace(/\//g, '\\').toLowerCase()
@@ -315,8 +327,9 @@ const resolveShell = (custom?: string): Effect.Effect<ShellConfiguration, Execut
     if (custom !== undefined) {
       if (yield* exists(custom)) return configuration(custom)
       return yield* new ExecutionError({
-        code: 'shell_unavailable',
-        message: `Custom shell path not found: ${custom}`,
+        reason: new ExecutionShellUnavailable({
+          message: `Custom shell path not found: ${custom}`,
+        }),
       })
     }
     const candidates: string[] = []
@@ -332,8 +345,9 @@ const resolveShell = (custom?: string): Effect.Effect<ShellConfiguration, Execut
       if (yield* exists(candidate)) return configuration(candidate)
     if (process.platform === 'win32')
       return yield* new ExecutionError({
-        code: 'shell_unavailable',
-        message: 'No Bash shell is available; install Git Bash or configure a shell path',
+        reason: new ExecutionShellUnavailable({
+          message: 'No Bash shell is available; install Git Bash or configure a shell path',
+        }),
       })
     return { program: 'sh', args: ['-c'] }
   })

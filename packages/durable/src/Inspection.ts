@@ -164,7 +164,7 @@ export const changes = (
           while (true) {
             const journal = yield* store.journal(after).pipe(
               Effect.catchIf(
-                (error) => error.reason === 'closed',
+                (error) => error.reason._tag === 'Closed',
                 () => Effect.void,
               ),
             )

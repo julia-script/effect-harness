@@ -32,7 +32,11 @@ import * as Memory from '../../src/storage/Memory.ts'
 import { Generation } from '../../src/workflow/Generation.ts'
 import { Submission } from '../../src/workflow/Submission.ts'
 import * as SubmissionExecutor from '../../src/workflow/SubmissionExecutor.ts'
-import { ExecutionError } from '../../src/workflow/ExecutionError.ts'
+import {
+  ExecutionError,
+  ExecutionErrorCodec,
+  InvalidState,
+} from '../../src/workflow/ExecutionError.ts'
 import { ToolCall } from '../../src/workflow/ToolCall.ts'
 import * as ToolExecutor from '../../src/workflow/ToolExecutor.ts'
 import * as GenerationExecutor from '../../src/workflow/GenerationExecutor.ts'
@@ -90,15 +94,14 @@ const fakeGeneration = (
           answer: Record.EntryId,
           inputs: Schema.Array(Record.SubmissionId),
         }),
-        error: ExecutionError,
+        error: ExecutionErrorCodec,
         execute: session
           .transaction(
             Effect.fnUntraced(function* (tx) {
               const task = yield* tx.task(payload.taskId)
               if (task === undefined)
                 return yield* new ExecutionError({
-                  reason: 'invalid_state',
-                  message: 'Missing generation',
+                  reason: new InvalidState({ message: 'Missing generation' }),
                 })
               const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
               const answer = yield* tx.appendEntry(payload.conversationId, {
@@ -818,7 +821,7 @@ describe('native submission executor', () => {
           1,
         )
         const conflict = yield* Submission.execute(input('same')).pipe(Effect.flip)
-        assert.strictEqual(conflict.reason, 'request_conflict')
+        assert.strictEqual(conflict.reason._tag, 'RequestConflict')
         assert.strictEqual((yield* session.scanSubmissions({}, 10)).items.length, 1)
         const polled = yield* Submission.poll(yield* Submission.executionId(write('same')))
         assert.strictEqual(polled._tag, 'Some')
@@ -856,7 +859,7 @@ describe('native submission executor', () => {
         ...input('reject'),
         submission: { ...input('reject').submission, whenBusy: 'reject' },
       }).pipe(Effect.flip)
-      assert.strictEqual(rejected.reason, 'conversation_busy')
+      assert.strictEqual(rejected.reason._tag, 'ConversationBusy')
       assert.strictEqual((yield* session.scanSubmissions({}, 10)).items.length, 1)
       assert.deepStrictEqual(yield* Submission.execute(write('previous', 'changed')), previous)
     }).pipe(Effect.provide(runtime())),

@@ -1,4 +1,5 @@
 import * as Schema from 'effect/Schema'
+import * as Result from 'effect/Result'
 
 const safe = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }))
 export const ConversationId = safe.pipe(Schema.brand('ConversationId'))
@@ -311,8 +312,15 @@ export interface EntryToken<D extends Json = never> {
   readonly kind: string
   readonly is: (entry: Entry | undefined) => entry is TypedEntry<D>
 }
-export const defineEntry = <D extends Json = never>(kind: string): EntryToken<D> => {
-  if (kind.length === 0) throw new TypeError('Entry kind must be nonempty')
-  return { kind, is: (entry): entry is TypedEntry<D> => entry?.kind === kind }
-}
+export class EntryDefinitionError extends Schema.TaggedError<EntryDefinitionError>(
+  '@effect-harness/durable/Record/EntryDefinitionError',
+)('EntryDefinitionError', { message: Schema.String }) {}
+export const defineEntry = <D extends Json = never>(
+  kind: string,
+): Result.Result<EntryToken<D>, EntryDefinitionError> =>
+  kind.length === 0
+    ? Result.fail(new EntryDefinitionError({ message: 'Entry kind must be nonempty' }))
+    : Result.succeed({ kind, is: (entry): entry is TypedEntry<D> => entry?.kind === kind })
+export const defineEntryUnsafe = <D extends Json = never>(kind: string): EntryToken<D> =>
+  Result.getOrThrow(defineEntry<D>(kind))
 export const SubmissionStatus = Schema.Literals(['queued', 'placed', 'done', 'unanswered'])

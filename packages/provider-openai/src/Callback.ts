@@ -1,4 +1,10 @@
-import { AuthError, type OAuth } from '@effect-harness/auth/Credential'
+import {
+  AuthCallbackError,
+  AuthConfigurationError,
+  AuthExpiredError,
+  AuthError,
+  type OAuth,
+} from '@effect-harness/auth/Credential'
 import * as Context from 'effect/Context'
 import * as Clock from 'effect/Clock'
 import * as Deferred from 'effect/Deferred'
@@ -30,8 +36,9 @@ export const layer = (options?: { readonly account?: string | undefined }) =>
         server.address.address.toString() !== '127.0.0.1'
       )
         return yield* new AuthError({
-          reason: 'configuration',
-          message: 'OAuth callback server must bind 127.0.0.1',
+          reason: new AuthConfigurationError({
+            message: 'OAuth callback server must bind 127.0.0.1',
+          }),
         })
       const redirectUri = `http://127.0.0.1:${server.address.port}/auth/callback`
       const result = yield* Deferred.make<OAuth, AuthError>()
@@ -43,7 +50,10 @@ export const layer = (options?: { readonly account?: string | undefined }) =>
           const request = yield* HttpServerRequest.HttpServerRequest
           const parsed = yield* Effect.try({
             try: () => new URL(request.url, redirectUri),
-            catch: () => new AuthError({ reason: 'callback', message: 'Invalid callback URL' }),
+            catch: (cause) =>
+              new AuthError({
+                reason: new AuthCallbackError({ cause, message: 'Invalid callback URL' }),
+              }),
           }).pipe(Effect.option)
           if (parsed._tag === 'None') return HttpServerResponse.empty({ status: 400 })
           const url = parsed.value
@@ -90,8 +100,9 @@ export const layer = (options?: { readonly account?: string | undefined }) =>
                   Effect.andThen(
                     Effect.fail(
                       new AuthError({
-                        reason: 'expired',
-                        message: 'Authorization attempt expired',
+                        reason: new AuthExpiredError({
+                          message: 'Authorization attempt expired',
+                        }),
                       }),
                     ),
                   ),

@@ -4,7 +4,8 @@ import * as Option from 'effect/Option'
 import type * as Path from 'effect/Path'
 import type * as PlatformError from 'effect/PlatformError'
 import * as Random from 'effect/Random'
-import { FileError, fromPlatform, type NativeFiles } from '../Env.ts'
+import * as Serialization from '../Serialization.ts'
+import { FileError, fromPlatform, type NativeFiles, FileNotSupported, fileReason } from '../Env.ts'
 
 /** Replace a regular file after its sibling staging file has been written and synced. */
 export const write = Effect.fnUntraced(function* (
@@ -30,9 +31,10 @@ export const write = Effect.fnUntraced(function* (
           )
           if (info?.kind === 'symlink')
             return yield* new FileError({
-              code: 'not_supported',
-              path: resolved,
-              message: 'Cannot atomically replace through an unresolved symlink',
+              reason: new FileNotSupported({
+                path: resolved,
+                message: 'Cannot atomically replace through an unresolved symlink',
+              }),
             })
           const parent = yield* io(fs.realPath(path.dirname(resolved)))
           return path.join(parent, path.basename(resolved))
@@ -47,15 +49,17 @@ export const write = Effect.fnUntraced(function* (
   )
   if (metadata !== undefined && metadata.type !== 'File')
     return yield* new FileError({
-      code: metadata.type === 'Directory' ? 'is_directory' : 'not_supported',
-      path: resolved,
-      message: 'Atomic replacement requires a regular file',
+      reason: fileReason(metadata.type === 'Directory' ? 'is_directory' : 'not_supported', {
+        path: resolved,
+        message: 'Atomic replacement requires a regular file',
+      }),
     })
   if (metadata !== undefined && Option.isSome(metadata.nlink) && metadata.nlink.value > 1)
     return yield* new FileError({
-      code: 'not_supported',
-      path: resolved,
-      message: 'Atomic replacement of multiply linked files is not supported',
+      reason: new FileNotSupported({
+        path: resolved,
+        message: 'Atomic replacement of multiply linked files is not supported',
+      }),
     })
   if (metadata !== undefined) yield* io(fs.access(destination, { writable: true }))
   const directory = path.dirname(destination)
@@ -101,10 +105,7 @@ export const write = Effect.fnUntraced(function* (
               // Skip only native errors identifying unavailable directory sync, not bad arguments or I/O faults.
               (error) => {
                 const cause = error.reason.cause
-                const code =
-                  typeof cause === 'object' && cause !== null && 'code' in cause
-                    ? String(cause.code)
-                    : ''
+                const code = Serialization.stringProperty(cause, 'code') ?? ''
                 return (
                   ['EINVAL', 'EISDIR', 'ENOTSUP', 'ENOSYS'].includes(code) ||
                   (path.sep === '\\' && code === 'EPERM')

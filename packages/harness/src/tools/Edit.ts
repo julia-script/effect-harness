@@ -3,7 +3,7 @@ import * as Schema from 'effect/Schema'
 import * as AiTool from 'effect/ai/Tool'
 import * as Prompt from 'effect/ai/Prompt'
 import { Env } from '../Env.ts'
-import { ToolError } from '../Error.ts'
+import { ToolError, ToolExecution, ToolInvalidParameters } from '../Error.ts'
 import { Invocation, Result } from '../Invocation.ts'
 import * as Metadata from '../Tool.ts'
 import * as Diff from './EditDiff.ts'
@@ -62,7 +62,10 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
   const env = yield* Env
   const absolute = yield* Path.resolve(input.path).pipe(
     Effect.mapError(
-      (cause) => new ToolError({ name: 'edit', reason: 'execution', message: cause.message }),
+      (cause) =>
+        new ToolError({
+          reason: new ToolExecution({ name: 'edit', message: cause.message, cause: cause }),
+        }),
     ),
   )
   return yield* Mutation.withFile(
@@ -70,16 +73,18 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
     Effect.gen(function* () {
       if (input.edits.length === 0)
         return yield* new ToolError({
-          name: 'edit',
-          reason: 'invalid_parameters',
-          message: 'edits must contain at least one replacement',
+          reason: new ToolInvalidParameters({
+            name: 'edit',
+            message: 'edits must contain at least one replacement',
+          }),
         })
       const info = yield* env.fileInfo(absolute)
       if (info.kind !== 'file' && info.kind !== 'symlink')
         return yield* new ToolError({
-          name: 'edit',
-          reason: 'execution',
-          message: `Could not edit file: ${input.path}. Path is not a file.`,
+          reason: new ToolExecution({
+            name: 'edit',
+            message: `Could not edit file: ${input.path}. Path is not a file.`,
+          }),
         })
       const original = yield* env.readTextFile(absolute)
       const { bom, text } = Diff.stripBom(original)
@@ -88,7 +93,10 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
         Diff.applyEditsToNormalizedContent(Diff.normalizeToLF(text), input.edits, input.path),
       ).pipe(
         Effect.mapError(
-          (cause) => new ToolError({ name: 'edit', reason: 'execution', message: cause.message }),
+          (cause) =>
+            new ToolError({
+              reason: new ToolExecution({ name: 'edit', message: cause.message, cause: cause }),
+            }),
         ),
       )
       yield* env.writeFile(absolute, bom + Diff.restoreLineEndings(changed.newContent, ending))
@@ -113,9 +121,11 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
       cause instanceof ToolError
         ? cause
         : new ToolError({
-            name: 'edit',
-            reason: 'execution',
-            message: `Could not edit file: ${input.path}. Error code: ${cause.code}. ${cause.message}`,
+            reason: new ToolExecution({
+              name: 'edit',
+              message: `Could not edit file: ${input.path}. Error code: ${cause.code}. ${cause.message}`,
+              cause: cause,
+            }),
           }),
     ),
   )

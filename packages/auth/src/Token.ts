@@ -2,7 +2,13 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
-import { AuthError, Secret } from './Credential.ts'
+import {
+  AuthNetworkError,
+  AuthProtocolError,
+  AuthTokenError,
+  AuthError,
+  Secret,
+} from './Credential.ts'
 export const TokenResponse = Schema.Struct({
   access_token: Secret,
   refresh_token: Secret,
@@ -23,20 +29,34 @@ export const request = Effect.fnUntraced(function* (
     .execute(HttpClientRequest.post(endpoint).pipe(HttpClientRequest.bodyUrlParams(fields)))
     .pipe(
       Effect.mapError(
-        () => new AuthError({ reason: 'network', message: 'Token endpoint could not be reached' }),
+        (cause) =>
+          new AuthError({
+            reason: new AuthNetworkError({ cause, message: 'Token endpoint could not be reached' }),
+          }),
       ),
     )
   if (response.status !== 200)
     return yield* new AuthError({
-      reason: 'token',
-      message: 'Token endpoint rejected the grant',
-      status: response.status,
+      reason: new AuthTokenError({
+        message: 'Token endpoint rejected the grant',
+        status: response.status,
+      }),
     })
   const body = yield* response.json.pipe(
-    Effect.mapError(() => new AuthError({ reason: 'protocol', message: 'Invalid token response' })),
+    Effect.mapError(
+      (cause) =>
+        new AuthError({
+          reason: new AuthProtocolError({ cause, message: 'Invalid token response' }),
+        }),
+    ),
   )
   const token = yield* Schema.decodeUnknownEffect(TokenResponse)(body).pipe(
-    Effect.mapError(() => new AuthError({ reason: 'protocol', message: 'Invalid token response' })),
+    Effect.mapError(
+      (cause) =>
+        new AuthError({
+          reason: new AuthProtocolError({ cause, message: 'Invalid token response' }),
+        }),
+    ),
   )
   if (
     token.token_type.toLowerCase() !== 'bearer' ||
@@ -44,8 +64,9 @@ export const request = Effect.fnUntraced(function* (
     token.expires_in <= 0
   )
     return yield* new AuthError({
-      reason: 'protocol',
-      message: 'Unsupported token type or lifetime',
+      reason: new AuthProtocolError({
+        message: 'Unsupported token type or lifetime',
+      }),
     })
   return token
 })
@@ -58,13 +79,17 @@ export const revoke = Effect.fnUntraced(function* (
     .execute(HttpClientRequest.post(endpoint).pipe(HttpClientRequest.bodyUrlParams(fields)))
     .pipe(
       Effect.mapError(
-        () => new AuthError({ reason: 'network', message: 'Revocation could not be confirmed' }),
+        (cause) =>
+          new AuthError({
+            reason: new AuthNetworkError({ cause, message: 'Revocation could not be confirmed' }),
+          }),
       ),
     )
   if (response.status !== 200)
     return yield* new AuthError({
-      reason: 'token',
-      message: 'Revocation could not be confirmed',
-      status: response.status,
+      reason: new AuthTokenError({
+        message: 'Revocation could not be confirmed',
+        status: response.status,
+      }),
     })
 })

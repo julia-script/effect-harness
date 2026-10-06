@@ -1,3 +1,4 @@
+import * as Serialization from './Serialization.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -5,7 +6,6 @@ import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Path from 'effect/Path'
 import type * as PlatformError from 'effect/PlatformError'
-import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
 import type * as Stream from 'effect/Stream'
@@ -15,35 +15,9 @@ import * as AtomicWrite from './env/AtomicWrite.ts'
 import * as Exec from './env/Exec.ts'
 import * as Watch from './env/Watch.ts'
 
-export const FileErrorCode = Schema.Literals([
-  'aborted',
-  'not_found',
-  'permission_denied',
-  'not_directory',
-  'is_directory',
-  'invalid',
-  'not_supported',
-  'unknown',
-])
-export class FileError extends Schema.TaggedError<FileError>()(
-  '@effect-harness/harness/Env/FileError',
-  { code: FileErrorCode, message: Schema.String, path: Schema.optionalKey(Schema.String) },
-) {}
-export class ExecutionError extends Schema.TaggedError<ExecutionError>()(
-  '@effect-harness/harness/Env/ExecutionError',
-  {
-    code: Schema.Literals([
-      'aborted',
-      'timeout',
-      'shell_unavailable',
-      'spawn_error',
-      'callback_error',
-      'unknown',
-    ]),
-    message: Schema.String,
-    spillPath: Schema.optionalKey(Schema.String),
-  },
-) {}
+import { FileError, ExecutionError, FileInvalid, fileReason } from './env/Error.ts'
+export * from './env/Error.ts'
+
 export interface FileInfo {
   readonly name: string
   readonly path: string
@@ -231,8 +205,7 @@ export class Env extends Context.Service<
 export const fromPlatform = (error: PlatformError.PlatformError, path?: string): FileError => {
   let code: FileError['code'] = 'unknown'
   const cause = error.reason.cause
-  const nativeCode =
-    typeof cause === 'object' && cause !== null && 'code' in cause ? String(cause.code) : ''
+  const nativeCode = Serialization.stringProperty(cause, 'code') ?? ''
   if (nativeCode === 'ABORT_ERR') code = 'aborted'
   else if (error.reason._tag === 'NotFound' || nativeCode === 'ENOENT') code = 'not_found'
   else if (
@@ -247,7 +220,13 @@ export const fromPlatform = (error: PlatformError.PlatformError, path?: string):
     code = 'invalid'
   else if (nativeCode === 'ENOTSUP' || nativeCode === 'ENOSYS') code = 'not_supported'
 
-  return new FileError({ code, message: error.message, ...(path === undefined ? {} : { path }) })
+  return new FileError({
+    reason: fileReason(code, {
+      message: error.message,
+      cause: error,
+      ...(path === undefined ? {} : { path }),
+    }),
+  })
 }
 export const make = Effect.fnUntraced(function* (options: Options) {
   const fs = yield* FileSystem.FileSystem
@@ -260,7 +239,8 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     if (input.startsWith('file:')) {
       const url = yield* Effect.try({
         try: () => new URL(input),
-        catch: () => new FileError({ code: 'invalid', message: 'Invalid URL' }),
+        catch: (cause) =>
+          new FileError({ reason: new FileInvalid({ message: 'Invalid URL', cause }) }),
       }).pipe(Effect.option)
       if (Option.isSome(url))
         input = yield* path.fromFileUrl(url.value).pipe(Effect.orElseSucceed(() => input))
@@ -300,7 +280,9 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     const readLine = lock.withPermit(
       Effect.gen(function* () {
         if (closed)
-          return yield* new FileError({ code: 'invalid', message: 'Reader is closed', path: value })
+          return yield* new FileError({
+            reason: new FileInvalid({ message: 'Reader is closed', path: value }),
+          })
         while (true) {
           const index = pending.indexOf('\n')
           if (index >= 0) {
@@ -365,9 +347,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
           const max = lineOptions?.maxLines ?? Infinity
           if (max !== Infinity && (!Number.isSafeInteger(max) || max < 0))
             return yield* new FileError({
-              code: 'invalid',
-              message: 'Invalid maxLines',
-              path: value,
+              reason: new FileInvalid({ message: 'Invalid maxLines', path: value }),
             })
           const reader = yield* openTextLineReader(value)
           const lines: string[] = []
@@ -387,7 +367,9 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     truncateFile: (value, size) =>
       !Number.isSafeInteger(size) || size < 0
         ? Effect.fail(
-            new FileError({ code: 'invalid', message: 'Invalid truncate size', path: value }),
+            new FileError({
+              reason: new FileInvalid({ message: 'Invalid truncate size', path: value }),
+            }),
           )
         : io(value, (resolved) =>
             Effect.scoped(

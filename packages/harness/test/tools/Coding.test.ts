@@ -6,7 +6,7 @@ import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
-import { Env, ExecutionError } from '../../src/Env.ts'
+import { Env, ExecutionError, ExecutionSpawnError, ExecutionUnknown } from '../../src/Env.ts'
 import { ToolCall } from '../../src/Invocation.ts'
 import { Executor, layer as executorLayer } from '../../src/Executor.ts'
 import * as Agent from '../../src/Agent.ts'
@@ -412,10 +412,14 @@ describe('native coding tools', () => {
             exec: (command, options) =>
               Effect.gen(function* () {
                 if (typeof command === 'string')
-                  return yield* new ExecutionError({ code: 'unknown', message: 'Expected argv' })
+                  return yield* new ExecutionError({
+                    reason: new ExecutionUnknown({ message: 'Expected argv' }),
+                  })
                 yield* Ref.update(calls, (values) => [...values, command])
                 if (command[0] === 'missing')
-                  return yield* new ExecutionError({ code: 'spawn_error', message: 'missing' })
+                  return yield* new ExecutionError({
+                    reason: new ExecutionSpawnError({ message: 'missing' }),
+                  })
                 assert.strictEqual(options?.window?.maxBytes, 3)
                 if (options?.onOutput !== undefined)
                   yield* options.onOutput('out', {

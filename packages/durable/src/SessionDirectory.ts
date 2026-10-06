@@ -2,7 +2,7 @@ import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import { Session, type Service as SessionService } from './Session.ts'
-import { rejected, type StorageError } from './StorageError.ts'
+import { rejected, type StorageError, NotFound } from './StorageError.ts'
 
 /** Resolves already scoped Session services for native Workflow executor Layers. */
 export class SessionDirectory extends Context.Service<
@@ -23,7 +23,7 @@ export const layer = (
       resolve: (sessionId) => {
         const session = entries.get(sessionId)
         return session === undefined
-          ? Effect.fail(rejected(`Session ${sessionId} is not registered`, 'not_found'))
+          ? Effect.fail(rejected(`Session ${sessionId} is not registered`, NotFound))
           : Effect.succeed(session)
       },
     }),
@@ -40,7 +40,7 @@ export const layerSingle = (sessionId: string): Layer.Layer<SessionDirectory, ne
         resolve: (requested) =>
           requested === sessionId
             ? Effect.succeed(session)
-            : Effect.fail(rejected(`Session ${requested} is not registered`, 'not_found')),
+            : Effect.fail(rejected(`Session ${requested} is not registered`, NotFound)),
       })
     }),
   )

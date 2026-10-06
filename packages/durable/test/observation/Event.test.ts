@@ -69,7 +69,7 @@ describe('ordered committed semantic events', () => {
         yield* session.transaction(
           Effect.fnUntraced(function* (tx) {
             const live = yield* tx.doc(Inbox.LiveDoc, { owner: root.id })
-            live.generation = { attempt: 1, message: Document.copy(partial) }
+            live.generation = { attempt: 1, message: Document.copyUnsafe(partial) }
           }),
         )
         for (let index = 0; index < 110; index++)
@@ -172,7 +172,7 @@ describe('ordered committed semantic events', () => {
         yield* session.transaction(
           Effect.fnUntraced(function* (tx) {
             const live = yield* tx.doc(Inbox.LiveDoc, { owner: root.id })
-            live.generation = { attempt: 1, message: Document.copy(partial) }
+            live.generation = { attempt: 1, message: Document.copyUnsafe(partial) }
             live.tools = [
               { callId: 'c', name: 'tool', status: 'running', details: { unchanged: true } },
             ]
@@ -253,7 +253,7 @@ describe('ordered committed semantic events', () => {
         yield* session.transaction(
           Effect.fnUntraced(function* (tx) {
             const live = yield* tx.doc(Inbox.LiveDoc, { owner: root.id })
-            live.generation = { attempt: 1, message: Document.copy(partial) }
+            live.generation = { attempt: 1, message: Document.copyUnsafe(partial) }
           }),
         )
         const answer = yield* session.transaction(

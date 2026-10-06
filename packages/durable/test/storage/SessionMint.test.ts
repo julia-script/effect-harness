@@ -52,7 +52,7 @@ describe('Session.mint', () => {
       const ids = yield* session.transaction((tx) =>
         Effect.gen(function* () {
           const rejected = yield* tx.mint(Schema.Literal(999)).pipe(Effect.flip)
-          assert.strictEqual(rejected.reason, 'invalid')
+          assert.strictEqual(rejected.reason._tag, 'Invalid')
           return yield* Effect.forEach([1, 2, 3], () => tx.mint(Record.TaskId), {
             concurrency: 'unbounded',
           })
@@ -69,7 +69,7 @@ describe('Session.mint', () => {
       const last = yield* session.transaction((tx) => tx.mint(Record.TaskId))
       assert.strictEqual(last, Number.MAX_SAFE_INTEGER)
       const exhausted = yield* session.transaction((tx) => tx.mint(Record.TaskId)).pipe(Effect.flip)
-      assert.strictEqual(exhausted.reason, 'invalid')
+      assert.strictEqual(exhausted.reason._tag, 'Invalid')
       assert.strictEqual((yield* session.committed).nextId, Number.MAX_SAFE_INTEGER + 1)
     }).pipe(Effect.provide(layers)),
   )
@@ -121,7 +121,7 @@ describe('Session.mint', () => {
       assert.ok(waiter)
       yield* Fiber.join(holder)
       const revoked = yield* Fiber.join(waiter).pipe(Effect.flip)
-      assert.strictEqual(revoked.reason, 'revoked')
+      assert.strictEqual(revoked.reason._tag, 'Revoked')
       assert.strictEqual(decodes, 1)
       assert.strictEqual((yield* session.committed).nextId, 2)
     }).pipe(Effect.provide(layers)),

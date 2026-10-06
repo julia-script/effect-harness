@@ -1,7 +1,7 @@
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Record from '../Record.ts'
-import { ExecutionError } from './ExecutionError.ts'
+import { ExecutionErrorCodec } from './ExecutionError.ts'
 
 export const Result = Schema.Struct({
   status: Schema.Literals(['answered', 'tools', 'reset', 'failed', 'aborted']),
@@ -19,6 +19,6 @@ export const Generation = Workflow.make('@effect-harness/durable/Generation/v1',
     inputs: Schema.Array(Record.SubmissionId),
   },
   success: Result,
-  error: ExecutionError,
+  error: ExecutionErrorCodec,
   idempotencyKey: ({ sessionId, taskId }) => JSON.stringify([sessionId, taskId]),
 })

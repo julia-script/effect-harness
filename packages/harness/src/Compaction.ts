@@ -1,7 +1,9 @@
 // Cut selection/serialization adapted from pi-durable (MIT), pinned 636703a0.
 import * as AiPrompt from 'effect/ai/Prompt'
+import * as Result from 'effect/Result'
 import type * as Agent from './Agent.ts'
 import * as Context from './Context.ts'
+import * as Serialization from './Serialization.ts'
 
 export function selectCut(
   view: Context.View,
@@ -99,29 +101,34 @@ export function serializeConversation(messages: ReadonlyArray<AiPrompt.Message>)
   }
   return lines.join('\n\n')
 }
+const jsonText = (value: unknown): string =>
+  Result.getOrElse(Serialization.stringify(value), () => Serialization.unencodable)
 function serializeArgs(params: unknown): string {
-  if (params === null || typeof params !== 'object' || Array.isArray(params))
-    return JSON.stringify(params) ?? ''
-  return Object.entries(params)
-    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
-    .join(', ')
+  return Serialization.textOrMarker(() => {
+    if (params === null || typeof params !== 'object' || Array.isArray(params))
+      return jsonText(params)
+    return Object.entries(params)
+      .map(([key, value]) => `${key}=${jsonText(value)}`)
+      .join(', ')
+  })
 }
 function toolText(result: unknown): string {
-  if (typeof result === 'string') return result
-  if (result === null || typeof result !== 'object') return JSON.stringify(result) ?? ''
-  const content: unknown = Reflect.get(result, 'content')
-  if (!Array.isArray(content)) return JSON.stringify(result) ?? ''
-  return content
-    .flatMap((part: unknown) =>
-      typeof part === 'object' &&
-      part !== null &&
-      Reflect.get(part, 'type') === 'text' &&
-      typeof Reflect.get(part, 'text') === 'string'
-        ? [String(Reflect.get(part, 'text'))]
-        : [],
-    )
-    .join('\n')
+  return Serialization.textOrMarker(() => {
+    if (typeof result === 'string') return result
+    if (result === null || typeof result !== 'object') return Serialization.display(result)
+    const content: unknown = Reflect.get(result, 'content')
+    if (!Array.isArray(content)) return Serialization.display(result)
+    return content
+      .flatMap((part: unknown) => {
+        if (typeof part !== 'object' || part === null || Reflect.get(part, 'type') !== 'text')
+          return []
+        const text: unknown = Reflect.get(part, 'text')
+        return typeof text === 'string' ? [text] : []
+      })
+      .join('\n')
+  })
 }
+
 const system =
   'You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.'
 const instructions =

@@ -1,17 +1,22 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
+import * as Result from 'effect/Result'
 import * as Record from '../Record.ts'
-import { rejected, StorageError } from '../StorageError.ts'
+import { rejected, StorageError, Invalid, Corrupt, NotFound, Conflict } from '../StorageError.ts'
 
-/** Copies JSON data through property access so scoped draft proxies are safely detached. */
-export const detached = <A>(value: A): A => {
+export class CloneError extends Schema.TaggedError<CloneError>(
+  '@effect-harness/durable/storage/State/CloneError',
+)('CloneError', { message: Schema.String, cause: Schema.Defect() }) {}
+
+/** Copies values, including scoped JSON proxies, without throwing native clone/access failures. */
+export const detached = <A>(value: A): Result.Result<A, CloneError> => {
   // Persisted facts are ordinary JSON and use the optimized native path. Scoped drafts
   // contain Proxy values; only that unsupported-clone case needs recursive unwrapping.
-  try {
-    return structuredClone(value)
-  } catch (cause) {
-    if (!(cause instanceof DOMException) || cause.name !== 'DataCloneError') throw cause
-  }
+  const native = Result.try({ try: () => structuredClone(value), catch: (cause) => cause })
+  if (Result.isSuccess(native)) return Result.succeed(native.success)
+  const cause = native.failure
+  if (!(cause instanceof DOMException) || cause.name !== 'DataCloneError')
+    return Result.fail(new CloneError({ message: 'Cannot detach durable value', cause }))
   const copies = new WeakMap<object, object>()
   const copy = (input: unknown): unknown => {
     if (input === null || typeof input !== 'object') return input
@@ -34,14 +39,24 @@ export const detached = <A>(value: A): A => {
     return output
   }
   // Every object is rebuilt; the generic type preserves the caller's validated record shape.
-  return copy(value) as A
+  return Result.try({
+    try: () => copy(value) as A,
+    catch: (cause) => new CloneError({ message: 'Cannot detach durable proxy', cause }),
+  })
 }
+/** Synchronous twin for protocols whose callbacks cannot return a Result. */
+export const detachedUnsafe = <A>(value: A): A => Result.getOrThrow(detached(value))
+/** Lifts cloning into the storage failure channel at Effect boundaries. */
+export const detachedEffect = <A>(value: A): Effect.Effect<A, StorageError> =>
+  Effect.suspend(() => Effect.fromResult(detached(value))).pipe(
+    Effect.mapError((error) => rejected(error.message, undefined, error.cause)),
+  )
 export const validate = Effect.fnUntraced(function* <S extends Schema.Constraint>(
   schema: S,
   value: unknown,
 ) {
   return yield* Schema.decodeUnknownEffect(schema)(value).pipe(
-    Effect.mapError((cause) => rejected('Invalid durable value', 'invalid', cause)),
+    Effect.mapError((cause) => rejected('Invalid durable value', Invalid, cause)),
   )
 })
 
@@ -50,11 +65,13 @@ export const applyOps = Effect.fnUntraced(function* (
   ops: ReadonlyArray<Record.Op>,
 ) {
   const result = yield* Effect.try({
+    // effect-review-allow P1-throw-only-in-unsafe-orthrow: this synchronous
+    // catching thunk maps every native clone/operation throw into StorageError.
     try: () => {
-      let result = detached(value)
+      let result = detachedUnsafe(value)
       for (const op of ops) {
         if (op[0] === 'replace') {
-          result = detached(op[1])
+          result = detachedUnsafe(op[1])
           continue
         }
         const path = op[1]
@@ -78,7 +95,7 @@ export const applyOps = Effect.fnUntraced(function* (
           else Reflect.deleteProperty(current, key)
         } else
           Object.defineProperty(current, key, {
-            value: detached(op[2]),
+            value: detachedUnsafe(op[2]),
             enumerable: true,
             configurable: true,
             writable: true,
@@ -86,7 +103,7 @@ export const applyOps = Effect.fnUntraced(function* (
       }
       return result
     },
-    catch: (cause) => rejected('Invalid document operation', 'corrupt', cause),
+    catch: (cause) => rejected('Invalid document operation', Corrupt, cause),
   })
   return yield* validate(Schema.JsonObject, result)
 })
@@ -102,15 +119,15 @@ export const materialize = Effect.fnUntraced(function* (
   const baseIndex = revisions.findLastIndex((revision) => revision.content.kind === 'base')
   const base = revisions[baseIndex]
   if (base === undefined || base.content.kind !== 'base')
-    return yield* rejected('Document is missing a required base', 'corrupt')
-  let value = detached(base.content.value)
+    return yield* rejected('Document is missing a required base', Corrupt)
+  let value = yield* detachedEffect(base.content.value)
   for (const revision of revisions.slice(baseIndex + 1)) {
     if (revision.content.kind !== 'delta' || revision.content.version !== base.content.version)
-      return yield* rejected('Document crosses a stored version boundary without a base', 'corrupt')
+      return yield* rejected('Document crosses a stored version boundary without a base', Corrupt)
     value = yield* applyOps(value, revision.content.ops)
   }
   return {
-    record: detached(document.record),
+    record: yield* detachedEffect(document.record),
     version: base.content.version,
     value,
     deltasSinceBase: revisions.length - baseIndex - 1,
@@ -129,17 +146,19 @@ export const visibleEntries = Effect.fnUntraced(function* (
   let current = conversationId
   let cap = max
   while (true) {
-    if (seen.has(current)) return yield* rejected('Conversation ancestry is cyclic', 'corrupt')
+    if (seen.has(current)) return yield* rejected('Conversation ancestry is cyclic', Corrupt)
     seen.add(current)
     const conversation = state.conversations.find((item) => item.id === current)
-    if (conversation === undefined) return yield* rejected('Unknown conversation', 'not_found')
+    if (conversation === undefined) return yield* rejected('Unknown conversation', NotFound)
     entries.push(
-      ...state.entries
-        .filter(
-          (item) =>
-            item.entry.conversationId === current && item.entry.id >= min && item.entry.id <= cap,
-        )
-        .map((item) => detached(item.entry)),
+      ...(yield* detachedEffect(
+        state.entries
+          .filter(
+            (item) =>
+              item.entry.conversationId === current && item.entry.id >= min && item.entry.id <= cap,
+          )
+          .map((item) => item.entry),
+      )),
     )
     if (conversation.parent === undefined) break
     cap = Math.min(cap, conversation.parent.at)
@@ -164,10 +183,12 @@ export const page = <A extends { readonly id: number }>(
     .sort((a, b) => a.id - b.id)
   const shown = kept.slice(0, limit)
   const last = shown.at(-1)
-  return Effect.succeed({
-    items: detached(shown),
-    ...(kept.length > limit && last !== undefined ? { next: { after: last.id } } : {}),
-  })
+  return detachedEffect(shown).pipe(
+    Effect.map((items) => ({
+      items,
+      ...(kept.length > limit && last !== undefined ? { next: { after: last.id } } : {}),
+    })),
+  )
 }
 
 export const applyWrites = Effect.fnUntraced(function* (
@@ -176,11 +197,19 @@ export const applyWrites = Effect.fnUntraced(function* (
 ): Effect.fn.Return<Record.State, StorageError> {
   const writes = yield* validate(Schema.Array(Record.Write), input)
   const seq = yield* validate(Record.Seq, state.nextSeq)
-  const conversations = new Map(state.conversations.map((item) => [item.id, detached(item)]))
-  const entries = new Map(state.entries.map((item) => [item.entry.id, detached(item)]))
-  const tasks = new Map(state.tasks.map((item) => [item.id, detached(item)]))
-  const submissions = new Map(state.submissions.map((item) => [item.id, detached(item)]))
-  const documents = new Map(state.documents.map((item) => [item.record.id, detached(item)]))
+  const conversations = new Map(
+    (yield* detachedEffect(state.conversations)).map((item) => [item.id, item]),
+  )
+  const entries = new Map(
+    (yield* detachedEffect(state.entries)).map((item) => [item.entry.id, item]),
+  )
+  const tasks = new Map((yield* detachedEffect(state.tasks)).map((item) => [item.id, item]))
+  const submissions = new Map(
+    (yield* detachedEffect(state.submissions)).map((item) => [item.id, item]),
+  )
+  const documents = new Map(
+    (yield* detachedEffect(state.documents)).map((item) => [item.record.id, item]),
+  )
   const ids = new Map<number, string>()
   for (const [kind, values] of [
     ['conversation', state.conversations],
@@ -225,22 +254,22 @@ export const applyWrites = Effect.fnUntraced(function* (
         existing !== undefined &&
         (existing !== kind || kind === 'conversation' || kind === 'entry' || kind === 'document')
       )
-        return yield* rejected(`ID ${id} already belongs to ${existing}`, 'conflict')
+        return yield* rejected(`ID ${id} already belongs to ${existing}`, Conflict)
       ids.set(id, kind)
       nextId = Math.max(nextId, id + 1)
     }
     switch (write.type) {
       case 'conversation':
-        conversations.set(write.value.id, detached(write.value))
+        conversations.set(write.value.id, yield* detachedEffect(write.value))
         break
       case 'entry':
-        entries.set(write.value.id, { entry: detached(write.value), commitSeq: seq })
+        entries.set(write.value.id, { entry: yield* detachedEffect(write.value), commitSeq: seq })
         break
       case 'task':
-        tasks.set(write.value.id, detached(write.value))
+        tasks.set(write.value.id, yield* detachedEffect(write.value))
         break
       case 'submission':
-        submissions.set(write.value.id, detached(write.value))
+        submissions.set(write.value.id, yield* detachedEffect(write.value))
         break
       case 'document.create':
       case 'document.copy': {
@@ -262,7 +291,7 @@ export const applyWrites = Effect.fnUntraced(function* (
             return yield* rejected('Document copy source is changed in the copy batch')
           const source = documents.get(write.source.id)
           if (source === undefined)
-            return yield* rejected('Document copy source is absent', 'not_found')
+            return yield* rejected('Document copy source is absent', NotFound)
           const stored = yield* materialize(source, write.source.at)
           if (
             stored === undefined ||
@@ -279,7 +308,7 @@ export const applyWrites = Effect.fnUntraced(function* (
         if (content.kind !== 'base') return yield* rejected('Document creation requires a base')
         documents.set(write.record.id, {
           record: { ...write.record, createdAt: seq },
-          revisions: [{ seq, content: detached(content) }],
+          revisions: [{ seq, content: yield* detachedEffect(content) }],
         })
         break
       }
@@ -289,7 +318,7 @@ export const applyWrites = Effect.fnUntraced(function* (
         contentCommands.add(id)
         const previous = documents.get(write.id)
         if (previous === undefined || previous.record.retiredAt !== undefined)
-          return yield* rejected('Document is absent or retired', 'not_found')
+          return yield* rejected('Document is absent or retired', NotFound)
         const latest = previous.revisions.at(-1)
         if (
           write.content.kind === 'delta' &&
@@ -319,7 +348,7 @@ export const applyWrites = Effect.fnUntraced(function* (
             : previous.revisions
         documents.set(write.id, {
           record: previous.record,
-          revisions: [...revisions, { seq, content: detached(write.content) }],
+          revisions: [...revisions, { seq, content: yield* detachedEffect(write.content) }],
         })
         break
       }
@@ -328,7 +357,7 @@ export const applyWrites = Effect.fnUntraced(function* (
   for (const id of retired) {
     const previous = documents.get(id as Record.DocumentId)
     if (previous === undefined || previous.record.retiredAt !== undefined)
-      return yield* rejected('Document is absent or retired', 'not_found')
+      return yield* rejected('Document is absent or retired', NotFound)
     documents.set(previous.record.id, {
       record: { ...previous.record, retiredAt: seq },
       revisions: Record.currentOnly(previous.record) ? [] : previous.revisions,
@@ -339,7 +368,7 @@ export const applyWrites = Effect.fnUntraced(function* (
     if (document.record.retiredAt !== undefined) continue
     const address = Record.addressKey(document.record)
     if (addresses.has(address))
-      return yield* rejected('Document address already has a current incarnation', 'conflict')
+      return yield* rejected('Document address already has a current incarnation', Conflict)
     addresses.add(address)
   }
   return {
@@ -369,7 +398,7 @@ export const validateState = Effect.fnUntraced(function* (
   input: unknown,
 ): Effect.fn.Return<Record.State, StorageError> {
   const state = yield* validate(Record.State, input).pipe(
-    Effect.mapError((cause) => rejected('Invalid persisted durable state', 'corrupt', cause)),
+    Effect.mapError((cause) => rejected('Invalid persisted durable state', Corrupt, cause)),
   )
   const ids = new Set<number>()
   const allIds: ReadonlyArray<number> = [
@@ -381,7 +410,7 @@ export const validateState = Effect.fnUntraced(function* (
   ]
   for (const id of allIds) {
     if (ids.has(id) || id >= state.nextId)
-      return yield* rejected('Persisted ID namespace or allocator is corrupt', 'corrupt')
+      return yield* rejected('Persisted ID namespace or allocator is corrupt', Corrupt)
     ids.add(id)
   }
   if (
@@ -390,7 +419,7 @@ export const validateState = Effect.fnUntraced(function* (
       (record) => record.id === 1 && record.parent === undefined && record.owner === undefined,
     )
   )
-    return yield* rejected('Persisted reserved root ID is corrupt', 'corrupt')
+    return yield* rejected('Persisted reserved root ID is corrupt', Corrupt)
   const addresses = new Set<string>()
   for (const document of state.documents) {
     const record = document.record
@@ -399,16 +428,16 @@ export const validateState = Effect.fnUntraced(function* (
       (record.retiredAt !== undefined &&
         (record.retiredAt < record.createdAt || record.retiredAt >= state.nextSeq))
     )
-      return yield* rejected('Persisted document lifetime is corrupt', 'corrupt')
+      return yield* rejected('Persisted document lifetime is corrupt', Corrupt)
     if (record.scope.kind === 'conversation') {
       if (
         record.history === undefined ||
         record.fork === undefined ||
         (record.history === 'latest' && record.fork === 'asOf')
       )
-        return yield* rejected('Persisted document policy is corrupt', 'corrupt')
+        return yield* rejected('Persisted document policy is corrupt', Corrupt)
     } else if (record.history !== undefined || record.fork !== undefined)
-      return yield* rejected('Persisted document policy is corrupt', 'corrupt')
+      return yield* rejected('Persisted document policy is corrupt', Corrupt)
     if (
       !Record.currentOnly(record) &&
       (record.retiredAt === undefined || record.retiredAt > record.createdAt)
@@ -422,7 +451,7 @@ export const validateState = Effect.fnUntraced(function* (
         revision.seq >= state.nextSeq ||
         (record.retiredAt !== undefined && revision.seq > record.retiredAt)
       )
-        return yield* rejected('Persisted document revision sequence is corrupt', 'corrupt')
+        return yield* rejected('Persisted document revision sequence is corrupt', Corrupt)
       previous = revision.seq
       if (revision.content.kind === 'base' && !Record.currentOnly(record))
         yield* materialize(document, revision.seq)
@@ -430,7 +459,7 @@ export const validateState = Effect.fnUntraced(function* (
     if (record.retiredAt === undefined) {
       const key = Record.addressKey(record)
       if (addresses.has(key))
-        return yield* rejected('Persisted document addresses overlap', 'corrupt')
+        return yield* rejected('Persisted document addresses overlap', Corrupt)
       addresses.add(key)
       yield* materialize(document, 'current')
     } else if (!Record.currentOnly(record) && record.retiredAt > record.createdAt)
@@ -443,12 +472,12 @@ export const validateState = Effect.fnUntraced(function* (
       keys.has(receipt.key) ||
       receipt.seq >= state.nextSeq
     )
-      return yield* rejected('Persisted operation receipts are corrupt', 'corrupt')
+      return yield* rejected('Persisted operation receipts are corrupt', Corrupt)
     keys.add(receipt.key)
   }
   for (const entry of state.entries)
     if (entry.commitSeq >= state.nextSeq)
-      return yield* rejected('Persisted entry commit sequence is corrupt', 'corrupt')
+      return yield* rejected('Persisted entry commit sequence is corrupt', Corrupt)
   return state
 })
 import * as Json from '@effect-harness/harness/Json'

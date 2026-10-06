@@ -14,16 +14,25 @@ import * as Record from '../Record.ts'
 import type * as Session from '../Session.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
 import type { StorageError } from '../StorageError.ts'
-import { ExecutionError } from './ExecutionError.ts'
+import {
+  ExecutionError,
+  ExecutionErrorCodec,
+  Closed,
+  Storage,
+  InvalidState,
+  RequestConflict,
+  ConversationBusy,
+  InvalidArguments,
+} from './ExecutionError.ts'
 import { Generation } from './Generation.ts'
 import { Submission, Result } from './Submission.ts'
 import * as Prompt from 'effect/ai/Prompt'
 
 export const Settled = DurableDeferred.make('submission/settled/v1', {
   success: Result,
-  error: ExecutionError,
+  error: ExecutionErrorCodec,
 })
-export const Links = Document.family({
+export const Links = Document.familyUnsafe({
   kind: 'harness.submission-links',
   version: 1,
   scope: 'session',
@@ -38,9 +47,11 @@ const Admission = Schema.Struct({
 })
 export const storageError = (error: StorageError) =>
   new ExecutionError({
-    reason: error.reason === 'closed' ? 'closed' : 'storage',
-    message: error.message,
-    detail: { reason: error.reason, certainty: error.certainty },
+    reason: new (error.reason._tag === 'Closed' ? Closed : Storage)({
+      message: error.message,
+      detail: { reason: error.code, certainty: error.certainty },
+      cause: error,
+    }),
   })
 
 /** A task record is an inspectable projection of a normal native Workflow execution. */
@@ -95,10 +106,9 @@ export const notify = Effect.fnUntraced(function* (
       .pipe(Effect.mapError(storageError))
     const value = yield* Schema.decodeEffect(Result)(receipt).pipe(
       Effect.mapError(
-        () =>
+        (cause) =>
           new ExecutionError({
-            reason: 'invalid_state',
-            message: 'Invalid settled submission receipt',
+            reason: new InvalidState({ message: 'Invalid settled submission receipt', cause }),
           }),
       ),
     )
@@ -122,8 +132,9 @@ export const admitInTransaction = Effect.fnUntraced(function* (
   if (existing !== undefined) {
     if (existing.type !== payload.submission.type)
       return yield* new ExecutionError({
-        reason: 'request_conflict',
-        message: 'Request identity already belongs to a different submission kind',
+        reason: new RequestConflict({
+          message: 'Request identity already belongs to a different submission kind',
+        }),
       })
     const links = yield* tx.doc(Links, { key: String(existing.id) })
     if (!links.executions.includes(executionId)) links.executions.push(executionId)
@@ -133,8 +144,7 @@ export const admitInTransaction = Effect.fnUntraced(function* (
   }
   if ((yield* tx.conversation(payload.conversationId)) === undefined)
     return yield* new ExecutionError({
-      reason: 'invalid_state',
-      message: 'Conversation is absent',
+      reason: new InvalidState({ message: 'Conversation is absent' }),
     })
   const boundary = yield* Inbox.prepare(tx, payload.conversationId, config.settings)
   const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
@@ -144,8 +154,7 @@ export const admitInTransaction = Effect.fnUntraced(function* (
     live.run !== undefined
   )
     return yield* new ExecutionError({
-      reason: 'conversation_busy',
-      message: 'Conversation already has an active run',
+      reason: new ConversationBusy({ message: 'Conversation already has an active run' }),
     })
   const submission = yield* tx.createSubmission({
     conversationId: payload.conversationId,
@@ -159,24 +168,23 @@ export const admitInTransaction = Effect.fnUntraced(function* (
     boundary.inbox.items.push({
       id: submission.id,
       mode: 'write',
-      entry: Document.copy(payload.submission.entry),
+      entry: yield* Document.copyEffect(payload.submission.entry),
     })
   else {
     const message = yield* Schema.encodeEffect(Schema.toCodecJson(Prompt.UserMessage))(
       payload.submission.message,
     ).pipe(
       Effect.mapError(
-        () =>
+        (cause) =>
           new ExecutionError({
-            reason: 'invalid_arguments',
-            message: 'Input cannot be persisted',
+            reason: new InvalidArguments({ message: 'Input cannot be persisted', cause }),
           }),
       ),
     )
     boundary.inbox.items.push({
       id: submission.id,
       mode: payload.submission.whenBusy === 'steer' ? 'steer' : 'followUp',
-      message: Document.copy(message),
+      message: yield* Document.copyEffect(message),
     })
   }
   if (live.run !== undefined) return { id: submission.id, notify: [] }
@@ -226,13 +234,13 @@ export const layer: Layer.Layer<
       yield* Activity.make({
         name: 'ensure-root',
         success: Record.Conversation,
-        error: ExecutionError,
+        error: ExecutionErrorCodec,
         execute: session.root().pipe(Effect.mapError(storageError)),
       }).annotate(ClusterSchema.WithTransaction, true)
     const admitted = yield* Activity.make({
       name: 'admission',
       success: Admission,
-      error: ExecutionError,
+      error: ExecutionErrorCodec,
       execute: admit(session, config, payload, executionId),
     }).annotate(ClusterSchema.WithTransaction, true)
     if (admitted.generation !== undefined)

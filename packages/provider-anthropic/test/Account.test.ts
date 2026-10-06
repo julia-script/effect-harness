@@ -1,7 +1,14 @@
 import { assert, describe, it } from '@effect/vitest'
 import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
-import { AuthError } from '@effect-harness/auth/Credential'
+import {
+  AuthExpiredError,
+  AuthNetworkError,
+  AuthPermissionError,
+  AuthStorageError,
+  AuthTokenError,
+  AuthError,
+} from '@effect-harness/auth/Credential'
 import * as Model from '@effect-harness/harness/Model'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -13,6 +20,7 @@ import * as Prompt from 'effect/ai/Prompt'
 import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
 import * as HttpClient from 'effect/http/HttpClient'
+import * as HttpClientError from 'effect/http/HttpClientError'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import * as Account from '../src/Account.ts'
@@ -107,7 +115,9 @@ const fixture = (stream = false, denied: boolean | AuthError = false) => {
           ? Effect.fail(
               denied instanceof AuthError
                 ? denied
-                : new AuthError({ reason: 'expired', message: 'Credential refresh failed' }),
+                : new AuthError({
+                    reason: new AuthExpiredError({ message: 'Credential refresh failed' }),
+                  }),
             )
           : Effect.succeed(Redacted.make(`private-token-${credentials}`))
       }),
@@ -405,6 +415,38 @@ describe('direct Pi-compatible Anthropic account transport', () => {
     },
   )
   it.effect(
+    'raw generated native account client retains its caught AuthError transport cause',
+    () => {
+      const original = new AuthError({
+        reason: new AuthNetworkError({
+          message: 'Sanitized credential failure',
+          cause: new Error('private-token-diagnostic'),
+        }),
+      })
+      const f = fixture(false, original)
+      return Effect.gen(function* () {
+        const client = yield* AnthropicClient.AnthropicClient
+        const error = yield* client.client
+          .betaMessagesPost({
+            payload: {
+              model: 'declared-model',
+              max_tokens: 2000,
+              messages: [{ role: 'user', content: 'Hello' }],
+            },
+          })
+          .pipe(Effect.flip)
+        if (!HttpClientError.isHttpClientError(error)) {
+          return yield* Effect.die('Expected raw HTTP client failure')
+        }
+        assert.strictEqual(error.reason._tag, 'TransportError')
+        assert.strictEqual(error.reason.cause, original)
+        assert.isFalse(JSON.stringify(error).includes('private-token-diagnostic'))
+        assert.strictEqual(f.requests.length, 0)
+      }).pipe(Effect.provide(f.layer))
+    },
+  )
+
+  it.effect(
     'native provider-built tool names retain their schema literals; canonicalization applies to custom client tools',
     () => {
       const f = fixture()
@@ -429,9 +471,15 @@ describe('direct Pi-compatible Anthropic account transport', () => {
     () =>
       Effect.forEach(
         [
-          new AuthError({ reason: 'network', message: 'Token endpoint unavailable' }),
-          new AuthError({ reason: 'token', message: 'Grant temporarily rejected', status: 429 }),
-          new AuthError({ reason: 'token', message: 'Grant temporarily rejected', status: 503 }),
+          new AuthError({
+            reason: new AuthNetworkError({ message: 'Token endpoint unavailable' }),
+          }),
+          new AuthError({
+            reason: new AuthTokenError({ message: 'Grant temporarily rejected', status: 429 }),
+          }),
+          new AuthError({
+            reason: new AuthTokenError({ message: 'Grant temporarily rejected', status: 503 }),
+          }),
         ],
         (failure) => {
           const f = fixture(false, failure)
@@ -442,6 +490,29 @@ describe('direct Pi-compatible Anthropic account transport', () => {
             assert.isTrue(error.isRetryable)
             assert.strictEqual(f.requests.length, 0)
             assert.isFalse(JSON.stringify(error).includes('private-token'))
+          }).pipe(Effect.provide(f.layer))
+        },
+      ),
+  )
+  it.effect(
+    'permission and uncertain storage failures remain permanent despite server status',
+    () =>
+      Effect.forEach(
+        [
+          new AuthPermissionError({ message: '503 please retry', status: 503 }),
+          new AuthStorageError({ message: '503 please retry', status: 503 }),
+          new AuthTokenError({ message: 'Invalid grant', status: 401 }),
+          new AuthTokenError({ message: 'Unknown status', status: 600 }),
+        ],
+        (reason) => {
+          const f = fixture(false, new AuthError({ reason }))
+          return Effect.gen(function* () {
+            const error = yield* NativeLanguageModel.generateText({ prompt: 'Hello' }).pipe(
+              Effect.flip,
+            )
+            assert.strictEqual(error.reason._tag, 'AuthenticationError')
+            assert.isFalse(error.isRetryable)
+            assert.strictEqual(f.requests.length, 0)
           }).pipe(Effect.provide(f.layer))
         },
       ),

@@ -17,13 +17,13 @@ import * as Record from '../Record.ts'
 import type * as Session from '../Session.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
 import * as Usage from '../Usage.ts'
-import { ExecutionError } from './ExecutionError.ts'
+import { ExecutionError, InvalidState, ExecutionErrorCodec, Aborted } from './ExecutionError.ts'
 import { storageError } from './SubmissionExecutor.ts'
 import { ToolCall, Result } from './ToolCall.ts'
 import * as Cancellation from './Cancellation.ts'
 import * as Structured from './Structured.ts'
 
-export const IntentDoc = Document.define({
+export const IntentDoc = Document.defineUnsafe({
   kind: 'harness.tool-intent',
   version: 1,
   scope: 'task',
@@ -35,8 +35,11 @@ const Prepared = Schema.Union([
   Schema.Struct({ type: Schema.Literal('intent'), intent: Tool.Intent }),
   Schema.Struct({ type: Schema.Literal('rejected'), message: Schema.String }),
 ])
-const invalid = (message: string) => new ExecutionError({ reason: 'invalid_state', message })
-const codecError = () => invalid('Tool result cannot be persisted')
+const invalid = (message: string, cause?: unknown) =>
+  new ExecutionError({
+    reason: new InvalidState({ message, ...(cause === undefined ? {} : { cause }) }),
+  })
+const codecError = (cause: unknown) => invalid('Tool result cannot be persisted', cause)
 
 /** A native tool result entry also covers an unoffered call, which has no executable task. */
 export const appendResult = Effect.fnUntraced(function* (
@@ -109,9 +112,12 @@ const progress =
             delete slot.droppedLines
           }
           if (value.output !== undefined) slot.output = value.output
-          if (value.details !== undefined) slot.details = Document.copy(value.details)
+          if (value.details !== undefined) slot.details = yield* Document.copyEffect(value.details)
           if (value.diagnostics !== undefined)
-            slot.diagnostics = [...(slot.diagnostics ?? []), ...Document.copy(value.diagnostics)]
+            slot.diagnostics = [
+              ...(slot.diagnostics ?? []),
+              ...(yield* Document.copyEffect(value.diagnostics)),
+            ]
           if (value.droppedBytes !== undefined) slot.droppedBytes = value.droppedBytes
           if (value.droppedLines !== undefined) slot.droppedLines = value.droppedLines
         }),
@@ -153,7 +159,7 @@ export const layer: Layer.Layer<
     const prepared = yield* Activity.make({
       name: 'intent',
       success: Prepared,
-      error: ExecutionError,
+      error: ExecutionErrorCodec,
       execute: Cancellation.activity(
         payload,
         session,
@@ -161,8 +167,7 @@ export const layer: Layer.Layer<
           const task = yield* session.task(payload.taskId).pipe(Effect.mapError(storageError))
           if (task?.abortRequested)
             return yield* new ExecutionError({
-              reason: 'aborted',
-              message: 'Tool aborted before intent',
+              reason: new Aborted({ message: 'Tool aborted before intent' }),
             })
           const persisted = yield* session
             .snapshot(IntentDoc, { owner: payload.taskId })
@@ -231,7 +236,7 @@ export const layer: Layer.Layer<
     const outcome = yield* Activity.make({
       name: 'execute-and-settle',
       success: Outcome,
-      error: ExecutionError,
+      error: ExecutionErrorCodec,
       execute: Effect.gen(function* () {
         const task = yield* session.task(payload.taskId).pipe(Effect.mapError(storageError))
         if (task?.state.status === 'terminal' || task?.state.status === 'completing') {
@@ -269,8 +274,7 @@ export const layer: Layer.Layer<
                 if (task === undefined) return yield* invalid('Tool task projection is absent')
                 if (task.abortRequested)
                   return yield* new ExecutionError({
-                    reason: 'aborted',
-                    message: 'Tool aborted before execution',
+                    reason: new Aborted({ message: 'Tool aborted before execution' }),
                   })
                 const doc = yield* tx.doc(IntentDoc, { owner: payload.taskId })
                 const before = doc.started

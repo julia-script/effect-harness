@@ -6,6 +6,7 @@ import * as Scope from 'effect/Scope'
 import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
+import * as Result from 'effect/Result'
 import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 import * as Document from './Document.ts'
@@ -13,10 +14,19 @@ import { address, typed } from './Document.ts'
 import * as Option from 'effect/Option'
 import * as Observation from './Observation.ts'
 import * as Record from './Record.ts'
-import { rejected, StorageError } from './StorageError.ts'
+import {
+  rejected,
+  StorageError,
+  Closed,
+  Revoked,
+  ReadAfterWrite,
+  NotFound,
+  Invalid,
+} from './StorageError.ts'
 import { Store, type CommitOptions, type UnkeyedOptions } from './Store.ts'
 import {
   detached,
+  detachedEffect,
   documentsInScope,
   findDocument,
   materialize,
@@ -290,11 +300,33 @@ const entryPage = Effect.fnUntraced(function* (
     ...(entries.length > limit && last !== undefined ? { next: { after: last.id } } : {}),
   }
 })
-class DraftMutation extends TypeError {
-  constructor(message: string, cause?: unknown) {
-    super(message, { cause })
-  }
-}
+class DraftMutationError extends Schema.TaggedError<DraftMutationError>(
+  '@effect-harness/durable/Session/DraftMutationError',
+)('DraftMutationError', { message: Schema.String, cause: Schema.optionalKey(Schema.Defect()) }) {}
+// effect-review-allow P2-no-throw-in-effect-code, P1-throw-only-in-unsafe-orthrow:
+// Native synchronous Proxy traps cannot return Effect/Result failures. Only this private
+// sentinel is thrown for invalid draft operations and translated by transaction's
+// targeted catchDefect. All unrelated defects retain their original Cause.
+const draftValue = (input: unknown): Record.Json =>
+  Result.match(
+    Result.try({
+      try: () => Schema.decodeUnknownSync(Schema.Json)(input),
+      catch: (cause) => new DraftMutationError({ message: 'Document value must be JSON', cause }),
+    }),
+    {
+      onSuccess: (value) => value,
+      onFailure: (error) => {
+        throw error
+      },
+    },
+  )
+const cloneDraft = <A>(value: A): A =>
+  Result.match(detached(value), {
+    onSuccess: (value) => value,
+    onFailure: (error) => {
+      throw new DraftMutationError({ message: error.message, cause: error.cause })
+    },
+  })
 interface Acquired {
   readonly definition: {
     readonly version: number
@@ -322,7 +354,7 @@ const draft = <T extends Record.JsonObject>(
     const previous = proxies.get(object)
     if (previous !== undefined) return previous
     const check = () => {
-      if (!active()) throw new TypeError('Document draft is revoked')
+      if (!active()) throw new DraftMutationError({ message: 'Document draft is revoked' })
     }
     const proxy = new Proxy(object, {
       get(target, key, receiver) {
@@ -343,26 +375,22 @@ const draft = <T extends Record.JsonObject>(
             item < 0 ||
             item > 4294967295
           )
-            throw new DraftMutation('Invalid array length')
+            throw new DraftMutationError({ message: 'Invalid array length' })
           Reflect.set(target, key, item)
-          ops.push(['replace', detached(value)])
+          ops.push(['replace', cloneDraft(value)])
           return true
         }
-        if (typeof key === 'symbol') throw new DraftMutation('Symbol document keys are not JSON')
-        let valid: Record.Json
-        try {
-          valid = Schema.decodeUnknownSync(Schema.Json)(item)
-        } catch (cause) {
-          throw new DraftMutation('Document value must be JSON', cause)
-        }
+        if (typeof key === 'symbol')
+          throw new DraftMutationError({ message: 'Symbol document keys are not JSON' })
+        const valid = draftValue(item)
         const segment = Array.isArray(target) ? Number(key) : String(key)
         Object.defineProperty(target, key, {
-          value: detached(valid),
+          value: cloneDraft(valid),
           enumerable: true,
           configurable: true,
           writable: true,
         })
-        ops.push(['set', [...path, segment], detached(valid)])
+        ops.push(['set', [...path, segment], cloneDraft(valid)])
         return true
       },
       deleteProperty(target, key) {
@@ -383,13 +411,10 @@ const draft = <T extends Record.JsonObject>(
           descriptor.configurable === false ||
           descriptor.writable === false
         )
-          throw new DraftMutation('Document descriptors must be writable enumerable JSON data')
-        let valid: Record.Json
-        try {
-          valid = Schema.decodeUnknownSync(Schema.Json)(descriptor.value)
-        } catch (cause) {
-          throw new DraftMutation('Document value must be JSON', cause)
-        }
+          throw new DraftMutationError({
+            message: 'Document descriptors must be writable enumerable JSON data',
+          })
+        const valid = draftValue(descriptor.value)
         if (Array.isArray(target) && key === 'length') {
           if (
             typeof valid !== 'number' ||
@@ -397,13 +422,13 @@ const draft = <T extends Record.JsonObject>(
             valid < 0 ||
             valid > 4294967295
           )
-            throw new DraftMutation('Invalid array length')
+            throw new DraftMutationError({ message: 'Invalid array length' })
           Reflect.set(target, key, valid)
-          ops.push(['replace', detached(value)])
+          ops.push(['replace', cloneDraft(value)])
           return true
         }
         Object.defineProperty(target, key, {
-          value: detached(valid),
+          value: cloneDraft(valid),
           enumerable: true,
           configurable: true,
           writable: true,
@@ -411,17 +436,17 @@ const draft = <T extends Record.JsonObject>(
         ops.push([
           'set',
           [...path, Array.isArray(target) ? Number(key) : String(key)],
-          detached(valid),
+          cloneDraft(valid),
         ])
         return true
       },
       setPrototypeOf() {
         check()
-        throw new DraftMutation('Document prototypes cannot change')
+        throw new DraftMutationError({ message: 'Document prototypes cannot change' })
       },
       preventExtensions() {
         check()
-        throw new DraftMutation('Document drafts must remain mutable')
+        throw new DraftMutationError({ message: 'Document drafts must remain mutable' })
       },
       ownKeys(target) {
         check()
@@ -447,7 +472,7 @@ export const make = Effect.fnUntraced(function* () {
   let closing: Fiber.Fiber<void, StorageError> | undefined
   const cleanups = new Set<Effect.Effect<void>>()
   const usable = Effect.suspend(() =>
-    sealed ? Effect.fail(rejected('Session is closed', 'closed')) : Effect.void,
+    sealed ? Effect.fail(rejected('Session is closed', Closed)) : Effect.void,
   )
   const onClose: Service['onClose'] = (cleanup) =>
     Effect.sync(() => {
@@ -459,7 +484,7 @@ export const make = Effect.fnUntraced(function* () {
     }).pipe(
       Effect.filterOrFail(
         (unregister) => unregister !== undefined,
-        () => rejected('Session is closed', 'closed'),
+        () => rejected('Session is closed', Closed),
       ),
     )
   const close = Effect.uninterruptibleMask((restore) =>
@@ -562,14 +587,14 @@ export const make = Effect.fnUntraced(function* () {
           const retiredAddresses = new Set<string>()
           const acquisitions = new Map<string, Effect.Effect<Record.JsonObject, StorageError>>()
           const open = Effect.suspend(() =>
-            active ? Effect.void : Effect.fail(rejected('Transaction is revoked', 'revoked')),
+            active ? Effect.void : Effect.fail(rejected('Transaction is revoked', Revoked)),
           )
           const read = Effect.fnUntraced(function* () {
             yield* open
             if (tableWritten)
               return yield* rejected(
                 'Table reads after the first table write are forbidden',
-                'read_after_write',
+                ReadAfterWrite,
               )
           })
           const mint = Effect.fnUntraced(function* <S extends Schema.Constraint>(schema: S) {
@@ -594,7 +619,7 @@ export const make = Effect.fnUntraced(function* () {
               )
                 return yield* rejected('Task is terminal or cannot change conversations')
             }
-            writes.push(detached(valid))
+            writes.push(yield* detachedEffect(valid))
             if (valid.type === 'conversation') localConversations.set(valid.value.id, valid.value)
             if (valid.type === 'task') localTasks.set(valid.value.id, valid.value)
             if (valid.type === 'submission') localSubmissions.set(valid.value.id, valid.value)
@@ -635,11 +660,11 @@ export const make = Effect.fnUntraced(function* () {
                     logical.scope.kind === 'conversation' &&
                     !localConversations.has(logical.scope.conversationId)
                   )
-                    return yield* rejected('Document conversation is absent', 'not_found')
+                    return yield* rejected('Document conversation is absent', NotFound)
                   if (logical.scope.kind === 'task') {
                     const task = localTasks.get(logical.scope.taskId)
                     if (task === undefined || task.state.status === 'terminal')
-                      return yield* rejected('Document task is absent or settled', 'not_found')
+                      return yield* rejected('Document task is absent or settled', NotFound)
                   }
                   const staged = retiredAddresses.has(key)
                     ? undefined
@@ -663,10 +688,10 @@ export const make = Effect.fnUntraced(function* () {
                         (item) => item.record.id === staged.source.id,
                       )
                       if (source === undefined)
-                        return yield* rejected('Staged copy source is absent', 'not_found')
+                        return yield* rejected('Staged copy source is absent', NotFound)
                       const sourceValue = yield* materialize(source, staged.source.at)
                       if (sourceValue === undefined)
-                        return yield* rejected('Staged copy source is not alive', 'not_found')
+                        return yield* rejected('Staged copy source is not alive', NotFound)
                       content = {
                         kind: 'base',
                         version: sourceValue.version,
@@ -681,7 +706,7 @@ export const make = Effect.fnUntraced(function* () {
                         createdAt: yield* validate(Record.Seq, original.nextSeq),
                       },
                       version: content.version,
-                      value: detached(content.value),
+                      value: yield* detachedEffect(content.value),
                       deltasSinceBase: 0,
                     }
                   }
@@ -690,7 +715,7 @@ export const make = Effect.fnUntraced(function* () {
                   if (stored === undefined) {
                     value = yield* Effect.try({
                       try: () => token.definition.initial(target.seed),
-                      catch: (cause) => rejected('Document initializer failed', 'invalid', cause),
+                      catch: (cause) => rejected('Document initializer failed', Invalid, cause),
                     })
                     value = yield* validate(token.definition.schema, value)
                     yield* validate(Schema.JsonObject, value)
@@ -701,7 +726,7 @@ export const make = Effect.fnUntraced(function* () {
                   }
                   yield* open
                   const ops: Array<Record.Op> = []
-                  const mutable = detached(value)
+                  const mutable = yield* detachedEffect(value)
                   const record: Acquired = {
                     definition: token.definition,
                     address: logical,
@@ -717,7 +742,7 @@ export const make = Effect.fnUntraced(function* () {
                         token.definition.checkpointWhen?.(mutable, ops, {
                           deltasSinceBase: stored?.deltasSinceBase ?? 0,
                         }) ?? false,
-                      catch: (cause) => rejected('Checkpoint predicate failed', 'invalid', cause),
+                      catch: (cause) => rejected('Checkpoint predicate failed', Invalid, cause),
                     }),
                     ...(stored === undefined ? {} : { stored }),
                     ...(stagedRecord === undefined ? {} : { staged: stagedRecord }),
@@ -735,7 +760,7 @@ export const make = Effect.fnUntraced(function* () {
             doc,
             ensureRoot: Effect.suspend(() => {
               const existing = localConversations.get(Record.ROOT_CONVERSATION_ID)
-              if (existing !== undefined) return Effect.succeed(detached(existing))
+              if (existing !== undefined) return detachedEffect(existing)
               const root = { id: Record.ROOT_CONVERSATION_ID }
               return write({ type: 'conversation', value: root }).pipe(
                 Effect.andThen(creationHook?.run(tx, root) ?? Effect.void),
@@ -744,19 +769,21 @@ export const make = Effect.fnUntraced(function* () {
             }),
             conversation: Effect.fnUntraced(function* (id) {
               yield* read()
-              return detached(original.conversations.find((item) => item.id === id))
+              return yield* detachedEffect(original.conversations.find((item) => item.id === id))
             }),
             entry: Effect.fnUntraced(function* (id) {
               yield* read()
-              return detached(original.entries.find((item) => item.entry.id === id)?.entry)
+              return yield* detachedEffect(
+                original.entries.find((item) => item.entry.id === id)?.entry,
+              )
             }),
             task: Effect.fnUntraced(function* (id) {
               yield* read()
-              return detached(original.tasks.find((item) => item.id === id))
+              return yield* detachedEffect(original.tasks.find((item) => item.id === id))
             }),
             submission: Effect.fnUntraced(function* (id) {
               yield* read()
-              return detached(original.submissions.find((item) => item.id === id))
+              return yield* detachedEffect(original.submissions.find((item) => item.id === id))
             }),
             scanConversations: Effect.fnUntraced(function* (query, limit, cursor) {
               yield* read()
@@ -782,7 +809,7 @@ export const make = Effect.fnUntraced(function* () {
             }),
             submissionByRequest: Effect.fnUntraced(function* (conversationId, requestId) {
               yield* read()
-              return detached(
+              return yield* detachedEffect(
                 original.submissions.find(
                   (item) => item.conversationId === conversationId && item.requestId === requestId,
                 ),
@@ -794,7 +821,7 @@ export const make = Effect.fnUntraced(function* () {
               const value = { id, ...ownership }
               yield* write({ type: 'conversation', value })
               if (creationHook !== undefined) yield* creationHook.run(tx, value)
-              return detached(value)
+              return yield* detachedEffect(value)
             }),
             forkConversation: Effect.fnUntraced(function* (parent, at, options) {
               yield* open
@@ -803,7 +830,7 @@ export const make = Effect.fnUntraced(function* () {
               const entry = visible.find((item) => item.id === at)
               const committed = original.entries.find((item) => item.entry.id === at)
               if (entry === undefined || committed === undefined)
-                return yield* rejected('Fork cutoff is not visible', 'not_found')
+                return yield* rejected('Fork cutoff is not visible', NotFound)
               const ownership = yield* owner(options.ownership)
               const id = yield* mint(Record.ConversationId)
               const selected = new Map<
@@ -860,12 +887,12 @@ export const make = Effect.fnUntraced(function* () {
               const value = { id, parent: { conversationId: parent, at }, ...ownership }
               yield* write({ type: 'conversation', value })
               if (creationHook !== undefined) yield* creationHook.run(tx, value)
-              return detached(value)
+              return yield* detachedEffect(value)
             }),
             appendEntry: Effect.fnUntraced(function* (conversationId, input) {
               yield* open
               if (!localConversations.has(conversationId))
-                return yield* rejected('Entry conversation is absent', 'not_found')
+                return yield* rejected('Entry conversation is absent', NotFound)
               const id = yield* mint(Record.EntryId)
               const { head, ...draftValue } = input
               const value = {
@@ -875,12 +902,12 @@ export const make = Effect.fnUntraced(function* () {
                 ...(head === undefined ? {} : { head: head === 'self' ? id : head }),
               }
               yield* write({ type: 'entry', value })
-              return detached(value)
+              return yield* detachedEffect(value)
             }),
             createTask: Effect.fnUntraced(function* (input) {
               yield* open
               if (!localConversations.has(input.conversationId))
-                return yield* rejected('Task conversation is absent', 'not_found')
+                return yield* rejected('Task conversation is absent', NotFound)
               if (abortingAncestor(input.conversationId))
                 return yield* rejected('Task conversation has an aborting ancestor')
               if (input.owner !== undefined) {
@@ -902,18 +929,18 @@ export const make = Effect.fnUntraced(function* () {
             createSubmission: Effect.fnUntraced(function* (input) {
               yield* open
               if (!localConversations.has(input.conversationId))
-                return yield* rejected('Submission conversation is absent', 'not_found')
+                return yield* rejected('Submission conversation is absent', NotFound)
               if (abortingAncestor(input.conversationId))
                 return yield* rejected('Submission conversation has an aborting ancestor')
               const id = yield* mint(Record.SubmissionId)
               const value = { ...input, id }
               yield* write({ type: 'submission', value })
-              return detached(value)
+              return yield* detachedEffect(value)
             }),
             placeSubmission: Effect.fnUntraced(function* (id, entry) {
               yield* open
               const current = localSubmissions.get(id)
-              if (current === undefined) return yield* rejected('Submission is absent', 'not_found')
+              if (current === undefined) return yield* rejected('Submission is absent', NotFound)
               if (current.status === 'done' || current.status === 'unanswered') return
               if (current.status !== 'queued')
                 return yield* rejected('Only queued submissions may be placed')
@@ -926,7 +953,7 @@ export const make = Effect.fnUntraced(function* () {
             settleSubmission: Effect.fnUntraced(function* (id, settlement) {
               yield* open
               const current = localSubmissions.get(id)
-              if (current === undefined) return yield* rejected('Submission is absent', 'not_found')
+              if (current === undefined) return yield* rejected('Submission is absent', NotFound)
               if (current.status === 'done' || current.status === 'unanswered') return
               if (
                 settlement.status === 'done' &&
@@ -988,8 +1015,8 @@ export const make = Effect.fnUntraced(function* () {
           }
           const result = yield* change(tx).pipe(
             Effect.catchDefect((defect) =>
-              defect instanceof DraftMutation
-                ? Effect.fail(rejected(defect.message, 'invalid', defect.cause))
+              defect instanceof DraftMutationError
+                ? Effect.fail(rejected(defect.message, Invalid, defect.cause))
                 : Effect.die(defect),
             ),
             Effect.ensuring(
@@ -1143,8 +1170,7 @@ export const make = Effect.fnUntraced(function* () {
       transaction(
         Effect.fnUntraced(function* (tx) {
           const conversation = yield* tx.conversation(conversationId)
-          if (conversation === undefined)
-            return yield* rejected('Conversation is absent', 'not_found')
+          if (conversation === undefined) return yield* rejected('Conversation is absent', NotFound)
           if (creationHook?.recover !== undefined) yield* creationHook.recover(tx, conversation)
         }),
       ),
@@ -1168,7 +1194,7 @@ export const make = Effect.fnUntraced(function* () {
       const entry = visible.find((item) => item.id === at)
       const persisted = state.entries.find((item) => item.entry.id === at)
       if (entry === undefined || persisted === undefined)
-        return yield* rejected('Historical entry is not visible', 'not_found')
+        return yield* rejected('Historical entry is not visible', NotFound)
       const logical = yield* address(token, { ...target, owner: entry.conversationId })
       const document = findDocument(state, logical, persisted.commitSeq)
       const snapshotValue =
@@ -1182,7 +1208,9 @@ export const make = Effect.fnUntraced(function* () {
     commits: Observation.commits(store),
     conversation: (id) =>
       store.read.pipe(
-        Effect.map((state) => detached(state.conversations.find((item) => item.id === id))),
+        Effect.flatMap((state) =>
+          detachedEffect(state.conversations.find((item) => item.id === id)),
+        ),
       ),
     entry: Effect.fnUntraced(function* (id, conversationId) {
       const state = yield* store.read
@@ -1191,18 +1219,20 @@ export const make = Effect.fnUntraced(function* () {
         !(yield* visibleEntries(state, conversationId)).some((item) => item.id === id)
       )
         return undefined
-      return detached(state.entries.find((item) => item.entry.id === id))
+      return yield* detachedEffect(state.entries.find((item) => item.entry.id === id))
     }),
     task: (id) =>
-      store.read.pipe(Effect.map((state) => detached(state.tasks.find((item) => item.id === id)))),
+      store.read.pipe(
+        Effect.flatMap((state) => detachedEffect(state.tasks.find((item) => item.id === id))),
+      ),
     submission: (id) =>
       store.read.pipe(
-        Effect.map((state) => detached(state.submissions.find((item) => item.id === id))),
+        Effect.flatMap((state) => detachedEffect(state.submissions.find((item) => item.id === id))),
       ),
     submissionByRequest: (conversationId, requestId) =>
       store.read.pipe(
-        Effect.map((state) =>
-          detached(
+        Effect.flatMap((state) =>
+          detachedEffect(
             state.submissions.find(
               (item) => item.conversationId === conversationId && item.requestId === requestId,
             ),
@@ -1236,7 +1266,9 @@ export const make = Effect.fnUntraced(function* () {
         ),
       ),
     findDocument: (logical, at = 'current') =>
-      store.read.pipe(Effect.map((state) => detached(findDocument(state, logical, at)?.record))),
+      store.read.pipe(
+        Effect.flatMap((state) => detachedEffect(findDocument(state, logical, at)?.record)),
+      ),
     document: Effect.fnUntraced(function* (id, at = 'current') {
       const state = yield* store.read
       const document = state.documents.find((item) => item.record.id === id)

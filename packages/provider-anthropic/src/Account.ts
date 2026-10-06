@@ -49,18 +49,19 @@ const invalid = (description: string) =>
   })
 const authError = (error: AuthError) => {
   let reason: AiError.AiErrorReason
-  if (error.reason === 'network')
+  if (error.reason._tag === 'AuthNetworkError')
     reason = new AiError.NetworkError({
       reason: 'TransportError',
       request: { method: 'POST', url: tokenUrl, urlParams: [], hash: undefined, headers: {} },
       description: error.message,
     })
-  else if (error.status === 429) reason = new AiError.RateLimitError({})
-  else if ((error.status !== undefined && error.status >= 500) || error.reason === 'busy')
+  else if (error.isRetryable && error.status === 429)
+    reason = new AiError.RateLimitError({ retryAfter: error.retryAfter })
+  else if (error.isRetryable)
     reason = new AiError.InternalProviderError({ description: error.message })
   else
     reason = new AiError.AuthenticationError({
-      kind: error.reason === 'permission' ? 'InsufficientPermissions' : 'Unknown',
+      kind: error.reason._tag === 'AuthPermissionError' ? 'InsufficientPermissions' : 'Unknown',
       description: error.message,
     })
   return new AiError.AiError({ module: 'AnthropicAccount', method: 'credential', reason })
@@ -201,6 +202,7 @@ export const layerClient = (options: ClientOptions) =>
                     reason: new HttpClientError.TransportError({
                       request,
                       description: error.message,
+                      cause: error,
                     }),
                   }),
               ),

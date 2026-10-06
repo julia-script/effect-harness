@@ -5,7 +5,7 @@ import * as FileSystem from 'effect/FileSystem'
 import * as BunRuntime from '@effect/platform-bun/BunRuntime'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
 import * as Harness from '@effect-harness/harness/Executor'
-import { ToolError } from '@effect-harness/harness/Error'
+import { ToolError, ToolExecution } from '@effect-harness/harness/Error'
 import * as Invocation from '@effect-harness/harness/Invocation'
 import * as Model from '@effect-harness/harness/Model'
 import * as Registry from '@effect-harness/harness/Registry'
@@ -44,7 +44,7 @@ import * as Structured from '../../src/workflow/Structured.ts'
 import { Submission } from '../../src/workflow/Submission.ts'
 import { Abort } from '../../src/workflow/Abort.ts'
 import { Compaction } from '../../src/workflow/Compaction.ts'
-import { ExecutionError } from '../../src/workflow/ExecutionError.ts'
+import { ExecutionErrorCodec } from '../../src/workflow/ExecutionError.ts'
 
 const Child = Workflow.make('restart/owned-child/v1', {
   payload: {
@@ -53,7 +53,7 @@ const Child = Workflow.make('restart/owned-child/v1', {
     taskId: Record.TaskId,
   },
   success: Schema.Json,
-  error: ExecutionError,
+  error: ExecutionErrorCodec,
   idempotencyKey: ({ taskId }) => String(taskId),
 })
 const finish = (reason: Response.FinishReason): Response.FinishPartEncoded => ({
@@ -248,7 +248,13 @@ const main = Effect.gen(function* () {
               Effect.mapError((error) =>
                 error instanceof ToolError
                   ? error
-                  : new ToolError({ name: 'work', reason: 'execution', message: error.message }),
+                  : new ToolError({
+                      reason: new ToolExecution({
+                        name: 'work',
+                        message: error.message,
+                        cause: error,
+                      }),
+                    }),
               ),
             ),
         }),
@@ -374,7 +380,7 @@ const main = Effect.gen(function* () {
           Activity.make({
             name: 'child/body',
             success: Schema.Json,
-            error: ExecutionError,
+            error: ExecutionErrorCodec,
             execute: audit('child').pipe(
               Effect.andThen(first ? Effect.never : Effect.succeed({ status: 'completed' })),
             ),

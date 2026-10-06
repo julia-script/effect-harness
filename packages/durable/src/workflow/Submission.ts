@@ -2,7 +2,7 @@ import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Record from '../Record.ts'
-import { ExecutionError } from './ExecutionError.ts'
+import { ExecutionErrorCodec } from './ExecutionError.ts'
 
 export const EntryDraft = Schema.Struct({
   kind: Schema.String,
@@ -37,7 +37,7 @@ export const Submission = Workflow.make('@effect-harness/durable/Submission/v1',
     submission: Input,
   },
   success: Result,
-  error: ExecutionError,
+  error: ExecutionErrorCodec,
   idempotencyKey: ({ sessionId, conversationId, requestId, submission }) =>
     JSON.stringify([sessionId, conversationId, requestId, submission.type]),
 })

@@ -3,17 +3,17 @@ import * as Layer from 'effect/Layer'
 import * as Record from '../Record.ts'
 import { Store } from '../Store.ts'
 import * as Backend from './Backend.ts'
-import { detached } from './State.ts'
+import { detachedEffect } from './State.ts'
 
 export const make = Effect.fnUntraced(function* () {
   let snapshot: Backend.Snapshot = { state: Record.emptyState(), frames: [] }
   return yield* Effect.acquireRelease(
     Backend.make({
-      load: Effect.sync(() => detached(snapshot)),
-      committed: Effect.sync(() => detached(snapshot)),
+      load: Effect.suspend(() => detachedEffect(snapshot)),
+      committed: Effect.suspend(() => detachedEffect(snapshot)),
       save: (next) =>
-        Effect.sync(() => {
-          snapshot = detached(next)
+        Effect.gen(function* () {
+          snapshot = yield* detachedEffect(next)
         }),
       atomic: (effect) => effect,
       close: Effect.void,

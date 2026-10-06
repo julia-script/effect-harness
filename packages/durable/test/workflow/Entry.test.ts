@@ -43,7 +43,7 @@ describe('public native built-in entry tokens', () => {
               Prompt.assistantMessage({ content: [Prompt.textPart({ text: 'partial' })] }),
             )
             const live = yield* tx.doc(Inbox.LiveDoc, { owner: root.id })
-            live.generation = { attempt: 1, message: Document.copy(encoded) }
+            live.generation = { attempt: 1, message: Document.copyUnsafe(encoded) }
             yield* GenerationExecutor.convertPartial(tx, live, root.id)
           }),
         )

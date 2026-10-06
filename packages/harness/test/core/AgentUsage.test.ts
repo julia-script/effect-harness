@@ -4,7 +4,7 @@ import * as Schema from 'effect/Schema'
 import * as Response from 'effect/ai/Response'
 import * as Agent from '../../src/Agent.ts'
 import * as Model from '../../src/Model.ts'
-import { ModelError } from '../../src/Error.ts'
+import { ModelError, ModelUnsupported } from '../../src/Error.ts'
 import * as AiError from 'effect/ai/AiError'
 import * as Usage from '../../src/Usage.ts'
 
@@ -64,8 +64,7 @@ describe('agent stored configuration and accounting', () => {
       reason: new AiError.InternalProviderError({ description: 'billing diagnostic' }),
     })
     const local = new ModelError({
-      reason: 'unsupported',
-      message: 'Network error retry delay is unsupported',
+      reason: new ModelUnsupported({ message: 'Network error retry delay is unsupported' }),
     })
     assert.strictEqual(
       Agent.shouldRetry(Agent.defaultRetry, 1, Model.classify(permanent).retryable),

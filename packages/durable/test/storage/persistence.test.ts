@@ -14,7 +14,7 @@ import { Store } from '../../src/Store.ts'
 import { StorageError } from '../../src/StorageError.ts'
 import * as Jsonl from '../../src/storage/Jsonl.ts'
 import * as Sqlite from '../../src/storage/Sqlite.ts'
-const token = Document.define({
+const token = Document.defineUnsafe({
   kind: 'counter',
   version: 1,
   scope: 'session',
@@ -122,7 +122,7 @@ describe('JSONL recovery', () => {
         assert.deepStrictEqual(yield* fs.readFile(file), valid)
         yield* fs.writeFileString(file, '{"garbage":true}\n', { flag: 'a' })
         const error = yield* fail(Effect.scoped(Jsonl.make({ directory })))
-        assert.strictEqual(error.reason, 'corrupt')
+        assert.strictEqual(error.reason._tag, 'Corrupt')
       }).pipe(Effect.provide(env)),
     ),
   )
@@ -156,8 +156,8 @@ describe('JSONL recovery', () => {
                 ]),
               )
               assert.strictEqual(error.certainty, 'uncertain')
-              assert.strictEqual((yield* fail(store.read)).reason, 'poisoned')
-              assert.strictEqual((yield* fail(store.commit([]))).reason, 'poisoned')
+              assert.strictEqual((yield* fail(store.read)).reason._tag, 'Poisoned')
+              assert.strictEqual((yield* fail(store.commit([]))).reason._tag, 'Poisoned')
             }),
           )
           yield* Effect.scoped(
@@ -273,9 +273,9 @@ describe('SQLite schema and reopen', () => {
           const sql = yield* SqlClient.SqlClient
           yield* Effect.scoped(Sqlite.make())
           yield* sql`DELETE FROM durable_state`
-          assert.strictEqual((yield* fail(Effect.scoped(Sqlite.make()))).reason, 'corrupt')
+          assert.strictEqual((yield* fail(Effect.scoped(Sqlite.make()))).reason._tag, 'Corrupt')
           yield* sql`UPDATE durable_schema SET version=999`
-          assert.strictEqual((yield* fail(Effect.scoped(Sqlite.make()))).reason, 'corrupt')
+          assert.strictEqual((yield* fail(Effect.scoped(Sqlite.make()))).reason._tag, 'Corrupt')
         }).pipe(Effect.provide(client)),
       ),
   )
@@ -338,7 +338,7 @@ describe('SQLite schema and reopen', () => {
         yield* sql`DELETE FROM durable_schema`
         const error = yield* fail(Sqlite.migrate())
         assert.ok(error instanceof StorageError)
-        assert.strictEqual(error.reason, 'corrupt')
+        assert.strictEqual(error.reason._tag, 'Corrupt')
       }).pipe(Effect.provide(client)),
     ),
   )

@@ -14,7 +14,7 @@ import { rejected } from '../../src/StorageError.ts'
 import * as Memory from '../../src/storage/Memory.ts'
 import { sessionLayer } from '../../src/testing/Storage.ts'
 const root = Record.ROOT_CONVERSATION_ID
-const token = Document.define({
+const token = Document.defineUnsafe({
   kind: 'readonlyschema',
   version: 1,
   scope: 'session',
@@ -105,7 +105,7 @@ describe('transaction adversarial boundaries', () => {
             }),
           ),
         )
-        assert.strictEqual(error.reason, 'invalid')
+        assert.strictEqual(error.reason._tag, 'Invalid')
         assert.strictEqual(yield* session.snapshot(token), undefined)
         const exit = yield* session
           .transaction(() => Effect.die(new TypeError('unrelated defect')))
@@ -131,7 +131,7 @@ describe('transaction adversarial boundaries', () => {
           ),
         )
         assert.deepStrictEqual(yield* store.read, before)
-        const checkpoint = Document.define({
+        const checkpoint = Document.defineUnsafe({
           ...token.definition,
           checkpointWhen: () => {
             throw new Error('checkpoint predicate')
@@ -180,7 +180,7 @@ describe('transaction adversarial boundaries', () => {
         Effect.gen(function* () {
           const session = yield* Session.Session
           yield* session.root()
-          const nested = Document.define({
+          const nested = Document.defineUnsafe({
             kind: 'nestedproxies',
             version: 1,
             scope: 'session',
@@ -224,7 +224,7 @@ describe('transaction adversarial boundaries', () => {
     provide(
       Effect.gen(function* () {
         const session = yield* Session.Session
-        const dynamic = Document.define({
+        const dynamic = Document.defineUnsafe({
           kind: 'dynamic',
           version: 1,
           scope: 'session',
@@ -265,7 +265,7 @@ describe('transaction adversarial boundaries', () => {
     provide(
       Effect.gen(function* () {
         const session = yield* Session.Session
-        const family = Document.family({ ...token.definition, kind: 'family' })
+        const family = Document.familyUnsafe({ ...token.definition, kind: 'family' })
         yield* session.transaction(
           Effect.fnUntraced(function* (tx) {
             const [a, b] = yield* Effect.all(
@@ -293,7 +293,7 @@ describe('transaction adversarial boundaries', () => {
         const store = yield* Store
         yield* session.transaction((tx) => tx.doc(token).pipe(Effect.as(null)))
         let calls = 0
-        const newer = Document.define({
+        const newer = Document.defineUnsafe({
           ...token.definition,
           version: 2,
           migrate: (value) => {
@@ -329,14 +329,14 @@ describe('transaction adversarial boundaries', () => {
         Effect.gen(function* () {
           const session = yield* Session.Session
           yield* session.root()
-          const history = Document.define({
+          const history = Document.defineUnsafe({
             ...token.definition,
             kind: 'history',
             scope: 'conversation',
             history: 'rewindable',
             fork: 'asOf',
           })
-          const current = Document.define({
+          const current = Document.defineUnsafe({
             ...history.definition,
             kind: 'current',
             fork: 'current',
@@ -361,7 +361,7 @@ describe('creation initializer', () => {
   it.effect('runs for raw root/create/fork once and rejects atomically on hook failure', () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const hookDoc = Document.define({
+        const hookDoc = Document.defineUnsafe({
           ...token.definition,
           kind: 'hook',
           scope: 'conversation',
@@ -410,7 +410,7 @@ describe('creation initializer', () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const copied = Document.define({
+          const copied = Document.defineUnsafe({
             ...token.definition,
             kind: 'copied',
             scope: 'conversation',
@@ -477,7 +477,7 @@ describe('creation initializer', () => {
             }),
           ),
         )
-        assert.strictEqual(error.reason, 'invalid')
+        assert.strictEqual(error.reason._tag, 'Invalid')
         assert.deepStrictEqual((yield* store.read).conversations, [])
         yield* Deferred.succeed(release, undefined)
       }),
@@ -540,7 +540,10 @@ describe('watch lifecycle', () => {
           }),
         )
         yield* watch.changes.pipe(Stream.take(1), Stream.runCollect)
-        assert.strictEqual((yield* fail(watch.changes.pipe(Stream.runCollect))).reason, 'invalid')
+        assert.strictEqual(
+          (yield* fail(watch.changes.pipe(Stream.runCollect))).reason._tag,
+          'Invalid',
+        )
       }),
     ),
   )

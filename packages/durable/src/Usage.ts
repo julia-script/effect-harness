@@ -5,7 +5,7 @@ import type * as Record from './Record.ts'
 import type * as Session from './Session.ts'
 
 /** A conversation's own spend persists through reset; forks begin with an empty ledger. */
-export const UsageDoc = Document.define({
+export const UsageDoc = Document.defineUnsafe({
   kind: 'harness.usage',
   version: 1,
   scope: 'conversation',

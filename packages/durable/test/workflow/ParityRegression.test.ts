@@ -2,7 +2,13 @@ import { assert, describe, it } from '@effect/vitest'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as Harness from '@effect-harness/harness/Executor'
-import { HookError, ToolError, type RegistryError } from '@effect-harness/harness/Error'
+import {
+  HookError,
+  ToolError,
+  type RegistryError,
+  ToolExecution,
+  HookFailure,
+} from '@effect-harness/harness/Error'
 import * as Hook from '@effect-harness/harness/Hook'
 import * as Invocation from '@effect-harness/harness/Invocation'
 import * as Model from '@effect-harness/harness/Model'
@@ -481,9 +487,7 @@ describe('independent parity regressions', () => {
                 broken: () =>
                   Effect.fail(
                     new ToolError({
-                      name: 'broken',
-                      reason: 'execution',
-                      message: 'broken handler',
+                      reason: new ToolExecution({ name: 'broken', message: 'broken handler' }),
                     }),
                   ),
               }),
@@ -504,7 +508,14 @@ describe('independent parity regressions', () => {
                     assert.strictEqual(entry?.entry.kind, 'harness.tool')
                     seen.push(result)
                   }
-                }).pipe(Effect.mapError((error) => new HookError({ message: error.message }))),
+                }).pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new HookError({
+                        reason: new HookFailure({ message: error.message, cause: error }),
+                      }),
+                  ),
+                ),
             },
             [Ownership.Current],
           )
@@ -612,9 +623,11 @@ describe('independent parity regressions', () => {
                       Effect.mapError(
                         (error) =>
                           new ToolError({
-                            name: 'read-current',
-                            reason: 'execution',
-                            message: error.message,
+                            reason: new ToolExecution({
+                              name: 'read-current',
+                              message: error.message,
+                              cause: error,
+                            }),
                           }),
                       ),
                     )

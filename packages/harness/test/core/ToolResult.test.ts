@@ -9,7 +9,7 @@ import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as Tool from '../../src/Tool.ts'
 import * as ToolResult from '../../src/ToolResult.ts'
-import { ToolError } from '../../src/Error.ts'
+import { ToolError, ToolExecution } from '../../src/Error.ts'
 
 describe('model-visible tool content', () => {
   for (const retain of ['head', 'tail'] as const) {
@@ -52,7 +52,9 @@ describe('model-visible tool content', () => {
           diagnostics: [{ kind: 'existing', message: 'kept' }],
         }
         const failed = yield* Tool.settleFailure(
-          Cause.fail(new ToolError({ name: 'tool', reason: 'execution', message: 'broken' })),
+          Cause.fail(
+            new ToolError({ reason: new ToolExecution({ name: 'tool', message: 'broken' }) }),
+          ),
           partial,
         )
         assert.deepStrictEqual(

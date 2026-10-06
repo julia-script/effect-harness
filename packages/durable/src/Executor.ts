@@ -11,7 +11,7 @@ import * as AbortExecutor from './workflow/AbortExecutor.ts'
 import * as Cancellation from './workflow/Cancellation.ts'
 import { Compaction } from './workflow/Compaction.ts'
 import * as CompactionExecutor from './workflow/CompactionExecutor.ts'
-import { ExecutionError } from './workflow/ExecutionError.ts'
+import { ExecutionError, InvalidState } from './workflow/ExecutionError.ts'
 import { Generation } from './workflow/Generation.ts'
 import * as GenerationExecutor from './workflow/GenerationExecutor.ts'
 import * as Structured from './workflow/Structured.ts'
@@ -72,10 +72,12 @@ export const layerConversationDrain = Layer.effect(
             boundary.binding,
           ).pipe(
             Effect.mapError(
-              () =>
+              (cause) =>
                 new ExecutionError({
-                  reason: 'invalid_state',
-                  message: 'Owned conversation generation has no binding',
+                  reason: new InvalidState({
+                    message: 'Owned conversation generation has no binding',
+                    cause,
+                  }),
                 }),
             ),
           )
@@ -83,10 +85,12 @@ export const layerConversationDrain = Layer.effect(
             binding.payload,
           ).pipe(
             Effect.mapError(
-              () =>
+              (cause) =>
                 new ExecutionError({
-                  reason: 'invalid_state',
-                  message: 'Owned conversation generation input is invalid',
+                  reason: new InvalidState({
+                    message: 'Owned conversation generation input is invalid',
+                    cause,
+                  }),
                 }),
             ),
           )

@@ -46,29 +46,29 @@ describe('conversation and inbox domain integration', () => {
             tx.appendEntry(root.id, { kind: 'old', model: [false] }),
           )
           assert.strictEqual(
-            (yield* conversation.context(root.id).pipe(Effect.flip)).reason,
-            'invalid_state',
+            (yield* conversation.context(root.id).pipe(Effect.flip)).reason._tag,
+            'InvalidState',
           )
           yield* session.transaction((tx) =>
             tx.appendEntry(root.id, { kind: 'reset', head: 'self' }),
           )
           assert.deepStrictEqual((yield* conversation.context(root.id)).messages, [])
           assert.strictEqual(
-            (yield* conversation.context(root.id, malformed.id).pipe(Effect.flip)).reason,
-            'invalid_state',
+            (yield* conversation.context(root.id, malformed.id).pipe(Effect.flip)).reason._tag,
+            'InvalidState',
           )
           const other = yield* conversation.create()
           const invisible = yield* session.transaction((tx) =>
             tx.appendEntry(other.id, { kind: 'unrelated' }),
           )
           assert.strictEqual(
-            (yield* conversation.context(root.id, invisible.id).pipe(Effect.flip)).reason,
-            'invalid_arguments',
+            (yield* conversation.context(root.id, invisible.id).pipe(Effect.flip)).reason._tag,
+            'InvalidArguments',
           )
           const unknown = yield* Schema.decodeEffect(Record.EntryId)(999)
           assert.strictEqual(
-            (yield* conversation.context(root.id, unknown).pipe(Effect.flip)).reason,
-            'invalid_arguments',
+            (yield* conversation.context(root.id, unknown).pipe(Effect.flip)).reason._tag,
+            'InvalidArguments',
           )
         }),
       ),
@@ -205,10 +205,10 @@ describe('conversation and inbox domain integration', () => {
                 status: 'queued',
               })).id
               inbox.items.push(
-                { id: firstId, mode: 'followUp', message: Document.copy(first) },
-                { id: secondId, mode: 'followUp', message: Document.copy(second) },
-                { id: writeId, mode: 'write', entry: Document.copy(reset) },
-                { id: steerId, mode: 'steer', message: Document.copy(steer) },
+                { id: firstId, mode: 'followUp', message: Document.copyUnsafe(first) },
+                { id: secondId, mode: 'followUp', message: Document.copyUnsafe(second) },
+                { id: writeId, mode: 'write', entry: Document.copyUnsafe(reset) },
+                { id: steerId, mode: 'steer', message: Document.copyUnsafe(steer) },
               )
               return { firstId, secondId, writeId, steerId }
             }),
@@ -273,7 +273,7 @@ describe('conversation and inbox domain integration', () => {
               })).id
               inbox.items.push(
                 { id: stale, mode: 'write', entry: { kind: 'summary', head: first.id } },
-                { id: userId, mode: 'followUp', message: Document.copy(input) },
+                { id: userId, mode: 'followUp', message: Document.copyUnsafe(input) },
               )
               return { stale, userId }
             }),
@@ -350,10 +350,9 @@ describe('conversation and inbox domain integration', () => {
             kind: 'malformed',
             model: [false],
           }
-          assert.strictEqual(
-            (yield* Conversation.projectEntry(invalid).pipe(Effect.flip)).reason,
-            'invalid_state',
-          )
+          const invalidContext = yield* Conversation.projectEntry(invalid).pipe(Effect.flip)
+          assert.strictEqual(invalidContext.reason._tag, 'InvalidState')
+          assert.ok(invalidContext.cause instanceof Schema.SchemaError)
         }),
       ),
   )

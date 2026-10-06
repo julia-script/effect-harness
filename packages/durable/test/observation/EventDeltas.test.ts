@@ -192,7 +192,7 @@ describe('Event.messageChanges', () => {
       yield* session.transaction((tx) =>
         Effect.gen(function* () {
           const live = yield* tx.doc(Inbox.LiveDoc, { owner: root.id })
-          live.generation = { attempt: 1, message: Document.copy(initial) }
+          live.generation = { attempt: 1, message: Document.copyUnsafe(initial) }
         }),
       )
       const watch = yield* events.watch(root.id)

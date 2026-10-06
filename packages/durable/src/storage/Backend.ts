@@ -4,9 +4,9 @@ import * as Scope from 'effect/Scope'
 import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
 import * as Record from '../Record.ts'
-import { rejected, StorageError } from '../StorageError.ts'
+import { rejected, StorageError, Invalid, Closed, Poisoned, Conflict } from '../StorageError.ts'
 import { Store, type CommitOptions, type Candidate } from '../Store.ts'
-import { applyWrites, detached, materialize, validate } from './State.ts'
+import { applyWrites, detachedEffect, materialize, validate } from './State.ts'
 
 export interface Snapshot {
   readonly state: Record.State
@@ -128,7 +128,7 @@ const receiptResult = Effect.fnUntraced(function* (input: unknown) {
       }
       visit(input)
     },
-    catch: (cause) => rejected('Receipt result is not serializable JSON', 'invalid', cause),
+    catch: (cause) => rejected('Receipt result is not serializable JSON', Invalid, cause),
   })
   return yield* validate(Schema.Json, input)
 })
@@ -141,9 +141,9 @@ export const make = Effect.fnUntraced(function* (backend: Backend) {
   let readers = 0
   let poison: StorageError | undefined
   const usable = Effect.suspend(() => {
-    if (closed) return Effect.fail(rejected('Store is closed', 'closed'))
+    if (closed) return Effect.fail(rejected('Store is closed', Closed))
     if (poison !== undefined)
-      return Effect.fail(rejected('Store is poisoned; reopen it', 'poisoned', poison))
+      return Effect.fail(rejected('Store is poisoned; reopen it', Poisoned, poison))
     return Effect.void
   })
   const snapshot = (load: Effect.Effect<Snapshot, StorageError>) =>
@@ -161,7 +161,7 @@ export const make = Effect.fnUntraced(function* (backend: Backend) {
       }),
     )
   const read = (load: Effect.Effect<Snapshot, StorageError>) =>
-    snapshot(load).pipe(Effect.map((value) => detached(value.state)))
+    snapshot(load).pipe(Effect.flatMap((value) => detachedEffect(value.state)))
   const transact = <A, E, R>(
     change: (state: Record.State) => Effect.Effect<Candidate<A>, E, R>,
     options: CommitOptions = {},
@@ -186,15 +186,17 @@ export const make = Effect.fnUntraced(function* (backend: Backend) {
                       if (receipt.fingerprint !== (options.fingerprint ?? ''))
                         return yield* rejected(
                           'Idempotency key reused with different input',
-                          'conflict',
+                          Conflict,
                         )
                       // The generic result type is chosen by the same stable operation key, not a runtime decoder.
                       return (
-                        receipt.resultIsVoid === true ? undefined : detached(receipt.result)
+                        receipt.resultIsVoid === true
+                          ? undefined
+                          : yield* detachedEffect(receipt.result)
                       ) as A
                     }
                   }
-                  const candidate = yield* restore(change(detached(snapshot.state)))
+                  const candidate = yield* restore(change(yield* detachedEffect(snapshot.state)))
                   if (options.key !== undefined && candidate.result !== undefined)
                     yield* receiptResult(candidate.result)
                   if (
@@ -263,7 +265,11 @@ export const make = Effect.fnUntraced(function* (backend: Backend) {
                       ops,
                     })
                   }
-                  const frame = { seq, writes: detached(candidate.writes), documents: publications }
+                  const frame = {
+                    seq,
+                    writes: yield* detachedEffect(candidate.writes),
+                    documents: publications,
+                  }
                   yield* backend
                     .save({ state, frames: retainFrames([...snapshot.frames, frame]) })
                     .pipe(
@@ -323,8 +329,8 @@ export const make = Effect.fnUntraced(function* (backend: Backend) {
       const frames = loaded.frames.filter((frame) => frame.seq > after)
       const oldest = loaded.frames[0]
       return {
-        state: detached(loaded.state),
-        frames: detached(frames),
+        state: yield* detachedEffect(loaded.state),
+        frames: yield* detachedEffect(frames),
         reset: frames.length > 100 || (oldest !== undefined && after < oldest.seq - 1),
       }
     }),

@@ -3,6 +3,8 @@ import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
 import * as Layer from 'effect/Layer'
 import * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
@@ -12,7 +14,7 @@ import * as Document from './Document.ts'
 import * as Inbox from './Inbox.ts'
 import type * as Observation from './Observation.ts'
 import * as Record from './Record.ts'
-import { rejected, type StorageError } from './StorageError.ts'
+import { rejected, type StorageError, NotFound, Corrupt, Closed } from './StorageError.ts'
 import * as Store from './Store.ts'
 import * as Usage from './Usage.ts'
 import { findDocument, materialize, visibleEntries } from './storage/State.ts'
@@ -114,7 +116,7 @@ const own = (object: object, key: string | number, value: unknown) =>
   })
 
 /** Replay structural deltas while preserving all unchanged branches and safe own-property keys. */
-export function apply(value: Value, ops: ReadonlyArray<Op>): Value {
+export function applyUnsafe(value: Value, ops: ReadonlyArray<Op>): Value {
   let result: unknown = value
   const edit = (node: unknown, path: Path, update: (leaf: unknown) => unknown): unknown => {
     if (path.length === 0) return update(node)
@@ -153,10 +155,21 @@ export function apply(value: Value, ops: ReadonlyArray<Op>): Value {
   // Every delta is produced from a validated mount and preserves its structural shape.
   return result as Value
 }
+export class ViewOperationError extends Schema.TaggedError<ViewOperationError>(
+  '@effect-harness/durable/View/ViewOperationError',
+)('ViewOperationError', { message: Schema.String, cause: Schema.Defect() }) {}
+export const apply = (
+  value: Value,
+  ops: ReadonlyArray<Op>,
+): Result.Result<Value, ViewOperationError> =>
+  Result.try({
+    try: () => applyUnsafe(value, ops),
+    catch: (cause) => new ViewOperationError({ message: 'Invalid view operation', cause }),
+  })
 
 const hydrate = Effect.fnUntraced(function* (state: Record.State, id: Record.ConversationId) {
   const conversation = state.conversations.find((item) => item.id === id)
-  if (conversation === undefined) return yield* rejected('Conversation does not exist', 'not_found')
+  if (conversation === undefined) return yield* rejected('Conversation does not exist', NotFound)
   const visible = (yield* visibleEntries(state, id)).toReversed()
   const head = visible.findLast((entry) => entry.head !== undefined)
   const range = visible.filter((entry) => head?.head === undefined || entry.id >= head.head)
@@ -244,7 +257,7 @@ const advance = Effect.fnUntraced(function* (
       docOps.push(['delete', path])
     } else {
       if (publication.version === undefined)
-        return yield* rejected('Publication has no document version', 'corrupt')
+        return yield* rejected('Publication has no document version', Corrupt)
       const converted = yield* item.load({
         record: publication.record,
         version: publication.version,
@@ -291,7 +304,9 @@ const advance = Effect.fnUntraced(function* (
       mount.tasks.set(write.value.id, write.value)
   const before = mount.value
   const ops = [...docOps, ...entryOps]
-  mount.value = apply(before, ops)
+  mount.value = yield* Effect.fromResult(apply(before, ops)).pipe(
+    Effect.mapError((error) => rejected(error.message, Corrupt, error.cause)),
+  )
   const change: Change = {
     seq: frame.seq,
     before,
@@ -318,7 +333,7 @@ export const make = Effect.fnUntraced(function* (
     mounts.clear()
   })
   const refreshUnlocked = Effect.gen(function* () {
-    if (closed !== undefined) return yield* rejected('View service is closed', 'closed')
+    if (closed !== undefined) return yield* rejected('View service is closed', Closed)
     const journal = yield* store.journal(after)
     for (const [id, mount] of mounts) {
       const relevant = journal.frames.filter((frame) => touches(frame, id))
@@ -362,7 +377,7 @@ export const make = Effect.fnUntraced(function* (
   yield* Effect.forkScoped(
     Effect.forever(refresh.pipe(Effect.andThen(Effect.sleep('20 millis')))).pipe(
       Effect.catch((error) =>
-        close(error.reason === 'closed' ? 'session_closed' : 'listener_error'),
+        close(error.reason._tag === 'Closed' ? 'session_closed' : 'listener_error'),
       ),
     ),
   )
@@ -370,7 +385,7 @@ export const make = Effect.fnUntraced(function* (
     return yield* semaphore.withPermit(
       Effect.gen(function* () {
         const state = yield* refreshUnlocked
-        if (closed !== undefined) return yield* rejected('View service is closed', 'closed')
+        if (closed !== undefined) return yield* rejected('View service is closed', Closed)
         let mount = mounts.get(id)
         if (mount === undefined) {
           mount = yield* hydrate(state, id)

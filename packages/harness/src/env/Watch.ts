@@ -1,3 +1,4 @@
+import * as Serialization from '../Serialization.ts'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Base64 from 'effect/encoding/Base64'
@@ -15,11 +16,14 @@ import {
   type WatchChange,
   type WatchOptions,
   type WatchTarget,
+  FileInvalid,
+  FileUnknown,
 } from '../Env.ts'
 
 interface Scan {
   readonly values: Map<string, string>
   readonly directories: Map<string, string>
+  readonly nestedSymlinks: Set<string>
 }
 export const make = Effect.fnUntraced(function* (
   fs: FileSystem.FileSystem,
@@ -32,7 +36,7 @@ export const make = Effect.fnUntraced(function* (
   const budget = options.directoryBudget ?? 10000
   let mode: 'native' | 'polling' = options.mode ?? 'native'
   if (!Number.isFinite(interval) || interval <= 0 || !Number.isSafeInteger(budget) || budget <= 0)
-    return yield* new FileError({ code: 'invalid', message: 'Invalid watch options' })
+    return yield* new FileError({ reason: new FileInvalid({ message: 'Invalid watch options' }) })
   const scope = yield* Scope.make()
   const output = yield* Queue.unbounded<WatchChange, Cause.Done>()
   const events = yield* Queue.unbounded<{
@@ -78,6 +82,7 @@ export const make = Effect.fnUntraced(function* (
   const scan = Effect.fnUntraced(function* (): Effect.fn.Return<Scan, FileError> {
     const values = new Map<string, string>()
     const directories = new Map<string, string>()
+    const nestedSymlinks = new Set<string>()
     const counted = new Set<string>()
     const stat = (value: string) =>
       native.lstat(value).pipe(
@@ -96,9 +101,10 @@ export const make = Effect.fnUntraced(function* (
       if (count) counted.add(value)
       if (counted.size > budget)
         return yield* new FileError({
-          code: 'invalid',
-          message: `Watch directory budget ${budget} exceeded`,
-          path: value,
+          reason: new FileInvalid({
+            message: `Watch directory budget ${budget} exceeded`,
+            path: value,
+          }),
         })
     })
     for (const target of targets) {
@@ -125,6 +131,12 @@ export const make = Effect.fnUntraced(function* (
           ),
         )
         if (metadata === undefined) return
+        if (
+          !root &&
+          metadata.kind === 'symlink' &&
+          !targets.some((target) => target.path === value)
+        )
+          nestedSymlinks.add(value)
         let kind: string = metadata.kind
         let size = metadata.size
         let mtime = metadata.mtimeMs
@@ -190,7 +202,7 @@ export const make = Effect.fnUntraced(function* (
       })
       yield* visit(target.path, true)
     }
-    return { values, directories }
+    return { values, directories, nestedSymlinks }
   })
   const watchers = new Map<string, { readonly scope: Scope.Closeable; readonly identity: string }>()
   const closeWatchers = Effect.fnUntraced(function* () {
@@ -277,7 +289,11 @@ export const make = Effect.fnUntraced(function* (
           yield* Queue.offer(output, { overflow: true })
         yield* Effect.sleep(50)
       }
-      const changes = new Set(raw.filter(covered).map(reported))
+      // Native backends can emit a nested link when its external target changes.
+      // Such links are not followed; only a snapshot change reports their own mutation.
+      const changes = new Set(
+        raw.filter((value) => covered(value) && !previous.nestedSymlinks.has(value)).map(reported),
+      )
       for (let round = 0; round < 10 && !closed; round++) {
         const next = yield* scan()
         for (const value of new Set([...previous.values.keys(), ...next.values.keys()]))
@@ -301,7 +317,9 @@ export const make = Effect.fnUntraced(function* (
           error:
             error instanceof FileError
               ? error
-              : new FileError({ code: 'unknown', message: String(error) }),
+              : new FileError({
+                  reason: new FileUnknown({ message: Serialization.errorText(error), cause }),
+                }),
         })
         yield* Queue.end(output)
       })

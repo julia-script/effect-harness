@@ -106,7 +106,7 @@ describe('Pi-compatible Anthropic consent', () => {
           })
           assert.strictEqual(request.headers['content-type'], 'application/json')
           assert.strictEqual(
-            (yield* auth.complete(attempt.state, 'again').pipe(Effect.flip)).reason,
+            (yield* auth.complete(attempt.state, 'again').pipe(Effect.flip)).code,
             'callback',
           )
         }
@@ -129,24 +129,24 @@ describe('Pi-compatible Anthropic consent', () => {
           `${attempt.redirectUri}?code=c`,
         ])
           assert.strictEqual(
-            (yield* auth.complete(attempt.state, input).pipe(Effect.flip)).reason,
+            (yield* auth.complete(attempt.state, input).pipe(Effect.flip)).code,
             'callback',
           )
         assert.strictEqual(
           (yield* auth
             .complete(attempt.state, `${attempt.redirectUri}?error=access_denied&state=${state}`)
-            .pipe(Effect.flip)).reason,
+            .pipe(Effect.flip)).code,
           'denied',
         )
         yield* auth.cancel(attempt.state)
         assert.strictEqual(
-          (yield* auth.complete(attempt.state, 'code').pipe(Effect.flip)).reason,
+          (yield* auth.complete(attempt.state, 'code').pipe(Effect.flip)).code,
           'callback',
         )
         const expiring = yield* auth.begin({ account: 'key' })
         yield* TestClock.adjust('11 seconds')
         assert.strictEqual(
-          (yield* auth.complete(expiring.state, 'code').pipe(Effect.flip)).reason,
+          (yield* auth.complete(expiring.state, 'code').pipe(Effect.flip)).code,
           'expired',
         )
         assert.strictEqual(f.requests.length, 0)
@@ -175,7 +175,7 @@ describe('Pi-compatible Anthropic consent', () => {
         const store = yield* CredentialStore
         assert.isTrue(Option.isSome(yield* store.get('key')))
         yield* auth.signOut('key')
-        assert.strictEqual((yield* auth.accessToken('key').pipe(Effect.flip)).reason, 'missing')
+        assert.strictEqual((yield* auth.accessToken('key').pipe(Effect.flip)).code, 'missing')
       }).pipe(Effect.provide(f.layer))
     },
   )
@@ -210,7 +210,7 @@ describe('Pi-compatible Anthropic consent', () => {
         const saved = yield* store.get('key')
         reject = true
         const error = yield* auth.refresh('key', { force: true }).pipe(Effect.flip)
-        assert.strictEqual(error.reason, 'token')
+        assert.strictEqual(error.code, 'token')
         assert.isFalse(JSON.stringify(error).includes('private-'))
         assert.deepEqual(yield* store.get('key'), saved)
       }).pipe(Effect.provide(f.layer))
@@ -235,7 +235,7 @@ describe('Pi-compatible Anthropic consent', () => {
           const auth = yield* OAuth.OAuth
           yield* store.set('key', old())
           const error = yield* auth.refresh('key', { force: true }).pipe(Effect.flip)
-          assert.isTrue(error.reason === 'protocol' || error.reason === 'permission')
+          assert.isTrue(error.code === 'protocol' || error.reason._tag === 'AuthPermissionError')
           assert.isFalse(JSON.stringify(error).includes('secret-'))
           assert.deepEqual(yield* store.get('key'), Option.some(old()))
         }).pipe(Effect.provide(f.layer))
@@ -378,7 +378,7 @@ describe('Pi-compatible Anthropic consent', () => {
               Layer.provide(Layer.succeed(HttpServer.HttpServer, wrong)),
             ),
           ).pipe(Effect.flip)
-          assert.strictEqual(error.reason, 'configuration')
+          assert.strictEqual(error.code, 'configuration')
           const right = HttpServer.make({
             address: Result.getOrThrow(NetAddress.inetAddressV4(NetAddress.ipv4Loopback, 53692)),
             serve: () => Effect.void,
@@ -391,10 +391,10 @@ describe('Pi-compatible Anthropic consent', () => {
           const callback = Context.get(context, OAuth.Callback)
           const waiting = yield* Effect.forkChild(callback.await.pipe(Effect.flip))
           yield* TestClock.adjust('11 seconds')
-          assert.strictEqual((yield* Fiber.join(waiting)).reason, 'expired')
+          assert.strictEqual((yield* Fiber.join(waiting)).code, 'expired')
           const auth = yield* OAuth.OAuth
           assert.strictEqual(
-            (yield* auth.complete(callback.authorization.state, 'code').pipe(Effect.flip)).reason,
+            (yield* auth.complete(callback.authorization.state, 'code').pipe(Effect.flip)).code,
             'callback',
           )
           assert.strictEqual(f.requests.length, 0)
@@ -425,7 +425,7 @@ describe('Pi-compatible Anthropic consent', () => {
           const store = yield* CredentialStore
           yield* store.set('key', old())
           const error = yield* auth.refresh('key', { force: true }).pipe(Effect.flip)
-          assert.isTrue(error.reason === 'network' || error.reason === 'protocol')
+          assert.isTrue(error.reason._tag === 'AuthNetworkError' || error.code === 'protocol')
           assert.isFalse(JSON.stringify(error).includes('secret-'))
           assert.deepEqual(yield* store.get('key'), Option.some(old()))
         }).pipe(Effect.provide(f.layer))
@@ -457,7 +457,7 @@ describe('Pi-compatible Anthropic consent', () => {
           )
           yield* Deferred.await(started)
           yield* TestClock.adjust('31 seconds')
-          assert.strictEqual((yield* Fiber.join(waiting)).reason, 'network')
+          assert.strictEqual((yield* Fiber.join(waiting)).code, 'network')
           assert.isTrue(interrupted)
           assert.deepEqual(yield* store.get('key'), Option.some(old()))
           yield* store.remove('key')
@@ -511,7 +511,7 @@ describe('Pi-compatible Anthropic consent', () => {
           yield* Deferred.await(headers)
           yield* TestClock.adjust('31 seconds')
           const error = yield* Fiber.join(waiting)
-          assert.strictEqual(error.reason, 'network')
+          assert.strictEqual(error.code, 'network')
           assert.strictEqual(error.message, 'Anthropic token request timed out')
           assert.isTrue(bodyStarted)
           assert.isTrue(aborted)

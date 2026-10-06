@@ -4,7 +4,7 @@ import * as Schema from 'effect/Schema'
 import * as AiTool from 'effect/ai/Tool'
 import * as Prompt from 'effect/ai/Prompt'
 import { Env, type BinaryReader, type FileInfo } from '../Env.ts'
-import { ToolError } from '../Error.ts'
+import { ToolError, ToolExecution } from '../Error.ts'
 import { Invocation, Result, type ToolResult, type Diagnostic } from '../Invocation.ts'
 import * as Metadata from '../Tool.ts'
 import { characterEnd } from '../Output.ts'
@@ -89,9 +89,10 @@ const readText = Effect.fnUntraced(function* (
   const total = scan.newlines + 1
   if (startLine >= total)
     return yield* new ToolError({
-      name: 'read',
-      reason: 'execution',
-      message: `Offset ${offset} is beyond end of file (${total} lines total)`,
+      reason: new ToolExecution({
+        name: 'read',
+        message: `Offset ${offset} is beyond end of file (${total} lines total)`,
+      }),
     })
   let userLimited: number | undefined
   let count = total - sliceStart
@@ -156,7 +157,10 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
   const env = yield* Env
   const absolute = yield* Path.resolveRead(input.path).pipe(
     Effect.mapError(
-      (cause) => new ToolError({ name: 'read', reason: 'execution', message: cause.message }),
+      (cause) =>
+        new ToolError({
+          reason: new ToolExecution({ name: 'read', message: cause.message, cause: cause }),
+        }),
     ),
   )
   return yield* Effect.scoped(
@@ -173,9 +177,10 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
           return result
         if (attempt === 1)
           return yield* new ToolError({
-            name: 'read',
-            reason: 'execution',
-            message: `${input.path} changed while it was read`,
+            reason: new ToolExecution({
+              name: 'read',
+              message: `${input.path} changed while it was read`,
+            }),
           })
       }
     }),
@@ -183,7 +188,9 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
     Effect.mapError((cause) =>
       cause instanceof ToolError
         ? cause
-        : new ToolError({ name: 'read', reason: 'execution', message: cause.message }),
+        : new ToolError({
+            reason: new ToolExecution({ name: 'read', message: cause.message, cause: cause }),
+          }),
     ),
   )
 })

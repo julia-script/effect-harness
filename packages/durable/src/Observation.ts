@@ -5,7 +5,7 @@ import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as Document from './Document.ts'
 import * as Record from './Record.ts'
-import { rejected, type StorageError } from './StorageError.ts'
+import { rejected, type StorageError, Corrupt } from './StorageError.ts'
 import type { Service as StoreService } from './Store.ts'
 import { findDocument, materialize } from './storage/State.ts'
 
@@ -62,7 +62,7 @@ export const watch = Effect.fnUntraced(function* <T extends Record.JsonObject>(
       }
     }).pipe(
       Effect.catch((error) =>
-        stop(error.reason === 'closed' ? 'session_closed' : 'listener_error'),
+        stop(error.reason._tag === 'Closed' ? 'session_closed' : 'listener_error'),
       ),
     ),
   )
@@ -91,7 +91,7 @@ export const watch = Effect.fnUntraced(function* <T extends Record.JsonObject>(
             refresh = false
             const journal = yield* store.journal(after).pipe(
               Effect.catchIf(
-                (error) => error.reason === 'closed',
+                (error) => error.reason._tag === 'Closed',
                 () => stop('session_closed').pipe(Effect.as(undefined)),
               ),
             )
@@ -128,7 +128,7 @@ export const watch = Effect.fnUntraced(function* <T extends Record.JsonObject>(
                 }
                 const frameVersion = publication.version
                 if (frameVersion === undefined)
-                  return yield* rejected('Committed document publication lacks version', 'corrupt')
+                  return yield* rejected('Committed document publication lacks version', Corrupt)
                 const converted = yield* Document.typed(
                   token,
                   {

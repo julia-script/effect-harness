@@ -2,7 +2,7 @@ import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
 import * as OpenAiLanguageModel from '@effect/ai-openai/OpenAiLanguageModel'
 import * as OpenAiSchema from '@effect/ai-openai/OpenAiSchema'
 import * as Model from '@effect-harness/harness/Model'
-import { ModelError } from '@effect-harness/harness/Error'
+import { ModelError, ModelNoModel, ModelUnsupported } from '@effect-harness/harness/Error'
 import * as Usage from '@effect-harness/harness/Usage'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -30,7 +30,10 @@ export interface Entry {
   readonly config?: Omit<typeof OpenAiLanguageModel.Config.Service, 'model'> | undefined
   readonly prices?: Prices | undefined
 }
-const fail = (message: string) => new ModelError({ reason: 'unsupported', message })
+const fail = (message: string, cause?: unknown) =>
+  new ModelError({
+    reason: new ModelUnsupported({ message, ...(cause === undefined ? {} : { cause }) }),
+  })
 const fields = OpenAiSchema.CreateResponse.fields
 const Options = Schema.Struct({
   metadata: fields.metadata,
@@ -57,7 +60,7 @@ const Options = Schema.Struct({
 })
 const decode = (value: unknown) =>
   Schema.decodeUnknownEffect(Options, { onExcessProperty: 'error' })(value).pipe(
-    Effect.mapError(() => fail('Unsupported or invalid OpenAI request options')),
+    Effect.mapError((cause) => fail('Unsupported or invalid OpenAI request options', cause)),
   )
 const session = Schema.String.check(Schema.isUUID(7))
 const positive = (value: number) => Number.isSafeInteger(value) && value > 0
@@ -142,7 +145,7 @@ export const descriptor = (
     const configure = Effect.fnUntraced(function* (request: Model.RequestOptions) {
       if (request.sessionId !== undefined)
         yield* Schema.decodeEffect(session)(request.sessionId).pipe(
-          Effect.mapError(() => fail('Conversation sessionId must be UUID7')),
+          Effect.mapError((cause) => fail('Conversation sessionId must be UUID7', cause)),
         )
       const supplied = yield* decode(request.options)
       const merged = { ...defaults, ...supplied }
@@ -230,8 +233,9 @@ export const layer = (options: {
             ? Effect.succeed(found)
             : Effect.fail(
                 new ModelError({
-                  reason: 'no_model',
-                  message: 'OpenAI model is not available in this catalogue',
+                  reason: new ModelNoModel({
+                    message: 'OpenAI model is not available in this catalogue',
+                  }),
                 }),
               )
         },

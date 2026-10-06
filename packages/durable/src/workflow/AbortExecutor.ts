@@ -14,7 +14,7 @@ import * as Record from '../Record.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
 import { Abort } from './Abort.ts'
 import * as Cancellation from './Cancellation.ts'
-import { ExecutionError } from './ExecutionError.ts'
+import { ExecutionError, ExecutionErrorCodec, InvalidState } from './ExecutionError.ts'
 import { convertPartial } from './GenerationExecutor.ts'
 import { RequestDoc } from './Request.ts'
 import * as SubmissionExecutor from './SubmissionExecutor.ts'
@@ -63,7 +63,7 @@ export const layer: Layer.Layer<
     const marked = yield* Activity.make({
       name: 'mark',
       success: Marked,
-      error: ExecutionError,
+      error: ExecutionErrorCodec,
       execute: session
         .transaction(
           Effect.fnUntraced(function* (tx) {
@@ -75,8 +75,7 @@ export const layer: Layer.Layer<
             const reached = Ownership.reach(graph, target, payload.background)
             if (reached === undefined)
               return yield* new ExecutionError({
-                reason: 'invalid_state',
-                message: 'Abort target is absent',
+                reason: new InvalidState({ message: 'Abort target is absent' }),
               })
             const deferred: Array<(typeof Marked.Type.deferred)[number]> = []
             for (const task of reached.tasks) {
@@ -124,7 +123,7 @@ export const layer: Layer.Layer<
       const settled = yield* Activity.make({
         name: `reconcile/${previous.id}`,
         success: Schema.Array(Record.SubmissionId),
-        error: ExecutionError,
+        error: ExecutionErrorCodec,
         execute: session
           .transaction(
             Effect.fnUntraced(function* (tx) {
@@ -141,10 +140,9 @@ export const layer: Layer.Layer<
                   task.input,
                 ).pipe(
                   Effect.mapError(
-                    () =>
+                    (cause) =>
                       new ExecutionError({
-                        reason: 'invalid_state',
-                        message: 'Aborted tool has no binding',
+                        reason: new InvalidState({ message: 'Aborted tool has no binding', cause }),
                       }),
                   ),
                 )
@@ -152,10 +150,12 @@ export const layer: Layer.Layer<
                   Schema.toCodecJson(ToolCall.payloadSchema),
                 )(binding.payload).pipe(
                   Effect.mapError(
-                    () =>
+                    (cause) =>
                       new ExecutionError({
-                        reason: 'invalid_state',
-                        message: 'Aborted tool input is invalid',
+                        reason: new InvalidState({
+                          message: 'Aborted tool input is invalid',
+                          cause,
+                        }),
                       }),
                   ),
                 )
@@ -177,10 +177,9 @@ export const layer: Layer.Layer<
                   receipt: { status: 'aborted', entryId: entry.id },
                 }).pipe(
                   Effect.mapError(
-                    () =>
+                    (cause) =>
                       new ExecutionError({
-                        reason: 'invalid_state',
-                        message: 'Aborted result is invalid',
+                        reason: new InvalidState({ message: 'Aborted result is invalid', cause }),
                       }),
                   ),
                 )

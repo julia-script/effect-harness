@@ -202,14 +202,14 @@ describe('installed CLI native catalogue', () => {
         ]
         for (const request of negatives)
           assert.strictEqual(
-            (yield* descriptor.configure(request).pipe(Effect.flip)).reason,
-            'unsupported',
+            (yield* descriptor.configure(request).pipe(Effect.flip)).reason._tag,
+            'ModelUnsupported',
           )
         const modern = yield* Catalog.descriptor({ ...entry, supportsThinkingOff: false })
         assert.strictEqual(
           (yield* modern.configure({ thinking: 'off', options: {}, sessionId }).pipe(Effect.flip))
-            .reason,
-          'unsupported',
+            .reason._tag,
+          'ModelUnsupported',
         )
         const wrong = Context.make(RequestOptions.Current, { model: 'different' })
         assert.strictEqual(

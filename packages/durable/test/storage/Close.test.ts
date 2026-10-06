@@ -6,7 +6,7 @@ import * as Record from '../../src/Record.ts'
 import * as Session from '../../src/Session.ts'
 import * as Store from '../../src/Store.ts'
 import * as Backend from '../../src/storage/Backend.ts'
-import { rejected } from '../../src/StorageError.ts'
+import { rejected, Io } from '../../src/StorageError.ts'
 
 describe('sealed Session close with scoped cleanup', () => {
   it.live(
@@ -47,7 +47,7 @@ describe('sealed Session close with scoped cleanup', () => {
           yield* Effect.yieldNow
           const read = yield* session.committed.pipe(Effect.result)
           assert.strictEqual(read._tag, 'Failure')
-          if (read._tag === 'Failure') assert.strictEqual(read.failure.reason, 'closed')
+          if (read._tag === 'Failure') assert.strictEqual(read.failure.reason._tag, 'Closed')
           const rejectedWrite = yield* session
             .transaction((tx) => tx.appendEntry(root.id, { kind: 'late' }))
             .pipe(Effect.result)
@@ -89,7 +89,7 @@ describe('sealed Session close with scoped cleanup', () => {
             atomic: (effect) => effect,
             close: Effect.sync(() => {
               closes++
-            }).pipe(Effect.andThen(Effect.fail(rejected('close fixture', 'io')))),
+            }).pipe(Effect.andThen(Effect.fail(rejected('close fixture', Io)))),
           })
           const reader = yield* store.committed.pipe(Effect.forkScoped)
           yield* Deferred.await(entered)

@@ -4,10 +4,10 @@ import * as Layer from 'effect/Layer'
 import * as Path from 'effect/Path'
 import * as Schema from 'effect/Schema'
 import * as Record from '../Record.ts'
-import { rejected, uncertain } from '../StorageError.ts'
+import { rejected, uncertain, Io, Corrupt, Invalid } from '../StorageError.ts'
 import { Store } from '../Store.ts'
 import * as Backend from './Backend.ts'
-import { detached, validateState, validate } from './State.ts'
+import { detachedEffect, validateState, validate } from './State.ts'
 
 export interface Options {
   readonly directory: string
@@ -23,21 +23,21 @@ export const make = Effect.fnUntraced(function* (options: Options) {
   const temporary = path.join(directory, 'commits.reclaim')
   yield* fs
     .makeDirectory(directory, { recursive: true })
-    .pipe(Effect.mapError((cause) => rejected('Cannot create JSONL directory', 'io', cause)))
+    .pipe(Effect.mapError((cause) => rejected('Cannot create JSONL directory', Io, cause)))
   const exists = yield* fs
     .exists(file)
-    .pipe(Effect.mapError((cause) => rejected('Cannot inspect JSONL file', 'io', cause)))
+    .pipe(Effect.mapError((cause) => rejected('Cannot inspect JSONL file', Io, cause)))
   let snapshot: Backend.Snapshot = { state: Record.emptyState(), frames: [] }
   if (exists) {
     const bytes = yield* fs
       .readFile(file)
-      .pipe(Effect.mapError((cause) => rejected('Cannot read JSONL file', 'io', cause)))
+      .pipe(Effect.mapError((cause) => rejected('Cannot read JSONL file', Io, cause)))
     const complete =
       bytes.length === 0 || bytes.at(-1) === 10 ? bytes.length : bytes.lastIndexOf(10) + 1
     if (complete !== bytes.length)
       yield* fs
         .truncate(file, complete)
-        .pipe(Effect.mapError((cause) => rejected('Cannot repair torn JSONL tail', 'io', cause)))
+        .pipe(Effect.mapError((cause) => rejected('Cannot repair torn JSONL tail', Io, cause)))
     let start = 0
     let previous = 0
     for (let end = 0; end < complete; end++) {
@@ -45,14 +45,14 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       const value = yield* Effect.try({
         try: () =>
           JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(start, end))),
-        catch: (cause) => rejected('Malformed complete JSONL frame', 'corrupt', cause),
+        catch: (cause) => rejected('Malformed complete JSONL frame', Corrupt, cause),
       })
       const parsed = yield* validate(SnapshotSchema, value).pipe(
-        Effect.mapError((cause) => rejected('Invalid complete JSONL frame', 'corrupt', cause)),
+        Effect.mapError((cause) => rejected('Invalid complete JSONL frame', Corrupt, cause)),
       )
       const seq = parsed.state.nextSeq - 1
       if (seq <= previous || !Number.isSafeInteger(seq))
-        return yield* rejected('JSONL commit sequences do not strictly increase', 'corrupt')
+        return yield* rejected('JSONL commit sequences do not strictly increase', Corrupt)
       previous = seq
       snapshot = { ...parsed, state: yield* validateState(parsed.state) }
       start = end + 1
@@ -70,7 +70,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
   const save = Effect.fnUntraced(function* (next: Backend.Snapshot) {
     const encoded = yield* Effect.try({
       try: () => `${JSON.stringify(next)}\n`,
-      catch: (cause) => rejected('Cannot encode JSONL frame', 'invalid', cause),
+      catch: (cause) => rejected('Cannot encode JSONL frame', Invalid, cause),
     })
     yield* fs
       .writeFileString(file, encoded, { flag: 'a' })
@@ -79,7 +79,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       yield* flush(file).pipe(
         Effect.mapError((cause) => uncertain('JSONL flush settlement is uncertain', cause)),
       )
-    snapshot = detached(next)
+    snapshot = yield* detachedEffect(next)
     // Publication has succeeded. Reclamation can fail safely and is retried on a later commit.
     yield* Effect.gen(function* () {
       yield* fs.writeFileString(temporary, encoded)
@@ -89,8 +89,8 @@ export const make = Effect.fnUntraced(function* (options: Options) {
   })
   return yield* Effect.acquireRelease(
     Backend.make({
-      load: Effect.sync(() => detached(snapshot)),
-      committed: Effect.sync(() => detached(snapshot)),
+      load: Effect.suspend(() => detachedEffect(snapshot)),
+      committed: Effect.suspend(() => detachedEffect(snapshot)),
       save,
       atomic: (effect) => effect,
       close: Effect.void,

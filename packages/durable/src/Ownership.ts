@@ -7,7 +7,7 @@ import * as Workflow from 'effect/workflow/Workflow'
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import * as Record from './Record.ts'
 import type * as Session from './Session.ts'
-import { ExecutionError } from './workflow/ExecutionError.ts'
+import { ExecutionError, InvalidState, Closed, Aborted } from './workflow/ExecutionError.ts'
 
 /** Durable references identify native Workflow executions; they contain no custom scheduler state. */
 export const Binding = Schema.Struct({
@@ -49,8 +49,9 @@ export const layerDeclarations = <const W extends ReadonlyArray<Workflow.Any>>(
             const declaration = declarations.get(binding.workflow)
             if (declaration === undefined)
               return yield* new ExecutionError({
-                reason: 'invalid_state',
-                message: `Workflow ${binding.workflow} is not declared`,
+                reason: new InvalidState({
+                  message: `Workflow ${binding.workflow} is not declared`,
+                }),
               })
             // Native metadata is erased by this heterogeneous registry. Every entry is a
             // Workflow declaration; schema services are captured when its Layer is built.
@@ -86,8 +87,10 @@ export const layerDeclarations = <const W extends ReadonlyArray<Workflow.Any>>(
                 error instanceof ExecutionError
                   ? error
                   : new ExecutionError({
-                      reason: 'invalid_state',
-                      message: `Native workflow ${binding.workflow} failed`,
+                      reason: new InvalidState({
+                        message: `Native workflow ${binding.workflow} failed`,
+                        cause: error,
+                      }),
                     }),
               ),
             )
@@ -127,7 +130,9 @@ export const layerCurrent = (identity: Identity, session: Session.Service): Laye
           active
             ? Effect.void
             : Effect.fail(
-                new ExecutionError({ reason: 'closed', message: 'Task invocation has ended' }),
+                new ExecutionError({
+                  reason: new Closed({ message: 'Task invocation has ended' }),
+                }),
               ),
         ),
       })
@@ -137,13 +142,12 @@ export const layerCurrent = (identity: Identity, session: Session.Service): Laye
 function writable(task: Record.Task | undefined): Effect.Effect<Record.Task, ExecutionError> {
   if (task === undefined)
     return Effect.fail(
-      new ExecutionError({ reason: 'invalid_state', message: 'Task projection is absent' }),
+      new ExecutionError({ reason: new InvalidState({ message: 'Task projection is absent' }) }),
     )
   if (task.abortRequested || task.state.status === 'terminal' || task.state.status === 'completing')
     return Effect.fail(
       new ExecutionError({
-        reason: 'aborted',
-        message: 'Task no longer accepts invocation writes',
+        reason: new Aborted({ message: 'Task no longer accepts invocation writes' }),
       }),
     )
   return Effect.succeed(task)
@@ -160,8 +164,7 @@ export const memo = Effect.fnUntraced(function* <S extends Schema.Constraint, E,
   const task = yield* current.session.task(current.taskId)
   if (task === undefined)
     return yield* new ExecutionError({
-      reason: 'invalid_state',
-      message: 'Task projection is absent',
+      reason: new InvalidState({ message: 'Task projection is absent' }),
     })
   const codec = Schema.toCodecJson(schema)
   if (task.memos !== undefined && Object.hasOwn(task.memos, name))

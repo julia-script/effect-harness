@@ -4,7 +4,7 @@ import type * as AiPrompt from 'effect/ai/Prompt'
 import type * as Response from 'effect/ai/Response'
 import type * as Context from './Context.ts'
 import * as Services from 'effect/Context'
-import { HookError } from './Error.ts'
+import { HookError, HookFailure } from './Error.ts'
 import { Invocation, type ToolResult } from './Invocation.ts'
 
 export interface ToolInput {
@@ -175,7 +175,11 @@ export const bind = <R, RequestServices = never>(
               for (const service of requestServices)
                 if (!current.mapUnsafe.has(service.key))
                   return Effect.fail(
-                    new HookError({ message: `Request service ${service.key} is absent` }),
+                    new HookError({
+                      reason: new HookFailure({
+                        message: `Request service ${service.key} is absent`,
+                      }),
+                    }),
                   )
               // bind's R is checked before heterogeneous callbacks enter the registry.
               // Captured host services and validated invocation services satisfy R.

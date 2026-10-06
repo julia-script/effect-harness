@@ -41,9 +41,14 @@ export const layerApiKey = (options: {
 const authenticationError = (error: AuthError) => {
   let reason: AiError.AiErrorReason
   const metadata = {
-    openai: { authReason: error.reason, message: error.message, status: error.status ?? null },
+    openai: {
+      authReason: error.reason._tag,
+      authCode: error.code,
+      message: error.message,
+      status: error.status ?? null,
+    },
   }
-  if (error.reason === 'network')
+  if (error.reason._tag === 'AuthNetworkError')
     reason = new AiError.NetworkError({
       reason: 'TransportError',
       request: {
@@ -55,12 +60,13 @@ const authenticationError = (error: AuthError) => {
       },
       description: error.message,
     })
-  else if (error.status === 429) reason = new AiError.RateLimitError({ metadata })
-  else if ((error.status !== undefined && error.status >= 500) || error.reason === 'busy')
+  else if (error.isRetryable && error.status === 429)
+    reason = new AiError.RateLimitError({ metadata, retryAfter: error.retryAfter })
+  else if (error.isRetryable)
     reason = new AiError.InternalProviderError({ description: error.message, metadata })
   else
     reason = new AiError.AuthenticationError({
-      kind: error.reason === 'permission' ? 'InsufficientPermissions' : 'Unknown',
+      kind: error.reason._tag === 'AuthPermissionError' ? 'InsufficientPermissions' : 'Unknown',
       description: error.message,
       metadata,
     })
@@ -184,6 +190,7 @@ export const layerChatGptClient = (options: { readonly account: string }) =>
                   reason: new HttpClientError.TransportError({
                     request,
                     description: error.message,
+                    cause: error,
                   }),
                 }),
             ),

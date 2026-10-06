@@ -38,7 +38,7 @@ import * as CompactionExecutor from '../../src/workflow/CompactionExecutor.ts'
 import * as Cancellation from '../../src/workflow/Cancellation.ts'
 import { Submission } from '../../src/workflow/Submission.ts'
 import * as Structured from '../../src/workflow/Structured.ts'
-import { ExecutionError } from '../../src/workflow/ExecutionError.ts'
+import { ExecutionError, ExecutionErrorCodec, Storage } from '../../src/workflow/ExecutionError.ts'
 
 const modelRef = { provider: 'race', modelId: 'model' }
 const finish = (reason: Response.FinishReason = 'stop'): Response.FinishPartEncoded => ({
@@ -83,7 +83,7 @@ const Node = Workflow.make('race/custom/v1', {
     name: Schema.String,
   },
   success: Schema.Json,
-  error: ExecutionError,
+  error: ExecutionErrorCodec,
   idempotencyKey: ({ taskId }) => String(taskId),
 })
 type Behavior = (name: string) => Effect.Effect<Record.Json, ExecutionError>
@@ -134,7 +134,7 @@ const runtime = (
     }).pipe(
       Effect.mapError((error) =>
         error._tag === 'StorageError'
-          ? new ExecutionError({ reason: 'storage', message: error.message })
+          ? new ExecutionError({ reason: new Storage({ message: error.message, cause: error }) })
           : error,
       ),
     ),

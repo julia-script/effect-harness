@@ -7,7 +7,7 @@ const State = Schema.Struct({
   handle: Schema.optionalKey(Schema.Json),
 })
 /** Inspectable, pinned request data for recovery and cancellation of deferred provider work. */
-export const RequestDoc = Document.define({
+export const RequestDoc = Document.defineUnsafe({
   kind: 'harness.model-request',
   version: 1,
   scope: 'task',

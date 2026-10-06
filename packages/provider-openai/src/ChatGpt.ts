@@ -1,4 +1,19 @@
-import { AuthError, accountKey, OAuth, type Registration } from '@effect-harness/auth/Credential'
+import {
+  AuthBusyError,
+  AuthCallbackError,
+  AuthConfigurationError,
+  AuthDeniedError,
+  AuthExpiredError,
+  AuthIdentityError,
+  AuthMissingError,
+  AuthNetworkError,
+  AuthPermissionError,
+  AuthProtocolError,
+  AuthError,
+  accountKey,
+  OAuth,
+  type Registration,
+} from '@effect-harness/auth/Credential'
 import { CredentialStore } from '@effect-harness/auth/CredentialStore'
 import { Jwt } from '@effect-harness/auth/Jwt'
 import * as Pkce from '@effect-harness/auth/Pkce'
@@ -70,7 +85,8 @@ export class ChatGpt extends Context.Service<ChatGpt, Service>()(
 const parseUrl = (input: string) =>
   Effect.try({
     try: () => new URL(input),
-    catch: () => new AuthError({ reason: 'callback', message: 'Invalid callback URL' }),
+    catch: (cause) =>
+      new AuthError({ reason: new AuthCallbackError({ cause, message: 'Invalid callback URL' }) }),
   })
 const scopeList = (scope: string): ReadonlyArray<string> => [
   ...new Set(scope.split(/\s+/).filter((item) => item.length > 0)),
@@ -79,7 +95,9 @@ const requireDirect = (scopes: ReadonlyArray<string>) =>
   scopes.includes(directScope)
     ? Effect.void
     : Effect.fail(
-        new AuthError({ reason: 'permission', message: 'ChatGPT plan permission was not granted' }),
+        new AuthError({
+          reason: new AuthPermissionError({ message: 'ChatGPT plan permission was not granted' }),
+        }),
       )
 
 /** Validate arithmetic against the same finite timestamp codecs used by persisted OAuth grants. */
@@ -105,7 +123,10 @@ const deadlines = (
         : { earliestRefreshAt: value.earliestRefreshAt }),
     })),
     Effect.mapError(
-      () => new AuthError({ reason: 'protocol', message: 'Invalid ChatGPT token lifetime' }),
+      (cause) =>
+        new AuthError({
+          reason: new AuthProtocolError({ cause, message: 'Invalid ChatGPT token lifetime' }),
+        }),
     ),
   )
 
@@ -118,8 +139,9 @@ export const layer = (options: {
     Effect.gen(function* () {
       if (options.appName.trim().length === 0)
         return yield* new AuthError({
-          reason: 'configuration',
-          message: 'An actual application name is required',
+          reason: new AuthConfigurationError({
+            message: 'An actual application name is required',
+          }),
         })
       if (
         (options.authorizationLifetimeMs !== undefined &&
@@ -129,8 +151,9 @@ export const layer = (options: {
           (!Number.isFinite(options.refreshSkewMs) || options.refreshSkewMs < 0))
       )
         return yield* new AuthError({
-          reason: 'configuration',
-          message: 'Authorization lifetime and refresh skew must be finite valid durations',
+          reason: new AuthConfigurationError({
+            message: 'Authorization lifetime and refresh skew must be finite valid durations',
+          }),
         })
       const store = yield* CredentialStore
       const jwt = yield* Jwt
@@ -146,8 +169,9 @@ export const layer = (options: {
           current.value.issuer !== issuer
         )
           return yield* new AuthError({
-            reason: 'missing',
-            message: 'ChatGPT account registration was not found',
+            reason: new AuthMissingError({
+              message: 'ChatGPT account registration was not found',
+            }),
           })
         return current.value
       })
@@ -162,14 +186,16 @@ export const layer = (options: {
               current.value.issuer !== issuer
             )
               return yield* new AuthError({
-                reason: 'missing',
-                message: 'ChatGPT account is signed out',
+                reason: new AuthMissingError({
+                  message: 'ChatGPT account is signed out',
+                }),
               })
             const credential = current.value
             if (credential.clientId === 'dynamic_agent_client')
               return yield* new AuthError({
-                reason: 'protocol',
-                message: 'An issued account client ID is required',
+                reason: new AuthProtocolError({
+                  message: 'An issued account client ID is required',
+                }),
               })
             yield* requireDirect(credential.scopes)
             const now = yield* Clock.currentTimeMillis
@@ -181,8 +207,9 @@ export const layer = (options: {
             if (credential.earliestRefreshAt !== undefined && now < credential.earliestRefreshAt) {
               if (credential.expiresAt > now) return credential
               return yield* new AuthError({
-                reason: 'expired',
-                message: 'Credential cannot yet be refreshed',
+                reason: new AuthExpiredError({
+                  message: 'Credential cannot yet be refreshed',
+                }),
               })
             }
             const token = yield* Token.request(tokenEndpoint, {
@@ -202,8 +229,9 @@ export const layer = (options: {
               })
               if (identity.sub !== credential.subject)
                 return yield* new AuthError({
-                  reason: 'identity',
-                  message: 'Refreshed credential belongs to another account',
+                  reason: new AuthIdentityError({
+                    message: 'Refreshed credential belongs to another account',
+                  }),
                 })
             }
             return {
@@ -218,8 +246,9 @@ export const layer = (options: {
         )
         if (updated?.kind !== 'oauth')
           return yield* new AuthError({
-            reason: 'missing',
-            message: 'ChatGPT account is signed out',
+            reason: new AuthMissingError({
+              message: 'ChatGPT account is signed out',
+            }),
           })
         return updated
       })
@@ -238,8 +267,9 @@ export const layer = (options: {
             redirect.password !== ''
           )
             return yield* new AuthError({
-              reason: 'configuration',
-              message: 'Use an HTTP 127.0.0.1 loopback callback at /auth/callback',
+              reason: new AuthConfigurationError({
+                message: 'Use an HTTP 127.0.0.1 loopback callback at /auth/callback',
+              }),
             })
           const returning =
             beginOptions.account === undefined ? undefined : yield* load(beginOptions.account)
@@ -249,8 +279,9 @@ export const layer = (options: {
               returning.redirectUri === undefined
             )
               return yield* new AuthError({
-                reason: 'protocol',
-                message: 'Incomplete account registration',
+                reason: new AuthProtocolError({
+                  message: 'Incomplete account registration',
+                }),
               })
             const previous = yield* parseUrl(returning.redirectUri)
             if (
@@ -259,15 +290,17 @@ export const layer = (options: {
               previous.pathname !== redirect.pathname
             )
               return yield* new AuthError({
-                reason: 'configuration',
-                message: 'Callback scheme, host and path must match registration',
+                reason: new AuthConfigurationError({
+                  message: 'Callback scheme, host and path must match registration',
+                }),
               })
           }
           const hostId = yield* store.hostId('openai')
           if (returning !== undefined && returning.hostId !== hostId)
             return yield* new AuthError({
-              reason: 'configuration',
-              message: 'Account registration belongs to another host',
+              reason: new AuthConfigurationError({
+                message: 'Account registration belongs to another host',
+              }),
             })
           const challenge = yield* Pkce.make().pipe(Effect.provideContext(cryptoContext))
           const now = yield* Clock.currentTimeMillis
@@ -275,8 +308,9 @@ export const layer = (options: {
             if (attempt.authorization.expiresAt <= now) pending.delete(state)
           if (pending.size >= 32)
             return yield* new AuthError({
-              reason: 'busy',
-              message: 'Too many pending authorization attempts',
+              reason: new AuthBusyError({
+                message: 'Too many pending authorization attempts',
+              }),
             })
           const query = new URLSearchParams({
             client_id: returning?.clientId ?? 'dynamic_agent_client',
@@ -311,8 +345,9 @@ export const layer = (options: {
           const attempt = state === null ? undefined : pending.get(state)
           if (attempt === undefined || state === null)
             return yield* new AuthError({
-              reason: 'callback',
-              message: 'Authorization state does not match a pending attempt',
+              reason: new AuthCallbackError({
+                message: 'Authorization state does not match a pending attempt',
+              }),
             })
           const expected = yield* parseUrl(attempt.authorization.redirectUri)
           if (
@@ -323,25 +358,29 @@ export const layer = (options: {
             callback.password !== ''
           )
             return yield* new AuthError({
-              reason: 'callback',
-              message: 'Callback does not match the authorization redirect',
+              reason: new AuthCallbackError({
+                message: 'Callback does not match the authorization redirect',
+              }),
             })
           for (const key of ['state', 'code', 'client_id', 'error'])
             if (callback.searchParams.getAll(key).length > 1)
               return yield* new AuthError({
-                reason: 'callback',
-                message: 'Duplicate authorization callback parameter',
+                reason: new AuthCallbackError({
+                  message: 'Duplicate authorization callback parameter',
+                }),
               })
           pending.delete(state)
           if ((yield* Clock.currentTimeMillis) >= attempt.authorization.expiresAt)
             return yield* new AuthError({
-              reason: 'expired',
-              message: 'Authorization attempt expired',
+              reason: new AuthExpiredError({
+                message: 'Authorization attempt expired',
+              }),
             })
           if (callback.searchParams.has('error'))
             return yield* new AuthError({
-              reason: 'denied',
-              message: 'Authorization was declined or failed',
+              reason: new AuthDeniedError({
+                message: 'Authorization was declined or failed',
+              }),
             })
           const code = callback.searchParams.get('code')
           const suppliedId = callback.searchParams.get('client_id')
@@ -355,13 +394,15 @@ export const layer = (options: {
             clientId === 'dynamic_agent_client'
           )
             return yield* new AuthError({
-              reason: 'callback',
-              message: 'Authorization code and issued client ID are required',
+              reason: new AuthCallbackError({
+                message: 'Authorization code and issued client ID are required',
+              }),
             })
           if (attempt.returning !== undefined && clientId !== attempt.returning.clientId)
             return yield* new AuthError({
-              reason: 'identity',
-              message: 'Callback client ID differs from selected account',
+              reason: new AuthIdentityError({
+                message: 'Callback client ID differs from selected account',
+              }),
             })
           const token = yield* Token.request(tokenEndpoint, {
             grant_type: 'authorization_code',
@@ -373,8 +414,9 @@ export const layer = (options: {
           }).pipe(Effect.provideService(HttpClient.HttpClient, client))
           if (token.id_token === undefined || token.scope === undefined)
             return yield* new AuthError({
-              reason: 'protocol',
-              message: 'Sign-in response requires identity and granted scopes',
+              reason: new AuthProtocolError({
+                message: 'Sign-in response requires identity and granted scopes',
+              }),
             })
           const identity = yield* jwt.verify(token.id_token, {
             issuer,
@@ -385,8 +427,9 @@ export const layer = (options: {
           })
           if (attempt.returning !== undefined && identity.sub !== attempt.returning.subject)
             return yield* new AuthError({
-              reason: 'identity',
-              message: 'Signed-in identity differs from selected account',
+              reason: new AuthIdentityError({
+                message: 'Signed-in identity differs from selected account',
+              }),
             })
           const scopes = scopeList(token.scope)
           yield* requireDirect(scopes)
@@ -421,27 +464,36 @@ export const layer = (options: {
             )
             .pipe(
               Effect.mapError(
-                () =>
+                (cause) =>
                   new AuthError({
-                    reason: 'network',
-                    message: 'Model catalog could not be loaded',
+                    reason: new AuthNetworkError({
+                      cause,
+                      message: 'Model catalog could not be loaded',
+                    }),
                   }),
               ),
             )
           if (response.status !== 200)
             return yield* new AuthError({
-              reason: 'permission',
-              message: 'Account model catalog unavailable',
-              status: response.status,
+              reason: new AuthPermissionError({
+                message: 'Account model catalog unavailable',
+                status: response.status,
+              }),
             })
           const body = yield* response.json.pipe(
             Effect.mapError(
-              () => new AuthError({ reason: 'protocol', message: 'Invalid model catalog' }),
+              (cause) =>
+                new AuthError({
+                  reason: new AuthProtocolError({ cause, message: 'Invalid model catalog' }),
+                }),
             ),
           )
           const catalog = yield* Schema.decodeUnknownEffect(ModelList)(body).pipe(
             Effect.mapError(
-              () => new AuthError({ reason: 'protocol', message: 'Invalid model catalog' }),
+              (cause) =>
+                new AuthError({
+                  reason: new AuthProtocolError({ cause, message: 'Invalid model catalog' }),
+                }),
             ),
           )
           return catalog.models.filter((model) => model.visibility === 'list')
@@ -457,8 +509,9 @@ export const layer = (options: {
                 current.value.issuer !== issuer
               )
                 return yield* new AuthError({
-                  reason: 'missing',
-                  message: 'ChatGPT registration was not found',
+                  reason: new AuthMissingError({
+                    message: 'ChatGPT registration was not found',
+                  }),
                 })
               const credential = current.value
               if (credential.kind === 'registration') return credential

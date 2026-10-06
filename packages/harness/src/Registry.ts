@@ -5,7 +5,7 @@ import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 import * as Agent from './Agent.ts'
-import { RegistryError } from './Error.ts'
+import { RegistryError, RegistryFailure } from './Error.ts'
 import type * as Extension from './Extension.ts'
 import * as Hook from './Hook.ts'
 import { Invocation } from './Invocation.ts'
@@ -40,13 +40,19 @@ function validate(
 ): Effect.Effect<void, RegistryError> {
   for (const extension of extensions) {
     if (extension.name === '')
-      return Effect.fail(new RegistryError({ message: 'Extension name must be nonempty' }))
+      return Effect.fail(
+        new RegistryError({
+          reason: new RegistryFailure({ message: 'Extension name must be nonempty' }),
+        }),
+      )
     const names = new Set<string>()
     for (const registration of extension.tools ?? []) {
       if (names.has(registration.tool.name))
         return Effect.fail(
           new RegistryError({
-            message: `Duplicate tool ${registration.tool.name} in ${extension.name}`,
+            reason: new RegistryFailure({
+              message: `Duplicate tool ${registration.tool.name} in ${extension.name}`,
+            }),
           }),
         )
       names.add(registration.tool.name)
@@ -55,11 +61,17 @@ function validate(
     for (const section of extension.sections ?? []) {
       if (!/^[a-z][a-z0-9_-]*$/.test(section.key) || section.key === 'instructions')
         return Effect.fail(
-          new RegistryError({ message: `Invalid or reserved section ${section.key}` }),
+          new RegistryError({
+            reason: new RegistryFailure({ message: `Invalid or reserved section ${section.key}` }),
+          }),
         )
       if (keys.has(section.key))
         return Effect.fail(
-          new RegistryError({ message: `Duplicate section ${section.key} in ${extension.name}` }),
+          new RegistryError({
+            reason: new RegistryFailure({
+              message: `Duplicate section ${section.key} in ${extension.name}`,
+            }),
+          }),
         )
       keys.add(section.key)
     }
@@ -148,7 +160,9 @@ export const resolve = Effect.fnUntraced(function* (
       else if (next.tool.name !== wrapper.name) {
         tools.delete(wrapper.name)
         yield* (yield* Invocation).report(
-          new RegistryError({ message: `Tool wrapper renamed ${wrapper.name}` }),
+          new RegistryError({
+            reason: new RegistryFailure({ message: `Tool wrapper renamed ${wrapper.name}` }),
+          }),
         )
       } else tools.set(wrapper.name, next)
     }
@@ -160,7 +174,9 @@ export const resolve = Effect.fnUntraced(function* (
       else if (next.key !== wrapper.key) {
         sections.delete(wrapper.key)
         yield* (yield* Invocation).report(
-          new RegistryError({ message: `Section wrapper renamed ${wrapper.key}` }),
+          new RegistryError({
+            reason: new RegistryFailure({ message: `Section wrapper renamed ${wrapper.key}` }),
+          }),
         )
       } else sections.set(wrapper.key, next)
     }

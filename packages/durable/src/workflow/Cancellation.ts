@@ -8,7 +8,7 @@ import * as Workflow from 'effect/workflow/Workflow'
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import * as Ownership from '../Ownership.ts'
 import type * as Session from '../Session.ts'
-import { ExecutionError } from './ExecutionError.ts'
+import { ExecutionError, InvalidState, Aborted } from './ExecutionError.ts'
 
 /** Owner-local capabilities supplement native engine cancellation without replacing its journal. */
 export class Cancellation extends Context.Service<
@@ -61,8 +61,7 @@ export const mark = Effect.fnUntraced(function* (
       const reached = Ownership.reach(graph, target, options?.background)
       if (reached === undefined)
         return yield* new ExecutionError({
-          reason: 'invalid_state',
-          message: 'Abort target is absent',
+          reason: new InvalidState({ message: 'Abort target is absent' }),
         })
       for (const task of reached.tasks)
         if (!task.abortRequested)
@@ -105,7 +104,7 @@ export const activity = <A, E, R>(
         )
         .pipe(
           Effect.catchIf(
-            (error) => error.reason === 'closed',
+            (error) => error.reason._tag === 'Closed',
             () => pause,
           ),
         )
@@ -148,13 +147,13 @@ export const run = <A, E, R>(
         const initial = (yield* session.committed).tasks.find((task) => task.id === identity.taskId)
         if (initial === undefined || initial.abortRequested || initial.state.status === 'terminal')
           return yield* new ExecutionError({
-            reason: 'aborted',
-            message: 'Task cannot enter an invocation',
+            reason: new Aborted({ message: 'Task cannot enter an invocation' }),
           })
         if (initial.conversationId !== identity.conversationId)
           return yield* new ExecutionError({
-            reason: 'invalid_state',
-            message: 'Invocation task belongs to another conversation',
+            reason: new InvalidState({
+              message: 'Invocation task belongs to another conversation',
+            }),
           })
         let aborted = false
         const fiber = yield* body.pipe(Effect.interruptible, Effect.forkScoped)
@@ -166,7 +165,7 @@ export const run = <A, E, R>(
           yield* Fiber.interrupt(fiber)
         }).pipe(
           Effect.catchIf(
-            (error) => error.reason === 'closed',
+            (error) => error.reason._tag === 'Closed',
             () => Effect.void,
           ),
           Effect.orDie,
@@ -178,7 +177,7 @@ export const run = <A, E, R>(
             if (yield* session.isClosed) return yield* Effect.never
             const state = yield* session.committed.pipe(
               Effect.catchIf(
-                (error) => error.reason === 'closed',
+                (error) => error.reason._tag === 'Closed',
                 () => Effect.never,
               ),
             )
@@ -190,8 +189,7 @@ export const run = <A, E, R>(
         const exit = yield* Effect.raceFirst(Fiber.await(fiber), Fiber.join(monitor))
         if (aborted)
           return yield* new ExecutionError({
-            reason: 'aborted',
-            message: 'Task has a durable abort mark',
+            reason: new Aborted({ message: 'Task has a durable abort mark' }),
           })
         return yield* exit
       }),

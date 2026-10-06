@@ -2,7 +2,7 @@ import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
 import * as Redacted from 'effect/Redacted'
 import * as Base64 from 'effect/encoding/Base64'
-import { AuthError } from './Credential.ts'
+import { AuthConfigurationError, AuthError } from './Credential.ts'
 export interface Challenge {
   readonly verifier: Redacted.Redacted<string>
   readonly challenge: string
@@ -21,18 +21,24 @@ export const make = Effect.fnUntraced(function* (): Effect.fn.Return<
     crypto.randomBytes(size).pipe(
       Effect.map(base64Url),
       Effect.mapError(
-        () =>
-          new AuthError({ reason: 'configuration', message: 'Secure random generation failed' }),
+        (cause) =>
+          new AuthError({
+            reason: new AuthConfigurationError({
+              cause,
+              message: 'Secure random generation failed',
+            }),
+          }),
       ),
     )
   const verifier = yield* random(32)
-  const digest = yield* crypto
-    .digest('SHA-256', new TextEncoder().encode(verifier))
-    .pipe(
-      Effect.mapError(
-        () => new AuthError({ reason: 'configuration', message: 'PKCE digest failed' }),
-      ),
-    )
+  const digest = yield* crypto.digest('SHA-256', new TextEncoder().encode(verifier)).pipe(
+    Effect.mapError(
+      (cause) =>
+        new AuthError({
+          reason: new AuthConfigurationError({ cause, message: 'PKCE digest failed' }),
+        }),
+    ),
+  )
   return {
     verifier: Redacted.make(verifier),
     challenge: base64Url(digest),

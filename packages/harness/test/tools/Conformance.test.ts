@@ -57,8 +57,7 @@ describe('public conformance adapter and scope ownership', () => {
             const settings = yield* AdapterSettings
             if (settings.refuse)
               return yield* new Env.FileError({
-                code: 'not_supported',
-                message: 'adapter initialization rejected',
+                reason: new Env.FileNotSupported({ message: 'adapter initialization rejected' }),
               })
             return Context.get(yield* Layer.build(NodeEnv.layer({ cwd })), Env.Env)
           }),
@@ -153,7 +152,9 @@ describe('public conformance adapter and scope ownership', () => {
             ...env,
             openBinaryReader: () =>
               Effect.fail(
-                new Env.FileError({ code: 'not_supported', message: 'negative control' }),
+                new Env.FileError({
+                  reason: new Env.FileNotSupported({ message: 'negative control' }),
+                }),
               ),
           })),
         ).pipe(Layer.provide(NodeFileSystem.layer))
@@ -178,7 +179,9 @@ describe('public conformance adapter and scope ownership', () => {
         adapted.greaterThan(2, 1)
         yield* adapted.rejects(
           Effect.fail(
-            new Env.FileError({ code: 'unknown', message: 'expected adapter rejection' }),
+            new Env.FileError({
+              reason: new Env.FileUnknown({ message: 'expected adapter rejection' }),
+            }),
           ),
           'adapter rejection',
         )

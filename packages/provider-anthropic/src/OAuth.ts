@@ -1,4 +1,10 @@
-import { AuthError, Secret, type OpaqueOAuth } from '@effect-harness/auth/Credential'
+import {
+  AuthError,
+  makeAuthErrorReason,
+  Secret,
+  type AuthErrorCode,
+  type OpaqueOAuth,
+} from '@effect-harness/auth/Credential'
 import { CredentialStore } from '@effect-harness/auth/CredentialStore'
 import * as Pkce from '@effect-harness/auth/Pkce'
 import * as Clock from 'effect/Clock'
@@ -65,8 +71,15 @@ interface Pending {
   readonly authorization: Authorization
   readonly challenge: Pkce.Challenge
 }
-const failure = (reason: AuthError['reason'], message: string, status?: number) =>
-  new AuthError({ reason, message, ...(status === undefined ? {} : { status }) })
+const failure = (reason: AuthErrorCode, message: string, status?: number, cause?: unknown) =>
+  new AuthError({
+    reason: makeAuthErrorReason({
+      reason,
+      message,
+      ...(status === undefined ? {} : { status }),
+      ...(cause === undefined ? {} : { cause }),
+    }),
+  })
 const Token = Schema.Struct({
   access_token: Secret,
   refresh_token: Secret,
@@ -115,8 +128,13 @@ export const layer = (options?: {
               ),
             )
             .pipe(
-              Effect.mapError(() =>
-                failure('network', 'Anthropic token endpoint could not be reached'),
+              Effect.mapError((cause) =>
+                failure(
+                  'network',
+                  'Anthropic token endpoint could not be reached',
+                  undefined,
+                  cause,
+                ),
               ),
             )
           if (response.status !== 200)
@@ -126,10 +144,14 @@ export const layer = (options?: {
               response.status,
             )
           const json = yield* response.json.pipe(
-            Effect.mapError(() => failure('protocol', 'Invalid Anthropic token response')),
+            Effect.mapError((cause) =>
+              failure('protocol', 'Invalid Anthropic token response', undefined, cause),
+            ),
           )
           const token = yield* Schema.decodeUnknownEffect(Token)(json).pipe(
-            Effect.mapError(() => failure('protocol', 'Invalid Anthropic token response')),
+            Effect.mapError((cause) =>
+              failure('protocol', 'Invalid Anthropic token response', undefined, cause),
+            ),
           )
           if (token.token_type !== undefined && token.token_type.toLowerCase() !== 'bearer')
             return yield* failure('protocol', 'Unsupported Anthropic token type')
@@ -243,7 +265,7 @@ export const layer = (options?: {
           if (/^https?:\/\//.test(value)) {
             const url = yield* Effect.try({
               try: () => new URL(value),
-              catch: () => failure('callback', 'Invalid Anthropic callback'),
+              catch: (cause) => failure('callback', 'Invalid Anthropic callback', undefined, cause),
             })
             const redirect = new URL(attempt.authorization.redirectUri)
             if (
@@ -338,7 +360,7 @@ export const layerCallback = (options: { readonly account: string }) =>
           const request = yield* HttpServerRequest.HttpServerRequest
           const parsed = yield* Effect.try({
             try: () => new URL(request.url, browserRedirectUri),
-            catch: () => failure('callback', 'Invalid Anthropic callback'),
+            catch: (cause) => failure('callback', 'Invalid Anthropic callback', undefined, cause),
           }).pipe(Effect.option)
           if (
             Option.isNone(parsed) ||

@@ -1,5 +1,5 @@
 import * as Model from '@effect-harness/harness/Model'
-import { ModelError } from '@effect-harness/harness/Error'
+import { ModelError, ModelNoModel, ModelUnsupported } from '@effect-harness/harness/Error'
 import * as Usage from '@effect-harness/harness/Usage'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -25,7 +25,10 @@ export interface Options {
   readonly cwd?: string | undefined
   readonly historyMode?: Provider.Options['historyMode']
 }
-const fail = (message: string) => new ModelError({ reason: 'unsupported', message })
+const fail = (message: string, cause?: unknown) =>
+  new ModelError({
+    reason: new ModelUnsupported({ message, ...(cause === undefined ? {} : { cause }) }),
+  })
 const Effort = Schema.Literals(['low', 'medium', 'high', 'xhigh', 'max'])
 const NativeOptions = Schema.Struct({ effort: Schema.optionalKey(Effort) })
 const positive = (value: number) => Number.isSafeInteger(value) && value > 0
@@ -77,12 +80,12 @@ export const descriptor = (entry: Entry, options?: Omit<Options, 'models'>) =>
     const configure = Effect.fnUntraced(function* (request: Model.RequestOptions) {
       if (request.sessionId !== undefined)
         yield* Schema.decodeEffect(Schema.String.check(Schema.isUUID(7)))(request.sessionId).pipe(
-          Effect.mapError(() => fail('Conversation sessionId must be UUID7')),
+          Effect.mapError((cause) => fail('Conversation sessionId must be UUID7', cause)),
         )
       const supplied = yield* Schema.decodeEffect(NativeOptions, {
         onExcessProperty: 'error',
       })(request.options).pipe(
-        Effect.mapError(() => fail('Unsupported or invalid CLI request options')),
+        Effect.mapError((cause) => fail('Unsupported or invalid CLI request options', cause)),
       )
       let effort = supplied.effort
       let thinkingEnabled: boolean | undefined
@@ -96,8 +99,8 @@ export const descriptor = (entry: Entry, options?: Omit<Options, 'models'>) =>
         thinkingEnabled = false
       } else if (request.thinking !== 'default') {
         const requested = yield* Schema.decodeUnknownEffect(Effort)(request.thinking).pipe(
-          Effect.mapError(() =>
-            fail('CLI thinking must be default, supported off, or a declared effort'),
+          Effect.mapError((cause) =>
+            fail('CLI thinking must be default, supported off, or a declared effort', cause),
           ),
         )
         if (effort !== undefined && effort !== requested)
@@ -148,8 +151,9 @@ export const layer = (options: Options) =>
             ? Effect.succeed(found)
             : Effect.fail(
                 new ModelError({
-                  reason: 'no_model',
-                  message: 'CLI model is not available in this catalogue',
+                  reason: new ModelNoModel({
+                    message: 'CLI model is not available in this catalogue',
+                  }),
                 }),
               )
         },

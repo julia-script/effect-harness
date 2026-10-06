@@ -20,7 +20,7 @@ export const Item = Schema.Union([
 ])
 export type Item = typeof Item.Type
 export const State = Schema.Struct({ items: Schema.Array(Item) })
-export const InboxDoc = Document.define({
+export const InboxDoc = Document.defineUnsafe({
   kind: 'harness.inbox',
   version: 1,
   scope: 'conversation',
@@ -71,7 +71,7 @@ export const LiveState = Schema.Struct({
   ),
 })
 export type LiveState = typeof LiveState.Type
-export const LiveDoc = Document.define({
+export const LiveDoc = Document.defineUnsafe({
   kind: 'harness.live',
   version: 1,
   scope: 'conversation',

@@ -1,7 +1,7 @@
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Record from '../Record.ts'
-import { ExecutionError } from './ExecutionError.ts'
+import { ExecutionErrorCodec } from './ExecutionError.ts'
 
 /** Records cancellation intent and reconciles the owned tree through native interruption. */
 export const Abort = Workflow.make('@effect-harness/durable/Abort/v1', {
@@ -16,6 +16,6 @@ export const Abort = Workflow.make('@effect-harness/durable/Abort/v1', {
     reason: Schema.optionalKey(Schema.String),
   },
   success: Schema.Struct({ reached: Schema.Array(Record.TaskId) }),
-  error: ExecutionError,
+  error: ExecutionErrorCodec,
   idempotencyKey: ({ sessionId, requestId }) => JSON.stringify([sessionId, requestId]),
 })

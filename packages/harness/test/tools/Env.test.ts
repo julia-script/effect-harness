@@ -1,5 +1,6 @@
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
 import * as FileSystem from 'effect/FileSystem'
 import * as Exit from 'effect/Exit'
 import * as Scope from 'effect/Scope'
@@ -179,7 +180,7 @@ describe('portable native Env filesystem resources', () => {
     for (let size = 1; size <= 7; size++) {
       const decoder = Decode.make()
       let text = ''
-      const scan = Scanner.make(1, 3)
+      const scan = Result.getOrThrow(Scanner.make(1, 3))
       for (let position = 0; position < bytes.length; position += size) {
         const chunk = bytes.subarray(position, position + size)
         text += Decode.decode(decoder, chunk)

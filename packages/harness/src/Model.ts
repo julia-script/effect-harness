@@ -5,10 +5,11 @@ import * as Schema from 'effect/Schema'
 import type * as LanguageModel from 'effect/ai/LanguageModel'
 import type * as Prompt from 'effect/ai/Prompt'
 import * as Agent from './Agent.ts'
-import { ModelError } from './Error.ts'
+import { ModelError, ModelNoModel, ModelUnsupported } from './Error.ts'
 import type * as Usage from './Usage.ts'
 import * as AiError from 'effect/ai/AiError'
 import type * as Response from 'effect/ai/Response'
+import * as Serialization from './Serialization.ts'
 
 export const RequestOptions = Schema.Struct({
   thinking: Schema.String,
@@ -52,8 +53,9 @@ export function layer(descriptors: ReadonlyArray<Descriptor>): Layer.Layer<Catal
         return descriptor === undefined
           ? Effect.fail(
               new ModelError({
-                reason: 'no_model',
-                message: `Model ${ref.provider}/${ref.modelId} is not available`,
+                reason: new ModelNoModel({
+                  message: `Model ${ref.provider}/${ref.modelId} is not available`,
+                }),
               }),
             )
           : Effect.succeed(descriptor)
@@ -73,8 +75,9 @@ export const noOptions = (
   options.cache !== undefined
     ? Effect.fail(
         new ModelError({
-          reason: 'unsupported',
-          message: 'This model adapter does not support request options',
+          reason: new ModelUnsupported({
+            message: 'This model adapter does not support request options',
+          }),
         }),
       )
     : Effect.succeed(Context.empty())
@@ -243,9 +246,7 @@ const foreignTransient = new RegExp(
 )
 
 export function errorText(error: unknown): string {
-  if (error instanceof Error) return error.message
-  if (typeof error === 'string') return error
-  return JSON.stringify(error) ?? String(error)
+  return Serialization.errorText(error)
 }
 /** Converts SDK invalid-request diagnostics and otherwise unclassified foreign sentinels once at the model boundary. */
 export function providerError(error: unknown, provider?: string): AiError.AiError {
@@ -255,7 +256,7 @@ export function providerError(error: unknown, provider?: string): AiError.AiErro
       method: 'model',
       reason: new AiError.InvalidRequestError({
         description: error.message,
-        metadata: { harness: { reason: error.reason } },
+        metadata: { harness: { reason: error.reason._tag } },
       }),
     })
   const native = AiError.isAiError(error) ? error : undefined

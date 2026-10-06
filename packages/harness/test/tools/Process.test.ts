@@ -7,8 +7,14 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Path from 'effect/Path'
 import * as PlatformError from 'effect/PlatformError'
 import * as Ref from 'effect/Ref'
-import { ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
-import { Env, ExecutionError } from '../../src/Env.ts'
+import { ChildProcessSpawner, type ChildProcessHandle } from 'effect/process/ChildProcessSpawner'
+import { TestClock } from 'effect/testing'
+import {
+  Env,
+  ExecutionError,
+  ExecutionCallbackError,
+  ExecutionShellUnavailable,
+} from '../../src/Env.ts'
 import * as Exec from '../../src/env/Exec.ts'
 import { withEnv } from './Helpers.ts'
 
@@ -96,23 +102,16 @@ describe('native process boundaries and complete spill output', () => {
       ),
   )
   it.live(
-    'timeout is typed, retains spill; caller cancellation remains interruption and kills only owned command',
+    'real timeout before output has no spill; caller cancellation remains interruption and kills only owned command',
     () =>
       withEnv(
         Effect.gen(function* () {
           const env = yield* Env
           const failure = yield* Effect.flip(
-            env.exec('printf prefix; sleep 10', {
-              timeout: 0.03,
-              spill: { afterBytes: 2, afterLines: 100 },
-            }),
+            env.exec('sleep 10', { timeout: 0.03, spill: { afterBytes: 2, afterLines: 100 } }),
           )
           assert.strictEqual(failure.code, 'timeout')
-          assert.isDefined(failure.spillPath)
-          if (failure.spillPath !== undefined) {
-            assert.strictEqual(yield* env.readTextFile(failure.spillPath), 'prefix')
-            yield* env.remove(failure.spillPath)
-          }
+          assert.strictEqual(failure.spillPath, undefined)
           const started = yield* Deferred.make<void>()
           const first = yield* env
             .exec('printf started; sleep 10', {
@@ -128,6 +127,66 @@ describe('native process boundaries and complete spill output', () => {
         }),
       ),
   )
+  it.effect(
+    'timeout after spill publication retains native output and settles its owned child',
+    () =>
+      withEnv(
+        Effect.gen(function* () {
+          const env = yield* Env
+          const fs = yield* FileSystem.FileSystem
+          const path = yield* Path.Path
+          const nativeSpawner = yield* ChildProcessSpawner
+          const handles: ChildProcessHandle[] = []
+          const spawner: ChildProcessSpawner['Service'] = {
+            ...nativeSpawner,
+            // The native acquisition and its registered cleanup keep the live clock;
+            // only Exec's semantic timeout is driven by the test clock.
+            spawn: (command) =>
+              TestClock.withLive(nativeSpawner.spawn(command)).pipe(
+                Effect.tap((handle) =>
+                  Effect.sync(() => {
+                    handles.push(handle)
+                  }),
+                ),
+              ),
+          }
+          const custom = yield* Exec.make(fs, path, spawner, {
+            id: 'admitted-timeout',
+            cwd: env.cwd,
+            shell: '/bin/sh',
+          })
+          const published = yield* Deferred.make<string>()
+          const settled = yield* Ref.make(false)
+          const running = yield* custom
+            .exec('printf prefix; sleep 10', {
+              timeout: 0.03,
+              spill: { afterBytes: 2, afterLines: 100 },
+              onSpill: (file) => Deferred.succeed(published, file).pipe(Effect.asVoid),
+            })
+            .pipe(
+              Effect.onExit(() => Ref.set(settled, true)),
+              Effect.flip,
+              Effect.forkChild,
+            )
+          // onSpill runs after the prefix write settles, so host scheduling cannot
+          // consume the deadline before the file whose retention is being tested exists.
+          const file = yield* Deferred.await(published)
+          assert.strictEqual(yield* env.readTextFile(file), 'prefix')
+          yield* TestClock.adjust(29)
+          assert.strictEqual(yield* Ref.get(settled), false)
+          yield* TestClock.adjust(1)
+          const failure = yield* Fiber.join(running)
+          assert.strictEqual(failure.reason._tag, 'ExecutionTimeout')
+          assert.strictEqual(failure.spillPath, file)
+          assert.strictEqual(yield* env.readTextFile(file), 'prefix')
+          assert.strictEqual(handles.length, 1)
+          const handle = handles[0]
+          assert.ok(handle)
+          assert.strictEqual(yield* handle.isRunning, false)
+          yield* env.remove(file)
+        }),
+      ),
+  )
   it.live(
     'callback failures stop command with semantic callback error; spill failure is never silent',
     () =>
@@ -138,7 +197,9 @@ describe('native process boundaries and complete spill output', () => {
             env.exec('printf x; sleep 10', {
               onOutput: () =>
                 Effect.fail(
-                  new ExecutionError({ code: 'callback_error', message: 'observer rejected' }),
+                  new ExecutionError({
+                    reason: new ExecutionCallbackError({ message: 'observer rejected' }),
+                  }),
                 ),
             }),
           )
@@ -289,7 +350,9 @@ describe('native process boundaries and complete spill output', () => {
             id: 'missing',
             cwd: env.cwd,
             resolveShell: Effect.fail(
-              new ExecutionError({ code: 'shell_unavailable', message: 'No shell' }),
+              new ExecutionError({
+                reason: new ExecutionShellUnavailable({ message: 'No shell' }),
+              }),
             ),
           })
           assert.strictEqual((yield* Effect.flip(missing.exec('x'))).code, 'shell_unavailable')

@@ -6,7 +6,7 @@ import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
 import { createLocalJWKSet, jwtVerify } from 'jose'
-import { AuthError } from './Credential.ts'
+import { AuthIdentityError, AuthNetworkError, AuthError } from './Credential.ts'
 const KeySet = Schema.Struct({
   keys: Schema.Array(
     Schema.Struct({
@@ -53,26 +53,35 @@ export const layer = Layer.effect(Jwt)(
       verify: Effect.fnUntraced(function* (token, options) {
         const response = yield* client.get(options.jwksUrl).pipe(
           Effect.mapError(
-            () =>
+            (cause) =>
               new AuthError({
-                reason: 'network',
-                message: 'Identity verification keys could not be loaded',
+                reason: new AuthNetworkError({
+                  cause,
+                  message: 'Identity verification keys could not be loaded',
+                }),
               }),
           ),
         )
         if (response.status !== 200)
           return yield* new AuthError({
-            reason: 'identity',
-            message: 'Identity verification keys unavailable',
+            reason: new AuthIdentityError({
+              message: 'Identity verification keys unavailable',
+            }),
           })
         const json = yield* response.json.pipe(
           Effect.mapError(
-            () => new AuthError({ reason: 'identity', message: 'Invalid verification keys' }),
+            (cause) =>
+              new AuthError({
+                reason: new AuthIdentityError({ cause, message: 'Invalid verification keys' }),
+              }),
           ),
         )
         const keys = yield* Schema.decodeUnknownEffect(KeySet)(json).pipe(
           Effect.mapError(
-            () => new AuthError({ reason: 'identity', message: 'Invalid verification keys' }),
+            (cause) =>
+              new AuthError({
+                reason: new AuthIdentityError({ cause, message: 'Invalid verification keys' }),
+              }),
           ),
         )
         const keyResolver = yield* Effect.try({
@@ -90,7 +99,10 @@ export const layer = Layer.effect(Jwt)(
                 ...(key.y === undefined ? {} : { y: key.y }),
               })),
             }),
-          catch: () => new AuthError({ reason: 'identity', message: 'Invalid verification keys' }),
+          catch: (cause) =>
+            new AuthError({
+              reason: new AuthIdentityError({ cause, message: 'Invalid verification keys' }),
+            }),
         })
         const now = yield* Clock.currentTimeMillis
         const verified = yield* Effect.tryPromise({
@@ -102,21 +114,27 @@ export const layer = Layer.effect(Jwt)(
               requiredClaims: ['sub', 'iss', 'aud', 'exp'],
               currentDate: new Date(now),
             }),
-          catch: () =>
+          catch: (cause) =>
             new AuthError({
-              reason: 'identity',
-              message: 'ID token signature or claims are invalid',
+              reason: new AuthIdentityError({
+                cause,
+                message: 'ID token signature or claims are invalid',
+              }),
             }),
         })
         const claims = yield* Schema.decodeUnknownEffect(Claims)(verified.payload).pipe(
           Effect.mapError(
-            () => new AuthError({ reason: 'identity', message: 'ID token identity is invalid' }),
+            (cause) =>
+              new AuthError({
+                reason: new AuthIdentityError({ cause, message: 'ID token identity is invalid' }),
+              }),
           ),
         )
         if (options.nonce !== undefined && claims.nonce !== options.nonce)
           return yield* new AuthError({
-            reason: 'identity',
-            message: 'ID token nonce does not match the authorization attempt',
+            reason: new AuthIdentityError({
+              message: 'ID token nonce does not match the authorization attempt',
+            }),
           })
         return claims
       }),

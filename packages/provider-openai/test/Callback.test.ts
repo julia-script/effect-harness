@@ -1,4 +1,9 @@
-import { AuthError, type OAuth } from '@effect-harness/auth/Credential'
+import {
+  AuthCallbackError,
+  AuthDeniedError,
+  AuthError,
+  type OAuth,
+} from '@effect-harness/auth/Credential'
 import { assert, describe, it } from '@effect/vitest'
 import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
@@ -77,10 +82,16 @@ const makeFixture = (address = '127.0.0.1:43210', exchange?: Effect.Effect<OAuth
             return completed === 1
               ? exchange
               : Effect.fail(
-                  new AuthError({ reason: 'callback', message: 'Consumed authorization state' }),
+                  new AuthError({
+                    reason: new AuthCallbackError({ message: 'Consumed authorization state' }),
+                  }),
                 )
           return url.includes('error=')
-            ? Effect.fail(new AuthError({ reason: 'denied', message: 'Private server diagnostic' }))
+            ? Effect.fail(
+                new AuthError({
+                  reason: new AuthDeniedError({ message: 'Private server diagnostic' }),
+                }),
+              )
             : Effect.succeed(credential)
         }),
       ),
@@ -198,7 +209,7 @@ describe('scoped callback receiver', () => {
         )
         assert.strictEqual(response.status, 400)
         assert.isFalse(JSON.stringify(response).includes('Private server diagnostic'))
-        assert.strictEqual((yield* receiver.await.pipe(Effect.flip)).reason, 'denied')
+        assert.strictEqual((yield* receiver.await.pipe(Effect.flip)).code, 'denied')
       }),
     )
   })
@@ -210,7 +221,7 @@ describe('scoped callback receiver', () => {
         const receiver = Context.get(yield* Layer.build(f.layer), Callback.Callback)
         const waiter = yield* Effect.forkChild(receiver.await.pipe(Effect.flip))
         yield* TestClock.adjust('61 seconds')
-        assert.strictEqual((yield* Fiber.join(waiter)).reason, 'expired')
+        assert.strictEqual((yield* Fiber.join(waiter)).code, 'expired')
         assert.strictEqual(f.cancelled(), 1)
       }),
     )
@@ -221,7 +232,7 @@ describe('scoped callback receiver', () => {
     return Effect.scoped(
       Effect.gen(function* () {
         const error = yield* Layer.build(f.layer).pipe(Effect.flip)
-        assert.strictEqual(error.reason, 'configuration')
+        assert.strictEqual(error.code, 'configuration')
         assert.isFalse(f.active())
       }),
     )

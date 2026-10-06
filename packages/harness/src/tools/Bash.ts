@@ -1,8 +1,8 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as AiTool from 'effect/ai/Tool'
-import { Env, ExecutionError } from '../Env.ts'
-import { ToolError } from '../Error.ts'
+import { Env, ExecutionError, ExecutionCallbackError } from '../Env.ts'
+import { ToolError, ToolExecution, ToolInvalidParameters } from '../Error.ts'
 import { Invocation, ToolCall, Result, type ToolResult } from '../Invocation.ts'
 import * as Metadata from '../Tool.ts'
 import * as Truncate from './Truncate.ts'
@@ -63,9 +63,7 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
       (!Number.isFinite(input.timeout) || input.timeout <= 0 || input.timeout > 2147483.647)
     )
       return yield* new ToolError({
-        name,
-        reason: 'invalid_parameters',
-        message: 'Invalid timeout',
+        reason: new ToolInvalidParameters({ name, message: 'Invalid timeout' }),
       })
     const execution: Execution = {
       command: options.commandPrefix ? `${options.commandPrefix}\n${input.command}` : input.command,
@@ -107,9 +105,11 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
             Effect.mapError(
               (cause) =>
                 new ExecutionError({
-                  code: 'callback_error',
-                  message: cause.message,
-                  spillPath: path,
+                  reason: new ExecutionCallbackError({
+                    message: cause.message,
+                    spillPath: path,
+                    cause: cause,
+                  }),
                 }),
             ),
           )
@@ -122,13 +122,14 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
           inheritEnv: execution.inheritEnv,
           ...(input.timeout === undefined ? {} : { timeout: input.timeout }),
           onOutput: (text, info) =>
-            api
-              .output(text, info.skipped)
-              .pipe(
-                Effect.mapError(
-                  (cause) => new ExecutionError({ code: 'callback_error', message: cause.message }),
-                ),
+            api.output(text, info.skipped).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ExecutionError({
+                    reason: new ExecutionCallbackError({ message: cause.message, cause: cause }),
+                  }),
               ),
+            ),
           onSpill: diagnostic,
           spill: { afterBytes: Truncate.DEFAULT_MAX_BYTES, afterLines: Truncate.DEFAULT_MAX_LINES },
           ...(api.outputWindow === undefined ? {} : { window: api.outputWindow }),
@@ -139,7 +140,10 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
       if (spill !== undefined)
         yield* diagnostic(spill).pipe(
           Effect.mapError(
-            (cause) => new ToolError({ name, reason: 'execution', message: cause.message }),
+            (cause) =>
+              new ToolError({
+                reason: new ToolExecution({ name, message: cause.message, cause: cause }),
+              }),
           ),
         )
       if (outcome._tag === 'Success') {
@@ -151,15 +155,15 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
     }
     if (result === undefined)
       return yield* new ToolError({
-        name,
-        reason: 'execution',
-        message: last?.message ?? 'No command to run',
+        reason: new ToolExecution({
+          name,
+          message: last?.message ?? 'No command to run',
+          ...(last === undefined ? {} : { cause: last }),
+        }),
       })
     if (result.exitCode !== 0)
       return yield* new ToolError({
-        name,
-        reason: 'execution',
-        message: `Command exited with code ${result.exitCode}`,
+        reason: new ToolExecution({ name, message: `Command exited with code ${result.exitCode}` }),
       })
     return {}
   })

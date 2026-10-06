@@ -13,9 +13,12 @@ import * as Record from '../Record.ts'
 import type * as Session from '../Session.ts'
 import * as Cancellation from './Cancellation.ts'
 import type { StorageError } from '../StorageError.ts'
-import { ExecutionError } from './ExecutionError.ts'
+import { ExecutionError, InvalidState } from './ExecutionError.ts'
 
-const invalid = (message: string) => new ExecutionError({ reason: 'invalid_state', message })
+const invalid = (message: string, cause?: unknown) =>
+  new ExecutionError({
+    reason: new InvalidState({ message, ...(cause === undefined ? {} : { cause }) }),
+  })
 
 /** Attach native Workflow identity to an already created domain task in the same transaction. */
 export const domainBinding = Effect.fnUntraced(function* <
@@ -126,7 +129,7 @@ const execute = Effect.fnUntraced(function* (
 > {
   if (task.state.status === 'terminal') return
   const binding = yield* Schema.decodeUnknownEffect(Ownership.Binding)(task.input).pipe(
-    Effect.mapError(() => invalid(`Task ${task.id} has no native Workflow binding`)),
+    Effect.mapError((cause) => invalid(`Task ${task.id} has no native Workflow binding`, cause)),
   )
   const declarations = yield* Ownership.Declarations
   if (declarations.get(binding.workflow) === undefined) {
@@ -466,7 +469,7 @@ export const evaluate = <E, R>(
     else {
       const error = Cause.squash(exit.cause)
       let status = Cause.hasDies(exit.cause) ? 'faulted' : 'failed'
-      if (error instanceof ExecutionError && error.reason === 'aborted') status = 'aborted'
+      if (error instanceof ExecutionError && error.reason._tag === 'Aborted') status = 'aborted'
       outcome = {
         status,
         error: { message: error instanceof Error ? error.message : String(error) },

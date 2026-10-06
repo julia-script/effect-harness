@@ -4,6 +4,8 @@ import * as Prompt from 'effect/ai/Prompt'
 import * as Usage from './Usage.ts'
 import * as ToolResult from './ToolResult.ts'
 import * as Option from 'effect/Option'
+import * as Result from 'effect/Result'
+import * as Serialization from './Serialization.ts'
 
 export const Edit = Schema.Union([
   Schema.Struct({ target: Schema.Int, action: Schema.Literal('omit') }),
@@ -143,11 +145,14 @@ export function estimateMessage(message: Prompt.Message): number {
         size += part.text.length
         break
       case 'tool-call':
-        size += part.name.length + JSON.stringify(part.params).length
+        size += part.name.length + Serialization.display(part.params).length
         break
       case 'tool-result': {
-        const envelope = Schema.decodeUnknownOption(Schema.toCodecJson(ToolResult.Envelope))(
-          part.result,
+        const envelope = Result.getOrElse(
+          Serialization.attempt(() =>
+            Schema.decodeUnknownOption(Schema.toCodecJson(ToolResult.Envelope))(part.result),
+          ),
+          () => Option.none(),
         )
         if (Option.isSome(envelope))
           for (const block of envelope.value.content)
@@ -156,7 +161,7 @@ export function estimateMessage(message: Prompt.Message): number {
           size +=
             typeof part.result === 'string'
               ? part.result.length
-              : (JSON.stringify(part.result)?.length ?? 0)
+              : Serialization.display(part.result).length
         break
       }
       case 'file':
@@ -175,8 +180,8 @@ export function systemMessages(patch: SystemPatch): ReadonlyArray<Prompt.SystemM
     .join('\n\n')
   const content = [
     text,
-    ...(patch.toolsAdded?.length ? [JSON.stringify(patch.toolsAdded)] : []),
-    ...(patch.toolsRemoved?.length ? [JSON.stringify(patch.toolsRemoved)] : []),
+    ...(patch.toolsAdded?.length ? [Serialization.display(patch.toolsAdded)] : []),
+    ...(patch.toolsRemoved?.length ? [Serialization.display(patch.toolsRemoved)] : []),
   ]
   return content
     .filter((value) => value !== '')

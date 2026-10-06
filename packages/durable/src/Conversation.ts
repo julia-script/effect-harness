@@ -15,13 +15,13 @@ import * as Document from './Document.ts'
 import * as Inbox from './Inbox.ts'
 import * as Record from './Record.ts'
 import * as Session from './Session.ts'
-import { rejected, type StorageError } from './StorageError.ts'
+import { rejected, type StorageError, NotFound } from './StorageError.ts'
 import * as Usage from './Usage.ts'
 import * as Ownership from './Ownership.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
-import { ExecutionError } from './workflow/ExecutionError.ts'
+import { ExecutionError, InvalidState, InvalidArguments } from './workflow/ExecutionError.ts'
 
-export const AgentDoc = Document.define({
+export const AgentDoc = Document.defineUnsafe({
   kind: 'harness.agent',
   version: 1,
   scope: 'conversation',
@@ -32,7 +32,7 @@ export const AgentDoc = Document.define({
   checkpointWhen: () => true,
 })
 export const ProviderState = Schema.Struct({ sessionId: Schema.NonEmptyString })
-export const ProviderDoc = Document.define({
+export const ProviderDoc = Document.defineUnsafe({
   kind: 'harness.provider',
   version: 1,
   scope: 'conversation',
@@ -81,7 +81,9 @@ export const layerConfiguration = (
       )
       return Configuration.of({
         get settings() {
-          return Document.copy(settings)
+          // effect-review-allow P1-throw-only-in-unsafe-orthrow: this synchronous
+          // service getter copies settings already validated by Agent.Settings.
+          return Document.copyUnsafe(settings)
         },
         updateSettings: (input) =>
           Schema.decodeUnknownEffect(Agent.Settings)(Agent.settings(input)).pipe(
@@ -110,7 +112,9 @@ export const layerCreation = Layer.effect(Session.CreationHook)(
       conversation: Record.Conversation,
     ) {
       const sessionId = yield* crypto.randomUUIDv7.pipe(
-        Effect.mapError(() => rejected('Provider identity generation failed')),
+        Effect.mapError((cause) =>
+          rejected('Provider identity generation failed', undefined, cause),
+        ),
       )
       yield* tx.doc(ProviderDoc, { owner: conversation.id, seed: sessionId })
     })
@@ -141,7 +145,7 @@ export const layerCreation = Layer.effect(Session.CreationHook)(
             if (callback !== undefined)
               yield* Effect.suspend(() => callback.call(handlers, conversation.id)).pipe(
                 Effect.provideService(Invocation.Invocation, invocation),
-                Effect.mapError((error) => rejected(error.message)),
+                Effect.mapError((error) => rejected(error.message, undefined, error)),
               )
           }
         }
@@ -171,10 +175,12 @@ export type Metadata = typeof Metadata.Type
 export const projectEntry = Effect.fnUntraced(function* (
   entry: Record.Entry,
 ): Effect.fn.Return<ConversationContext.Entry, ExecutionError> {
-  const invalid = () =>
+  const invalid = (cause?: unknown) =>
     new ExecutionError({
-      reason: 'invalid_state',
-      message: `Entry ${entry.id} has invalid model context`,
+      reason: new InvalidState({
+        message: `Entry ${entry.id} has invalid model context`,
+        ...(cause === undefined ? {} : { cause }),
+      }),
     })
   const messages = yield* Schema.decodeEffect(Schema.toCodecJson(Schema.Array(Prompt.Message)))(
     entry.model ?? [],
@@ -219,8 +225,9 @@ export const context = Effect.fnUntraced(function* (
 ) {
   if (at !== undefined && (yield* session.entry(at, conversationId)) === undefined)
     return yield* new ExecutionError({
-      reason: 'invalid_arguments',
-      message: 'Context cutoff is not visible in this conversation',
+      reason: new InvalidArguments({
+        message: 'Context cutoff is not visible in this conversation',
+      }),
     })
   const entries: Record.Entry[] = []
   // Freeze the visible cutoff before paginating so concurrent appends cannot extend this read.
@@ -254,14 +261,20 @@ export const resetDraft = Effect.fnUntraced(function* (note?: string) {
     message,
   ).pipe(
     Effect.mapError(
-      () => new ExecutionError({ reason: 'invalid_arguments', message: 'Invalid reset note' }),
+      (cause) =>
+        new ExecutionError({
+          reason: new InvalidArguments({ message: 'Invalid reset note', cause }),
+        }),
     ),
   )
   const model = yield* Schema.decodeEffect(Schema.toCodecJson(Schema.Array(Schema.Json)))(
     encoded,
   ).pipe(
     Effect.mapError(
-      () => new ExecutionError({ reason: 'invalid_arguments', message: 'Invalid reset messages' }),
+      (cause) =>
+        new ExecutionError({
+          reason: new InvalidArguments({ message: 'Invalid reset messages', cause }),
+        }),
     ),
   )
   return { kind: 'harness.reset', head: 'self' as const, model } satisfies Record.EntryDraft
@@ -304,12 +317,12 @@ export const layer = Layer.effect(Conversation)(
         session.transaction(
           Effect.fnUntraced(function* (tx) {
             if ((yield* tx.conversation(id)) === undefined)
-              return yield* rejected('Conversation is absent', 'not_found')
+              return yield* rejected('Conversation is absent', NotFound)
             const draft = yield* tx.doc(AgentDoc, { owner: id })
             const next = Agent.configure(draft, change)
             for (const key of Object.keys(draft)) Reflect.deleteProperty(draft, key)
             Object.assign(draft, next)
-            return Document.copy(next)
+            return yield* Document.copyEffect(next)
           }),
         ),
       context: (id, at) => context(session, id, at),
@@ -342,7 +355,7 @@ export const awaitIdle = Effect.fnUntraced(function* (
         const tasks = new Map<Record.TaskId, Record.Task>()
         for (const root of roots) {
           const reached = Ownership.reach(state, { kind: 'conversation', id: root })
-          if (reached === undefined) return yield* rejected('Conversation is absent', 'not_found')
+          if (reached === undefined) return yield* rejected('Conversation is absent', NotFound)
           for (const task of reached.tasks) tasks.set(task.id, task)
         }
         if (tasks.size === 0) return
@@ -352,10 +365,12 @@ export const awaitIdle = Effect.fnUntraced(function* (
           if (started.has(task.id)) continue
           const binding = yield* Schema.decodeUnknownEffect(Ownership.Binding)(task.input).pipe(
             Effect.mapError(
-              () =>
+              (cause) =>
                 new ExecutionError({
-                  reason: 'invalid_state',
-                  message: `Task ${task.id} has no native binding`,
+                  reason: new InvalidState({
+                    message: `Task ${task.id} has no native binding`,
+                    cause,
+                  }),
                 }),
             ),
           )

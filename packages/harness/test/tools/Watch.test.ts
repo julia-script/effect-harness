@@ -3,8 +3,12 @@ import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Fiber from 'effect/Fiber'
 import * as Ref from 'effect/Ref'
+import * as Queue from 'effect/Queue'
+import * as Path from 'effect/Path'
+import * as Watch from '../../src/env/Watch.ts'
+import * as NodeEnv from '../../src/env/Node.ts'
 import * as Stream from 'effect/Stream'
-import { Env, type Watcher, type WatchChange } from '../../src/Env.ts'
+import { Env, NativeFiles, type Watcher, type WatchChange } from '../../src/Env.ts'
 import { withEnv } from './Helpers.ts'
 const hasPath = (value: WatchChange, path: string): boolean =>
   'paths' in value &&
@@ -115,6 +119,80 @@ describe('watch supervision coverage and scoped close', () => {
           yield* env.writeFile('tree/visible/sub/file', 'late')
           yield* Effect.sleep(100)
           assert.strictEqual((yield* Ref.get(seen)).length, count)
+          yield* Fiber.interrupt(listening)
+        }),
+      ),
+  )
+  it.live(
+    'native hints for unchanged nested symlinks require snapshot changes; explicit targets remain covered',
+    () =>
+      withEnv(
+        Effect.gen(function* () {
+          const env = yield* Env
+          const fs = yield* FileSystem.FileSystem
+          const path = yield* Path.Path
+          const native = yield* NativeFiles.pipe(Effect.provide(NodeEnv.nativeLayer))
+          yield* env.writeFile('external', 'before')
+          yield* env.writeFile('tree/barrier', 'before')
+          const nested = path.join(env.cwd, 'tree/link')
+          const explicit = path.join(env.cwd, 'root-link')
+          const barrier = path.join(env.cwd, 'tree/barrier')
+          yield* fs.symlink(path.join(env.cwd, 'external'), nested)
+          yield* fs.symlink(path.join(env.cwd, 'external'), explicit)
+          const callbacks = new Map<string, (changed: string | undefined) => void>()
+          const watcher = yield* Watch.make(
+            fs,
+            path,
+            {
+              ...native,
+              watchDirectory: (directory, callback) =>
+                Effect.acquireRelease(
+                  Effect.sync(() => {
+                    callbacks.set(directory, callback)
+                  }),
+                  () =>
+                    Effect.sync(() => {
+                      callbacks.delete(directory)
+                    }),
+                ).pipe(Effect.asVoid),
+            },
+            [{ path: path.join(env.cwd, 'tree'), recursive: true }, { path: explicit }],
+          )
+          const observed = yield* Queue.unbounded<WatchChange>()
+          const listening = yield* watcher.changes.pipe(
+            Stream.runForEach((change) => Queue.offer(observed, change)),
+            Effect.forkChild,
+          )
+          const emitTree = callbacks.get(path.dirname(nested))
+          const emitRoot = callbacks.get(env.cwd)
+          assert.ok(emitTree)
+          assert.ok(emitRoot)
+          yield* Effect.sync(() => {
+            emitTree(nested)
+            emitRoot(explicit)
+          })
+          const seen: WatchChange[] = []
+          while (!seen.some((change) => hasPath(change, explicit)))
+            seen.push(yield* Queue.take(observed).pipe(Effect.timeout(3000)))
+          yield* env.writeFile('tree/barrier', 'settled')
+          yield* Effect.sync(() => emitTree(barrier))
+          while (!seen.some((change) => hasPath(change, barrier)))
+            seen.push(yield* Queue.take(observed).pipe(Effect.timeout(3000)))
+          assert.strictEqual(
+            seen.some((change) => hasPath(change, nested)),
+            false,
+          )
+          assert.strictEqual(
+            seen.some((change) => hasPath(change, explicit)),
+            true,
+          )
+          yield* fs.remove(nested)
+          yield* fs.symlink(path.join(env.cwd, 'different-target'), nested)
+          yield* Effect.sync(() => emitTree(nested))
+          let replacement = yield* Queue.take(observed).pipe(Effect.timeout(3000))
+          while (!hasPath(replacement, nested))
+            replacement = yield* Queue.take(observed).pipe(Effect.timeout(3000))
+          yield* watcher.close
           yield* Fiber.interrupt(listening)
         }),
       ),

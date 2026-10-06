@@ -8,7 +8,13 @@ import * as Path from 'effect/Path'
 import * as Schedule from 'effect/Schedule'
 import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
-import { AuthError, Credential } from './Credential.ts'
+import {
+  AuthBusyError,
+  AuthConfigurationError,
+  AuthStorageError,
+  AuthError,
+  Credential,
+} from './Credential.ts'
 
 export interface Service {
   readonly get: (key: string) => Effect.Effect<Option.Option<Credential>, AuthError>
@@ -44,8 +50,13 @@ const replace = (snapshot: Snapshot, key: string, value: Credential | undefined)
     ...(value === undefined ? [] : [{ key, value }]),
   ],
 })
-const storageError = () =>
-  new AuthError({ reason: 'storage', message: 'Protected credential storage failed' })
+const storageError = (cause?: unknown) =>
+  new AuthError({
+    reason: new AuthStorageError({
+      message: 'Protected credential storage failed',
+      ...(cause === undefined ? {} : { cause }),
+    }),
+  })
 
 const makeService = (
   read: Effect.Effect<Snapshot, AuthError>,
@@ -111,21 +122,24 @@ export const layerProtectedFile = (options: {
       const directory = path.dirname(file)
       if (file === directory)
         return yield* new AuthError({
-          reason: 'configuration',
-          message: 'Credential path must name a file',
+          reason: new AuthConfigurationError({
+            message: 'Credential path must name a file',
+          }),
         })
       if (
         options.lockRetries !== undefined &&
         (!Number.isSafeInteger(options.lockRetries) || options.lockRetries < 0)
       )
         return yield* new AuthError({
-          reason: 'configuration',
-          message: 'Lock retries must be a nonnegative integer',
+          reason: new AuthConfigurationError({
+            message: 'Lock retries must be a nonnegative integer',
+          }),
         })
       if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option)))
         return yield* new AuthError({
-          reason: 'storage',
-          message: 'Credential directory must not be a symbolic link',
+          reason: new AuthStorageError({
+            message: 'Credential directory must not be a symbolic link',
+          }),
         })
       yield* fs
         .makeDirectory(directory, { recursive: true, mode: 0o700 })
@@ -133,24 +147,27 @@ export const layerProtectedFile = (options: {
       const directoryStat = yield* fs.stat(directory).pipe(Effect.mapError(storageError))
       if (directoryStat.type !== 'Directory' || (directoryStat.mode & 0o077) !== 0)
         return yield* new AuthError({
-          reason: 'storage',
-          message: 'Credential directory must be owner-only',
+          reason: new AuthStorageError({
+            message: 'Credential directory must be owner-only',
+          }),
         })
       const lockDirectory = `${file}.lock`
       const acquire = Effect.fnUntraced(
         function* () {
           yield* fs.makeDirectory(lockDirectory, { mode: 0o700 }).pipe(
-            Effect.catch(() =>
+            Effect.catch((cause) =>
               fs.exists(lockDirectory).pipe(
                 Effect.mapError(storageError),
                 Effect.flatMap((exists) =>
                   Effect.fail(
                     exists
                       ? new AuthError({
-                          reason: 'busy',
-                          message: 'Credential store is locked by another process',
+                          reason: new AuthBusyError({
+                            message: 'Credential store is locked by another process',
+                            cause,
+                          }),
                         })
-                      : storageError(),
+                      : storageError(cause),
                   ),
                 ),
               ),
@@ -160,7 +177,7 @@ export const layerProtectedFile = (options: {
         Effect.retry({
           times: options.lockRetries ?? 100,
           schedule: Schedule.spaced('20 millis'),
-          while: (error) => error.reason === 'busy',
+          while: (error) => error.reason._tag === 'AuthBusyError',
         }),
       )
       const diskLock = <A, E, R>(
@@ -176,15 +193,17 @@ export const layerProtectedFile = (options: {
       const read = Effect.gen(function* () {
         if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option)))
           return yield* new AuthError({
-            reason: 'storage',
-            message: 'Credential file must not be a symbolic link',
+            reason: new AuthStorageError({
+              message: 'Credential file must not be a symbolic link',
+            }),
           })
         if (!(yield* fs.exists(file).pipe(Effect.mapError(storageError)))) return empty
         const stat = yield* fs.stat(file).pipe(Effect.mapError(storageError))
         if ((stat.mode & 0o077) !== 0 || stat.type !== 'File')
           return yield* new AuthError({
-            reason: 'storage',
-            message: 'Credential file must be a regular owner-only file',
+            reason: new AuthStorageError({
+              message: 'Credential file must be a regular owner-only file',
+            }),
           })
         const text = yield* fs.readFileString(file).pipe(Effect.mapError(storageError))
         const json: unknown = yield* Effect.try({

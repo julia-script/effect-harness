@@ -9,7 +9,13 @@ import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
-import { AuthError, Credential, OpaqueOAuth } from '../src/Credential.ts'
+import {
+  AuthNetworkError,
+  AuthTokenError,
+  AuthError,
+  Credential,
+  OpaqueOAuth,
+} from '../src/Credential.ts'
 import * as Store from '../src/CredentialStore.ts'
 const encoded = {
   kind: 'opaqueOAuth',
@@ -51,7 +57,7 @@ describe('provider-neutral opaque OAuth credentials', () => {
       yield* store.set('caller-owned-key', value)
       yield* store
         .modify('caller-owned-key', () =>
-          Effect.fail(new AuthError({ reason: 'token', message: 'refresh failed' })),
+          Effect.fail(new AuthError({ reason: new AuthTokenError({ message: 'refresh failed' }) })),
         )
         .pipe(Effect.flip)
       assert.deepEqual(yield* store.get('caller-owned-key'), Option.some(value))
@@ -79,7 +85,7 @@ describe('provider-neutral opaque OAuth credentials', () => {
           assert.strictEqual(Redacted.value(saved.value.accessToken), encoded.accessToken)
         yield* reopened
           .modify('account', () =>
-            Effect.fail(new AuthError({ reason: 'network', message: 'failure' })),
+            Effect.fail(new AuthError({ reason: new AuthNetworkError({ message: 'failure' }) })),
           )
           .pipe(Effect.flip)
         assert.deepEqual(yield* reopened.get('account'), saved)

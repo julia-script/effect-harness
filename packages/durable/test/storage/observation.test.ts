@@ -15,7 +15,7 @@ import { rejected, StorageError } from '../../src/StorageError.ts'
 import * as Memory from '../../src/storage/Memory.ts'
 import * as Sqlite from '../../src/storage/Sqlite.ts'
 import { sessionLayer } from '../../src/testing/Storage.ts'
-const token = Document.define({
+const token = Document.defineUnsafe({
   kind: 'counter',
   version: 1,
   scope: 'session',
