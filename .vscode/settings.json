@@ -1,0 +1,7 @@
+{
+  "js/ts.experimental.useTsgo": true,
+  "js/ts.tsdk.path": "./node_modules/typescript/bin",
+  "js/ts.tsdk.promptToUseWorkspaceVersion": true,
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "oxc.oxc-vscode"
+}
