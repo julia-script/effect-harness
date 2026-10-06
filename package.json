@@ -7,7 +7,7 @@
       "apps/*"
     ],
     "catalog": {
-      "effect": "4.0.0-rc.118"
+      "effect": "4.0.1"
     }
   },
   "type": "module",
@@ -23,12 +23,12 @@
     "test": "turbo run test"
   },
   "devDependencies": {
-    "@effect/platform-bun": "4.0.0-rc.118",
-    "@effect/platform-node": "4.0.0-rc.118",
-    "@effect/sql-sqlite-bun": "4.0.0-rc.118",
-    "@effect/sql-sqlite-node": "4.0.0-rc.118",
+    "@effect/platform-bun": "4.0.1",
+    "@effect/platform-node": "4.0.1",
+    "@effect/sql-sqlite-bun": "4.0.1",
+    "@effect/sql-sqlite-node": "4.0.1",
     "@effect/tsgo": "0.48.1",
-    "@effect/vitest": "4.0.0-rc.118",
+    "@effect/vitest": "4.0.1",
     "@types/bun": "1.4.2",
     "@types/diff": "^8.0.0",
     "effect": "catalog:",
@@ -40,11 +40,11 @@
     "vitest": "5.0.3"
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.0-rc.118",
-    "effect": "4.0.0-rc.118"
+    "@effect/platform-node-shared": "4.0.1",
+    "effect": "4.0.1"
   },
   "packageManager": "bun@1.4.2",
   "patchedDependencies": {
-    "effect@4.0.0-rc.118": "patches/effect@4.0.0-rc.118.patch"
+    "effect@4.0.1": "patches/effect@4.0.1.patch"
   }
 }

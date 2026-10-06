@@ -10,6 +10,7 @@ import * as Memory from '../../src/storage/Memory.ts'
 import * as Sqlite from '../../src/storage/Sqlite.ts'
 import { createStorageConformance } from '../../src/testing/Conformance.ts'
 import { sessionLayer } from '../../src/testing/Storage.ts'
+import type { Store } from '../../src/Store.ts'
 
 const env = Layer.merge(NodeFileSystem.layer, Path.layer)
 const jsonl = Layer.unwrap(
@@ -20,7 +21,10 @@ const jsonl = Layer.unwrap(
   }),
 ).pipe(Layer.provide(env))
 const sqlite = Sqlite.layer.pipe(Layer.provide(SqliteClient.layer({ filename: ':memory:' })))
-const backends = [
+const backends: ReadonlyArray<{
+  readonly name: string
+  readonly layer: Layer.Layer<Store, Layer.Error<typeof jsonl> | Layer.Error<typeof sqlite>>
+}> = [
   { name: 'Memory', layer: Memory.layer },
   { name: 'JSONL', layer: jsonl },
   { name: 'SQLite', layer: sqlite },

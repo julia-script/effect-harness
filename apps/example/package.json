@@ -11,8 +11,8 @@
   "dependencies": {
     "@effect-harness/durable": "workspace:*",
     "@effect-harness/harness": "workspace:*",
-    "@effect/platform-bun": "4.0.0-rc.118",
-    "@effect/sql-sqlite-bun": "4.0.0-rc.118",
+    "@effect/platform-bun": "4.0.1",
+    "@effect/sql-sqlite-bun": "4.0.1",
     "effect": "catalog:"
   }
 }

@@ -24,7 +24,7 @@
   "dependencies": {
     "@effect-harness/auth": "workspace:*",
     "@effect-harness/harness": "workspace:*",
-    "@effect/ai-openai": "4.0.0-rc.118",
+    "@effect/ai-openai": "4.0.1",
     "effect": "catalog:"
   }
 }

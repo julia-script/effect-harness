@@ -5,12 +5,12 @@
     "": {
       "name": "effect-harness",
       "devDependencies": {
-        "@effect/platform-bun": "4.0.0-rc.118",
-        "@effect/platform-node": "4.0.0-rc.118",
-        "@effect/sql-sqlite-bun": "4.0.0-rc.118",
-        "@effect/sql-sqlite-node": "4.0.0-rc.118",
+        "@effect/platform-bun": "4.0.1",
+        "@effect/platform-node": "4.0.1",
+        "@effect/sql-sqlite-bun": "4.0.1",
+        "@effect/sql-sqlite-node": "4.0.1",
         "@effect/tsgo": "0.48.1",
-        "@effect/vitest": "4.0.0-rc.118",
+        "@effect/vitest": "4.0.1",
         "@types/bun": "1.4.2",
         "@types/diff": "^8.0.0",
         "effect": "catalog:",
@@ -27,8 +27,8 @@
       "dependencies": {
         "@effect-harness/durable": "workspace:*",
         "@effect-harness/harness": "workspace:*",
-        "@effect/platform-bun": "4.0.0-rc.118",
-        "@effect/sql-sqlite-bun": "4.0.0-rc.118",
+        "@effect/platform-bun": "4.0.1",
+        "@effect/sql-sqlite-bun": "4.0.1",
         "effect": "catalog:",
       },
     },
@@ -48,8 +48,8 @@
         "effect": "catalog:",
       },
       "peerDependencies": {
-        "@effect/sql-sqlite-bun": "4.0.0-rc.118",
-        "@effect/sql-sqlite-node": "4.0.0-rc.118",
+        "@effect/sql-sqlite-bun": "4.0.1",
+        "@effect/sql-sqlite-node": "4.0.1",
       },
       "optionalPeers": [
         "@effect/sql-sqlite-bun",
@@ -64,7 +64,7 @@
         "effect": "catalog:",
       },
       "peerDependencies": {
-        "@effect/platform-node": "4.0.0-rc.118",
+        "@effect/platform-node": "4.0.1",
       },
       "optionalPeers": [
         "@effect/platform-node",
@@ -76,7 +76,7 @@
       "dependencies": {
         "@effect-harness/auth": "workspace:*",
         "@effect-harness/harness": "workspace:*",
-        "@effect/ai-anthropic": "4.0.0-rc.118",
+        "@effect/ai-anthropic": "4.0.1",
         "effect": "catalog:",
       },
     },
@@ -94,20 +94,20 @@
       "dependencies": {
         "@effect-harness/auth": "workspace:*",
         "@effect-harness/harness": "workspace:*",
-        "@effect/ai-openai": "4.0.0-rc.118",
+        "@effect/ai-openai": "4.0.1",
         "effect": "catalog:",
       },
     },
   },
   "patchedDependencies": {
-    "effect@4.0.0-rc.118": "patches/effect@4.0.0-rc.118.patch",
+    "effect@4.0.1": "patches/effect@4.0.1.patch",
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.0-rc.118",
-    "effect": "4.0.0-rc.118",
+    "@effect/platform-node-shared": "4.0.1",
+    "effect": "4.0.1",
   },
   "catalog": {
-    "effect": "4.0.0-rc.118",
+    "effect": "4.0.1",
   },
   "packages": {
     "@effect-harness/auth": ["@effect-harness/auth@workspace:packages/auth"],
@@ -124,19 +124,19 @@
 
     "@effect-harness/provider-openai": ["@effect-harness/provider-openai@workspace:packages/provider-openai"],
 
-    "@effect/ai-anthropic": ["@effect/ai-anthropic@4.0.0-rc.118", "", { "peerDependencies": { "effect": "^4.0.0-rc.118" } }, "sha512-75a5I0nU/CnKXBstDKCtMVWazzGnmxETRtO1EXXtFJfYRGIp2MjJeB5bIfBReqrT6aXA3LE+D4S1K/9bqfOTHg=="],
+    "@effect/ai-anthropic": ["@effect/ai-anthropic@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-hJ3Es38q8C43CLiRInv0QLyjqayHIlrtOx7wCcT1x8LjYC1Ev/An6EhkUFstQfvWkI7ydo1tUe6oMWSS7NNW2g=="],
 
-    "@effect/ai-openai": ["@effect/ai-openai@4.0.0-rc.118", "", { "peerDependencies": { "effect": "^4.0.0-rc.118" } }, "sha512-VEhcR8L77hurJ5bHjxrrDe3KAIFZYf3xB1qwycbI5sfXrO6OdH6SMqqWQuOT71bBaUdGLbFc48Cmjl44XTozzg=="],
+    "@effect/ai-openai": ["@effect/ai-openai@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-NiiwUX+wXhYJf+dwRFqMpF1q2Vc/RjXKk8HXv9+8NwglV7k2NQMiIrShBO8pO8guT+w7afA12xX4ieSL5GPDfg=="],
 
-    "@effect/platform-bun": ["@effect/platform-bun@4.0.0-rc.118", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-rc.118" }, "peerDependencies": { "effect": "^4.0.0-rc.118" } }, "sha512-NT/VHIUEYk7QR86sC5le9OzEoRdy9DgxZ89zDkw9Ovd2oMaSw6+IBm3fj+2voGTEPXZaYPdF0to3oQbMouBeEA=="],
+    "@effect/platform-bun": ["@effect/platform-bun@4.0.1", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.1" }, "peerDependencies": { "effect": "^4.0.1" } }, "sha512-m+QR4bp39ZWujCuEsUhZADIYIOFZcUHHlmrixENZqZRbEYgaPLMUWiPrRJ69CM4BuuHW8oCOxfMGUU7oSw/o5g=="],
 
-    "@effect/platform-node": ["@effect/platform-node@4.0.0-rc.118", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-rc.118", "undici": "^8.11.2" }, "peerDependencies": { "effect": "^4.0.0-rc.118", "redis": ">=5.0.0 <7.0.0" } }, "sha512-qdAxPZ+5bKxVnzkwziqcHZTHRHz2hyfFX6NhwEmm75CBpmaIzXIZR2LRqGd1/8eI3J3cOrXcAYzByhln7T1/EA=="],
+    "@effect/platform-node": ["@effect/platform-node@4.0.1", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.1", "undici": "^8.11.2" }, "peerDependencies": { "effect": "^4.0.1", "redis": ">=5.0.0 <7.0.0" } }, "sha512-FT0Fu5LO0/XP9zBpj0HqrtJNLluK4StNKqf6TSulUsjp8FPBsDVXGJiDuyoN5J2yVMT7tgvhxSwaDcObWVRIaQ=="],
 
-    "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.0-rc.118", "", { "dependencies": { "@types/ws": "^8.18.1", "ws": "^8.22.0" }, "peerDependencies": { "effect": "^4.0.0-rc.118" } }, "sha512-pNbmIlxbAUxAthUNsp2xm1NLG9kxoYecsPkoYl9mNF2oxPcKDxAvkOar7tYnLSUpXJeATm4pxYVipdZjQfqO4Q=="],
+    "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.1", "", { "dependencies": { "@types/ws": "^8.18.1", "ws": "^8.22.0" }, "peerDependencies": { "effect": "^4.0.1" } }, "sha512-VanaejudEhKJ4mpmqnEzdncVUhN6sGSO9ZDND54mRxAlZxj+4dYAWjDTYAy9o4tJo9aALeP2U8cVcOFzEdSeLg=="],
 
-    "@effect/sql-sqlite-bun": ["@effect/sql-sqlite-bun@4.0.0-rc.118", "", { "peerDependencies": { "effect": "^4.0.0-rc.118" } }, "sha512-UF0oVOK7mQvEwpxySR9VTk5YoP5luRI//Z8NMOJKVG/SbZbsORGACd7Np+KZRiXXjgzSXEpfGb7Gs3G1cKfUCg=="],
+    "@effect/sql-sqlite-bun": ["@effect/sql-sqlite-bun@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-cBP2gD4KRuci02W1t/jzbrsk9spjiy45d7Z5i95nAnYaUXjU4JFgLa9Dxbumg5NUgzoK7qOdIeO0fULxEhK0LA=="],
 
-    "@effect/sql-sqlite-node": ["@effect/sql-sqlite-node@4.0.0-rc.118", "", { "peerDependencies": { "effect": "^4.0.0-rc.118" } }, "sha512-O+TswiXTeP1/9I7GaCalMWWGXrbalzZkFdkXoO/x/3uDdfnYSi3/lkcOvmfFJnmaQPvOR4wG2CkZSdf9n88A4w=="],
+    "@effect/sql-sqlite-node": ["@effect/sql-sqlite-node@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-VBlNvfFRxyyiu1viNygxA0ZVGZcpxBHA3+QLobaLQSXgAP0submgo98IzioWTHzdZUc9Xodi7ICci5ehhbD2fQ=="],
 
     "@effect/tsgo": ["@effect/tsgo@0.48.1", "", { "optionalDependencies": { "@effect/tsgo-darwin-arm64": "0.48.1", "@effect/tsgo-darwin-x64": "0.48.1", "@effect/tsgo-linux-arm": "0.48.1", "@effect/tsgo-linux-arm64": "0.48.1", "@effect/tsgo-linux-x64": "0.48.1", "@effect/tsgo-win32-arm64": "0.48.1", "@effect/tsgo-win32-x64": "0.48.1" }, "bin": { "effect-tsgo": "dist/effect-tsgo.cjs" } }, "sha512-yLgXNwPaUWfGxcQw7FwLYwOF7me69r+tY4oHYV5hwMFE16qClXbIRnotNPp8pZ5pnbeLgPeRvCE7AWGQyYqQ2A=="],
 
@@ -154,7 +154,7 @@
 
     "@effect/tsgo-win32-x64": ["@effect/tsgo-win32-x64@0.48.1", "", { "os": "win32", "cpu": "x64" }, "sha512-CDCaScEJ1gRwA8DRgRFn3Kh0mHPUCm1ln/gUwsRxC9qXJQdzqWEYzECa907b4Ts/dKW3uD4oFc47oKr+JQxYCg=="],
 
-    "@effect/vitest": ["@effect/vitest@4.0.0-rc.118", "", { "peerDependencies": { "effect": "^4.0.0-rc.118", "vitest": ">=5.0.0 <6.0.0" } }, "sha512-O0CPgtFVhkB+pyFtjP4up2XF4uVWsPgUmlv4hMjq8ARLOPKYix+uu3AUFIUKRHjzzQpx+JPce6KPhD6Flkrfag=="],
+    "@effect/vitest": ["@effect/vitest@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1", "vitest": ">=5.0.0 <6.0.0" } }, "sha512-DbY9kf/018zBxRIX7rJwBnPVPzSarnUpcshm0vfYPFiDkSa7AFrXTh2BlDNUbrdrmqcIOBhVZ7GkEtxf8WiQrg=="],
 
     "@jridgewell/resolve-uri": ["@jridgewell/resolve-uri@3.1.2", "", {}, "sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw=="],
 
@@ -374,7 +374,7 @@
 
     "diff": ["diff@8.0.4", "", {}, "sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw=="],
 
-    "effect": ["effect@4.0.0-rc.118", "", {}, "sha512-hxhpCd+swzrtu9lnyPpEFre2ODQzJ9qxgyL1oHIEY8NKnW4PxTbM1XzplMZXiAsLD62HO+KJc41Nqxr9T791ZQ=="],
+    "effect": ["effect@4.0.1", "", {}, "sha512-b1VlQG9g8fwxE5QnIZuPoOP/0MsqHJSRKxUijjoM80E5q95FXrX5yWtY5XI8G+GJsBQAVSDbLS458z9a++uVvw=="],
 
     "es-module-lexer": ["es-module-lexer@2.3.2", "", {}, "sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw=="],
 

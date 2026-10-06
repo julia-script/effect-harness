@@ -56,6 +56,7 @@ const Options = Schema.Struct({
   disableParallelToolCalls: Schema.optionalKey(Schema.Boolean),
   structuredOutputs: Schema.optionalKey(Schema.Boolean),
   strictJsonSchema: Schema.optionalKey(Schema.Boolean),
+  midConversationSystemMessages: Schema.optionalKey(Schema.Boolean),
 })
 const decode = (value: unknown) =>
   Schema.decodeUnknownEffect(Options, { onExcessProperty: 'error' })(
@@ -262,7 +263,6 @@ export const descriptor = (entry: Entry, provider = 'anthropic') =>
       contextWindow: entry.contextWindow,
       maxOutputTokens: entry.maxOutputTokens,
       configure,
-      normalizePrompt: Prompt.normalize,
       usage: (value, metadata) => usage(value, metadata, entry.prices),
       classify: (error) => Model.classify(error, 'anthropic'),
     } satisfies Model.Descriptor

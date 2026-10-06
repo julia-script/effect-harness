@@ -153,6 +153,7 @@ const options = {
     temperature: 0.2,
     thinking: { type: 'disabled' },
     structuredOutputs: true,
+    midConversationSystemMessages: false,
   },
   transformClient: (client: HttpClient.HttpClient) =>
     client.pipe(HttpClient.mapRequest(HttpClientRequest.setHeader('x-transform', 'retained'))),
@@ -267,7 +268,7 @@ const expectedMessages = (flow: 'apiKey' | 'account') => [
 
 describe('faithful native Anthropic system normalization', () => {
   it.effect(
-    'native generic tool parameters, errors, dependencies and streamed intents survive the bounded delegate',
+    'native generic tool parameters, errors, dependencies and streamed intents retain their types',
     () => {
       const observed: number[] = []
       const captured: NativePrompt.Prompt[] = []
@@ -295,7 +296,7 @@ describe('faithful native Anthropic system normalization', () => {
             return Stream.fromIterable(parts)
           },
         })
-        const model = Prompt.normalizeModel(original)
+        const model = original
         const withHandlers = yield* convertToolkit
         const pending = model.generateText({ prompt: history, toolkit: withHandlers })
         expectTypeOf(pending).toEqualTypeOf<
@@ -333,8 +334,7 @@ describe('faithful native Anthropic system normalization', () => {
         const streamed = yield* Stream.runCollect(stream)
         assert.deepEqual(streamed.find((part) => part.type === 'tool-call')?.params, { value: '7' })
         assert.deepEqual(observed, [7])
-        for (const prompt of captured)
-          assert.deepEqual(prompt.content, Prompt.normalize(history).content)
+        for (const prompt of captured) assert.deepEqual(prompt.content, history.content)
         const generic = <Tools extends Record<string, Tool.Any>>(
           input: Toolkit.WithHandler<Tools>,
         ) =>
@@ -366,21 +366,52 @@ describe('faithful native Anthropic system normalization', () => {
   })
 
   it.effect(
-    'installed upstream converter loses earlier system groups without the boundary (negative control)',
+    'stable native converter preserves every system group without a normalization facade',
     () => {
       const f = fixture('apiKey')
       return Effect.gen(function* () {
         yield* LanguageModel.generateText({ prompt: history })
-        assert.deepEqual(body(requestAt(f.requests)).system, [
-          { type: 'text', text: hook.content, cache_control: null },
-        ])
+        assert.deepEqual(body(requestAt(f.requests)).system, systems('apiKey'))
       }).pipe(
         Effect.provide(
-          AnthropicLanguageModel.layer({ model: options.model }).pipe(Layer.provide(f.client)),
+          AnthropicLanguageModel.layer({
+            model: options.model,
+            config: { midConversationSystemMessages: false },
+          }).pipe(Layer.provide(f.client)),
         ),
       )
     },
   )
+
+  it.effect('native system history capability follows scoped configuration', () => {
+    const f = fixture('apiKey')
+    const inlineHistory = NativePrompt.fromMessages([base, user, later, assistant])
+    return Effect.gen(function* () {
+      const model = yield* LanguageModel.LanguageModel
+      assert.isDefined(model.supportsSystemMessagesInHistory)
+      if (model.supportsSystemMessagesInHistory === undefined)
+        return yield* Effect.die('Missing native history capability')
+      assert.isFalse(yield* model.supportsSystemMessagesInHistory)
+      assert.isTrue(
+        yield* model.supportsSystemMessagesInHistory.pipe(
+          Anthropic.withConfigOverride({ midConversationSystemMessages: true }),
+        ),
+      )
+      yield* LanguageModel.generateText({ prompt: inlineHistory }).pipe(
+        Anthropic.withConfigOverride({ midConversationSystemMessages: true }),
+      )
+      const sent = body(requestAt(f.requests))
+      assert.deepEqual(sent.system, systems('apiKey', ['base instructions']))
+      const messages = yield* Schema.decodeUnknownEffect(
+        Schema.Array(Schema.Struct({ role: Schema.String })),
+      )(sent.messages)
+      assert.deepEqual(
+        messages.map((message) => message.role),
+        ['user', 'system', 'assistant'],
+      )
+      assert.isFalse(yield* model.supportsSystemMessagesInHistory)
+    }).pipe(Effect.provide(f.layer))
+  })
 
   it.effect(
     'native encoded message and string input overloads still decode without changing user roles',
@@ -494,6 +525,7 @@ describe('faithful native Anthropic system normalization', () => {
               contextWindow: 200000,
               maxOutputTokens: 32000,
               cache: true,
+              config: { midConversationSystemMessages: false },
             },
           ],
         }).pipe(Layer.provide(f.client))
@@ -513,8 +545,8 @@ describe('faithful native Anthropic system normalization', () => {
             { managedSystemMessages: [patch] },
           )
           const afterHooks = NativePrompt.fromMessages([...projected.content, hook])
-          assert.isDefined(descriptor.normalizePrompt)
-          const normalized = descriptor.normalizePrompt?.(afterHooks) ?? afterHooks
+          assert.isUndefined(descriptor.normalizePrompt)
+          const normalized = afterHooks
           const context = yield* descriptor.configure({
             thinking: 'off',
             options: { temperature: 0.4 },

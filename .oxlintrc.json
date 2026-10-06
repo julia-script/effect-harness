@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
-  "extends": ["./node_modules/@effect/tsgo/oxlint-presets/recommended.json"],
-  "ignorePatterns": ["repos/**", "**/dist/**", ".unlazy/**"],
+  "extends": ["./node_modules/@effect/tsgo/oxlint-presets/strict.json"],
+  "ignorePatterns": ["repos/**", "**/dist/**", ".unlazy/**", ".scratch/**"],
   "options": {
     "denyWarnings": true
   },

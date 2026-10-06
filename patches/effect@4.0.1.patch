@@ -1,8 +1,8 @@
 diff --git a/dist/ai/LanguageModel.d.ts b/dist/ai/LanguageModel.d.ts
-index eaffb81d142823ae29ab51e1e62dbe9fc356234f..a343257b75348d91f236f10b23dcea6882972f9f 100644
+index f6b7029b1..063593d22 100644
 --- a/dist/ai/LanguageModel.d.ts
 +++ b/dist/ai/LanguageModel.d.ts
-@@ -202,6 +202,8 @@ export interface GenerateTextOptions<Tools extends Record<string, Tool.Any>> {
+@@ -208,6 +208,8 @@ export interface GenerateTextOptions<Tools extends Record<string, Tool.Any>> {
       * resolver execution yourself.
       */
      readonly disableToolCallResolution?: boolean | undefined;
@@ -12,7 +12,7 @@ index eaffb81d142823ae29ab51e1e62dbe9fc356234f..a343257b75348d91f236f10b23dcea68
  type GenerateTextOptionsWithoutToolkit = Omit<GenerateTextOptions<{}>, "toolkit"> & {
      readonly toolkit?: undefined;
 diff --git a/dist/ai/LanguageModel.js b/dist/ai/LanguageModel.js
-index 7a53537ce4fd85124c45959424e2a9c2e6f17e7c..5a9d219abbd835d52803e80d9a0086b21a931022 100644
+index 8bc41785a..9bee6023a 100644
 --- a/dist/ai/LanguageModel.js
 +++ b/dist/ai/LanguageModel.js
 @@ -414,7 +414,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (params) {
@@ -69,7 +69,7 @@ index 7a53537ce4fd85124c45959424e2a9c2e6f17e7c..5a9d219abbd835d52803e80d9a0086b2
      const decodeParts = Schema.decodeEffect(ResponseSchema);
      // If tool call resolution is disabled, return the response without
      // resolving the tool calls that were generated
-@@ -1305,6 +1305,16 @@ const resolveStructuredOutput = /*#__PURE__*/Effect.fnUntraced(function* (respon
+@@ -1316,6 +1316,16 @@ const resolveStructuredOutput = /*#__PURE__*/Effect.fnUntraced(function* (respon
      reason: AiError.StructuredOutputError.fromSchemaError(error, text)
    }));
  });
@@ -87,7 +87,7 @@ index 7a53537ce4fd85124c45959424e2a9c2e6f17e7c..5a9d219abbd835d52803e80d9a0086b2
    if (Option.isSome(transformer)) {
      transformer.value({
 diff --git a/dist/cluster/ClusterSchema.d.ts b/dist/cluster/ClusterSchema.d.ts
-index 60ac39653645f057453e421000f9178934613e0f..5f7c9659bbaf5b87adc21d6706055a89cf6d38de 100644
+index 60ac39653..5f7c9659b 100644
 --- a/dist/cluster/ClusterSchema.d.ts
 +++ b/dist/cluster/ClusterSchema.d.ts
 @@ -9,6 +9,7 @@
@@ -109,7 +109,7 @@ index 60ac39653645f057453e421000f9178934613e0f..5f7c9659bbaf5b87adc21d6706055a89
  //# sourceMappingURL=ClusterSchema.d.ts.map
 \ No newline at end of file
 diff --git a/dist/cluster/ClusterSchema.js b/dist/cluster/ClusterSchema.js
-index fd656f1f38736ccd4e33bcca67f4652386dda1f3..55d4a0ac57ddb199df0126c09f59e860a04fe397 100644
+index fd656f1f3..55d4a0ac5 100644
 --- a/dist/cluster/ClusterSchema.js
 +++ b/dist/cluster/ClusterSchema.js
 @@ -173,6 +173,8 @@ export const ClientTracingEnabled = /*#__PURE__*/Context.Reference("effect/clust
@@ -122,7 +122,7 @@ index fd656f1f38736ccd4e33bcca67f4652386dda1f3..55d4a0ac57ddb199df0126c09f59e860
    defaultValue: () => identity
  });
 diff --git a/dist/cluster/ClusterWorkflowEngine.js b/dist/cluster/ClusterWorkflowEngine.js
-index 42f0a2dd3449e683c48ceefb8ed89fa4f324a688..e4ca3d16429fc1e5b4ff3d044ed8a36040f1f6f5 100644
+index 0e1d022fb..fcf56e806 100644
 --- a/dist/cluster/ClusterWorkflowEngine.js
 +++ b/dist/cluster/ClusterWorkflowEngine.js
 @@ -66,7 +66,15 @@ export const make = /*#__PURE__*/Effect.gen(function* () {
@@ -142,7 +142,7 @@ index 42f0a2dd3449e683c48ceefb8ed89fa4f324a688..e4ca3d16429fc1e5b4ff3d044ed8a360
        workflows.set(workflow._tag, workflow);
        entities.set(workflow._tag, entity);
      }
-@@ -598,7 +606,7 @@ const payloadParentKey = "~effect/cluster/ClusterWorkflowEngine/payloadParentKey
+@@ -611,7 +619,7 @@ const payloadParentKey = "~effect/cluster/ClusterWorkflowEngine/payloadParentKey
  // arrives. This keeps completed and suspended executions from holding
  // `maxResidentEntities` slots for the full `entityMaxIdleTime`.
  const entityMaxIdleTime = /*#__PURE__*/Duration.seconds(10);
@@ -151,7 +151,7 @@ index 42f0a2dd3449e683c48ceefb8ed89fa4f324a688..e4ca3d16429fc1e5b4ff3d044ed8a360
    payload: {
      ...workflow.payloadSchema.fields,
      [payloadParentKey]: Schema.optional(Schema.Struct({
-@@ -611,7 +619,7 @@ const makeWorkflowEntity = workflow => Entity.make(`Workflow/${workflow._tag}`,
+@@ -624,7 +632,7 @@ const makeWorkflowEntity = workflow => Entity.make(`Workflow/${workflow._tag}`,
      success: workflow.successSchema,
      error: workflow.errorSchema
    })
@@ -161,10 +161,10 @@ index 42f0a2dd3449e683c48ceefb8ed89fa4f324a688..e4ca3d16429fc1e5b4ff3d044ed8a360
  const activityPrimaryKey = (activity, attempt) => `${activity}/${attempt}`;
  class ClockPayload extends /*#__PURE__*/Schema.Class(`Workflow/DurableClock/Run`)({
 diff --git a/dist/cluster/internal/entityManager.js b/dist/cluster/internal/entityManager.js
-index 5f5c983f7a5226cb6e38bad1a7df009e9a48fe6d..7aa1ca9df29a62378a95ce9e12a43bb5429ea6ed 100644
+index ab3fc5f45..44bf27bc6 100644
 --- a/dist/cluster/internal/entityManager.js
 +++ b/dist/cluster/internal/entityManager.js
-@@ -371,7 +371,10 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (entity, buildHandl
+@@ -363,7 +363,10 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (entity, buildHandl
      return Effect.ensuring(effect, Effect.sync(() => scopeRemoveFinalizerUnsafe(callerScope, key)));
    });
    const requestWriteOptions = entry => {
@@ -177,10 +177,10 @@ index 5f5c983f7a5226cb6e38bad1a7df009e9a48fe6d..7aa1ca9df29a62378a95ce9e12a43bb5
      if (!onCaller) return onTransaction && {
        onRequest: onTransaction
 diff --git a/src/ai/LanguageModel.ts b/src/ai/LanguageModel.ts
-index e20a9e694fe5c95f5016df392369c45d87f7b40d..47651156e9c3b32aa69a04a772ae4bb6603f577b 100644
+index 6926ffc93..d8cf141e1 100644
 --- a/src/ai/LanguageModel.ts
 +++ b/src/ai/LanguageModel.ts
-@@ -305,6 +305,8 @@ export interface GenerateTextOptions<Tools extends Record<string, Tool.Any>> {
+@@ -312,6 +312,8 @@ export interface GenerateTextOptions<Tools extends Record<string, Tool.Any>> {
     * resolver execution yourself.
     */
    readonly disableToolCallResolution?: boolean | undefined
@@ -189,7 +189,7 @@ index e20a9e694fe5c95f5016df392369c45d87f7b40d..47651156e9c3b32aa69a04a772ae4bb6
  }
  
  type GenerateTextOptionsWithoutToolkit = Omit<GenerateTextOptions<{}>, "toolkit"> & {
-@@ -1123,7 +1125,7 @@ export const make: (params: {
+@@ -1133,7 +1135,7 @@ export const make: (params: {
          }
        }
        const ResponseSchema = Schema.mutable(
@@ -198,7 +198,7 @@ index e20a9e694fe5c95f5016df392369c45d87f7b40d..47651156e9c3b32aa69a04a772ae4bb6
        )
        const rawContent = yield* generateWithNonIncrementalFallback()
        const content = yield* Schema.decodeEffect(ResponseSchema)(rawContent)
-@@ -1161,7 +1163,7 @@ export const make: (params: {
+@@ -1171,7 +1173,7 @@ export const make: (params: {
          }
        }
        const ResponseSchema = Schema.mutable(
@@ -207,7 +207,7 @@ index e20a9e694fe5c95f5016df392369c45d87f7b40d..47651156e9c3b32aa69a04a772ae4bb6
        )
        const rawContent = yield* generateWithNonIncrementalFallback()
        const content = yield* Schema.decodeEffect(ResponseSchema)(rawContent)
-@@ -1235,11 +1237,11 @@ export const make: (params: {
+@@ -1245,11 +1247,11 @@ export const make: (params: {
        }
      }
  
@@ -221,7 +221,7 @@ index e20a9e694fe5c95f5016df392369c45d87f7b40d..47651156e9c3b32aa69a04a772ae4bb6
  
      // If tool call resolution is disabled, return the response without
      // resolving the tool calls that were generated
-@@ -1386,7 +1388,7 @@ export const make: (params: {
+@@ -1396,7 +1398,7 @@ export const make: (params: {
            providerOptions.incrementalPrompt = prepared.value.prompt
          }
        }
@@ -230,7 +230,7 @@ index e20a9e694fe5c95f5016df392369c45d87f7b40d..47651156e9c3b32aa69a04a772ae4bb6
        const decodeParts = Schema.decodeEffect(schema)
        return pipe(
          streamWithNonIncrementalFallback(),
-@@ -1435,7 +1437,7 @@ export const make: (params: {
+@@ -1445,7 +1447,7 @@ export const make: (params: {
            providerOptions.incrementalPrompt = prepared.value.prompt
          }
        }
@@ -239,7 +239,7 @@ index e20a9e694fe5c95f5016df392369c45d87f7b40d..47651156e9c3b32aa69a04a772ae4bb6
        const decodeParts = Schema.decodeEffect(schema)
        return pipe(
          streamWithNonIncrementalFallback(),
-@@ -1538,11 +1540,11 @@ export const make: (params: {
+@@ -1548,11 +1550,11 @@ export const make: (params: {
        }
      }
  
@@ -253,7 +253,7 @@ index e20a9e694fe5c95f5016df392369c45d87f7b40d..47651156e9c3b32aa69a04a772ae4bb6
      const decodeParts = Schema.decodeEffect(ResponseSchema)
  
      // If tool call resolution is disabled, return the response without
-@@ -2512,6 +2514,16 @@ const resolveStructuredOutput = Effect.fnUntraced(function*<
+@@ -2537,6 +2539,16 @@ const resolveStructuredOutput = Effect.fnUntraced(function*<
      }))
  })
  
@@ -271,7 +271,7 @@ index e20a9e694fe5c95f5016df392369c45d87f7b40d..47651156e9c3b32aa69a04a772ae4bb6
    transformer: Option.Option<SpanTransformer>,
    response: ReadonlyArray<Response.AllParts<any>>,
 diff --git a/src/cluster/ClusterSchema.ts b/src/cluster/ClusterSchema.ts
-index c6744cd31122762b3651d4239761fc875e3b222e..fd74bf004f05110d3b090cb53e459cdd448d7c15 100644
+index c6744cd31..fd74bf004 100644
 --- a/src/cluster/ClusterSchema.ts
 +++ b/src/cluster/ClusterSchema.ts
 @@ -9,6 +9,7 @@
@@ -296,7 +296,7 @@ index c6744cd31122762b3651d4239761fc875e3b222e..fd74bf004f05110d3b090cb53e459cdd
   * Context reference for deriving request annotations from a cluster request.
   *
 diff --git a/src/cluster/ClusterWorkflowEngine.ts b/src/cluster/ClusterWorkflowEngine.ts
-index b7eebd48f9448f92a2e04824cb37ad0785d6f4bf..3dcfc2e56c18ccd18760112f10a8337d102a2d3e 100644
+index 357d06184..799898b7d 100644
 --- a/src/cluster/ClusterWorkflowEngine.ts
 +++ b/src/cluster/ClusterWorkflowEngine.ts
 @@ -112,7 +112,15 @@ export const make = Effect.gen(function*() {
@@ -316,7 +316,7 @@ index b7eebd48f9448f92a2e04824cb37ad0785d6f4bf..3dcfc2e56c18ccd18760112f10a8337d
        workflows.set(workflow._tag, workflow)
        entities.set(workflow._tag, entity as any)
      }
-@@ -819,7 +827,7 @@ const payloadParentKey = "~effect/cluster/ClusterWorkflowEngine/payloadParentKey
+@@ -840,7 +848,7 @@ const payloadParentKey = "~effect/cluster/ClusterWorkflowEngine/payloadParentKey
  // `maxResidentEntities` slots for the full `entityMaxIdleTime`.
  const entityMaxIdleTime = Duration.seconds(10)
  
@@ -325,7 +325,7 @@ index b7eebd48f9448f92a2e04824cb37ad0785d6f4bf..3dcfc2e56c18ccd18760112f10a8337d
    Entity.make(`Workflow/${workflow._tag}`, [
      Rpc.make("run", {
        payload: {
-@@ -840,7 +848,7 @@ const makeWorkflowEntity = (workflow: Workflow.Any) =>
+@@ -861,7 +869,7 @@ const makeWorkflowEntity = (workflow: Workflow.Any) =>
  
      DeferredRpc,
      ResumeRpc,
@@ -335,10 +335,10 @@ index b7eebd48f9448f92a2e04824cb37ad0785d6f4bf..3dcfc2e56c18ccd18760112f10a8337d
  
  const makePartialWorkflowEntity = (workflowName: string) =>
 diff --git a/src/cluster/internal/entityManager.ts b/src/cluster/internal/entityManager.ts
-index 12bc386ad721ca058280ea133ad1ea17a99423e5..fdca257c066f5c2781aeb07e8f6e02a3b6c4ab6c 100644
+index 2fb7c18b1..d2587f064 100644
 --- a/src/cluster/internal/entityManager.ts
 +++ b/src/cluster/internal/entityManager.ts
-@@ -623,9 +623,12 @@ export const make = Effect.fnUntraced(function*<
+@@ -598,9 +598,12 @@ export const make = Effect.fnUntraced(function*<
    const requestWriteOptions = (
      entry: { readonly message: Message.IncomingRequestLocal<any>; readonly callerScope?: Scope.Scope | undefined }
    ): Parameters<EntityState["write"]>[2] => {

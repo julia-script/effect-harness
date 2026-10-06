@@ -31,7 +31,7 @@
     "effect": "catalog:"
   },
   "peerDependencies": {
-    "@effect/platform-node": "4.0.0-rc.118"
+    "@effect/platform-node": "4.0.1"
   },
   "peerDependenciesMeta": {
     "@effect/platform-node": {

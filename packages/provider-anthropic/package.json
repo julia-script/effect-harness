@@ -25,7 +25,7 @@
   "dependencies": {
     "@effect-harness/auth": "workspace:*",
     "@effect-harness/harness": "workspace:*",
-    "@effect/ai-anthropic": "4.0.0-rc.118",
+    "@effect/ai-anthropic": "4.0.1",
     "effect": "catalog:"
   }
 }

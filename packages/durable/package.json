@@ -27,8 +27,8 @@
     "effect": "catalog:"
   },
   "peerDependencies": {
-    "@effect/sql-sqlite-bun": "4.0.0-rc.118",
-    "@effect/sql-sqlite-node": "4.0.0-rc.118"
+    "@effect/sql-sqlite-bun": "4.0.1",
+    "@effect/sql-sqlite-node": "4.0.1"
   },
   "peerDependenciesMeta": {
     "@effect/sql-sqlite-bun": {
