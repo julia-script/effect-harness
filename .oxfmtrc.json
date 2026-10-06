@@ -6,5 +6,5 @@
   "trailingComma": "all",
   "semi": false,
   "arrowParens": "always",
-  "ignorePatterns": ["repos/**", "**/dist/**"]
+  "ignorePatterns": ["repos/**", "**/dist/**", ".unlazy/**"]
 }

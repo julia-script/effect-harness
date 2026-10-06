@@ -1,0 +1,354 @@
+diff --git a/dist/ai/LanguageModel.d.ts b/dist/ai/LanguageModel.d.ts
+index eaffb81d142823ae29ab51e1e62dbe9fc356234f..a343257b75348d91f236f10b23dcea6882972f9f 100644
+--- a/dist/ai/LanguageModel.d.ts
++++ b/dist/ai/LanguageModel.d.ts
+@@ -202,6 +202,8 @@ export interface GenerateTextOptions<Tools extends Record<string, Tool.Any>> {
+      * resolver execution yourself.
+      */
+     readonly disableToolCallResolution?: boolean | undefined;
++    /** Permit undeclared provider tool names for caller-owned settlement, only when automatic resolution is disabled. */
++    readonly allowUnknownToolCalls?: (string extends keyof Tools ? unknown extends Tool.ParametersEncoded<Tools[keyof Tools]> ? boolean : false : false) | undefined;
+ }
+ type GenerateTextOptionsWithoutToolkit = Omit<GenerateTextOptions<{}>, "toolkit"> & {
+     readonly toolkit?: undefined;
+diff --git a/dist/ai/LanguageModel.js b/dist/ai/LanguageModel.js
+index 7a53537ce4fd85124c45959424e2a9c2e6f17e7c..5a9d219abbd835d52803e80d9a0086b21a931022 100644
+--- a/dist/ai/LanguageModel.js
++++ b/dist/ai/LanguageModel.js
+@@ -414,7 +414,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (params) {
+           providerOptions.incrementalPrompt = prepared.value.prompt;
+         }
+       }
+-      const ResponseSchema = Schema.mutable(Schema.Array(Response.Part(Toolkit.empty)));
++      const ResponseSchema = Schema.mutable(Schema.Array(allowUnknownToolCall(Response.Part(Toolkit.empty), Toolkit.empty.tools, options.allowUnknownToolCalls === true && options.disableToolCallResolution === true)));
+       const rawContent = yield* generateWithNonIncrementalFallback();
+       const content = yield* Schema.decodeEffect(ResponseSchema)(rawContent);
+       if (tracker) {
+@@ -446,7 +446,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (params) {
+           providerOptions.incrementalPrompt = prepared.value.prompt;
+         }
+       }
+-      const ResponseSchema = Schema.mutable(Schema.Array(Response.Part(Toolkit.empty)));
++      const ResponseSchema = Schema.mutable(Schema.Array(allowUnknownToolCall(Response.Part(Toolkit.empty), Toolkit.empty.tools, options.allowUnknownToolCalls === true && options.disableToolCallResolution === true)));
+       const rawContent = yield* generateWithNonIncrementalFallback();
+       const content = yield* Schema.decodeEffect(ResponseSchema)(rawContent);
+       if (tracker) {
+@@ -500,7 +500,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (params) {
+         providerOptions.incrementalPrompt = prepared.value.prompt;
+       }
+     }
+-    const ResponseSchema = Schema.mutable(Schema.Array(Response.Part(options.disableToolCallResolution === true ? makeToolkitWithEncodedParameters(toolkit) : makeToolkitWithOpaqueParameters(toolkit))));
++    const ResponseSchema = Schema.mutable(Schema.Array(allowUnknownToolCall(Response.Part(options.disableToolCallResolution === true ? makeToolkitWithEncodedParameters(toolkit) : makeToolkitWithOpaqueParameters(toolkit)), toolkit.tools, options.allowUnknownToolCalls === true && options.disableToolCallResolution === true)));
+     // If tool call resolution is disabled, return the response without
+     // resolving the tool calls that were generated
+     if (options.disableToolCallResolution === true) {
+@@ -583,7 +583,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (params) {
+           providerOptions.incrementalPrompt = prepared.value.prompt;
+         }
+       }
+-      const schema = Schema.NonEmptyArray(Response.StreamPart(Toolkit.empty));
++      const schema = Schema.NonEmptyArray(allowUnknownToolCall(Response.StreamPart(Toolkit.empty), Toolkit.empty.tools, options.allowUnknownToolCalls === true && options.disableToolCallResolution === true));
+       const decodeParts = Schema.decodeEffect(schema);
+       return pipe(streamWithNonIncrementalFallback(), Stream.mapArrayEffect(parts => decodeParts(parts).pipe(tracker ? Effect.tap(decodedParts => {
+         for (const part of decodedParts) {
+@@ -615,7 +615,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (params) {
+           providerOptions.incrementalPrompt = prepared.value.prompt;
+         }
+       }
+-      const schema = Schema.NonEmptyArray(Response.StreamPart(Toolkit.empty));
++      const schema = Schema.NonEmptyArray(allowUnknownToolCall(Response.StreamPart(Toolkit.empty), Toolkit.empty.tools, options.allowUnknownToolCalls === true && options.disableToolCallResolution === true));
+       const decodeParts = Schema.decodeEffect(schema);
+       return pipe(streamWithNonIncrementalFallback(), Stream.mapArrayEffect(parts => decodeParts(parts).pipe(tracker ? Effect.tap(decodedParts => {
+         for (const part of decodedParts) {
+@@ -682,7 +682,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (params) {
+         providerOptions.incrementalPrompt = prepared.value.prompt;
+       }
+     }
+-    const ResponseSchema = Schema.NonEmptyArray(Response.StreamPart(options.disableToolCallResolution === true ? makeToolkitWithEncodedParameters(toolkit) : makeToolkitWithOpaqueParameters(toolkit)));
++    const ResponseSchema = Schema.NonEmptyArray(allowUnknownToolCall(Response.StreamPart(options.disableToolCallResolution === true ? makeToolkitWithEncodedParameters(toolkit) : makeToolkitWithOpaqueParameters(toolkit)), toolkit.tools, options.allowUnknownToolCalls === true && options.disableToolCallResolution === true));
+     const decodeParts = Schema.decodeEffect(ResponseSchema);
+     // If tool call resolution is disabled, return the response without
+     // resolving the tool calls that were generated
+@@ -1305,6 +1305,16 @@ const resolveStructuredOutput = /*#__PURE__*/Effect.fnUntraced(function* (respon
+     reason: AiError.StructuredOutputError.fromSchemaError(error, text)
+   }));
+ });
++// Keep undeclared calls available to caller-owned settlement without offering extra tools.
++const allowUnknownToolCall = (schema, tools, enabled) => {
++  if (!enabled) return schema;
++  const call = Response.ToolCallPart("", Schema.Unknown);
++  const unknownCall = Schema.Struct({ ...call.fields, name: Schema.String }).check(
++    Schema.makeFilter((part) => !Object.hasOwn(tools, part.name))
++  );
++  return Schema.Union([schema, unknownCall]);
++};
++
+ const applySpanTransformer = (transformer, response, options) => {
+   if (Option.isSome(transformer)) {
+     transformer.value({
+diff --git a/dist/cluster/ClusterSchema.d.ts b/dist/cluster/ClusterSchema.d.ts
+index 60ac39653645f057453e421000f9178934613e0f..5f7c9659bbaf5b87adc21d6706055a89cf6d38de 100644
+--- a/dist/cluster/ClusterSchema.d.ts
++++ b/dist/cluster/ClusterSchema.d.ts
+@@ -9,6 +9,7 @@
+  */
+ import * as Cause from "../Cause.ts";
+ import * as Context from "../Context.ts";
++import type * as Effect from "../Effect.ts";
+ import type * as Rpc from "../rpc/Rpc.ts";
+ import type { EntityId } from "./EntityId.ts";
+ import type { Request } from "./Envelope.ts";
+@@ -156,6 +157,8 @@ export declare const ClientTracingEnabled: Context.Reference<boolean>;
+  * @category services
+  * @since 4.0.0
+  */
++export declare const BeforeTransaction: Context.Reference<((request: Request<Rpc.AnyWithProps>) => Effect.Effect<void>) | undefined>;
++
+ export declare const Dynamic: Context.Reference<(annotations: Context.Context<never>, request: Request<Rpc.AnyWithProps>) => Context.Context<never>>;
+ export {};
+ //# sourceMappingURL=ClusterSchema.d.ts.map
+\ No newline at end of file
+diff --git a/dist/cluster/ClusterSchema.js b/dist/cluster/ClusterSchema.js
+index fd656f1f38736ccd4e33bcca67f4652386dda1f3..55d4a0ac57ddb199df0126c09f59e860a04fe397 100644
+--- a/dist/cluster/ClusterSchema.js
++++ b/dist/cluster/ClusterSchema.js
+@@ -173,6 +173,8 @@ export const ClientTracingEnabled = /*#__PURE__*/Context.Reference("effect/clust
+  * @category services
+  * @since 4.0.0
+  */
++export const BeforeTransaction = Context.Reference("effect/cluster/ClusterSchema/BeforeTransaction", { defaultValue: constUndefined });
++
+ export const Dynamic = /*#__PURE__*/Context.Reference("effect/cluster/ClusterSchema/Dynamic", {
+   defaultValue: () => identity
+ });
+diff --git a/dist/cluster/ClusterWorkflowEngine.js b/dist/cluster/ClusterWorkflowEngine.js
+index 42f0a2dd3449e683c48ceefb8ed89fa4f324a688..e4ca3d16429fc1e5b4ff3d044ed8a36040f1f6f5 100644
+--- a/dist/cluster/ClusterWorkflowEngine.js
++++ b/dist/cluster/ClusterWorkflowEngine.js
+@@ -66,7 +66,15 @@ export const make = /*#__PURE__*/Effect.gen(function* () {
+   const ensureEntity = workflow => {
+     let entity = entities.get(workflow._tag);
+     if (!entity) {
+-      entity = makeWorkflowEntity(workflow);
++      entity = makeWorkflowEntity(workflow, ActivityRpc.annotate(ClusterSchema.BeforeTransaction, (request) => Effect.gen(function* () {
++        const { name } = Schema.decodeUnknownSync(ActivityRpc.payloadSchema)(request.payload);
++        const activityId = `${request.address.entityId}/${name}`;
++        while (!activities.has(activityId)) {
++          const latch = activityLatches.get(activityId) ?? Latch.makeUnsafe();
++          activityLatches.set(activityId, latch);
++          yield* latch.await;
++        }
++      })));
+       workflows.set(workflow._tag, workflow);
+       entities.set(workflow._tag, entity);
+     }
+@@ -598,7 +606,7 @@ const payloadParentKey = "~effect/cluster/ClusterWorkflowEngine/payloadParentKey
+ // arrives. This keeps completed and suspended executions from holding
+ // `maxResidentEntities` slots for the full `entityMaxIdleTime`.
+ const entityMaxIdleTime = /*#__PURE__*/Duration.seconds(10);
+-const makeWorkflowEntity = workflow => Entity.make(`Workflow/${workflow._tag}`, [Rpc.make("run", {
++const makeWorkflowEntity = (workflow, activityRpc = ActivityRpc) => Entity.make(`Workflow/${workflow._tag}`, [Rpc.make("run", {
+   payload: {
+     ...workflow.payloadSchema.fields,
+     [payloadParentKey]: Schema.optional(Schema.Struct({
+@@ -611,7 +619,7 @@ const makeWorkflowEntity = workflow => Entity.make(`Workflow/${workflow._tag}`,
+     success: workflow.successSchema,
+     error: workflow.errorSchema
+   })
+-}).annotate(ClusterSchema.Persisted, true).annotate(ClusterSchema.Uninterruptible, true), DeferredRpc, ResumeRpc, ActivityRpc]).annotateMerge(workflow.annotations);
++}).annotate(ClusterSchema.Persisted, true).annotate(ClusterSchema.Uninterruptible, true), DeferredRpc, ResumeRpc, activityRpc]).annotateMerge(workflow.annotations);
+ const makePartialWorkflowEntity = workflowName => Entity.make(`Workflow/${workflowName}`, [DeferredRpc, ResumeRpc, ActivityRpc]);
+ const activityPrimaryKey = (activity, attempt) => `${activity}/${attempt}`;
+ class ClockPayload extends /*#__PURE__*/Schema.Class(`Workflow/DurableClock/Run`)({
+diff --git a/dist/cluster/internal/entityManager.js b/dist/cluster/internal/entityManager.js
+index 5f5c983f7a5226cb6e38bad1a7df009e9a48fe6d..7aa1ca9df29a62378a95ce9e12a43bb5429ea6ed 100644
+--- a/dist/cluster/internal/entityManager.js
++++ b/dist/cluster/internal/entityManager.js
+@@ -371,7 +371,10 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (entity, buildHandl
+     return Effect.ensuring(effect, Effect.sync(() => scopeRemoveFinalizerUnsafe(callerScope, key)));
+   });
+   const requestWriteOptions = entry => {
+-    const onTransaction = Context.get(entry.message.annotations, WithTransaction) ? options.storage.withTransaction : undefined;
++    let onTransaction = Context.get(entry.message.annotations, WithTransaction) ? options.storage.withTransaction : undefined;
++    const before = Context.get(entry.message.annotations, ClusterSchema.BeforeTransaction);
++    const transaction = onTransaction;
++    if (transaction && before) onTransaction = (effect) => Effect.andThen(before(entry.message.envelope), transaction(effect));
+     const onCaller = entry.callerScope && bindToCaller(entry.callerScope);
+     if (!onCaller) return onTransaction && {
+       onRequest: onTransaction
+diff --git a/src/ai/LanguageModel.ts b/src/ai/LanguageModel.ts
+index e20a9e694fe5c95f5016df392369c45d87f7b40d..47651156e9c3b32aa69a04a772ae4bb6603f577b 100644
+--- a/src/ai/LanguageModel.ts
++++ b/src/ai/LanguageModel.ts
+@@ -305,6 +305,8 @@ export interface GenerateTextOptions<Tools extends Record<string, Tool.Any>> {
+    * resolver execution yourself.
+    */
+   readonly disableToolCallResolution?: boolean | undefined
++  /** Permit undeclared provider tool names for caller-owned settlement, only when automatic resolution is disabled. */
++  readonly allowUnknownToolCalls?: (string extends keyof Tools ? unknown extends Tool.ParametersEncoded<Tools[keyof Tools]> ? boolean : false : false) | undefined
+ }
+ 
+ type GenerateTextOptionsWithoutToolkit = Omit<GenerateTextOptions<{}>, "toolkit"> & {
+@@ -1123,7 +1125,7 @@ export const make: (params: {
+         }
+       }
+       const ResponseSchema = Schema.mutable(
+-        Schema.Array(Response.Part(Toolkit.empty))
++        Schema.Array(allowUnknownToolCall(Response.Part(Toolkit.empty), Toolkit.empty.tools, options.allowUnknownToolCalls === true && options.disableToolCallResolution === true))
+       )
+       const rawContent = yield* generateWithNonIncrementalFallback()
+       const content = yield* Schema.decodeEffect(ResponseSchema)(rawContent)
+@@ -1161,7 +1163,7 @@ export const make: (params: {
+         }
+       }
+       const ResponseSchema = Schema.mutable(
+-        Schema.Array(Response.Part(Toolkit.empty))
++        Schema.Array(allowUnknownToolCall(Response.Part(Toolkit.empty), Toolkit.empty.tools, options.allowUnknownToolCalls === true && options.disableToolCallResolution === true))
+       )
+       const rawContent = yield* generateWithNonIncrementalFallback()
+       const content = yield* Schema.decodeEffect(ResponseSchema)(rawContent)
+@@ -1235,11 +1237,11 @@ export const make: (params: {
+       }
+     }
+ 
+-    const ResponseSchema = Schema.mutable(Schema.Array(Response.Part(
++    const ResponseSchema = Schema.mutable(Schema.Array(allowUnknownToolCall(Response.Part(
+       options.disableToolCallResolution === true
+         ? makeToolkitWithEncodedParameters(toolkit)
+         : makeToolkitWithOpaqueParameters(toolkit)
+-    )))
++    ), toolkit.tools, options.allowUnknownToolCalls === true && options.disableToolCallResolution === true)))
+ 
+     // If tool call resolution is disabled, return the response without
+     // resolving the tool calls that were generated
+@@ -1386,7 +1388,7 @@ export const make: (params: {
+           providerOptions.incrementalPrompt = prepared.value.prompt
+         }
+       }
+-      const schema = Schema.NonEmptyArray(Response.StreamPart(Toolkit.empty))
++      const schema = Schema.NonEmptyArray(allowUnknownToolCall(Response.StreamPart(Toolkit.empty), Toolkit.empty.tools, options.allowUnknownToolCalls === true && options.disableToolCallResolution === true))
+       const decodeParts = Schema.decodeEffect(schema)
+       return pipe(
+         streamWithNonIncrementalFallback(),
+@@ -1435,7 +1437,7 @@ export const make: (params: {
+           providerOptions.incrementalPrompt = prepared.value.prompt
+         }
+       }
+-      const schema = Schema.NonEmptyArray(Response.StreamPart(Toolkit.empty))
++      const schema = Schema.NonEmptyArray(allowUnknownToolCall(Response.StreamPart(Toolkit.empty), Toolkit.empty.tools, options.allowUnknownToolCalls === true && options.disableToolCallResolution === true))
+       const decodeParts = Schema.decodeEffect(schema)
+       return pipe(
+         streamWithNonIncrementalFallback(),
+@@ -1538,11 +1540,11 @@ export const make: (params: {
+       }
+     }
+ 
+-    const ResponseSchema = Schema.NonEmptyArray(Response.StreamPart(
++    const ResponseSchema = Schema.NonEmptyArray(allowUnknownToolCall(Response.StreamPart(
+       options.disableToolCallResolution === true
+         ? makeToolkitWithEncodedParameters(toolkit)
+         : makeToolkitWithOpaqueParameters(toolkit)
+-    ))
++    ), toolkit.tools, options.allowUnknownToolCalls === true && options.disableToolCallResolution === true))
+     const decodeParts = Schema.decodeEffect(ResponseSchema)
+ 
+     // If tool call resolution is disabled, return the response without
+@@ -2512,6 +2514,16 @@ const resolveStructuredOutput = Effect.fnUntraced(function*<
+     }))
+ })
+ 
++// Keep undeclared calls available to caller-owned settlement without offering extra tools.
++const allowUnknownToolCall = <S extends Schema.Constraint>(schema: S, tools: Readonly<Record<string, Tool.Any>>, enabled: boolean) => {
++  if (!enabled) return schema;
++  const call = Response.ToolCallPart("", Schema.Unknown);
++  const unknownCall = Schema.Struct({ ...call.fields, name: Schema.String }).check(
++    Schema.makeFilter((part) => !Object.hasOwn(tools, part.name))
++  );
++  return Schema.Union([schema, unknownCall]);
++};
++
+ const applySpanTransformer = (
+   transformer: Option.Option<SpanTransformer>,
+   response: ReadonlyArray<Response.AllParts<any>>,
+diff --git a/src/cluster/ClusterSchema.ts b/src/cluster/ClusterSchema.ts
+index c6744cd31122762b3651d4239761fc875e3b222e..fd74bf004f05110d3b090cb53e459cdd448d7c15 100644
+--- a/src/cluster/ClusterSchema.ts
++++ b/src/cluster/ClusterSchema.ts
+@@ -9,6 +9,7 @@
+  */
+ import * as Cause from "../Cause.ts"
+ import * as Context from "../Context.ts"
++import type * as Effect from "../Effect.ts"
+ import { constFalse, constTrue, constUndefined, identity } from "../Function.ts"
+ import type * as Rpc from "../rpc/Rpc.ts"
+ import type { EntityId } from "./EntityId.ts"
+@@ -173,6 +174,12 @@ export const ClientTracingEnabled = Context.Reference<boolean>("effect/cluster/C
+   defaultValue: constTrue
+ })
+ 
++/** Wait for request readiness before acquiring its storage transaction. */
++export const BeforeTransaction = Context.Reference<((request: Request<Rpc.AnyWithProps>) => Effect.Effect<void>) | undefined>(
++  "effect/cluster/ClusterSchema/BeforeTransaction", { defaultValue: constUndefined }
++)
++
++
+ /**
+  * Context reference for deriving request annotations from a cluster request.
+  *
+diff --git a/src/cluster/ClusterWorkflowEngine.ts b/src/cluster/ClusterWorkflowEngine.ts
+index b7eebd48f9448f92a2e04824cb37ad0785d6f4bf..3dcfc2e56c18ccd18760112f10a8337d102a2d3e 100644
+--- a/src/cluster/ClusterWorkflowEngine.ts
++++ b/src/cluster/ClusterWorkflowEngine.ts
+@@ -112,7 +112,15 @@ export const make = Effect.gen(function*() {
+   const ensureEntity = (workflow: Workflow.Any) => {
+     let entity = entities.get(workflow._tag)
+     if (!entity) {
+-      entity = makeWorkflowEntity(workflow) as any
++      entity = makeWorkflowEntity(workflow, ActivityRpc.annotate(ClusterSchema.BeforeTransaction, (request) => Effect.gen(function* () {
++        const { name } = Schema.decodeUnknownSync(ActivityRpc.payloadSchema)(request.payload);
++        const activityId = `${request.address.entityId}/${name}`;
++        while (!activities.has(activityId)) {
++          const latch = activityLatches.get(activityId) ?? Latch.makeUnsafe();
++          activityLatches.set(activityId, latch);
++          yield* latch.await;
++        }
++      }))) as any
+       workflows.set(workflow._tag, workflow)
+       entities.set(workflow._tag, entity as any)
+     }
+@@ -819,7 +827,7 @@ const payloadParentKey = "~effect/cluster/ClusterWorkflowEngine/payloadParentKey
+ // `maxResidentEntities` slots for the full `entityMaxIdleTime`.
+ const entityMaxIdleTime = Duration.seconds(10)
+ 
+-const makeWorkflowEntity = (workflow: Workflow.Any) =>
++const makeWorkflowEntity = (workflow: Workflow.Any, activityRpc: typeof ActivityRpc = ActivityRpc) =>
+   Entity.make(`Workflow/${workflow._tag}`, [
+     Rpc.make("run", {
+       payload: {
+@@ -840,7 +848,7 @@ const makeWorkflowEntity = (workflow: Workflow.Any) =>
+ 
+     DeferredRpc,
+     ResumeRpc,
+-    ActivityRpc
++    activityRpc
+   ]).annotateMerge(workflow.annotations)
+ 
+ const makePartialWorkflowEntity = (workflowName: string) =>
+diff --git a/src/cluster/internal/entityManager.ts b/src/cluster/internal/entityManager.ts
+index 12bc386ad721ca058280ea133ad1ea17a99423e5..fdca257c066f5c2781aeb07e8f6e02a3b6c4ab6c 100644
+--- a/src/cluster/internal/entityManager.ts
++++ b/src/cluster/internal/entityManager.ts
+@@ -623,9 +623,12 @@ export const make = Effect.fnUntraced(function*<
+   const requestWriteOptions = (
+     entry: { readonly message: Message.IncomingRequestLocal<any>; readonly callerScope?: Scope.Scope | undefined }
+   ): Parameters<EntityState["write"]>[2] => {
+-    const onTransaction = Context.get(entry.message.annotations, WithTransaction)
++    let onTransaction = Context.get(entry.message.annotations, WithTransaction)
+       ? options.storage.withTransaction
+       : undefined
++    const before = Context.get(entry.message.annotations, ClusterSchema.BeforeTransaction);
++    const transaction = onTransaction;
++    if (transaction && before) onTransaction = (effect) => Effect.andThen(before(entry.message.envelope), transaction(effect));
+     const onCaller = entry.callerScope && bindToCaller(entry.callerScope)
+     if (!onCaller) return onTransaction && { onRequest: onTransaction }
+     return { onRequest: onTransaction ? (effect) => onCaller(onTransaction(effect)) : onCaller }

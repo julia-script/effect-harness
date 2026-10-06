@@ -2,21 +2,40 @@
   "name": "@effect-harness/durable",
   "version": "0.0.0",
   "files": [
-    "dist"
+    "dist",
+    "NOTICE"
   ],
   "type": "module",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
     }
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch --preserveWatchOutput",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "cd ../.. && vitest run packages/durable/test"
   },
   "dependencies": {
+    "@effect-harness/harness": "workspace:*",
     "effect": "catalog:"
+  },
+  "peerDependencies": {
+    "@effect/sql-sqlite-bun": "4.0.0-rc.118",
+    "@effect/sql-sqlite-node": "4.0.0-rc.118"
+  },
+  "peerDependenciesMeta": {
+    "@effect/sql-sqlite-bun": {
+      "optional": true
+    },
+    "@effect/sql-sqlite-node": {
+      "optional": true
+    }
   }
 }

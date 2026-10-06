@@ -14,21 +14,37 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "typecheck": "turbo run typecheck",
+    "typecheck": "turbo run typecheck && tsc --project tsconfig.test.json",
     "lint": "oxlint --disable-nested-config .",
     "format": "oxfmt --write .",
     "check": "oxfmt --check . && oxlint --disable-nested-config . && bun run typecheck",
     "check:write": "oxfmt --write . && oxlint --disable-nested-config --fix .",
-    "prepare": "effect-tsgo patch --oxlint"
+    "prepare": "effect-tsgo patch --oxlint",
+    "test": "turbo run test"
   },
   "devDependencies": {
+    "@effect/platform-bun": "4.0.0-rc.118",
+    "@effect/platform-node": "4.0.0-rc.118",
+    "@effect/sql-sqlite-bun": "4.0.0-rc.118",
+    "@effect/sql-sqlite-node": "4.0.0-rc.118",
     "@effect/tsgo": "0.48.1",
+    "@effect/vitest": "4.0.0-rc.118",
     "@types/bun": "1.4.2",
+    "@types/diff": "^8.0.0",
+    "effect": "catalog:",
     "oxfmt": "0.72.0",
     "oxlint": "1.86.0",
     "oxlint-tsgolint": "7.0.2003",
     "turbo": "2.11.7",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
   },
-  "packageManager": "bun@1.4.2"
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.0-rc.118",
+    "effect": "4.0.0-rc.118"
+  },
+  "packageManager": "bun@1.4.2",
+  "patchedDependencies": {
+    "effect@4.0.0-rc.118": "patches/effect@4.0.0-rc.118.patch"
+  }
 }

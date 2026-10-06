@@ -1,0 +1,28 @@
+{
+  "name": "@effect-harness/auth",
+  "version": "0.0.0",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch --preserveWatchOutput",
+    "typecheck": "tsc --noEmit",
+    "test": "cd ../.. && vitest run packages/auth/test"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "jose": "6.2.12"
+  }
+}
