@@ -10,6 +10,7 @@ import * as Fiber from 'effect/Fiber'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
+import * as PlatformError from 'effect/PlatformError'
 import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
@@ -151,6 +152,185 @@ describe('auth', () => {
       assert.isFalse(JSON.stringify(rejected).includes('secret-echo'))
       assert.isFalse(JSON.stringify(rejected).includes('not-logged'))
     }),
+  )
+
+  it.effect(
+    'interruption during exclusive temporary creation removes staging and preserves the previous grant',
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const directory = yield* fs.makeTempDirectoryScoped()
+          const path = `${directory}/private/credentials.json`
+          const previous = {
+            kind: 'apiKey',
+            provider: 'openai',
+            apiKey: Redacted.make('original'),
+          } as const
+          const initial = Context.get(
+            yield* Layer.build(Store.layerProtectedFile({ path })),
+            Store.CredentialStore,
+          )
+          yield* initial.set('key', previous)
+          const created = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          let temporary = ''
+          const delayed = FileSystem.FileSystem.of({
+            ...fs,
+            open: (name, options) =>
+              fs.open(name, options).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    temporary = name
+                    assert.strictEqual(options?.flag, 'wx')
+                    assert.strictEqual(options?.mode, 0o600)
+                  }),
+                ),
+                Effect.tap(() => Deferred.succeed(created, undefined)),
+                Effect.tap(() => Deferred.await(release)),
+              ),
+          })
+          const store = Context.get(
+            yield* Layer.build(
+              Store.layerProtectedFile({ path }).pipe(
+                Layer.provide(Layer.succeed(FileSystem.FileSystem, delayed)),
+              ),
+            ),
+            Store.CredentialStore,
+          )
+          const owner = yield* Effect.forkChild(
+            store.set('key', { ...previous, apiKey: Redacted.make('replacement') }),
+          )
+          yield* Deferred.await(created)
+          assert.isTrue(yield* fs.exists(temporary))
+          const interrupted = yield* Effect.forkChild(Fiber.interrupt(owner), {
+            startImmediately: true,
+          })
+          yield* Deferred.succeed(release, undefined)
+          yield* Fiber.join(interrupted)
+          assert.isFalse(yield* fs.exists(temporary))
+          assert.isFalse(yield* fs.exists(`${path}.lock`))
+          assert.deepStrictEqual(yield* initial.get('key'), Option.some(previous))
+        }),
+      ).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer, BunCrypto.layer))),
+  )
+
+  it.effect(
+    'a partial staging write retains its failure cause and closes the handle before removing its file',
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const directory = yield* fs.makeTempDirectoryScoped()
+          const path = `${directory}/private/credentials.json`
+          const previous = {
+            kind: 'apiKey',
+            provider: 'openai',
+            apiKey: Redacted.make('original'),
+          } as const
+          const initial = Context.get(
+            yield* Layer.build(Store.layerProtectedFile({ path })),
+            Store.CredentialStore,
+          )
+          yield* initial.set('key', previous)
+          const caught = new PlatformError.PlatformError(
+            new PlatformError.SystemError({
+              _tag: 'Unknown',
+              module: 'FileSystem',
+              method: 'writeAll',
+              description: 'injected partial write',
+            }),
+          )
+          let temporary = ''
+          let closed = false
+          let removed = false
+          const failing = FileSystem.FileSystem.of({
+            ...fs,
+            open: (name, options) =>
+              options?.flag !== 'wx'
+                ? fs.open(name, options)
+                : Effect.gen(function* () {
+                    temporary = name
+                    yield* Effect.addFinalizer(() =>
+                      Effect.sync(() => {
+                        closed = true
+                      }),
+                    )
+                    const handle = yield* fs.open(name, options)
+                    return {
+                      ...handle,
+                      writeAll: (bytes: Uint8Array) =>
+                        handle
+                          .write(bytes.subarray(0, 4))
+                          .pipe(Effect.andThen(Effect.fail(caught))),
+                    }
+                  }),
+            remove: (name, options) =>
+              Effect.gen(function* () {
+                if (name === temporary) {
+                  assert.isTrue(closed)
+                  assert.strictEqual((yield* fs.stat(name)).size, 4n)
+                  removed = true
+                }
+                yield* fs.remove(name, options)
+              }),
+          })
+          const store = Context.get(
+            yield* Layer.build(
+              Store.layerProtectedFile({ path }).pipe(
+                Layer.provide(Layer.succeed(FileSystem.FileSystem, failing)),
+              ),
+            ),
+            Store.CredentialStore,
+          )
+          const error = yield* store
+            .set('key', { ...previous, apiKey: Redacted.make('replacement') })
+            .pipe(Effect.flip)
+          assert.strictEqual(error.reason._tag, 'AuthStorageError')
+          assert.strictEqual(error.cause, caught)
+          assert.isTrue(removed)
+          assert.isFalse(yield* fs.exists(temporary))
+          assert.isFalse(yield* fs.exists(`${path}.lock`))
+          assert.deepStrictEqual(yield* initial.get('key'), Option.some(previous))
+        }),
+      ).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer, BunCrypto.layer))),
+  )
+
+  it.effect("exclusive staging collision preserves the other owner's file", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const directory = yield* fs.makeTempDirectoryScoped()
+        const path = `${directory}/private/credentials.json`
+        let collision = ''
+        const occupied = FileSystem.FileSystem.of({
+          ...fs,
+          open: (name, options) =>
+            options?.flag !== 'wx'
+              ? fs.open(name, options)
+              : Effect.gen(function* () {
+                  collision = name
+                  yield* fs.writeFileString(name, 'another owner', { flag: 'wx', mode: 0o600 })
+                  return yield* fs.open(name, options)
+                }),
+        })
+        const store = Context.get(
+          yield* Layer.build(
+            Store.layerProtectedFile({ path }).pipe(
+              Layer.provide(Layer.succeed(FileSystem.FileSystem, occupied)),
+            ),
+          ),
+          Store.CredentialStore,
+        )
+        const error = yield* store
+          .set('key', { kind: 'apiKey', provider: 'openai', apiKey: Redacted.make('replacement') })
+          .pipe(Effect.flip)
+        assert.strictEqual(error.reason._tag, 'AuthStorageError')
+        assert.strictEqual(yield* fs.readFileString(collision), 'another owner')
+        assert.isFalse(yield* fs.exists(path))
+        assert.isFalse(yield* fs.exists(`${path}.lock`))
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer, BunCrypto.layer))),
   )
 
   it.effect(

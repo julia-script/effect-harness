@@ -35,7 +35,7 @@ export interface Case {
   readonly run: Effect.Effect<void, FileError | ExecutionError, Env>
 }
 
-/** Acquires a fresh writable cwd per Layer build; Env cleanup precedes directory removal. */
+/** Acquires a fresh writable cwd per Layer build; resource scope closes before directory removal. */
 export const freshLayer = <E, R>(
   make: (cwd: string) => Layer.Layer<Env, E, R>,
 ): Layer.Layer<Env, E | import('effect/PlatformError').PlatformError, R | FileSystem.FileSystem> =>
@@ -44,10 +44,11 @@ export const freshLayer = <E, R>(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const cwd = yield* fs.makeTempDirectoryScoped({ prefix: 'harness-env-conformance-' })
-      const context = yield* Layer.build(make(cwd))
-      const env = Context.get(context, Env)
-      yield* Effect.addFinalizer(() => env.cleanup)
-      return env
+      const resources = yield* Effect.acquireRelease(Scope.make(), (scope, exit) =>
+        Scope.close(scope, exit),
+      )
+      const context = yield* Layer.build(make(cwd)).pipe(Scope.provide(resources))
+      return Context.get(context, Env)
     }),
   )
 
@@ -153,7 +154,8 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
       Effect.gen(function* () {
         const env = yield* Env
         yield* env.writeFile('data.txt', 'hello world')
-        const reader = yield* env.openBinaryReader('data.txt')
+        const readerScope = yield* Scope.fork(yield* Scope.Scope)
+        const reader = yield* env.openBinaryReader('data.txt').pipe(Scope.provide(readerScope))
         const info = yield* reader.info
         assert.strictEqual(info.name, 'data.txt')
         assert.strictEqual(info.kind, 'file')
@@ -168,8 +170,8 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
           assert.strictEqual((yield* reader.read(offset, length)).length, 0)
         assert.strictEqual((yield* failure(reader.read(-1, 1))).code, 'invalid')
         assert.strictEqual((yield* failure(reader.read(0, 1.5))).code, 'invalid')
-        yield* reader.close
-        yield* reader.close
+        yield* Scope.close(readerScope, Exit.void)
+        yield* Scope.close(readerScope, Exit.void)
         assert.strictEqual((yield* failure(reader.read(0, 1))).code, 'invalid')
         assert.strictEqual((yield* failure(reader.info)).code, 'invalid')
       }),
@@ -269,12 +271,13 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
       Effect.gen(function* () {
         const env = yield* Env
         yield* env.createDir('empty')
-        const reader = yield* env.openDirReader('empty')
+        const readerScope = yield* Scope.fork(yield* Scope.Scope)
+        const reader = yield* env.openDirReader('empty').pipe(Scope.provide(readerScope))
         assert.deepStrictEqual(yield* reader.next(10), { entries: [], done: true })
         assert.deepStrictEqual(yield* reader.next(10), { entries: [], done: true })
         assert.strictEqual((yield* failure(reader.next(0))).code, 'invalid')
-        yield* reader.close
-        yield* reader.close
+        yield* Scope.close(readerScope, Exit.void)
+        yield* Scope.close(readerScope, Exit.void)
         assert.strictEqual((yield* failure(reader.next(1))).code, 'invalid')
       }),
     ),
@@ -421,15 +424,16 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
       'watch stops reporting once closed',
       Effect.gen(function* () {
         const env = yield* Env
-        const watcher = yield* env.watch([{ path: 'file.txt' }])
+        const watcherScope = yield* Scope.fork(yield* Scope.Scope)
+        const watcher = yield* env.watch([{ path: 'file.txt' }]).pipe(Scope.provide(watcherScope))
         const changes = yield* Ref.make<ReadonlyArray<WatchChange>>([])
         yield* watcher.changes.pipe(
           Stream.runForEach((change) => Ref.update(changes, (old) => [...old, change])),
           Effect.forkScoped,
         )
         assert.ok(watcher.mode === 'native' || watcher.mode === 'polling')
-        yield* watcher.close
-        yield* watcher.close
+        yield* Scope.close(watcherScope, Exit.void)
+        yield* Scope.close(watcherScope, Exit.void)
         yield* env.writeFile('file.txt', 'x')
         yield* Effect.sleep('300 millis')
         assert.deepStrictEqual(yield* Ref.get(changes), [])

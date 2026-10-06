@@ -1,12 +1,14 @@
 import * as Context from 'effect/Context'
 import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Path from 'effect/Path'
 import * as Schedule from 'effect/Schedule'
 import * as Schema from 'effect/Schema'
+import * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
 import {
   AuthBusyError,
@@ -220,16 +222,24 @@ export const layerProtectedFile = (options: {
         const temporary = `${file}.${uuid}.tmp`
         yield* Effect.scoped(
           Effect.gen(function* () {
-            yield* fs
-              .writeFileString(temporary, JSON.stringify(encoded), { flag: 'wx', mode: 0o600 })
-              .pipe(Effect.mapError(storageError))
-            yield* Effect.addFinalizer(() =>
-              fs.remove(temporary, { force: true }).pipe(Effect.orDie),
+            const stagingScope = yield* Effect.acquireRelease(Scope.make(), (scope, exit) =>
+              Scope.close(scope, exit),
             )
-            const handle = yield* fs
-              .open(temporary, { flag: 'r+' })
+            // Exclusive open establishes ownership before writing; close the handle before removal.
+            const handle = yield* Effect.acquireRelease(
+              fs
+                .open(temporary, { flag: 'wx', mode: 0o600 })
+                .pipe(Scope.provide(stagingScope), Effect.mapError(storageError)),
+              (_, exit) =>
+                Scope.close(stagingScope, exit).pipe(
+                  Effect.andThen(fs.remove(temporary, { force: true }).pipe(Effect.orDie)),
+                ),
+            )
+            yield* handle
+              .writeAll(new TextEncoder().encode(JSON.stringify(encoded)))
               .pipe(Effect.mapError(storageError))
             yield* handle.sync.pipe(Effect.mapError(storageError))
+            yield* Scope.close(stagingScope, Exit.void)
             yield* fs.rename(temporary, file).pipe(Effect.mapError(storageError))
             const dir = yield* fs.open(directory, { flag: 'r' }).pipe(Effect.mapError(storageError))
             yield* dir.sync.pipe(Effect.mapError(storageError))

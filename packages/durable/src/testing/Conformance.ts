@@ -1,4 +1,7 @@
 import * as Effect from 'effect/Effect'
+import * as Scope from 'effect/Scope'
+import * as Exit from 'effect/Exit'
+import { ResourceScope } from './Storage.ts'
 import * as Schema from 'effect/Schema'
 import * as Document from '../Document.ts'
 import * as Record from '../Record.ts'
@@ -65,7 +68,10 @@ const failure = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.
 /** Storage semantics shared by every backend, independent from the selected test runner. */
 export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case> => {
   const cases: Array<Case> = []
-  const test = (name: string, run: Effect.Effect<void, StorageError, Store | Session.Session>) => {
+  const test = (
+    name: string,
+    run: Effect.Effect<void, StorageError, Store | Session.Session | ResourceScope>,
+  ) => {
     cases.push({ name, run })
   }
   test(
@@ -861,8 +867,10 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
       const store = yield* Store
       const session = yield* Session.Session
       yield* session.root()
-      yield* session.close
-      yield* session.close
+      const scope = yield* ResourceScope
+      yield* Scope.close(scope, Exit.succeed(undefined))
+      yield* Scope.close(scope, Exit.succeed(undefined))
+      yield* session.awaitClosed
       for (const operation of [
         store.read.pipe(Effect.as(null)),
         store.committed.pipe(Effect.as(null)),

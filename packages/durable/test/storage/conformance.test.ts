@@ -9,7 +9,7 @@ import * as Jsonl from '../../src/storage/Jsonl.ts'
 import * as Memory from '../../src/storage/Memory.ts'
 import * as Sqlite from '../../src/storage/Sqlite.ts'
 import { createStorageConformance } from '../../src/testing/Conformance.ts'
-import { sessionLayer } from '../../src/testing/Storage.ts'
+import { withStorage } from '../../src/testing/Storage.ts'
 import type { Store } from '../../src/Store.ts'
 
 const env = Layer.merge(NodeFileSystem.layer, Path.layer)
@@ -33,7 +33,5 @@ const backends: ReadonlyArray<{
 for (const backend of backends)
   describe(backend.name, () => {
     for (const test of createStorageConformance(assert))
-      it.effect(test.name, () =>
-        Effect.scoped(test.run.pipe(Effect.provide(sessionLayer(backend.layer)))),
-      )
+      it.effect(test.name, () => withStorage(test.run, backend.layer))
   })

@@ -1,5 +1,7 @@
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
+import * as Scope from 'effect/Scope'
+import * as Exit from 'effect/Exit'
 import * as FileSystem from 'effect/FileSystem'
 import * as Fiber from 'effect/Fiber'
 import * as Ref from 'effect/Ref'
@@ -29,10 +31,13 @@ describe('watch supervision coverage and scoped close', () => {
           Effect.gen(function* () {
             const env = yield* Env
             const fs = yield* FileSystem.FileSystem
-            const watcher = yield* env.watch([{ path: 'missing/tree', recursive: true }], {
-              mode,
-              pollIntervalMs: 20,
-            })
+            const watcherScope = yield* Scope.fork(yield* Scope.Scope)
+            const watcher = yield* env
+              .watch([{ path: 'missing/tree', recursive: true }], {
+                mode,
+                pollIntervalMs: 20,
+              })
+              .pipe(Scope.provide(watcherScope))
             const target = env.path.join(env.cwd, 'missing/tree/a')
             const created = yield* until(watcher, target).pipe(Effect.forkChild)
             yield* env.writeFile('missing/tree/a', 'one')
@@ -51,16 +56,19 @@ describe('watch supervision coverage and scoped close', () => {
             const removed = yield* until(watcher, target).pipe(Effect.forkChild)
             yield* env.remove('missing/tree/a')
             yield* Fiber.join(removed)
-            yield* watcher.close
+            yield* Scope.close(watcherScope, Exit.void)
             yield* env.writeFile('real', 'before')
             yield* fs.symlink(env.path.join(env.cwd, 'real'), env.path.join(env.cwd, 'link'))
-            const linked = yield* env.watch([{ path: 'link' }], { mode, pollIntervalMs: 20 })
+            const linkedScope = yield* Scope.fork(yield* Scope.Scope)
+            const linked = yield* env
+              .watch([{ path: 'link' }], { mode, pollIntervalMs: 20 })
+              .pipe(Scope.provide(linkedScope))
             const event = yield* until(linked, env.path.join(env.cwd, 'link')).pipe(
               Effect.forkChild,
             )
             yield* env.writeFile('real', 'after')
             yield* Fiber.join(event)
-            yield* linked.close
+            yield* Scope.close(linkedScope, Exit.void)
           }),
         ),
     )
@@ -75,13 +83,16 @@ describe('watch supervision coverage and scoped close', () => {
           const fs = yield* FileSystem.FileSystem
           yield* env.writeFile('external', 'before')
           yield* fs.symlink(env.path.join(env.cwd, 'external'), env.path.join(env.cwd, 'tree/link'))
-          const watcher = yield* env.watch(
-            [
-              { path: 'tree', recursive: true, exclude: { hidden: true, names: ['skip'] } },
-              { path: 'tree/visible' },
-            ],
-            { mode: 'native' },
-          )
+          const watcherScope = yield* Scope.fork(yield* Scope.Scope)
+          const watcher = yield* env
+            .watch(
+              [
+                { path: 'tree', recursive: true, exclude: { hidden: true, names: ['skip'] } },
+                { path: 'tree/visible' },
+              ],
+              { mode: 'native' },
+            )
+            .pipe(Scope.provide(watcherScope))
           const seen = yield* Ref.make<ReadonlyArray<WatchChange>>([])
           const listening = yield* watcher.changes.pipe(
             Stream.runForEach((change) => Ref.update(seen, (values) => [...values, change])),
@@ -113,8 +124,8 @@ describe('watch supervision coverage and scoped close', () => {
             ),
             true,
           )
-          yield* watcher.close
-          yield* watcher.close
+          yield* Scope.close(watcherScope, Exit.void)
+          yield* Scope.close(watcherScope, Exit.void)
           const count = (yield* Ref.get(seen)).length
           yield* env.writeFile('tree/visible/sub/file', 'late')
           yield* Effect.sleep(100)
@@ -140,6 +151,7 @@ describe('watch supervision coverage and scoped close', () => {
           yield* fs.symlink(path.join(env.cwd, 'external'), nested)
           yield* fs.symlink(path.join(env.cwd, 'external'), explicit)
           const callbacks = new Map<string, (changed: string | undefined) => void>()
+          const watcherScope = yield* Scope.fork(yield* Scope.Scope)
           const watcher = yield* Watch.make(
             fs,
             path,
@@ -157,7 +169,7 @@ describe('watch supervision coverage and scoped close', () => {
                 ).pipe(Effect.asVoid),
             },
             [{ path: path.join(env.cwd, 'tree'), recursive: true }, { path: explicit }],
-          )
+          ).pipe(Scope.provide(watcherScope))
           const observed = yield* Queue.unbounded<WatchChange>()
           const listening = yield* watcher.changes.pipe(
             Stream.runForEach((change) => Queue.offer(observed, change)),
@@ -192,7 +204,7 @@ describe('watch supervision coverage and scoped close', () => {
           let replacement = yield* Queue.take(observed).pipe(Effect.timeout(3000))
           while (!hasPath(replacement, nested))
             replacement = yield* Queue.take(observed).pipe(Effect.timeout(3000))
-          yield* watcher.close
+          yield* Scope.close(watcherScope, Exit.void)
           yield* Fiber.interrupt(listening)
         }),
       ),

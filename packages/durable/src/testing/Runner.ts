@@ -1,9 +1,9 @@
-import * as Effect from 'effect/Effect'
+import type * as Effect from 'effect/Effect'
 import type * as Layer from 'effect/Layer'
 import type { StorageError } from '../StorageError.ts'
 import type { Store } from '../Store.ts'
 import { createStorageConformance } from './Conformance.ts'
-import { sessionLayer, type Assertions } from './Storage.ts'
+import { withStorage, type Assertions } from './Storage.ts'
 
 export interface Runner<E, R> {
   readonly describe: (name: string, suite: () => void) => unknown
@@ -18,8 +18,6 @@ export const registerStorageConformance = <E, R>(
 ): void => {
   runner.describe(name, () => {
     for (const test of createStorageConformance(assertions))
-      runner.test(test.name, () =>
-        Effect.scoped(test.run.pipe(Effect.provide(sessionLayer(backend)))),
-      )
+      runner.test(test.name, () => withStorage<void, StorageError, never, E, R>(test.run, backend))
   })
 }

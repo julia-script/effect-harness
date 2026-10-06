@@ -1,3 +1,6 @@
+import { ResourceScope, withLayer } from '../../src/testing/Storage.ts'
+import * as Exit from 'effect/Exit'
+import * as Scope from 'effect/Scope'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
@@ -104,9 +107,9 @@ describe('committed observations', () => {
         yield* update(session, 7)
         yield* Effect.sleep('50 millis')
         assert.strictEqual(watch.value?.count, 7)
-        yield* session.close
+        yield* Scope.close(yield* ResourceScope, Exit.void)
         assert.strictEqual(yield* watch.closed, 'session_closed')
-      }).pipe(Effect.provide(sessionLayer(Memory.layer))),
+      }).pipe((effect) => withLayer(effect, sessionLayer(Memory.layer))),
     ),
   )
   it.effect(

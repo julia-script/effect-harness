@@ -43,7 +43,6 @@ export interface BinaryReader {
     readonly startLine: number
     readonly endLine?: number | undefined
   }) => Effect.Effect<LineScan, FileError>
-  readonly close: Effect.Effect<void>
 }
 export interface TextLine {
   readonly text: string
@@ -51,7 +50,6 @@ export interface TextLine {
 }
 export interface TextLineReader {
   readonly readLine: Effect.Effect<TextLine | undefined, FileError>
-  readonly close: Effect.Effect<void>
 }
 export interface DirReader {
   readonly next: (
@@ -60,7 +58,6 @@ export interface DirReader {
     { readonly entries: ReadonlyArray<FileInfo>; readonly done: boolean },
     FileError
   >
-  readonly close: Effect.Effect<void>
 }
 export interface WatchTarget {
   readonly path: string
@@ -76,7 +73,6 @@ export type WatchChange =
 export interface Watcher {
   readonly mode: 'native' | 'polling'
   readonly changes: Stream.Stream<WatchChange>
-  readonly close: Effect.Effect<void>
 }
 export interface WatchOptions {
   readonly mode?: 'native' | 'polling' | undefined
@@ -199,7 +195,6 @@ export class Env extends Context.Service<
       command: string | ReadonlyArray<string>,
       options?: ShellExecOptions,
     ) => Effect.Effect<ShellExecResult, ExecutionError>
-    readonly cleanup: Effect.Effect<void>
   }
 >()('@effect-harness/harness/Env') {}
 export const fromPlatform = (error: PlatformError.PlatformError, path?: string): FileError => {
@@ -308,10 +303,10 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     const close = lock.withPermit(
       Effect.sync(() => {
         closed = true
-      }).pipe(Effect.andThen(reader.close)),
+      }),
     )
     yield* Effect.addFinalizer(() => close)
-    return { readLine, close }
+    return { readLine }
   })
   const append = (value: string, content: string | Uint8Array) =>
     io(value, (resolved) =>
@@ -441,7 +436,6 @@ export const make = Effect.fnUntraced(function* (options: Options) {
         return target
       }),
     exec: shell.exec,
-    cleanup: shell.cleanup,
   })
 })
 export const layer = (

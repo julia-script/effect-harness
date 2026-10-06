@@ -1,3 +1,5 @@
+import { ResourceScope, withLayer } from '../../src/testing/Storage.ts'
+import * as Exit from 'effect/Exit'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
@@ -294,7 +296,10 @@ describe('committed conversation mounts', () => {
         Effect.gen(function* () {
           const { session, views, root } = yield* initialize
           const bad = yield* views.watch(root.id)
-          const state = yield* views.state(root.id)
+          const stateScope = yield* Effect.acquireRelease(Scope.make(), (scope, exit) =>
+            Scope.close(scope, exit),
+          )
+          const state = yield* views.state(root.id).pipe(Scope.provide(stateScope))
           const listener = yield* bad
             .listen(() => Effect.fail('listener'))
             .pipe(Effect.exit, Effect.forkScoped)
@@ -303,13 +308,18 @@ describe('committed conversation mounts', () => {
           yield* Fiber.join(listener)
           yield* settle
           assert.strictEqual(state.value.entries.length, 1)
-          yield* state.dispose
+          yield* Scope.close(stateScope, Exit.void)
           const rebuilt = yield* views.watch(root.id)
           assert.notStrictEqual(rebuilt.value, state.value)
-          yield* session.close
+          yield* Scope.close(yield* ResourceScope, Exit.void)
           assert.strictEqual(yield* rebuilt.closed, 'session_closed')
           assert.ok(yield* views.watch(root.id).pipe(Effect.flip))
-        }).pipe(Effect.provide(layers)),
+        }).pipe((effect) =>
+          withLayer(
+            effect.pipe(Effect.provide(View.layer)),
+            Session.layer.pipe(Layer.provideMerge(Memory.layer)),
+          ),
+        ),
       ),
   )
 

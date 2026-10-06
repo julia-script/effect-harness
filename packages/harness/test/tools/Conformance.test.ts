@@ -91,12 +91,25 @@ describe('public conformance adapter and scope ownership', () => {
         const directories: string[] = []
         const cleaned: string[] = []
         const adapter = Conformance.freshLayer((cwd) =>
-          patched(cwd, (env) => ({
-            ...env,
-            cleanup: Effect.sync(() => {
-              cleaned.push(cwd)
-            }).pipe(Effect.andThen(env.cleanup)),
-          })),
+          Layer.effect(
+            Env.Env,
+            Effect.gen(function* () {
+              const fs = yield* FileSystem.FileSystem
+              const env = Context.get(yield* Layer.build(NodeEnv.layer({ cwd })), Env.Env)
+              yield* Effect.addFinalizer(() =>
+                fs.exists(cwd).pipe(
+                  Effect.tap((exists) =>
+                    Effect.sync(() => {
+                      assert.strictEqual(exists, true)
+                      cleaned.push(cwd)
+                    }),
+                  ),
+                  Effect.orDie,
+                ),
+              )
+              return env
+            }),
+          ),
         )
         for (let index = 0; index < 2; index++) {
           const exit = yield* Conformance.withEnv(

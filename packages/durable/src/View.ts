@@ -44,6 +44,7 @@ export interface ProjectionWatch<A> {
   readonly value: A
   readonly changes: Stream.Stream<A, StorageError>
   readonly closed: Effect.Effect<Observation.End>
+  /** effect-review-allow P3-scope-in-r-not-dispose-method: semantic subscription completion stops future deliveries and resolves closed as stopped; resource release remains owned by Scope. */
   readonly stop: Effect.Effect<void>
   readonly listen: <E, R>(
     listener: (value: A) => Effect.Effect<void, E, R>,
@@ -68,7 +69,6 @@ export interface State {
   readonly value: Value
   readonly cursor: number
   readonly closed: Effect.Effect<Observation.End>
-  readonly dispose: Effect.Effect<void>
 }
 export interface Service {
   readonly observe: <A>(
@@ -93,6 +93,7 @@ interface Mount {
 interface Observer {
   readonly advance: (change: Change) => Effect.Effect<void>
   readonly resync: (change: Change) => Effect.Effect<void>
+  /** effect-review-allow P3-scope-in-r-not-dispose-method: completes this subscription with its semantic end reason and removes it from its mount; does not release an acquired resource. */
   readonly close: (reason: Observation.End) => Effect.Effect<void>
 }
 const descriptor = <T extends Record.JsonObject>(token: Document.Document<T>) => ({
@@ -520,7 +521,6 @@ export const make = Effect.fnUntraced(function* (
           return cursor
         },
         closed: subscription.closed,
-        dispose: subscription.stop,
       }
     }),
   }

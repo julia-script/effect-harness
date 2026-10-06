@@ -2,6 +2,9 @@ import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Deferred from 'effect/Deferred'
 import * as Fiber from 'effect/Fiber'
+import * as FiberHandle from 'effect/FiberHandle'
+import * as Scope from 'effect/Scope'
+import * as Ref from 'effect/Ref'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Workflow from 'effect/workflow/Workflow'
@@ -17,7 +20,7 @@ export class Cancellation extends Context.Service<
     readonly register: (
       identity: Ownership.Identity,
       cancel: Effect.Effect<void>,
-    ) => Effect.Effect<() => void>
+    ) => Effect.Effect<void, never, Scope.Scope>
     readonly cancel: (sessionId: string, reached: Ownership.Reached) => Effect.Effect<void>
   }
 >()('@effect-harness/durable/Cancellation') {}
@@ -27,21 +30,27 @@ export const layer = Layer.sync(Cancellation, () => {
   const key = (sessionId: string, id: number) => JSON.stringify([sessionId, id])
   return Cancellation.of({
     register: (identity, cancel) =>
-      Effect.sync(() => {
-        const address = key(identity.sessionId, identity.taskId)
-        const registrations = live.get(address) ?? new Set<Effect.Effect<void>>()
-        registrations.add(cancel)
-        live.set(address, registrations)
-        return () => {
-          registrations.delete(cancel)
-          if (registrations.size === 0) live.delete(address)
-        }
-      }),
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const registration = Effect.suspend(() => cancel)
+          const address = key(identity.sessionId, identity.taskId)
+          const registrations = live.get(address) ?? new Set<Effect.Effect<void>>()
+          registrations.add(registration)
+          live.set(address, registrations)
+          return { address, registrations, registration }
+        }),
+        ({ address, registrations, registration }) =>
+          Effect.sync(() => {
+            registrations.delete(registration)
+            if (registrations.size === 0 && live.get(address) === registrations)
+              live.delete(address)
+          }),
+      ).pipe(Effect.asVoid),
     cancel: (sessionId, reached) =>
       Effect.forEach(
         reached.tasks,
         (task) =>
-          Effect.forEach(live.get(key(sessionId, task.id)) ?? [], (cancel) => cancel, {
+          Effect.forEach([...(live.get(key(sessionId, task.id)) ?? [])], (cancel) => cancel, {
             discard: true,
           }),
         { discard: true },
@@ -93,32 +102,73 @@ export const activity = <A, E, R>(
       if (yield* session.isClosed) return yield* pause
       let closing = false
       const closed = yield* Deferred.make<void>()
-      let fiber: Fiber.Fiber<A, E> | undefined
-      const unregister = yield* session
-        .onClose(
+      const completed = yield* Deferred.make<void>()
+      // Published once: None means the invocation closed before body startup.
+      const ready = yield* Deferred.make<Option.Option<Fiber.Fiber<A, E>>>()
+      const launched = yield* Ref.make(false)
+      return yield* Effect.gen(function* () {
+        yield* session
+          .onClose(
+            Effect.gen(function* () {
+              closing = true
+              yield* Deferred.succeed(closed, undefined)
+              // Actual exit must precede receipt observation: an early receipt can
+              // interrupt the enclosing native Activity before it records suspension.
+              const bodyFiber = yield* Deferred.await(ready)
+              if (Option.isSome(bodyFiber)) yield* Fiber.await(bodyFiber.value)
+              yield* Deferred.await(completed)
+            }),
+          )
+          .pipe(
+            Effect.catchIf(
+              (error) => error.reason._tag === 'Closed',
+              () => pause,
+            ),
+          )
+        if (closing || (yield* session.isClosed)) return yield* pause
+        // Acquired after registration: Scope joins the body handle before removing
+        // its cleanup membership, including external invocation interruption.
+        const handle = yield* FiberHandle.make<A, E>()
+        // The race first requests native suspension, then interrupts and joins body
+        // finalizers. Keep this immutable fiber independently of handle occupancy.
+        const fiber = yield* Effect.uninterruptible(
           Effect.gen(function* () {
-            closing = true
-            yield* Deferred.succeed(closed, undefined)
-            if (fiber !== undefined) yield* Fiber.await(fiber)
+            yield* Ref.set(launched, true)
+            const fiber = yield* FiberHandle.run(
+              handle,
+              Effect.scoped(
+                body.pipe(Effect.provide(Ownership.layerCurrent(identity, session))),
+              ).pipe(
+                Effect.raceFirst(Deferred.await(closed).pipe(Effect.andThen(pause))),
+                Effect.interruptible,
+              ),
+              { startImmediately: false },
+            )
+            yield* Deferred.succeed(ready, Option.some(fiber))
+            // Acquire and install this join without an interruption gap, including
+            // interruption before the deferred body has entered any onExit handler.
+            yield* Effect.addFinalizer(() =>
+              Fiber.interrupt(fiber).pipe(Effect.andThen(Deferred.succeed(completed, undefined))),
+            )
+            return fiber
           }),
         )
-        .pipe(
-          Effect.catchIf(
-            (error) => error.reason._tag === 'Closed',
-            () => pause,
+        const exit = yield* Fiber.await(fiber)
+        if (closing || (yield* session.isClosed)) return yield* pause
+        return yield* exit
+      }).pipe(
+        Effect.ensuring(
+          Ref.get(launched).pipe(
+            Effect.flatMap((started) =>
+              started
+                ? Effect.void
+                : Deferred.succeed(ready, Option.none()).pipe(
+                    Effect.andThen(Deferred.succeed(completed, undefined)),
+                  ),
+            ),
           ),
-        )
-      yield* Effect.addFinalizer(() => Effect.sync(unregister))
-      if (closing || (yield* session.isClosed)) return yield* pause
-      fiber = yield* body.pipe(
-        Effect.provide(Ownership.layerCurrent(identity, session)),
-        Effect.raceFirst(Deferred.await(closed).pipe(Effect.andThen(pause))),
-        Effect.interruptible,
-        Effect.forkScoped,
+        ),
       )
-      const exit = yield* Fiber.await(fiber)
-      if (closing || (yield* session.isClosed)) return yield* pause
-      return yield* exit
     }),
   )
 
@@ -170,8 +220,7 @@ export const run = <A, E, R>(
           ),
           Effect.orDie,
         )
-        const unregister = yield* capabilities.register(identity, stop)
-        yield* Effect.addFinalizer(() => Effect.sync(unregister))
+        yield* capabilities.register(identity, stop)
         const monitor = yield* Effect.forever(
           Effect.gen(function* () {
             if (yield* session.isClosed) return yield* Effect.never

@@ -1,3 +1,6 @@
+import { ResourceScope, withLayer } from '../../src/testing/Storage.ts'
+import * as Exit from 'effect/Exit'
+import * as Scope from 'effect/Scope'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -245,11 +248,11 @@ describe('committed native Workflow inspection and ownership graph', () => {
         const interrupted = yield* Fiber.await(first)
         assert.strictEqual(interrupted._tag, 'Failure')
         const collected = yield* Inspection.changes(store).pipe(
-          Stream.tap(() => session.close),
+          Stream.tap(() => Effect.flatMap(ResourceScope, (scope) => Scope.close(scope, Exit.void))),
           Stream.runCollect,
         )
         assert.strictEqual(collected.length, 1)
-      }).pipe(Effect.provide(layers)),
+      }).pipe((effect) => withLayer(effect, layers)),
     ),
   )
 })

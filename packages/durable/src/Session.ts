@@ -1,7 +1,9 @@
 import * as Context from 'effect/Context'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
-import * as Fiber from 'effect/Fiber'
+import * as FiberHandle from 'effect/FiberHandle'
+import * as Deferred from 'effect/Deferred'
+import * as Ref from 'effect/Ref'
 import * as Scope from 'effect/Scope'
 import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
@@ -206,12 +208,12 @@ export interface Service {
     id: Record.DocumentId,
     at?: Record.Point,
   ) => Effect.Effect<Document.Snapshot | undefined, StorageError>
-  /** Sealed at the start of close, before handler or storage cleanup finishes. */
+  /** Sealed at the start of owning Scope release, before handler or storage cleanup finishes. */
   readonly isClosed: Effect.Effect<boolean>
-  /** Register an owner-local body cleanup; unregister when the invocation ends. */
-  readonly onClose: (cleanup: Effect.Effect<void>) => Effect.Effect<() => void, StorageError>
-  /** Join shared cleanup; cancelling a caller only cancels its wait. */
-  readonly close: Effect.Effect<void, StorageError>
+  /** Register an owner-local body cleanup in the invocation caller Scope. */
+  readonly onClose: (cleanup: Effect.Effect<void>) => Effect.Effect<void, StorageError, Scope.Scope>
+  /** Observe both persistent cleanup receipts after Scope release; cancelling only abandons this wait. */
+  readonly awaitClosed: Effect.Effect<void, StorageError>
 }
 /** Optional atomically executed initializer for every newly created conversation. */
 export class CreationHook extends Context.Service<
@@ -466,54 +468,76 @@ const draft = <T extends Record.JsonObject>(
 
 export const make = Effect.fnUntraced(function* () {
   const underlying = yield* Store
-  const cleanupScope = yield* Scope.make()
-  yield* Effect.addFinalizer((exit) => Scope.close(cleanupScope, exit))
+  const cleanupScope = yield* Effect.acquireRelease(Scope.make(), (scope, exit) =>
+    Scope.close(scope, exit),
+  )
+  const handle = yield* FiberHandle.make<boolean, never>().pipe(Scope.provide(cleanupScope))
+  const started = yield* Ref.make(false)
+  const terminal = yield* Deferred.make<void, StorageError>()
   let sealed = false
-  let closing: Fiber.Fiber<void, StorageError> | undefined
   const cleanups = new Set<Effect.Effect<void>>()
   const usable = Effect.suspend(() =>
     sealed ? Effect.fail(rejected('Session is closed', Closed)) : Effect.void,
   )
   const onClose: Service['onClose'] = (cleanup) =>
-    Effect.sync(() => {
-      if (sealed) return undefined
-      cleanups.add(cleanup)
-      return () => {
-        cleanups.delete(cleanup)
-      }
-    }).pipe(
-      Effect.filterOrFail(
-        (unregister) => unregister !== undefined,
-        () => rejected('Session is closed', Closed),
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        if (sealed) return undefined
+        const registration = Effect.suspend(() => cleanup)
+        cleanups.add(registration)
+        return registration
+      }).pipe(
+        Effect.filterOrFail(
+          (registration) => registration !== undefined,
+          () => rejected('Session is closed', Closed),
+        ),
       ),
-    )
-  const close = Effect.uninterruptibleMask((restore) =>
+      (registration) =>
+        Effect.sync(() => {
+          // Captured cleanup belongs to shutdown, even if its invocation Scope ends meanwhile.
+          if (!sealed) cleanups.delete(registration)
+        }),
+    ).pipe(Effect.asVoid)
+  const shutdown = Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
-      if (closing === undefined) {
+      if (!(yield* Ref.getAndSet(started, true))) {
         sealed = true
         const admitted = [...cleanups].reverse()
         cleanups.clear()
-        closing = yield* Effect.gen(function* () {
-          // Stop direct Store observers while retaining backend resources until
-          // handler finalizers and already admitted operations have completed.
-          const sealExit = yield* underlying.seal.pipe(Effect.exit)
-          // Match normal Scope ordering: suspend inner Activity bodies first,
-          // and join every registered resource even if another cleanup defects.
-          const exits = yield* Effect.forEach(admitted, (cleanup) => Effect.exit(cleanup))
-          const backendExit = yield* underlying.close.pipe(Effect.exit)
-          let failure: Cause.Cause<StorageError> | undefined
-          for (const exit of [sealExit, ...exits, backendExit])
-            if (Exit.isFailure(exit))
-              failure = failure === undefined ? exit.cause : Cause.combine(failure, exit.cause)
-          if (failure !== undefined) return yield* Effect.failCause(failure)
-        }).pipe(Effect.uninterruptible, Effect.forkIn(cleanupScope))
+        yield* FiberHandle.run(
+          handle,
+          Effect.gen(function* () {
+            // Seal direct Store admission before suspending inner Activity bodies.
+            const sealExit = yield* underlying.seal.pipe(Effect.exit)
+            const exits = yield* Effect.forEach(admitted, (cleanup) => Effect.exit(cleanup))
+            let failure: Cause.Cause<StorageError> | undefined
+            for (const exit of [sealExit, ...exits])
+              if (Exit.isFailure(exit))
+                failure = failure === undefined ? exit.cause : Cause.combine(failure, exit.cause)
+            if (failure !== undefined) return yield* Effect.failCause(failure)
+            // Store release follows this finalizer in Layer/Scope reverse order.
+            // Waiting for its terminal receipt here would deadlock that release.
+          }).pipe(Effect.uninterruptible, Deferred.into(terminal)),
+        )
       }
-      yield* restore(Fiber.join(closing))
+      yield* restore(Deferred.await(terminal))
     }),
   )
-  yield* Effect.addFinalizer(() => close.pipe(Effect.orDie))
+  yield* Effect.addFinalizer(() => shutdown.pipe(Effect.orDie))
+  const awaitClosed = Effect.gen(function* () {
+    const sessionExit = yield* Deferred.await(terminal).pipe(Effect.exit)
+    const storeExit = yield* underlying.awaitClosed.pipe(Effect.exit)
+    if (Exit.isFailure(sessionExit)) {
+      return yield* Effect.failCause(
+        Exit.isFailure(storeExit)
+          ? Cause.combine(sessionExit.cause, storeExit.cause)
+          : sessionExit.cause,
+      )
+    }
+    return yield* storeExit
+  })
   // Seal Session admission before body cleanup; already admitted Store operations
-  // retain their normal transaction/read lifetime until the underlying close.
+  // retain their normal transaction/read lifetime until underlying resource release.
   // The Store validates keyed JSON results; this private forwarding signature
   // preserves both public overloads without erasing callback environments.
   const underlyingTransact = underlying.transact as <A, E, R>(
@@ -1276,7 +1300,7 @@ export const make = Effect.fnUntraced(function* () {
     }),
     isClosed: Effect.sync(() => sealed),
     onClose,
-    close,
+    awaitClosed,
   })
   return service
 })

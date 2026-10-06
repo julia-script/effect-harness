@@ -1,3 +1,6 @@
+import { ResourceScope, withLayer } from '../../src/testing/Storage.ts'
+import * as Exit from 'effect/Exit'
+import * as Scope from 'effect/Scope'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Context from 'effect/Context'
 import * as Option from 'effect/Option'
@@ -43,7 +46,8 @@ describe('public observer/native compensation lifetime', () => {
         yield* session.onClose(
           Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))),
         )
-        const closing = yield* session.close.pipe(Effect.forkScoped)
+        const scope = yield* ResourceScope
+        const closing = yield* Scope.close(scope, Exit.void).pipe(Effect.forkScoped)
         yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
         yield* Deferred.await(started)
         assert.strictEqual(
@@ -63,13 +67,10 @@ describe('public observer/native compensation lifetime', () => {
         assert.strictEqual(rejected._tag, 'Failure')
         yield* Deferred.succeed(release, undefined)
         yield* Fiber.join(closing)
-      }).pipe(
-        Effect.provide(
-          Event.layer.pipe(
-            Layer.provideMerge(View.layer),
-            Layer.provideMerge(Session.layer),
-            Layer.provide(Memory.layer),
-          ),
+      }).pipe((effect) =>
+        withLayer(
+          effect.pipe(Effect.provide(Event.layer.pipe(Layer.provideMerge(View.layer)))),
+          Session.layer.pipe(Layer.provideMerge(Memory.layer)),
         ),
       ),
     ),

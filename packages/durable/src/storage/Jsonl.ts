@@ -87,15 +87,11 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       yield* fs.rename(temporary, file)
     }).pipe(Effect.ignore)
   })
-  return yield* Effect.acquireRelease(
-    Backend.make({
-      load: Effect.suspend(() => detachedEffect(snapshot)),
-      committed: Effect.suspend(() => detachedEffect(snapshot)),
-      save,
-      atomic: (effect) => effect,
-      close: Effect.void,
-    }),
-    (store) => store.close.pipe(Effect.orDie),
-  )
+  return yield* Backend.make({
+    load: Effect.suspend(() => detachedEffect(snapshot)),
+    committed: Effect.suspend(() => detachedEffect(snapshot)),
+    save,
+    atomic: (effect) => effect,
+  })
 })
 export const layer = (options: Options) => Layer.effect(Store, make(options))

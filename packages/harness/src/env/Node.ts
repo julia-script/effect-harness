@@ -100,6 +100,17 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
             reason: new FileInvalid({ message: 'Final symlink is forbidden', path }),
           })
       }
+      const lock = yield* Semaphore.make(1)
+      const release = (file: Fsp.FileHandle) =>
+        lock.withPermit(
+          Effect.uninterruptible(
+            Effect.gen(function* () {
+              if (closed) return
+              closed = true
+              yield* Effect.promise(() => file.close())
+            }),
+          ),
+        )
       const file = yield* Effect.acquireRelease(
         io(path, () =>
           Fsp.open(
@@ -109,21 +120,9 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
               (options?.noFollow === true ? (Fs.constants.O_NOFOLLOW ?? 0) : 0),
           ),
         ),
-        (file) =>
-          Effect.sync(() => {
-            closed = true
-          }).pipe(Effect.andThen(io(path, () => file.close())), Effect.orDie),
+        release,
       )
-      const lock = yield* Semaphore.make(1)
-      const close = lock.withPermit(
-        Effect.uninterruptible(
-          Effect.gen(function* () {
-            if (closed) return
-            closed = true
-            yield* io(path, () => file.close()).pipe(Effect.orDie)
-          }),
-        ),
-      )
+      const close = release(file)
       const stat = yield* io(path, () => file.stat()).pipe(Effect.onError(() => close))
       if (!stat.isFile()) {
         yield* close
@@ -204,7 +203,6 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
           ),
         ),
         read,
-        close,
         scanLines: (options) =>
           Effect.gen(function* () {
             const scanner = yield* Effect.fromResult(
@@ -229,36 +227,24 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
     }),
     openDirReader: Effect.fnUntraced(function* (path) {
       let closed = false
+      const lock = yield* Semaphore.make(1)
       const directory = yield* Effect.acquireRelease(
         io(path, () => Fsp.opendir(path)),
         (directory) =>
-          Effect.sync(() => {
-            closed = true
-          }).pipe(
-            Effect.andThen(
-              io(path, () => directory.close()).pipe(
-                Effect.catchIf(
-                  (error) => error.message.includes('Directory handle was closed'),
-                  () => Effect.void,
-                ),
-              ),
-            ),
-            Effect.orDie,
+          lock.withPermit(
+            Effect.gen(function* () {
+              if (closed) return
+              closed = true
+              yield* Effect.promise(() =>
+                directory.close().catch((error: unknown) => {
+                  if (Serialization.stringProperty(error, 'code') !== 'ERR_DIR_CLOSED') throw error
+                }),
+              )
+            }),
           ),
       )
       let done = false
-      const lock = yield* Semaphore.make(1)
-      const close = lock.withPermit(
-        Effect.uninterruptible(
-          Effect.gen(function* () {
-            if (closed) return
-            closed = true
-            yield* io(path, () => directory.close()).pipe(Effect.orDie)
-          }),
-        ),
-      )
       return {
-        close,
         next: (maxEntries) =>
           lock.withPermit(
             Effect.gen(function* () {

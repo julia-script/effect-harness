@@ -16,6 +16,11 @@ import {
   ExecutionShellUnavailable,
 } from '../../src/Env.ts'
 import * as Exec from '../../src/env/Exec.ts'
+import * as NodeEnv from '../../src/env/Node.ts'
+import * as Context from 'effect/Context'
+import * as Layer from 'effect/Layer'
+import * as Scope from 'effect/Scope'
+import * as Exit from 'effect/Exit'
 import { withEnv } from './Helpers.ts'
 
 describe('native process boundaries and complete spill output', () => {
@@ -70,7 +75,14 @@ describe('native process boundaries and complete spill output', () => {
     () =>
       withEnv(
         Effect.gen(function* () {
-          const env = yield* Env
+          const base = yield* Env
+          const ownerScope = yield* Scope.fork(yield* Scope.Scope)
+          const env = Context.get(
+            yield* Layer.build(NodeEnv.layer({ cwd: base.cwd, shell: '/bin/sh' })).pipe(
+              Scope.provide(ownerScope),
+            ),
+            Env,
+          )
           const output = yield* Ref.make('')
           const result = yield* env.exec(
             ['/bin/sh', '-c', 'printf "\\357\\273\\277hello\\342\\202"'],
@@ -86,14 +98,15 @@ describe('native process boundaries and complete spill output', () => {
             [239, 187, 191, 104, 101, 108, 108, 111, 226, 130],
           )
           assert.strictEqual(yield* Ref.get(output), 'hello�')
-          yield* env.cleanup
+          yield* Scope.close(ownerScope, Exit.void)
           assert.strictEqual(yield* env.exists(result.spillPath), true)
           yield* env.remove(result.spillPath)
           assert.strictEqual(
-            (yield* env.exec('printf 1234', { spill: { afterBytes: 4, afterLines: 1 } })).spillPath,
+            (yield* base.exec('printf 1234', { spill: { afterBytes: 4, afterLines: 1 } }))
+              .spillPath,
             undefined,
           )
-          const lines = yield* env.exec('printf "a\\nb"', {
+          const lines = yield* base.exec('printf "a\\nb"', {
             spill: { afterBytes: 100, afterLines: 1 },
           })
           assert.isDefined(lines.spillPath)
@@ -323,7 +336,14 @@ describe('native process boundaries and complete spill output', () => {
     () =>
       withEnv(
         Effect.gen(function* () {
-          const env = yield* Env
+          const base = yield* Env
+          const ownerScope = yield* Scope.fork(yield* Scope.Scope)
+          const env = Context.get(
+            yield* Layer.build(NodeEnv.layer({ cwd: base.cwd, shell: '/bin/sh' })).pipe(
+              Scope.provide(ownerScope),
+            ),
+            Env,
+          )
           const fs = yield* FileSystem.FileSystem
           const path = yield* Path.Path
           const spawner = yield* ChildProcessSpawner
@@ -342,10 +362,13 @@ describe('native process boundaries and complete spill output', () => {
             .exec('printf started; sleep 10', { onOutput: callback })
             .pipe(Effect.forkChild)
           yield* Deferred.await(ready)
-          yield* env.cleanup
+          yield* Scope.close(ownerScope, Exit.void)
+          const closed = yield* Effect.flip(env.exec('printf after-release'))
+          assert.strictEqual(closed.message, 'Execution owner is closed')
+          assert.strictEqual(closed.cause, undefined)
           yield* Fiber.await(first).pipe(Effect.timeout(2000))
           yield* Fiber.await(second).pipe(Effect.timeout(2000))
-          assert.strictEqual((yield* env.exec('exit 0')).exitCode, 0)
+          assert.strictEqual((yield* base.exec('exit 0')).exitCode, 0)
           const missing = yield* Exec.make(fs, path, spawner, {
             id: 'missing',
             cwd: env.cwd,
@@ -357,7 +380,7 @@ describe('native process boundaries and complete spill output', () => {
           })
           assert.strictEqual((yield* Effect.flip(missing.exec('x'))).code, 'shell_unavailable')
           assert.strictEqual(
-            (yield* Effect.flip(env.exec('x', { cwd: '/definitely/no/cwd' }))).code,
+            (yield* Effect.flip(base.exec('x', { cwd: '/definitely/no/cwd' }))).code,
             'spawn_error',
           )
         }),

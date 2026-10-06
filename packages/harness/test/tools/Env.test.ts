@@ -71,7 +71,8 @@ describe('portable native Env filesystem resources', () => {
               (yield* Effect.flip(env.openBinaryReader('link', { noFollow: true }))).code,
               'invalid',
             )
-            const reader = yield* env.openBinaryReader('link')
+            const readerScope = yield* Scope.fork(yield* Scope.Scope)
+            const reader = yield* env.openBinaryReader('link').pipe(Scope.provide(readerScope))
             yield* env.renameFile('target', 'moved')
             yield* env.writeFile('target', 'replacement')
             assert.strictEqual((yield* reader.info).size, 6)
@@ -84,8 +85,8 @@ describe('portable native Env filesystem resources', () => {
               (yield* Effect.flip(reader.scanLines({ startLine: 2, endLine: 2 }))).code,
               'invalid',
             )
-            yield* reader.close
-            yield* reader.close
+            yield* Scope.close(readerScope, Exit.void)
+            yield* Scope.close(readerScope, Exit.void)
             assert.strictEqual((yield* Effect.flip(reader.read(0, 1))).code, 'invalid')
             yield* env.createDir('real')
             yield* env.writeFile('real/file', 'good')
@@ -113,7 +114,7 @@ describe('portable native Env filesystem resources', () => {
           const fs = yield* FileSystem.FileSystem
           for (const name of ['a', 'b', 'c']) yield* env.writeFile(name, name)
           yield* fs.symlink(env.path.join(env.cwd, 'a'), env.path.join(env.cwd, 'link'))
-          const scope = yield* Scope.make()
+          const scope = yield* Scope.fork(yield* Scope.Scope)
           const reader = yield* env
             .openDirReader('.')
             .pipe(Effect.provideService(Scope.Scope, scope))
@@ -136,7 +137,7 @@ describe('portable native Env filesystem resources', () => {
             'not_found',
           )
           yield* env.writeFile('buffered', 'first\nsecond\n')
-          const textScope = yield* Scope.make()
+          const textScope = yield* Scope.fork(yield* Scope.Scope)
           const text = yield* env
             .openTextLineReader('buffered')
             .pipe(Effect.provideService(Scope.Scope, textScope))
@@ -154,12 +155,13 @@ describe('portable native Env filesystem resources', () => {
           Effect.gen(function* () {
             const env = yield* Env
             yield* env.writeFile('lines', '\ufeffa\r\nb\n\ufeffc')
-            const reader = yield* env.openTextLineReader('lines')
+            const readerScope = yield* Scope.fork(yield* Scope.Scope)
+            const reader = yield* env.openTextLineReader('lines').pipe(Scope.provide(readerScope))
             assert.deepStrictEqual(yield* reader.readLine, { text: 'a\r', terminated: true })
             assert.deepStrictEqual(yield* reader.readLine, { text: 'b', terminated: true })
             assert.deepStrictEqual(yield* reader.readLine, { text: '\ufeffc', terminated: false })
             assert.strictEqual(yield* reader.readLine, undefined)
-            yield* reader.close
+            yield* Scope.close(readerScope, Exit.void)
             assert.strictEqual((yield* Effect.flip(reader.readLine)).code, 'invalid')
             yield* env.writeFile('empty', '')
             assert.deepStrictEqual(yield* env.readTextLines('empty'), [])

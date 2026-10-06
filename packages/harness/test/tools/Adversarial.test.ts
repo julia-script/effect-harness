@@ -1,6 +1,8 @@
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
+import * as Scope from 'effect/Scope'
+import * as Exit from 'effect/Exit'
 import * as FileSystem from 'effect/FileSystem'
 import * as Fiber from 'effect/Fiber'
 import * as Path from 'effect/Path'
@@ -18,6 +20,8 @@ import {
   FileNotSupported,
 } from '../../src/Env.ts'
 import * as NodeEnv from '../../src/env/Node.ts'
+import * as Layer from 'effect/Layer'
+import * as Context from 'effect/Context'
 import * as Watch from '../../src/env/Watch.ts'
 import * as Mutation from '../../src/tools/Mutation.ts'
 import * as Read from '../../src/tools/Read.ts'
@@ -34,10 +38,17 @@ describe('boundary race and failure regressions', () => {
       withEnv(
         Effect.gen(function* () {
           const env = yield* Env
-          const file = yield* env.createTempFile({ prefix: 'prefix-', suffix: '.data' })
+          const ownerScope = yield* Scope.fork(yield* Scope.Scope)
+          const owned = Context.get(
+            yield* Layer.build(NodeEnv.layer({ cwd: env.cwd, shell: '/bin/sh' })).pipe(
+              Scope.provide(ownerScope),
+            ),
+            Env,
+          )
+          const file = yield* owned.createTempFile({ prefix: 'prefix-', suffix: '.data' })
           assert.strictEqual(env.path.basename(file).startsWith('prefix-'), true)
           assert.strictEqual(file.endsWith('.data'), true)
-          yield* env.cleanup
+          yield* Scope.close(ownerScope, Exit.void)
           assert.strictEqual(yield* env.exists(file), true)
           yield* env.remove(env.path.dirname(file), { recursive: true })
           yield* env.createDir('dir')
@@ -264,24 +275,28 @@ describe('boundary race and failure regressions', () => {
                 new FileError({ reason: new FileNotSupported({ message: 'No native watcher' }) }),
               ),
           }
+          const watcherScope = yield* Scope.fork(yield* Scope.Scope)
           const watcher = yield* Watch.make(fs, path, unavailable, [{ path: env.cwd }], {
             pollIntervalMs: 10,
-          })
+          }).pipe(Scope.provide(watcherScope))
           assert.strictEqual(watcher.mode, 'polling')
           const overflow = yield* watcher.changes.pipe(Stream.take(1), Stream.runCollect)
           assert.deepStrictEqual(overflow, [{ overflow: true }])
-          yield* watcher.close
-          const limited = yield* env.watch([{ path: '.', recursive: true }], {
-            mode: 'polling',
-            pollIntervalMs: 10,
-            directoryBudget: 2,
-          })
+          yield* Scope.close(watcherScope, Exit.void)
+          const limitedScope = yield* Scope.fork(yield* Scope.Scope)
+          const limited = yield* env
+            .watch([{ path: '.', recursive: true }], {
+              mode: 'polling',
+              pollIntervalMs: 10,
+              directoryBudget: 2,
+            })
+            .pipe(Scope.provide(limitedScope))
           const result = yield* limited.changes.pipe(Stream.runCollect, Effect.forkChild)
           yield* env.writeFile('deep/a/file', 'new')
           const events = yield* Fiber.join(result).pipe(Effect.timeout(2000))
           assert.strictEqual(events.length, 1)
           assert.strictEqual(events[0] !== undefined && 'error' in events[0], true)
-          yield* limited.close
+          yield* Scope.close(limitedScope, Exit.void)
         }),
       ),
   )

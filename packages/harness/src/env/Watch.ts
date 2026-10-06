@@ -37,7 +37,6 @@ export const make = Effect.fnUntraced(function* (
   let mode: 'native' | 'polling' = options.mode ?? 'native'
   if (!Number.isFinite(interval) || interval <= 0 || !Number.isSafeInteger(budget) || budget <= 0)
     return yield* new FileError({ reason: new FileInvalid({ message: 'Invalid watch options' }) })
-  const scope = yield* Scope.make()
   const output = yield* Queue.unbounded<WatchChange, Cause.Done>()
   const events = yield* Queue.unbounded<{
     readonly path?: string | undefined
@@ -46,16 +45,18 @@ export const make = Effect.fnUntraced(function* (
     readonly settle?: boolean | undefined
   }>()
   let closed = false
-  const close = Effect.uninterruptible(
-    Effect.gen(function* () {
-      if (closed) return
-      closed = true
-      yield* Scope.close(scope, Exit.void)
-      yield* Queue.shutdown(events)
-      yield* Queue.shutdown(output)
-    }),
-  )
-  yield* Effect.addFinalizer(() => close)
+  const release = (scope: Scope.Closeable) =>
+    Effect.uninterruptible(
+      Effect.gen(function* () {
+        if (closed) return
+        closed = true
+        yield* Scope.close(scope, Exit.void).pipe(
+          Effect.ensuring(Queue.shutdown(events).pipe(Effect.andThen(Queue.shutdown(output)))),
+        )
+      }),
+    )
+  const scope = yield* Effect.acquireRelease(Scope.make(), release)
+  const close = release(scope)
   const excluded = (target: WatchTarget, value: string): boolean =>
     path
       .relative(target.path, value)
@@ -331,6 +332,5 @@ export const make = Effect.fnUntraced(function* (
       return mode
     },
     changes: Stream.fromQueue(output),
-    close,
   }
 })

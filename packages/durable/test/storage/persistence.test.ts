@@ -1,3 +1,5 @@
+import * as Scope from 'effect/Scope'
+import * as Exit from 'effect/Exit'
 import { NodeFileSystem } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { assert, describe, it } from '@effect/vitest'
@@ -238,8 +240,14 @@ describe('SQLite schema and reopen', () => {
         }
         yield* sql`INSERT INTO durable_state VALUES(1,1,2,${JSON.stringify(state)})`
         yield* sql`INSERT INTO durable_receipt VALUES(${JSON.stringify('old')},${JSON.stringify('input')},${JSON.stringify({ count: 1 })},1)`
-        const store = yield* Sqlite.make()
-        const session = yield* Session.make().pipe(Effect.provideService(Store, store))
+        const resourceScope = yield* Effect.acquireRelease(Scope.make(), (scope, exit) =>
+          Scope.close(scope, exit),
+        )
+        const store = yield* Sqlite.make().pipe(Scope.provide(resourceScope))
+        const session = yield* Session.make().pipe(
+          Effect.provideService(Store, store),
+          Scope.provide(resourceScope),
+        )
         assert.strictEqual(
           (yield* sql<{ version: number }>`SELECT version FROM durable_schema`)[0]?.version,
           Sqlite.CURRENT_SCHEMA_VERSION,
@@ -255,7 +263,7 @@ describe('SQLite schema and reopen', () => {
           yield* session.transaction(() => Effect.void, { key: 'void' }),
           undefined,
         )
-        yield* store.close
+        yield* Scope.close(resourceScope, Exit.void)
         const reopened = yield* Sqlite.make()
         const session2 = yield* Session.make().pipe(Effect.provideService(Store, reopened))
         assert.strictEqual(

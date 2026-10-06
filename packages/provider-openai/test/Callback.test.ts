@@ -34,7 +34,11 @@ const credential: OAuth = {
   expiresAt: 3600000,
   scopes: [ChatGpt.directScope],
 }
-const makeFixture = (address = '127.0.0.1:43210', exchange?: Effect.Effect<OAuth, AuthError>) => {
+const makeFixture = (
+  address = '127.0.0.1:43210',
+  exchange?: Effect.Effect<OAuth, AuthError>,
+  afterBegin: Effect.Effect<void> = Effect.void,
+) => {
   let handler:
     | Effect.Effect<
         HttpServerResponse.HttpServerResponse,
@@ -44,6 +48,7 @@ const makeFixture = (address = '127.0.0.1:43210', exchange?: Effect.Effect<OAuth
     | undefined
   let active = false
   let cancelled = 0
+  const cancelledStates: Array<string> = []
   let completed = 0
   // Native HttpServer.make deliberately erases the application's error type at its server boundary.
   const server = HttpServer.make({
@@ -71,6 +76,7 @@ const makeFixture = (address = '127.0.0.1:43210', exchange?: Effect.Effect<OAuth
           redirectUri,
           expiresAt: now + 60000,
         })),
+        Effect.tap(() => afterBegin),
       ),
     complete: (url) =>
       Effect.sync(() => {
@@ -99,9 +105,10 @@ const makeFixture = (address = '127.0.0.1:43210', exchange?: Effect.Effect<OAuth
     accessToken: () => Effect.succeed(credential.accessToken),
     models: () => Effect.succeed([]),
     signOut: () => Effect.void,
-    cancel: () =>
+    cancel: (state) =>
       Effect.sync(() => {
         cancelled++
+        cancelledStates.push(state)
       }),
   })
   const layer = Callback.layer().pipe(
@@ -124,11 +131,36 @@ const makeFixture = (address = '127.0.0.1:43210', exchange?: Effect.Effect<OAuth
     request,
     active: () => active,
     cancelled: () => cancelled,
+    cancelledStates: () => cancelledStates,
     completed: () => completed,
   }
 }
 
 describe('scoped callback receiver', () => {
+  it.effect(
+    'interruption during begin waits for acquisition and cancels its exact pending state',
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const f = makeFixture(
+          '127.0.0.1:43210',
+          undefined,
+          Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        )
+        const owner = yield* Effect.forkChild(Effect.scoped(Layer.build(f.layer)))
+        yield* Deferred.await(started)
+        const interrupted = yield* Effect.forkChild(Fiber.interrupt(owner), {
+          startImmediately: true,
+        })
+        yield* Deferred.succeed(release, undefined)
+        yield* Fiber.join(interrupted)
+        assert.strictEqual(f.cancelled(), 1)
+        assert.deepStrictEqual(f.cancelledStates(), ['expected'])
+        assert.isFalse(f.active())
+      }),
+  )
+
   it.effect(
     'starts before exposing URL, checks method/path/state and tears down with its scope',
     () => {

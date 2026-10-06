@@ -353,8 +353,10 @@ export const layerCallback = (options: { readonly account: string }) =>
       const auth = yield* OAuth
       const result = yield* Deferred.make<OpaqueOAuth, AuthError>()
       const claimed = yield* Ref.make(false)
-      const authorization = yield* auth.begin({ account: options.account, method: 'browser' })
-      yield* Effect.addFinalizer(() => auth.cancel(authorization.state))
+      const authorization = yield* Effect.acquireRelease(
+        auth.begin({ account: options.account, method: 'browser' }),
+        (authorization) => auth.cancel(authorization.state),
+      )
       yield* server.serve(
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest

@@ -75,12 +75,14 @@ const persisted = Effect.sync(() => {
         snapshot = next
       }),
     atomic: (effect) => effect,
-    close: Effect.sync(() => {
-      closes++
-    }),
   }
   const open = Effect.gen(function* () {
-    const store = yield* Backend.make(backend)
+    const store = yield* Backend.make(
+      backend,
+      Effect.sync(() => {
+        closes++
+      }),
+    )
     return yield* Session.make().pipe(Effect.provideService(Store.Store, store))
   })
   return { open, state: Effect.sync(() => snapshot.state), closes: Effect.sync(() => closes) }
@@ -129,25 +131,34 @@ describe('Session and native invocation lifecycle', () => {
             initial: (): { identity?: string } => ({}),
           })
           const storage = yield* persisted
-          const legacy = yield* storage.open
+          const legacyScope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
+            Scope.close(owned, exit),
+          )
+          const legacy = yield* Scope.provide(storage.open, legacyScope)
           const conversation = yield* legacy.root()
           const initial = yield* storage.state
           yield* legacy.initialize(conversation.id)
           assert.deepStrictEqual(yield* storage.state, initial)
-          yield* legacy.close
+          yield* Scope.close(legacyScope, Exit.void)
           let created = 0
-          const restored = yield* storage.open.pipe(
-            Effect.provideService(Session.CreationHook, {
-              run: () =>
-                Effect.sync(() => {
-                  created++
-                }),
-              recover: (tx, owner) =>
-                Effect.gen(function* () {
-                  const doc = yield* tx.doc(token, { owner: owner.id })
-                  doc.identity ??= 'pinned recovery identity'
-                }),
-            }),
+          const restoredScope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
+            Scope.close(owned, exit),
+          )
+          const restored = yield* Scope.provide(
+            storage.open.pipe(
+              Effect.provideService(Session.CreationHook, {
+                run: () =>
+                  Effect.sync(() => {
+                    created++
+                  }),
+                recover: (tx, owner) =>
+                  Effect.gen(function* () {
+                    const doc = yield* tx.doc(token, { owner: owner.id })
+                    doc.identity ??= 'pinned recovery identity'
+                  }),
+              }),
+            ),
+            restoredScope,
           )
           yield* restored.initialize(conversation.id)
           const recovered = yield* storage.state
@@ -165,7 +176,7 @@ describe('Session and native invocation lifecycle', () => {
           if (missing._tag === 'Failure')
             assert.strictEqual(missing.failure.reason._tag, 'NotFound')
           assert.deepStrictEqual(yield* storage.state, recovered)
-          yield* restored.close
+          yield* Scope.close(restoredScope, Exit.void)
           const failing = yield* storage.open.pipe(
             Effect.provideService(Session.CreationHook, {
               run: () => Effect.void,
@@ -193,7 +204,10 @@ describe('Session and native invocation lifecycle', () => {
         Effect.scoped(
           Effect.gen(function* () {
             const storage = yield* persisted
-            const first = yield* storage.open
+            const firstScope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
+              Scope.close(owned, exit),
+            )
+            const first = yield* Scope.provide(storage.open, firstScope)
             yield* first.root()
             const payload = yield* reserve(first)
             const token = Document.defineUnsafe({
@@ -275,7 +289,8 @@ describe('Session and native invocation lifecycle', () => {
             yield* Effect.gen(function* () {
               const client = yield* User.execute(payload).pipe(Effect.forkScoped)
               yield* Deferred.await(entered)
-              const closeWaiter = yield* first.close.pipe(Effect.forkScoped)
+              const scopeClosing = yield* Scope.close(firstScope, Exit.void).pipe(Effect.forkScoped)
+              const closeWaiter = yield* first.awaitClosed.pipe(Effect.forkScoped)
               yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
               yield* Deferred.await(finalizing)
               assert.isTrue(yield* first.isClosed)
@@ -295,9 +310,10 @@ describe('Session and native invocation lifecycle', () => {
               assert.strictEqual(yield* watch.closed, 'session_closed')
               assert.isTrue(yield* pending(client))
               yield* Fiber.interrupt(closeWaiter)
-              const otherWaiter = yield* first.close.pipe(Effect.forkScoped)
+              const otherWaiter = yield* first.awaitClosed.pipe(Effect.forkScoped)
               yield* Deferred.succeed(release, undefined)
               yield* Fiber.join(otherWaiter)
+              yield* Fiber.join(scopeClosing)
               assert.strictEqual(finalized, 1)
               assert.strictEqual(yield* storage.closes, 1)
               assert.deepStrictEqual(yield* storage.state, before)
@@ -527,7 +543,10 @@ describe('Session and native invocation lifecycle', () => {
                   Context.get(creation, Session.CreationHook),
                 ),
               )
-              const first = yield* open
+              const firstScope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
+                Scope.close(owned, exit),
+              )
+              const first = yield* Scope.provide(open, firstScope)
               yield* first.root()
               yield* first.transaction(
                 Effect.fnUntraced(function* (tx) {
@@ -611,7 +630,7 @@ describe('Session and native invocation lifecycle', () => {
                     ),
                   )
                 const before = yield* storage.state
-                yield* first.close
+                yield* Scope.close(firstScope, Exit.void)
                 assert.strictEqual(finalized, 1)
                 assert.deepStrictEqual(yield* storage.state, before)
                 assert.isTrue(
@@ -687,7 +706,10 @@ describe('Session and native invocation lifecycle', () => {
                 const store = yield* SqlStore.make()
                 return yield* Session.make().pipe(Effect.provideService(Store.Store, store))
               })
-              const first = yield* open
+              const firstScope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
+                Scope.close(owned, exit),
+              )
+              const first = yield* Scope.provide(open, firstScope)
               yield* first.root()
               const payload = yield* reserve(first)
               const before = yield* physical
@@ -773,7 +795,7 @@ describe('Session and native invocation lifecycle', () => {
               yield* Effect.gen(function* () {
                 const id = yield* User.execute(payload, { discard: true })
                 yield* Deferred.await(entered)
-                yield* first.close
+                yield* Scope.close(firstScope, Exit.void)
                 assert.strictEqual(cleaned, 1)
                 assert.deepStrictEqual(yield* physical, before)
                 yield* until(

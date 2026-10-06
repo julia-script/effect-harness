@@ -48,6 +48,7 @@ export interface Service {
   readonly journal: (after: Record.Seq | 0) => Effect.Effect<Journal, StorageError>
   /** Stop admission and committed observers while retaining resources for admitted-operation cleanup. */
   readonly seal: Effect.Effect<void>
-  readonly close: Effect.Effect<void, StorageError>
+  /** Observe the persistent cleanup receipt after the owning Scope releases; never initiates release. */
+  readonly awaitClosed: Effect.Effect<void, StorageError>
 }
 export class Store extends Context.Service<Store, Service>()('@effect-harness/durable/Store') {}

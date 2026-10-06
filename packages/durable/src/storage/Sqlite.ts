@@ -160,24 +160,20 @@ export const make = Effect.fnUntraced(function* () {
     ),
   )
   yield* load
-  return yield* Effect.acquireRelease(
-    Backend.make({
-      load,
-      committed,
-      save,
-      atomic: (effect) =>
-        sql
-          .withTransaction(effect)
-          .pipe(
-            Effect.mapError((cause) =>
-              cause instanceof SqlError.SqlError
-                ? uncertain('SQL transaction settlement is uncertain', cause)
-                : cause,
-            ),
+  return yield* Backend.make({
+    load,
+    committed,
+    save,
+    atomic: (effect) =>
+      sql
+        .withTransaction(effect)
+        .pipe(
+          Effect.mapError((cause) =>
+            cause instanceof SqlError.SqlError
+              ? uncertain('SQL transaction settlement is uncertain', cause)
+              : cause,
           ),
-      close: Effect.void,
-    }),
-    (store) => store.close.pipe(Effect.orDie),
-  )
+        ),
+  })
 })
 export const layer = Layer.effect(Store, make())

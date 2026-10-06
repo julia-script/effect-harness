@@ -66,6 +66,53 @@ const old = (expiresAt = 0): OpaqueOAuth => ({
 })
 
 describe('Pi-compatible Anthropic consent', () => {
+  it.effect('interruption during browser begin cancels the acquired pending attempt', () => {
+    const f = fixture()
+    return Effect.gen(function* () {
+      const auth = yield* OAuth.OAuth
+      const started = yield* Deferred.make<OAuth.Authorization>()
+      const release = yield* Deferred.make<void>()
+      let cancelled = 0
+      const delayed = OAuth.OAuth.of({
+        ...auth,
+        begin: (options) =>
+          auth.begin(options).pipe(
+            Effect.tap((authorization) => Deferred.succeed(started, authorization)),
+            Effect.tap(() => Deferred.await(release)),
+          ),
+        cancel: (state) =>
+          auth.cancel(state).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                cancelled++
+              }),
+            ),
+          ),
+      })
+      const server = HttpServer.make({
+        address: Result.getOrThrow(NetAddress.inetAddressV4(NetAddress.ipv4Loopback, 53692)),
+        serve: () => Effect.void,
+      })
+      const layer = OAuth.layerCallback({ account: 'key' }).pipe(
+        Layer.provide(Layer.succeed(OAuth.OAuth, delayed)),
+        Layer.provide(Layer.succeed(HttpServer.HttpServer, server)),
+      )
+      const owner = yield* Effect.forkChild(Effect.scoped(Layer.build(layer)))
+      const authorization = yield* Deferred.await(started)
+      const interrupted = yield* Effect.forkChild(Fiber.interrupt(owner), {
+        startImmediately: true,
+      })
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(interrupted)
+      assert.strictEqual(cancelled, 1)
+      assert.strictEqual(
+        (yield* auth.complete(authorization.state, 'code').pipe(Effect.flip)).reason._tag,
+        'AuthCallbackError',
+      )
+      assert.strictEqual(f.requests.length, 0)
+    }).pipe(Effect.provide(f.layer))
+  })
+
   it.effect(
     'browser and copy-code URLs preserve pinned PKCE/scopes and redact verifier-state',
     () => {

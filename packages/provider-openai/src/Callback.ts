@@ -43,8 +43,10 @@ export const layer = (options?: { readonly account?: string | undefined }) =>
       const redirectUri = `http://127.0.0.1:${server.address.port}/auth/callback`
       const result = yield* Deferred.make<OAuth, AuthError>()
       const claimed = yield* Ref.make(false)
-      const authorization = yield* auth.begin({ redirectUri, account: options?.account })
-      yield* Effect.addFinalizer(() => auth.cancel(authorization.state))
+      const authorization = yield* Effect.acquireRelease(
+        auth.begin({ redirectUri, account: options?.account }),
+        (authorization) => auth.cancel(authorization.state),
+      )
       yield* server.serve(
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest

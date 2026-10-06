@@ -1,3 +1,5 @@
+import { ResourceScope, withLayer } from '../../src/testing/Storage.ts'
+import * as Scope from 'effect/Scope'
 import { assert, describe, it } from '@effect/vitest'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as Option from 'effect/Option'
@@ -100,7 +102,6 @@ type Behavior = (
   session: Session.Service,
 ) => Effect.Effect<Record.Json, ExecutionError, Services>
 const setup = (behaviors: ReadonlyMap<string, Behavior>) => {
-  const sessionLayer = Session.layer.pipe(Layer.provideMerge(Memory.layer))
   const executor = Node.toLayer(
     Effect.fnUntraced(
       function* (payload) {
@@ -132,7 +133,6 @@ const setup = (behaviors: ReadonlyMap<string, Behavior>) => {
   )
   return executor.pipe(
     Layer.provideMerge(WorkflowEngine.layerMemory),
-    Layer.provideMerge(sessionLayer),
     Layer.provideMerge(Cancellation.layer),
     Layer.provideMerge(Ownership.layerDeclarations([Node])),
     Layer.provide(BunCrypto.layer),
@@ -142,7 +142,11 @@ const invoke = (payload: Payload) => Node.execute(payload)
 const withSetup = <A, E, R>(
   behaviors: ReadonlyMap<string, Behavior>,
   effect: Effect.Effect<A, E, R>,
-) => Effect.scoped(effect.pipe(Effect.provide(setup(behaviors))))
+) =>
+  withLayer(
+    effect.pipe(Effect.provide(setup(behaviors))),
+    Session.layer.pipe(Layer.provideMerge(Memory.layer)),
+  )
 
 describe('native structured ownership', () => {
   it.live(
@@ -219,7 +223,7 @@ describe('native structured ownership', () => {
                 Effect.result,
                 Effect.forkScoped,
               )
-              yield* session.close
+              yield* Scope.close(yield* ResourceScope, Exit.void)
               assert.strictEqual((yield* Fiber.join(closing))._tag, 'Failure')
             }),
           )
@@ -725,7 +729,7 @@ describe('native structured ownership', () => {
               )
             }),
         )
-        yield* Effect.scoped(
+        yield* withLayer(
           Effect.gen(function* () {
             const session = yield* Session.Session
             yield* session.root()
@@ -736,6 +740,7 @@ describe('native structured ownership', () => {
             yield* Deferred.succeed(dispatchFinish, undefined)
             assert.deepStrictEqual(yield* Fiber.join(fiber), { status: 'completed' })
           }).pipe(Effect.provide(setup(behaviors).pipe(Layer.provideMerge(drain)))),
+          Session.layer.pipe(Layer.provideMerge(Memory.layer)),
         )
       }),
   )
@@ -961,7 +966,7 @@ describe('native structured ownership', () => {
           )
         }),
       ).pipe(Layer.provideMerge(setup(new Map())))
-      return Effect.scoped(
+      return withLayer(
         Effect.gen(function* () {
           const session = yield* Session.Session
           yield* session.root()
@@ -983,6 +988,7 @@ describe('native structured ownership', () => {
             assert.strictEqual((yield* session.task(payload.taskId))?.state.status, 'terminal')
           }
         }).pipe(Effect.provide(custom)),
+        Session.layer.pipe(Layer.provideMerge(Memory.layer)),
       )
     },
   )
@@ -1163,7 +1169,7 @@ describe('native structured ownership', () => {
             ),
           ).pipe(Effect.exit, Effect.forkScoped)
           yield* Deferred.await(entered)
-          yield* session.close
+          yield* Scope.close(yield* ResourceScope, Exit.void)
           assert.isTrue(Exit.isFailure(yield* Fiber.join(fiber)))
           assert.isTrue(cleaned)
         }),

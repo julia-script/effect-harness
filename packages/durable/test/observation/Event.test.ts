@@ -1,3 +1,6 @@
+import { ResourceScope, withLayer } from '../../src/testing/Storage.ts'
+import * as Exit from 'effect/Exit'
+import * as Scope from 'effect/Scope'
 import { assert, describe, it } from '@effect/vitest'
 import * as Totals from '@effect-harness/harness/Usage'
 import * as Deferred from 'effect/Deferred'
@@ -615,10 +618,15 @@ describe('ordered committed semantic events', () => {
             batches[1]?.[0]?.type === 'snapshot' && batches[1][0].entries.length,
             102,
           )
-          yield* session.close
+          yield* Scope.close(yield* ResourceScope, Exit.void)
           assert.strictEqual(yield* watch.closed, 'session_closed')
           yield* Fiber.join(listening)
-        }).pipe(Effect.provide(layers)),
+        }).pipe((effect) =>
+          withLayer(
+            effect.pipe(Effect.provide(Event.layer.pipe(Layer.provideMerge(View.layer)))),
+            Session.layer.pipe(Layer.provideMerge(Memory.layer)),
+          ),
+        ),
       ),
   )
 

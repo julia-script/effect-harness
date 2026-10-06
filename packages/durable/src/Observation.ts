@@ -21,6 +21,7 @@ export interface Watch<T extends Record.JsonObject> {
   readonly record: Record.Document
   readonly changes: Stream.Stream<Change<T>, StorageError>
   readonly closed: Effect.Effect<End>
+  /** effect-review-allow P3-scope-in-r-not-dispose-method: semantic subscription completion stops future deliveries and resolves closed as stopped; resource release remains owned by Scope. */
   readonly stop: Effect.Effect<void>
   readonly listen: <E, R>(
     listener: (change: Change<T>) => Effect.Effect<void, E, R>,
@@ -215,7 +216,6 @@ export interface State<T extends Record.JsonObject> {
   readonly record: Record.Document
   readonly cursor: number
   readonly closed: Effect.Effect<End>
-  readonly dispose: Effect.Effect<void>
 }
 export const state = Effect.fnUntraced(function* <T extends Record.JsonObject>(
   store: StoreService,
@@ -242,6 +242,5 @@ export const state = Effect.fnUntraced(function* <T extends Record.JsonObject>(
       return cursor
     },
     closed: subscription.closed,
-    dispose: subscription.stop,
   }
 })

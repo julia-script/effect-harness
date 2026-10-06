@@ -9,6 +9,7 @@ import * as Option from 'effect/Option'
 import * as Pull from 'effect/Pull'
 import type * as Path from 'effect/Path'
 import * as Stream from 'effect/Stream'
+import * as Semaphore from 'effect/Semaphore'
 import * as ChildProcess from 'effect/process/ChildProcess'
 import type { ChildProcessSpawner, ChildProcessHandle } from 'effect/process/ChildProcessSpawner'
 import {
@@ -30,12 +31,18 @@ export const make = Effect.fnUntraced(function* (
   defaults: Options,
 ) {
   const active = new Set<ChildProcessHandle>()
+  const admission = yield* Semaphore.make(1)
+  let closed = false
   const exec = (
     command: string | ReadonlyArray<string>,
     options: ShellExecOptions = {},
   ): Effect.Effect<ShellExecResult, ExecutionError> =>
     Effect.scoped(
       Effect.gen(function* () {
+        if (closed)
+          return yield* new ExecutionError({
+            reason: new ExecutionUnknown({ message: 'Execution owner is closed' }),
+          })
         if (typeof command !== 'string' && command.length === 0)
           return yield* new ExecutionError({
             reason: new ExecutionSpawnError({ message: 'Empty argv' }),
@@ -92,19 +99,30 @@ export const make = Effect.fnUntraced(function* (
           )
         } else instruction = ChildProcess.make(command[0] ?? '', command.slice(1), nativeOptions)
 
-        const handle = yield* spawner.spawn(instruction).pipe(
-          Effect.mapError(
-            (error) =>
-              new ExecutionError({
-                reason: new ExecutionSpawnError({ message: error.message, cause: error }),
-              }),
+        const handle = yield* admission.withPermit(
+          Effect.uninterruptible(
+            Effect.gen(function* () {
+              if (closed)
+                return yield* new ExecutionError({
+                  reason: new ExecutionUnknown({ message: 'Execution owner is closed' }),
+                })
+              const handle = yield* spawner.spawn(instruction).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new ExecutionError({
+                      reason: new ExecutionSpawnError({ message: error.message, cause: error }),
+                    }),
+                ),
+              )
+              active.add(handle)
+              yield* Effect.addFinalizer(() =>
+                Effect.sync(() => {
+                  active.delete(handle)
+                }),
+              )
+              return handle
+            }),
           ),
-        )
-        active.add(handle)
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            active.delete(handle)
-          }),
         )
         let spillPath: string | undefined
         let chunks: Uint8Array[] = []
@@ -269,15 +287,20 @@ export const make = Effect.fnUntraced(function* (
         return yield* finished
       }),
     )
-  const cleanup = Effect.suspend(() =>
-    Effect.asVoid(
-      Effect.forEach(
-        [...active],
-        (handle) => handle.kill({ forceKillAfter: 1000 }).pipe(Effect.ignore),
-        { concurrency: 'unbounded' },
-      ),
-    ),
-  )
+  const cleanup = Effect.suspend(() => {
+    closed = true
+    return admission
+      .withPermit(Effect.sync(() => [...active]))
+      .pipe(
+        Effect.flatMap((handles) =>
+          Effect.forEach(
+            handles,
+            (handle) => handle.kill({ forceKillAfter: 1000 }).pipe(Effect.ignore),
+            { concurrency: 'unbounded', discard: true },
+          ),
+        ),
+      )
+  })
   yield* Effect.addFinalizer(() => cleanup)
-  return { exec, cleanup }
+  return { exec }
 })

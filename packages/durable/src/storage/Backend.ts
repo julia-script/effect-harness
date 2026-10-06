@@ -1,5 +1,7 @@
 import * as Effect from 'effect/Effect'
-import * as Fiber from 'effect/Fiber'
+import * as FiberHandle from 'effect/FiberHandle'
+import * as Deferred from 'effect/Deferred'
+import * as Ref from 'effect/Ref'
 import * as Scope from 'effect/Scope'
 import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
@@ -19,7 +21,6 @@ export interface Backend {
   readonly atomic: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, StorageError | E, R>
-  readonly close: Effect.Effect<void, StorageError>
 }
 /** Keeps global, document and conversation tails for exact bounded observer backlogs. */
 export const retainFrames = (frames: ReadonlyArray<Record.Frame>): ReadonlyArray<Record.Frame> => {
@@ -132,14 +133,36 @@ const receiptResult = Effect.fnUntraced(function* (input: unknown) {
   })
   return yield* validate(Schema.Json, input)
 })
-export const make = Effect.fnUntraced(function* (backend: Backend) {
+export const make = Effect.fnUntraced(function* (
+  backend: Backend,
+  release: Effect.Effect<void, StorageError> = Effect.void,
+) {
   const semaphore = yield* Semaphore.make(1)
-  const cleanupScope = yield* Scope.make()
-  yield* Effect.addFinalizer((exit) => Scope.close(cleanupScope, exit))
+  const cleanupScope = yield* Effect.acquireRelease(Scope.make(), (scope, exit) =>
+    Scope.close(scope, exit),
+  )
+  const handle = yield* FiberHandle.make<boolean, never>().pipe(Scope.provide(cleanupScope))
+  const started = yield* Ref.make(false)
+  const terminal = yield* Deferred.make<void, StorageError>()
   let closed = false
-  let closing: Fiber.Fiber<void, StorageError> | undefined
   let readers = 0
   let poison: StorageError | undefined
+  const shutdown = Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* () {
+      if (!(yield* Ref.getAndSet(started, true))) {
+        closed = true
+        yield* FiberHandle.run(
+          handle,
+          Effect.gen(function* () {
+            while (readers > 0) yield* Effect.sleep('1 millis')
+            yield* release
+          }).pipe(Effect.uninterruptible, Deferred.into(terminal)),
+        )
+      }
+      yield* restore(Deferred.await(terminal))
+    }),
+  )
+  yield* Effect.addFinalizer(() => shutdown.pipe(Effect.orDie))
   const usable = Effect.suspend(() => {
     if (closed) return Effect.fail(rejected('Store is closed', Closed))
     if (poison !== undefined)
@@ -334,20 +357,6 @@ export const make = Effect.fnUntraced(function* (backend: Backend) {
         reset: frames.length > 100 || (oldest !== undefined && after < oldest.seq - 1),
       }
     }),
-    close: Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        if (closing === undefined) {
-          // Seal admission before waiting for an already admitted transaction.
-          // Cleanup belongs to the resource Scope; cancelling one caller only
-          // cancels its wait, and every later caller joins the same result.
-          closed = true
-          closing = yield* Effect.gen(function* () {
-            while (readers > 0) yield* Effect.sleep('1 millis')
-            yield* backend.close
-          }).pipe(Effect.uninterruptible, Effect.forkIn(cleanupScope))
-        }
-        yield* restore(Fiber.join(closing))
-      }),
-    ),
+    awaitClosed: Deferred.await(terminal),
   })
 })
