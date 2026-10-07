@@ -35,6 +35,13 @@
       "types": "./dist/testing/index.d.ts",
       "default": "./dist/testing/index.js"
     },
+    "./storage/SqlStore": null,
+    "./storage/SqliteStore": null,
+    "./storage/BunSqliteStore": null,
+    "./storage/NodeSqliteStore": null,
+    "./storage/Sqlite": null,
+    "./storage/Bun": null,
+    "./storage/Node": null,
     "./*": {
       "types": "./dist/*.d.ts",
       "default": "./dist/*.js"
@@ -56,16 +63,6 @@
     "effect": "catalog:"
   },
   "peerDependencies": {
-    "@effect/sql-sqlite-bun": "4.0.1",
-    "@effect/sql-sqlite-node": "4.0.1",
     "effect": "^4.0.1"
-  },
-  "peerDependenciesMeta": {
-    "@effect/sql-sqlite-bun": {
-      "optional": true
-    },
-    "@effect/sql-sqlite-node": {
-      "optional": true
-    }
   }
 }

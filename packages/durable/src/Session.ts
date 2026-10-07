@@ -1370,8 +1370,7 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
   const project = Effect.fnUntraced(function* <A>(
     projection: (state: Record.State) => Effect.Effect<A, StorageError>,
   ): Effect.fn.Return<A, StorageError> {
-    // A custom Store without lease metadata is conservatively grouped by the full
-    // caller Context; native SQL groups the exact transaction connection/counter tuple.
+    // A Store may provide a shared view key; otherwise caller contexts remain separate.
     const readContext = yield* store.readContext ?? Effect.context<never>()
     return yield* Effect.request(new SnapshotRead({ readContext, project: projection }), reads)
   })
@@ -1600,7 +1599,7 @@ export declare namespace Session {
    * @since 0.0.0
    */
   export interface Service {
-    /** Physically committed facts, fenced from ambient SQL transaction previews. */
+    /** Saved domain facts, excluding uncommitted transaction candidates. */
     readonly committed: Effect.Effect<Record.State, StorageError>
     readonly root: (
       initialize?: (tx: Transaction) => Effect.Effect<void, StorageError>,

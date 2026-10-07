@@ -20,7 +20,7 @@ import * as Session from '@effect-harness/durable/Session'
 import * as View from '@effect-harness/durable/View'
 import * as Usage from '@effect-harness/durable/Usage'
 import * as Memory from '@effect-harness/durable/storage/Memory'
-import * as Sqlite from '@effect-harness/durable/storage/SqliteStore'
+import * as Sqlite from './storage/TestStore.ts'
 
 const layers = Layer.mergeAll(Session.layer, View.layer).pipe(Layer.provideMerge(Memory.layer))
 const initialize = Effect.gen(function* () {

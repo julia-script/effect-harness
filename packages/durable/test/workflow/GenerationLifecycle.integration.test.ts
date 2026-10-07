@@ -8,7 +8,6 @@ import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as FileSystem from 'effect/FileSystem'
 import * as Path from 'effect/Path'
 import * as SqlClient from 'effect/sql/SqlClient'
-import * as ClusterSchema from 'effect/cluster/ClusterSchema'
 import * as ClusterWorkflowEngine from 'effect/cluster/ClusterWorkflowEngine'
 import * as SingleRunner from 'effect/cluster/SingleRunner'
 import * as Cause from 'effect/Cause'
@@ -51,7 +50,9 @@ import * as Record from '@effect-harness/durable/Record'
 import * as Session from '@effect-harness/durable/Session'
 import * as Store from '@effect-harness/durable/Store'
 import * as Backend from '../../src/storage/internal/backend.ts'
-import * as SqlStore from '@effect-harness/durable/storage/SqliteStore'
+import * as SqlStore from '../storage/TestStore.ts'
+import * as SnapshotStore from '@effect-harness/durable/storage/SnapshotStore'
+import * as KeyValueStore from 'effect/persistence/KeyValueStore'
 import * as Document from '@effect-harness/durable/Document'
 import { rejected, NotFound, Closed } from '@effect-harness/durable/StorageError'
 import * as Cancellation from '@effect-harness/durable/workflow/Cancellation'
@@ -392,13 +393,20 @@ describe('GenerationLifecycle', () => {
                 return yield* Session.make.pipe(Effect.provideService(Store.Store, store))
               }),
               state: Effect.gen(function* () {
-                const rows = yield* readerSql<{
-                  state: string
-                }>`SELECT state FROM durable_state WHERE singleton=1`
-                return yield* Schema.decodeEffect(Schema.fromJsonString(Record.State))(
-                  rows[0]?.state ?? '{}',
-                )
-              }),
+                const values = yield* KeyValueStore.KeyValueStore
+                const saved = yield* KeyValueStore.toSchemaStore(
+                  values,
+                  SnapshotStore.Snapshot,
+                ).get('@effect-harness/durable/session')
+                if (Option.isNone(saved)) return yield* Effect.die('Saved snapshot missing')
+                return saved.value.state
+              }).pipe(
+                Effect.provide(
+                  KeyValueStore.layerSql().pipe(
+                    Layer.provide(Layer.succeed(SqlClient.SqlClient, readerSql)),
+                  ),
+                ),
+              ),
             }
             const storage = engineKind === 'sqlite' ? sqlStorage : yield* persisted
             const entered = yield* Deferred.make<void>()
@@ -701,17 +709,14 @@ describe('GenerationLifecycle', () => {
           const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'session-lifecycle-' })
           const database = SqliteClient.layer({ filename: path.join(directory, 'state.sqlite') })
           yield* Effect.gen(function* () {
-            const sql = yield* SqlClient.SqlClient
-            const physical = sql.withTransaction(
-              Effect.gen(function* () {
-                const rows = yield* sql<{
-                  state: string
-                }>`SELECT state FROM durable_state WHERE singleton=1`
-                return yield* Schema.decodeEffect(Schema.fromJsonString(Record.State))(
-                  rows[0]?.state ?? '{}',
-                )
-              }),
-            )
+            const physical = Effect.gen(function* () {
+              const values = yield* KeyValueStore.KeyValueStore
+              const saved = yield* KeyValueStore.toSchemaStore(values, SnapshotStore.Snapshot).get(
+                '@effect-harness/durable/session',
+              )
+              if (Option.isNone(saved)) return yield* Effect.die('Saved snapshot missing')
+              return saved.value.state
+            }).pipe(Effect.provide(KeyValueStore.layerSql()))
             const open = Effect.gen(function* () {
               const store = yield* SqlStore.make
               return yield* Session.make.pipe(Effect.provideService(Store.Store, store))
@@ -765,11 +770,7 @@ describe('GenerationLifecycle', () => {
                     ),
                   ),
                 })
-                return yield* Structured.evaluate(
-                  identity,
-                  session,
-                  transactional ? activity.annotate(ClusterSchema.WithTransaction, true) : activity,
-                )
+                return yield* Structured.evaluate(identity, session, activity)
               }).pipe(
                 Effect.mapError((error) =>
                   error._tag === 'StorageError'

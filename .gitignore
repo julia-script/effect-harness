@@ -34,3 +34,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .DS_Store
 
 .turbo
+
+# local research and review artifacts
+.unlazy/
+.scratch/

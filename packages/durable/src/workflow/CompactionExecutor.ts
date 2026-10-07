@@ -23,7 +23,6 @@ import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Prompt from 'effect/ai/Prompt'
-import * as ClusterSchema from 'effect/cluster/ClusterSchema'
 import * as Activity from 'effect/workflow/Activity'
 import * as Conversation from '../Conversation.ts'
 import type * as Document from '../Document.ts'
@@ -261,7 +260,7 @@ export const layer: Layer.Layer<
             { key: `workflow/compaction/placement/${executionId}` },
           )
           .pipe(Effect.mapError(domainError)),
-      }).annotate(ClusterSchema.WithTransaction, true)
+      })
       yield* Structured.drain(session, payload.taskId, payload.sessionId).pipe(
         Effect.mapError(domainError),
       )
@@ -457,7 +456,7 @@ export const layer: Layer.Layer<
                 cause instanceof ExecutionError ? cause : invalid(cause),
               ),
             ),
-        }).annotate(ClusterSchema.WithTransaction, true)
+        })
         if (response.type === 'summary')
           return yield* complete({
             firstKept: yield* Schema.decodeEffect(Record.EntryId)(pinned.firstKept).pipe(
@@ -476,15 +475,45 @@ export const layer: Layer.Layer<
         Effect.catchTag('ModelRetry', (cause) => Effect.fail(invalid(cause))),
       )
     })
+    // Settlement receipts restore native Activities before terminal-task fencing.
+    const receipts = (yield* session.committed.pipe(Effect.mapError(domainError))).receipts
+    const placement = Arr.findFirst(
+      receipts,
+      (receipt) => receipt.key === `workflow/compaction/placement/${executionId}`,
+    )
+    if (Option.isSome(placement)) return yield* complete()
+    const failed = Arr.findFirst(
+      receipts,
+      (receipt) => receipt.key === `workflow/compaction/failure/${executionId}`,
+    )
+    if (Option.isSome(failed)) {
+      const encoded = yield* Activity.make({
+        name: 'failed',
+        success: Schema.Json,
+        error: ExecutionErrorCodec,
+        execute: Effect.succeed(failed.value.result),
+      })
+      const error = yield* Schema.decodeEffect(Schema.toCodecJson(ExecutionErrorCodec))(
+        encoded,
+      ).pipe(Effect.mapError(invalid))
+      yield* Structured.drain(session, payload.taskId, payload.sessionId).pipe(
+        Effect.mapError(domainError),
+      )
+      return yield* error
+    }
     return yield* Cancellation.run(payload, session, run).pipe(
       Effect.mapError(domainError),
       Effect.tapError((error) =>
         Activity.make({
           name: 'failed',
+          success: Schema.Json,
           error: ExecutionErrorCodec,
           execute: session
             .transaction(
               Effect.fnUntraced(function* (tx) {
+                const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(ExecutionErrorCodec))(
+                  error,
+                ).pipe(Effect.mapError(invalid))
                 const graph = yield* Ownership.readGraph(tx)
                 const taskOption = yield* tx.task(payload.taskId)
                 if (
@@ -492,7 +521,7 @@ export const layer: Layer.Layer<
                   taskOption.value.state.status === 'terminal' ||
                   taskOption.value.state.status === 'completing'
                 )
-                  return
+                  return encoded
                 const task = taskOption.value
                 removeStatus(yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId }))
                 yield* Structured.hold(
@@ -505,16 +534,15 @@ export const layer: Layer.Layer<
                   },
                   graph,
                 )
+                return encoded
               }),
               { key: `workflow/compaction/failure/${executionId}` },
             )
             .pipe(Effect.mapError(domainError)),
-        })
-          .annotate(ClusterSchema.WithTransaction, true)
-          .pipe(
-            Effect.andThen(Structured.drain(session, payload.taskId, payload.sessionId)),
-            Effect.mapError(domainError),
-          ),
+        }).pipe(
+          Effect.andThen(Structured.drain(session, payload.taskId, payload.sessionId)),
+          Effect.mapError(domainError),
+        ),
       ),
     )
   }),

@@ -8,7 +8,7 @@ import * as Session from '@effect-harness/durable/Session'
 import { Store } from '@effect-harness/durable/Store'
 import { StorageError } from '@effect-harness/durable/StorageError'
 import * as Memory from '@effect-harness/durable/storage/Memory'
-import * as Sqlite from '@effect-harness/durable/storage/SqliteStore'
+import * as Sqlite from './storage/TestStore.ts'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { sessionLayer } from '@effect-harness/durable/testing/Storage'
 const token = Document.defineUnsafe({

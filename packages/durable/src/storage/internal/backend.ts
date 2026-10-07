@@ -164,9 +164,7 @@ export const make = Effect.fnUntraced(function* (
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         yield* admit
-        // Match native SQL Activity ordering: acquire the database transaction
-        // before the domain semaphore. Otherwise concurrent host transactions
-        // can hold the semaphore while waiting for an Activity's SQL lease.
+        // Backend coordination is acquired before this Store's local permit.
         return yield* restore(
           backend.atomic(
             semaphore.withPermit(

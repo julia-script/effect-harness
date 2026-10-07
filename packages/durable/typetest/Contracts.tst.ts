@@ -17,9 +17,9 @@ import * as Executor from '@effect-harness/durable/Executor'
 import * as Conversation from '@effect-harness/durable/Conversation'
 import * as Directory from '@effect-harness/durable/SessionDirectory'
 import * as Memory from '@effect-harness/durable/storage/Memory'
-import * as Sqlite from '@effect-harness/durable/storage/SqliteStore'
-import * as Node from '@effect-harness/durable/storage/NodeSqliteStore'
-import * as Bun from '@effect-harness/durable/storage/BunSqliteStore'
+import * as SnapshotStore from '@effect-harness/durable/storage/SnapshotStore'
+import type * as EventJournal from 'effect/eventlog/EventJournal'
+import type * as KeyValueStore from 'effect/persistence/KeyValueStore'
 import * as Jsonl from '@effect-harness/durable/storage/JsonlStore'
 import * as Cancellation from '@effect-harness/durable/workflow/Cancellation'
 import { Generation } from '@effect-harness/durable/workflow/Generation'
@@ -38,8 +38,6 @@ import type * as Path from 'effect/Path'
 import type * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
-import type * as SqlClient from 'effect/sql/SqlClient'
-import type * as SqlError from 'effect/sql/SqlError'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 
 class Caller extends Context.Service<Caller, { readonly value: string }>()(
@@ -152,17 +150,15 @@ test('all native storage and executor layers expose full inputs and acquisition 
   expect(Memory.layer).type.toBe<Layer.Layer<Store.Store>>()
   expect(Session.layer).type.toBe<Layer.Layer<Session.Session, never, Store.Store>>()
   expect(View.layer).type.toBe<Layer.Layer<View.View, never, Store.Store>>()
-  expect(Sqlite.layer).type.toBe<
-    Layer.Layer<Store.Store, StorageError.StorageError, SqlClient.SqlClient>
+  expect(SnapshotStore.layer).type.toBe<
+    Layer.Layer<
+      Store.Store,
+      StorageError.StorageError,
+      EventJournal.EventJournal | KeyValueStore.KeyValueStore
+    >
   >()
   expect(Jsonl.layer({ directory: 'data' })).type.toBe<
     Layer.Layer<Store.Store, StorageError.StorageError, FileSystem.FileSystem | Path.Path>
-  >()
-  expect(Node.layer({ filename: ':memory:' })).type.toBe<
-    Layer.Layer<Store.Store, StorageError.StorageError | SqlError.SqlError>
-  >()
-  expect(Bun.layer({ filename: ':memory:' })).type.toBe<
-    Layer.Layer<Store.Store, StorageError.StorageError | SqlError.SqlError>
   >()
   expect(Executor.layerExecutors).type.toBe<
     Layer.Layer<
@@ -368,6 +364,5 @@ test('owner companions preserve compatibility alias equality and scoped memory c
   expect<View.ProjectionWatch<number>>().type.toBe<View.View.ProjectionWatch<number>>()
   expect(Store.makeMemory).type.toBe<Effect.Effect<Store.Service, never, Scope.Scope>>()
   expect(Store.layerMemory).type.toBe<Layer.Layer<Store.Store>>()
-  expect(Sqlite.layerStoreMemory).type.toBe<Layer.Layer<Store.Store>>()
   expect(Observation.makeWatch).type.not.toBeCallableWith({ value: {}, stop: Effect.void })
 })

@@ -11,7 +11,6 @@ import type * as Layer from 'effect/Layer'
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as ClusterSchema from 'effect/cluster/ClusterSchema'
 import * as Activity from 'effect/workflow/Activity'
 import * as DurableDeferred from 'effect/workflow/DurableDeferred'
 import * as Conversation from '../Conversation.ts'
@@ -312,13 +311,13 @@ export const layer: Layer.Layer<
         success: Record.Conversation,
         error: ExecutionErrorCodec,
         execute: session.root().pipe(Effect.mapError(storageError)),
-      }).annotate(ClusterSchema.WithTransaction, true)
+      })
     const admitted = yield* Activity.make({
       name: 'admission',
       success: Admission,
       error: ExecutionErrorCodec,
       execute: admit(session, config, payload, executionId),
-    }).annotate(ClusterSchema.WithTransaction, true)
+    })
     if (admitted.generation !== undefined)
       yield* Generation.execute(admitted.generation, { discard: true })
     yield* notify(session, admitted.notify)

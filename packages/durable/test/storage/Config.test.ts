@@ -11,13 +11,16 @@ import * as Record from '@effect-harness/durable/Record'
 import * as Store from '@effect-harness/durable/Store'
 import type { StorageError } from '@effect-harness/durable/StorageError'
 import * as Jsonl from '@effect-harness/durable/storage/JsonlStore'
-import * as Node from '@effect-harness/durable/storage/NodeSqliteStore'
+import * as SnapshotStore from './TestStore.ts'
+import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 
 const platform = Layer.merge(NodeFileSystem.layer, Path.layer)
 const provider = (env: Readonly<Record<string, string>>) =>
   ConfigProvider.layer(ConfigProvider.fromEnv({ env }))
 const nodeConfig: Layer.Layer<Store.Store, StorageError | Config.ConfigError | SqlError.SqlError> =
-  Node.layerConfig({ filename: Config.String('DURABLE_SQLITE') })
+  SnapshotStore.layer.pipe(
+    Layer.provide(SqliteClient.layerConfig({ filename: Config.String('DURABLE_SQLITE') })),
+  )
 
 describe('Config', () => {
   it.effect(

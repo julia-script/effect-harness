@@ -58,14 +58,8 @@
         "effect": "catalog:",
       },
       "peerDependencies": {
-        "@effect/sql-sqlite-bun": "4.0.1",
-        "@effect/sql-sqlite-node": "4.0.1",
         "effect": "^4.0.1",
       },
-      "optionalPeers": [
-        "@effect/sql-sqlite-bun",
-        "@effect/sql-sqlite-node",
-      ],
     },
     "packages/harness": {
       "name": "@effect-harness/harness",

@@ -1,6 +1,8 @@
+import { SqliteClient } from '@effect/sql-sqlite-bun'
 import * as Config from 'effect/Config'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
+import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Path from 'effect/Path'
 import type * as PlatformError from 'effect/PlatformError'
@@ -29,3 +31,8 @@ export const filename: Effect.Effect<
   const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'effect-harness-example-' })
   return path.join(directory, 'example.sqlite')
 })
+
+/** Acquire SQLite and its optional temporary directory in the same Layer scope. */
+export const layer = Layer.unwrap(
+  Effect.map(filename, (filename) => SqliteClient.layer({ filename })),
+)

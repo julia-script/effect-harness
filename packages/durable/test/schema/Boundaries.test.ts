@@ -18,7 +18,9 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
 import * as Result from 'effect/Result'
-import * as SqlClient from 'effect/sql/SqlClient'
+import * as KeyValueStore from 'effect/persistence/KeyValueStore'
+import * as Layer from 'effect/Layer'
+import * as SnapshotStore from '@effect-harness/durable/storage/SnapshotStore'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Conversation from '@effect-harness/durable/Conversation'
 import * as Document from '@effect-harness/durable/Document'
@@ -31,7 +33,7 @@ import * as Session from '@effect-harness/durable/Session'
 import * as Store from '@effect-harness/durable/Store'
 import * as View from '@effect-harness/durable/View'
 import * as Memory from '@effect-harness/durable/storage/Memory'
-import * as Sqlite from '@effect-harness/durable/storage/SqliteStore'
+import * as Sqlite from '../storage/TestStore.ts'
 import { StrictReceiptJson } from '@effect-harness/durable/storage/StrictReceiptJson'
 import { cursor } from '../../src/storage/internal/state.ts'
 import * as Outcome from '@effect-harness/durable/workflow/Outcome'
@@ -294,39 +296,29 @@ describe('Boundaries', () => {
     )
   })
 
-  it.effect(
-    'decodes malformed native SQL driver rows as Corrupt and preserves text exhaustion counters',
-    () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        let malformed = false
-        const wrapped = new Proxy(sql, {
-          apply(target, self, args) {
-            const statement = Reflect.apply(target, self, args)
-            if (!malformed || !String(args[0]).includes('SELECT state,')) return statement
-            return statement.pipe(
-              Effect.map(() => [
-                { state: JSON.stringify(Record.emptyState()), next_seq: 1, format: 1 },
-              ]),
-            )
-          },
-        })
-        const store = yield* Sqlite.make.pipe(Effect.provideService(SqlClient.SqlClient, wrapped))
-        const exhausted = {
-          ...Record.emptyState(),
-          nextId: Number.MAX_SAFE_INTEGER + 1,
-          nextSeq: Number.MAX_SAFE_INTEGER + 1,
-        }
-        const text = yield* Schema.encodeEffect(Schema.fromJsonString(Record.State))(exhausted)
-        yield* sql`UPDATE durable_state SET state=${text},next_seq=${exhausted.nextSeq} WHERE singleton=1`
-        assert.strictEqual((yield* store.read).nextSeq, exhausted.nextSeq)
-        const rows = yield* sql`SELECT CAST(next_seq AS TEXT) AS next_seq FROM durable_state`
-        assert.deepStrictEqual(rows, [{ next_seq: String(exhausted.nextSeq) }])
-        malformed = true
-        const error = yield* store.read.pipe(Effect.flip)
-        assert.strictEqual(error.reason._tag, 'Corrupt')
-        assert.strictEqual(error.certainty, 'rejected')
-      }).pipe(Effect.provide(SqliteClient.layer({ filename: ':memory:' }))),
+  it.effect('validates saved snapshot counters and rejects malformed values', () =>
+    Effect.gen(function* () {
+      const values = yield* KeyValueStore.KeyValueStore
+      const store = yield* SnapshotStore.make()
+      const exhausted = {
+        ...Record.emptyState(),
+        nextId: Number.MAX_SAFE_INTEGER + 1,
+        nextSeq: Number.MAX_SAFE_INTEGER + 1,
+      }
+      yield* KeyValueStore.toSchemaStore(values, SnapshotStore.Snapshot).set(
+        '@effect-harness/durable/session',
+        { version: 1, state: exhausted, frames: [] },
+      )
+      assert.strictEqual((yield* store.read).nextSeq, exhausted.nextSeq)
+      yield* values.set('@effect-harness/durable/session', '{"version":1,"state":null,"frames":[]}')
+      const error = yield* store.read.pipe(Effect.flip)
+      assert.strictEqual(error.reason._tag, 'Corrupt')
+      assert.ok(error.cause instanceof Schema.SchemaError)
+    }).pipe(
+      Effect.provide(
+        Sqlite.persistence.pipe(Layer.provide(SqliteClient.layer({ filename: ':memory:' }))),
+      ),
+    ),
   )
 
   it.effect(
@@ -346,9 +338,8 @@ describe('Boundaries', () => {
         yield* session.transaction((tx) => tx.doc(token).pipe(Effect.asVoid))
         const encoded = yield* Document.encode(token, { value: 'kept', note: undefined })
         assert.deepStrictEqual(encoded, { value: 'kept' })
-        const sql = yield* SqlClient.SqlClient
-        const row = yield* sql`SELECT state FROM durable_state`
-        assert.isFalse(JSON.stringify(row).includes('null'))
+        const values = yield* KeyValueStore.KeyValueStore
+        assert.isFalse((yield* values.get('@effect-harness/durable/session'))?.includes('null'))
         const reopened = yield* Sqlite.make
         const next = yield* Session.make.pipe(Effect.provideService(Store.Store, reopened))
         const snapshot = yield* next.snapshot(token).pipe(Effect.map(Option.getOrUndefined))
@@ -358,7 +349,11 @@ describe('Boundaries', () => {
           note: undefined,
         })
         assert.isTrue(Object.hasOwn(copied, 'note'))
-      }).pipe(Effect.provide(SqliteClient.layer({ filename: ':memory:' }))),
+      }).pipe(
+        Effect.provide(
+          Sqlite.persistence.pipe(Layer.provideMerge(SqliteClient.layer({ filename: ':memory:' }))),
+        ),
+      ),
   )
 
   it('uses native part equivalence for content replacements with reordered option keys', () => {
@@ -377,44 +372,6 @@ describe('Boundaries', () => {
       [],
     )
   })
-
-  for (const [select, bad] of [
-    ['SELECT name FROM sqlite_master', [{ name: 1 }]],
-    ['SELECT version FROM durable_schema', [{ version: '2' }]],
-    ['SELECT seq,frame FROM durable_journal', [{ seq: 1, frame: 42 }]],
-    [
-      'SELECT key,fingerprint,result,seq,is_void FROM durable_receipt',
-      [{ key: '"key"', fingerprint: '""', result: '{}', seq: 1, is_void: true }],
-    ],
-  ] as const)
-    it.effect(`validates driver row array for ${select}`, () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        let active = select.includes('sqlite_master') || select.includes('durable_schema')
-        const wrapped = new Proxy(sql, {
-          apply(target, self, args) {
-            const statement = Reflect.apply(target, self, args)
-            return active && String(args[0]).includes(select)
-              ? statement.pipe(Effect.as(bad))
-              : statement
-          },
-        })
-        const failure = active
-          ? yield* Sqlite.make.pipe(
-              Effect.provideService(SqlClient.SqlClient, wrapped),
-              Effect.flip,
-            )
-          : yield* Effect.gen(function* () {
-              const store = yield* Sqlite.make.pipe(
-                Effect.provideService(SqlClient.SqlClient, wrapped),
-              )
-              active = true
-              return yield* store.read.pipe(Effect.flip)
-            })
-        assert.strictEqual(failure.reason._tag, 'Corrupt')
-        assert.ok(failure.cause instanceof Schema.SchemaError)
-      }).pipe(Effect.provide(SqliteClient.layer({ filename: ':memory:' }))),
-    )
 
   it.effect(
     'uses declared tool payload and pinned checkpoint schemas for tool-start arguments',
@@ -513,87 +470,91 @@ describe('Boundaries', () => {
       }),
   )
 
-  it.effect('rejects a schema encoding failure before any SQL write and retains its cause', () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient
-      let mutations = 0
-      const wrapped = new Proxy(sql, {
-        apply(target, self, args) {
-          if (String(args[0]).includes('UPDATE durable_state')) mutations++
-          return Reflect.apply(target, self, args)
-        },
-      })
-      const store = yield* Sqlite.make.pipe(Effect.provideService(SqlClient.SqlClient, wrapped))
-      const shape = Schema.Struct({ value: Schema.String })
-      const rejectedCodec = shape.pipe(
-        Schema.decodeTo(shape, {
-          decode: SchemaGetter.passthrough(),
-          encode: SchemaGetter.transformEffect(() =>
-            Effect.fail(new SchemaIssue.InvalidValue({ message: 'encoder rejected' })),
-          ),
-        }),
-      )
-      const token = Document.defineUnsafe({
-        kind: 'encoding-failure',
-        version: 1,
-        scope: 'session',
-        schema: rejectedCodec,
-        initial: () => ({ value: 'decode succeeds' }),
-      })
-      const session = yield* Session.make.pipe(Effect.provideService(Store.Store, store))
-      const before = yield* store.read
-      const error = yield* session
-        .transaction((tx) => tx.doc(token).pipe(Effect.asVoid))
-        .pipe(Effect.flip)
-      assert.strictEqual(error.reason._tag, 'Invalid')
-      assert.strictEqual(error.certainty, 'rejected')
-      assert.ok(error.cause instanceof Schema.SchemaError)
-      assert.strictEqual(mutations, 0)
-      assert.deepStrictEqual(yield* store.read, before)
-    }).pipe(Effect.provide(SqliteClient.layer({ filename: ':memory:' }))),
-  )
-
   it.effect(
-    'preserves scalar receipt columns and state/frame bytes through schema serialization',
+    'rejects a schema encoding failure before any key/value write and retains its cause',
     () =>
       Effect.gen(function* () {
-        const store = yield* Sqlite.make
-        const result: Record.JsonObject = { z: ['first', 1], a: { text: 'unicode \ud800' } }
-        Object.defineProperty(result, '__proto__', { value: 'own', enumerable: true })
-        const key = 'key:\ud800'
-        const fingerprint = 'fingerprint:"\\'
-        yield* store.transact(
-          (state) => Effect.succeed(Store.makeCandidate({ state, writes: [], result })),
-          {
-            key,
-            fingerprint,
+        const values = yield* KeyValueStore.KeyValueStore
+        let mutations = 0
+        const wrapped = KeyValueStore.make({
+          ...values,
+          set: (key, value) => {
+            mutations++
+            return values.set(key, value)
           },
+        })
+        const store = yield* SnapshotStore.make().pipe(
+          Effect.provideService(KeyValueStore.KeyValueStore, wrapped),
         )
-        const state = yield* store.read
-        const frame = (yield* store.journal(0)).frames[0]
-        const sql = yield* SqlClient.SqlClient
-        assert.deepStrictEqual(yield* sql`SELECT state FROM durable_state`, [
-          { state: JSON.stringify(state) },
-        ])
-        assert.deepStrictEqual(yield* sql`SELECT frame FROM durable_journal`, [
-          { frame: JSON.stringify(frame) },
-        ])
-        assert.deepStrictEqual(yield* sql`SELECT key,fingerprint,result FROM durable_receipt`, [
-          {
-            key: JSON.stringify(key),
-            fingerprint: JSON.stringify(fingerprint),
-            result: JSON.stringify(result),
-          },
-        ])
-        const reopened = yield* Sqlite.make
-        assert.deepStrictEqual(
-          yield* reopened.transact(() => Effect.die('receipt replay callback'), {
-            key,
-            fingerprint,
+        mutations = 0
+        const shape = Schema.Struct({ value: Schema.String })
+        const rejectedCodec = shape.pipe(
+          Schema.decodeTo(shape, {
+            decode: SchemaGetter.passthrough(),
+            encode: SchemaGetter.transformEffect(() =>
+              Effect.fail(new SchemaIssue.InvalidValue({ message: 'encoder rejected' })),
+            ),
           }),
-          result,
         )
-      }).pipe(Effect.provide(SqliteClient.layer({ filename: ':memory:' }))),
+        const token = Document.defineUnsafe({
+          kind: 'encoding-failure',
+          version: 1,
+          scope: 'session',
+          schema: rejectedCodec,
+          initial: () => ({ value: 'decode succeeds' }),
+        })
+        const session = yield* Session.make.pipe(Effect.provideService(Store.Store, store))
+        const before = yield* store.read
+        const error = yield* session
+          .transaction((tx) => tx.doc(token).pipe(Effect.asVoid))
+          .pipe(Effect.flip)
+        assert.strictEqual(error.reason._tag, 'Invalid')
+        assert.strictEqual(error.certainty, 'rejected')
+        assert.ok(error.cause instanceof Schema.SchemaError)
+        assert.strictEqual(mutations, 0)
+        assert.deepStrictEqual(yield* store.read, before)
+      }).pipe(
+        Effect.provide(
+          Sqlite.persistence.pipe(Layer.provideMerge(SqliteClient.layer({ filename: ':memory:' }))),
+        ),
+      ),
+  )
+
+  it.effect('preserves receipt strings and state/frames through schema serialization', () =>
+    Effect.gen(function* () {
+      const store = yield* Sqlite.make
+      const result: Record.JsonObject = { z: ['first', 1], a: { text: 'unicode \ud800' } }
+      Object.defineProperty(result, '__proto__', { value: 'own', enumerable: true })
+      const key = 'key:\ud800'
+      const fingerprint = 'fingerprint:"\\'
+      yield* store.transact(
+        (state) => Effect.succeed(Store.makeCandidate({ state, writes: [], result })),
+        {
+          key,
+          fingerprint,
+        },
+      )
+      const state = yield* store.read
+      const frame = (yield* store.journal(0)).frames[0]
+      assert.ok(frame)
+      const values = yield* KeyValueStore.KeyValueStore
+      const saved = yield* KeyValueStore.toSchemaStore(values, SnapshotStore.Snapshot).get(
+        '@effect-harness/durable/session',
+      )
+      assert.deepStrictEqual(Option.getOrUndefined(saved), { version: 1, state, frames: [frame] })
+      const reopened = yield* Sqlite.make
+      assert.deepStrictEqual(
+        yield* reopened.transact(() => Effect.die('receipt replay callback'), {
+          key,
+          fingerprint,
+        }),
+        result,
+      )
+    }).pipe(
+      Effect.provide(
+        Sqlite.persistence.pipe(Layer.provideMerge(SqliteClient.layer({ filename: ':memory:' }))),
+      ),
+    ),
   )
 
   it.effect('preserves exact JSONL snapshot bytes and schema-owned values on reopen', () =>

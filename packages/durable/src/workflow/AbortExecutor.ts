@@ -11,7 +11,6 @@ import * as Invocation from '@effect-harness/harness/Invocation'
 import * as Effect from 'effect/Effect'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
-import * as ClusterSchema from 'effect/cluster/ClusterSchema'
 import * as Activity from 'effect/workflow/Activity'
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import * as Conversation from '../Conversation.ts'
@@ -124,7 +123,7 @@ export const layer: Layer.Layer<
           { key: `workflow/abort/mark/${executionId}` },
         )
         .pipe(Effect.mapError(domainError)),
-    }).annotate(ClusterSchema.WithTransaction, true)
+    })
 
     yield* SubmissionExecutor.notify(session, marked.notify)
 
@@ -244,7 +243,7 @@ export const layer: Layer.Layer<
             { key: `workflow/abort/reconcile/${executionId}/${previous.id}` },
           )
           .pipe(Effect.mapError(domainError)),
-      }).annotate(ClusterSchema.WithTransaction, true)
+      })
       notify.push(...settled)
     }
     // Every admitted receipt is reconciled after restart even if another invocation already settled its task.

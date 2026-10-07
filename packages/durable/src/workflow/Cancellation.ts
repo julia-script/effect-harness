@@ -148,7 +148,7 @@ export const cancel = Effect.fnUntraced(function* (
  *
  * **Details**
  *
- * Use inside a native Activity execute effect, including transaction-annotated hooks. Closing requests public native suspension before interrupting the body and joins its resource finalizers; no domain outcome is written here.
+ * Use inside a native Activity execute effect. Closing requests public native suspension before interrupting the body and joins its resource finalizers; no domain outcome is written here.
  *
  * @category combinators
  * @since 0.0.0
@@ -247,7 +247,7 @@ export const activity = <A, E, R>(
  *
  * **Details**
  *
- * The Activity guard owns close suspension; abort still joins body finalizers and reports a typed aborted result for the executor's domain settlement. Do not call this physical-read boundary inside a SQL-annotated Activity; use activity there and retain the enclosing invocation's abort monitor.
+ * The Activity guard owns close suspension; abort still joins body finalizers and reports a typed aborted result for the executor's domain settlement. The supplied body uses ordinary Activities; domain receipts protect committed mutations during replay.
  *
  * @category combinators
  * @since 0.0.0

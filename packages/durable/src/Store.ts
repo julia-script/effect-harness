@@ -228,9 +228,9 @@ export declare namespace Store {
    */
   export interface Service {
     readonly read: Effect.Effect<Record.State, StorageError>
-    /** Actual ambient read lease; absent custom drivers are isolated by their complete caller Context. */
+    /** Optional stable key for batching reads that share the same storage view. */
     readonly readContext?: Effect.Effect<object> | undefined
-    /** Reads outside an inherited SQL transaction, waiting for physical settlement. */
+    /** Reads the saved snapshot without exposing a transaction candidate. */
     readonly committed: Effect.Effect<Record.State, StorageError>
     readonly transact: Transact
     readonly commit: (

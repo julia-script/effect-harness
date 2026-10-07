@@ -37,8 +37,10 @@ import * as Inbox from '@effect-harness/durable/Inbox'
 import * as Ownership from '@effect-harness/durable/Ownership'
 import * as Record from '@effect-harness/durable/Record'
 import * as Session from '@effect-harness/durable/Session'
+import * as Store from '@effect-harness/durable/Store'
+import type { StorageError } from '@effect-harness/durable/StorageError'
 import * as Directory from '@effect-harness/durable/SessionDirectory'
-import * as SqlStore from '@effect-harness/durable/storage/SqliteStore'
+import * as SqlStore from '../storage/TestStore.ts'
 import * as DurableExecutor from '@effect-harness/durable/Executor'
 import * as CompactionExecutor from '@effect-harness/durable/workflow/CompactionExecutor'
 import * as SubmissionExecutor from '@effect-harness/durable/workflow/SubmissionExecutor'
@@ -92,7 +94,7 @@ const main = Effect.gen(function* () {
   const filename = process.env['HARNESS_RESTART_DB']
   const scenario = process.env['HARNESS_RESTART_SCENARIO'] ?? 'request'
   const phase = process.env['HARNESS_RESTART_PHASE'] ?? 'start'
-  const base = scenario.replace('-missing-model', '')
+  const base = scenario === 'commit-deferred' ? 'deferred' : scenario.replace('-missing-model', '')
   if (filename === undefined) return yield* Effect.die('HARNESS_RESTART_DB is required')
   const database = SqliteClient.layer({ filename })
   yield* Effect.gen(function* () {
@@ -127,9 +129,17 @@ const main = Effect.gen(function* () {
       generateText: (options) =>
         Effect.gen(function* () {
           yield* audit('summary', options.prompt)
-          if (first && scenario !== 'compaction-retry' && scenario !== 'compaction-queued')
+          if (
+            first &&
+            scenario !== 'compaction-retry' &&
+            scenario !== 'compaction-queued' &&
+            !scenario.includes('-commit-')
+          )
             return yield* Effect.never
-          if (first && scenario === 'compaction-retry')
+          if (
+            first &&
+            (scenario === 'compaction-retry' || scenario === 'compaction-commit-failure')
+          )
             return yield* new AiError.AiError({
               module: 'fixture',
               method: 'generateText',
@@ -153,7 +163,7 @@ const main = Effect.gen(function* () {
                 },
                 finish('tool-calls'),
               ])
-            if (first && scenario === 'retry')
+            if (first && (scenario === 'retry' || scenario === 'commit-failure'))
               return Stream.fromIterable<Response.StreamPartEncoded>([
                 { type: 'error', error: '503 Service Unavailable' },
                 finish('error'),
@@ -165,7 +175,7 @@ const main = Effect.gen(function* () {
                 { type: 'text-start', id: 'text' },
                 { type: 'text-delta', id: 'text', delta: 'committed partial' },
               ]).pipe(Stream.concat(Stream.never))
-            if (first && !toolScenario) return Stream.never
+            if (first && !toolScenario && scenario !== 'commit-answer') return Stream.never
             return Stream.fromIterable(answer(`answer-${calls}`))
           }),
         ),
@@ -333,8 +343,43 @@ const main = Effect.gen(function* () {
         },
       },
     })
+    const commitBoundary = new Map([
+      ['commit-admission', 'workflow/submission/admit/'],
+      ['commit-answer', 'workflow/generation/answer/'],
+      ['commit-failure', 'workflow/generation/failure/'],
+      ['commit-deferred', 'workflow/generation/deferred/'],
+      ['compaction-commit-usage', 'workflow/compaction/usage/'],
+      ['compaction-commit-placement', 'workflow/compaction/placement/'],
+      ['compaction-commit-failure', 'workflow/compaction/failure/'],
+    ]).get(scenario)
+    const storage = Layer.effect(
+      Store.Store,
+      Effect.gen(function* () {
+        const store = yield* SqlStore.make
+        // The wrapper forwards both Store overloads without changing their results.
+        const original = store.transact as <A, E, R>(
+          change: (state: Record.State) => Effect.Effect<Store.Candidate<A>, E, R>,
+          options?: Store.CommitOptions,
+        ) => Effect.Effect<A, StorageError | E, R>
+        const transact: typeof store.transact = <A, E, R>(
+          change: (state: Record.State) => Effect.Effect<Store.Candidate<A>, E, R>,
+          options?: Store.CommitOptions,
+        ) =>
+          original(change, options).pipe(
+            Effect.tap(() =>
+              first && commitBoundary !== undefined && options?.key?.startsWith(commitBoundary)
+                ? audit('domain-commit', options.key).pipe(
+                    Effect.andThen(Console.log('HARNESS_READY')),
+                    Effect.andThen(Effect.never),
+                  )
+                : Effect.void,
+            ),
+          )
+        return Store.Store.of({ ...store, transact })
+      }),
+    )
     const sessionLayer = Session.layer.pipe(
-      Layer.provideMerge(SqlStore.layer),
+      Layer.provideMerge(storage),
       Layer.provide(
         Conversation.layerCreation.pipe(
           Layer.provide(configuration),
@@ -448,7 +493,10 @@ const main = Effect.gen(function* () {
                       (yield* Schema.decodeUnknownEffect(Ownership.Binding)(existing.input))
                         .payload,
                     )
-              return yield* Compaction.execute(payload)
+              const executing = Compaction.execute(payload)
+              return scenario === 'compaction-commit-failure'
+                ? yield* Effect.result(executing)
+                : yield* executing
             })
           : Submission.execute(input('primary'))
       if (!first && scenario.startsWith('abort'))
@@ -464,6 +512,7 @@ const main = Effect.gen(function* () {
         })
       const running = yield* receipt.pipe(Effect.forkScoped)
       if (first) {
+        if (commitBoundary !== undefined) return yield* Effect.never
         if (scenario === 'compaction-queued') {
           yield* waitFor(
             count('request').pipe(

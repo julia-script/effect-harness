@@ -1,5 +1,4 @@
 import { assert, describe, it } from '@effect/vitest'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Time from '@effect-harness/harness/Time'
 import * as DateTime from 'effect/DateTime'
 import * as Deferred from 'effect/Deferred'
@@ -11,7 +10,6 @@ import * as Ref from 'effect/Ref'
 import * as Scheduler from 'effect/Scheduler'
 import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
-import * as SqlClient from 'effect/sql/SqlClient'
 import * as Option from 'effect/Option'
 import * as Context from 'effect/Context'
 import * as Document from '@effect-harness/durable/Document'
@@ -23,7 +21,6 @@ import * as Session from '@effect-harness/durable/Session'
 import * as Conversation from '@effect-harness/durable/Conversation'
 import * as Store from '@effect-harness/durable/Store'
 import * as Memory from '@effect-harness/durable/storage/Memory'
-import * as Sqlite from '@effect-harness/durable/storage/SqliteStore'
 import * as TestClock from 'effect/testing/TestClock'
 import { remaining } from '@effect-harness/durable/workflow/ModelRetry'
 
@@ -280,73 +277,35 @@ describe('StateTime', () => {
     }),
   )
 
-  it.effect(
-    'isolates native SQL transaction previews from simultaneous physical reads without deadlock',
-    () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        const scope = yield* Effect.scope
-        const original = yield* Sqlite.make
-        const reads = yield* Ref.make(0)
-        const store = Store.Store.of({
-          ...original,
-          read: Ref.update(reads, (n) => n + 1).pipe(Effect.andThen(original.read)),
-        })
-        const session = yield* Session.make.pipe(Effect.provideService(Store.Store, store))
-        yield* session.transaction(
+  it.effect('publishes a transaction candidate only after its callback succeeds', () =>
+    Effect.gen(function* () {
+      const store = yield* Memory.make
+      const session = yield* Session.make.pipe(Effect.provideService(Store.Store, store))
+      yield* session.transaction((tx) => tx.doc(counter).pipe(Effect.asVoid))
+      const entered = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const writing = yield* session
+        .transaction(
           Effect.fnUntraced(function* (tx) {
-            yield* tx.doc(counter)
+            ;(yield* tx.doc(counter)).count = 7
+            yield* Deferred.succeed(entered, undefined)
+            yield* Deferred.await(release)
+            return yield* Effect.fail('rollback')
           }),
         )
-        const outside =
-          yield* Deferred.make<
-            Fiber.Fiber<
-              Document.Snapshot<{ readonly count: number }> | undefined,
-              import('@effect-harness/durable/StorageError').StorageError
-            >
-          >()
-        yield* sql
-          .withTransaction(
-            Effect.gen(function* () {
-              yield* session.transaction(
-                Effect.fnUntraced(function* (tx) {
-                  ;(yield* tx.doc(counter)).count = 7
-                }),
-              )
-              const local = yield* Effect.all(
-                [
-                  session.snapshot(counter).pipe(Effect.map(Option.getOrUndefined)),
-                  session.snapshot(counter).pipe(Effect.map(Option.getOrUndefined)),
-                ],
-                { concurrency: 2 },
-              ).pipe(Effect.forkIn(scope))
-              const physical = yield* session.snapshot(counter).pipe(
-                Effect.map(Option.getOrUndefined),
-                Effect.updateContext((context: Context.Context<never>) =>
-                  Context.omit(sql.transactionService)(context),
-                ),
-                Effect.forkIn(scope),
-              )
-              yield* Deferred.succeed(outside, physical)
-              const values = yield* Fiber.join(local).pipe(Effect.timeout('1 second'))
-              assert.deepStrictEqual(
-                values.map((value) => value?.value.count),
-                [7, 7],
-              )
-              return yield* Effect.fail('rollback')
-            }),
-          )
-          .pipe(Effect.flip)
-        assert.strictEqual((yield* Fiber.join(yield* Deferred.await(outside)))?.value.count, 0)
-        assert.strictEqual(yield* Ref.get(reads), 2)
-        const readContext = original.readContext
-        if (readContext === undefined) return yield* Effect.die('SQL read context missing')
-        const committedContext = yield* readContext
-        const lease = yield* sql.withTransaction(readContext)
-        const laterLease = yield* sql.withTransaction(readContext)
-        assert.notStrictEqual(lease, committedContext)
-        assert.notStrictEqual(lease, laterLease)
-      }).pipe(Effect.provide(SqliteClient.layer({ filename: ':memory:' }))),
+        .pipe(Effect.result, Effect.forkScoped)
+      yield* Deferred.await(entered)
+      assert.strictEqual(
+        (yield* session.snapshot(counter).pipe(Effect.map(Option.getOrUndefined)))?.value.count,
+        0,
+      )
+      yield* Deferred.succeed(release, undefined)
+      assert.strictEqual((yield* Fiber.join(writing))._tag, 'Failure')
+      assert.strictEqual(
+        (yield* session.snapshot(counter).pipe(Effect.map(Option.getOrUndefined)))?.value.count,
+        0,
+      )
+    }),
   )
 
   it.effect('defaults independent tool dispatch to sixteen and rejects invalid limits', () =>

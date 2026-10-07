@@ -9,12 +9,11 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
-import * as SqlClient from 'effect/sql/SqlClient'
 import * as Spawner from 'effect/process/ChildProcessSpawner'
 import * as Record from '@effect-harness/durable/Record'
 import * as Session from '@effect-harness/durable/Session'
 import * as Conversation from '@effect-harness/durable/Conversation'
-import * as SqlStore from '@effect-harness/durable/storage/SqliteStore'
+import * as SqlStore from '../storage/TestStore.ts'
 import * as Usage from '@effect-harness/durable/Usage'
 import * as Inbox from '@effect-harness/durable/Inbox'
 
@@ -33,28 +32,12 @@ const marker = (handle: Spawner.ChildProcessHandle, prefix: string) =>
   )
 const inspect = (filename: string) =>
   Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
-    // A separate writable transaction fences native notification vs physical COMMIT.
-    const physical = yield* sql.withTransaction(
-      Effect.gen(function* () {
-        const rows = yield* sql<{
-          state: string
-        }>`SELECT state FROM durable_state WHERE singleton=1`
-        const state = yield* Schema.decodeEffect(Schema.fromJsonString(Record.State))(
-          rows[0]?.state ?? '{}',
-        )
-        const fs = yield* FileSystem.FileSystem
-        const text = yield* fs.readFileString(filename + '.audit.jsonl')
-        const Audit = Schema.Struct({
-          phase: Schema.String,
-          kind: Schema.String,
-          data: Schema.String,
-        })
-        const audit = yield* Effect.forEach(text.split('\n').filter(Boolean), (line) =>
-          Schema.decodeEffect(Schema.fromJsonString(Audit))(line),
-        )
-        return { state, audit }
-      }),
+    const state = yield* (yield* SqlStore.make).committed
+    const fs = yield* FileSystem.FileSystem
+    const text = yield* fs.readFileString(filename + '.audit.jsonl')
+    const Audit = Schema.Struct({ phase: Schema.String, kind: Schema.String, data: Schema.String })
+    const audit = yield* Effect.forEach(text.split('\n').filter(Boolean), (line) =>
+      Schema.decodeEffect(Schema.fromJsonString(Audit))(line),
     )
     const documents = yield* Effect.gen(function* () {
       const session = yield* Session.Session
@@ -67,7 +50,7 @@ const inspect = (filename: string) =>
           .pipe(Effect.map(Option.getOrUndefined)))?.value,
       }
     }).pipe(Effect.provide(Session.layer.pipe(Layer.provide(SqlStore.layer))))
-    return { ...physical, ...documents }
+    return { state, audit, ...documents }
   }).pipe(Effect.provide(SqliteClient.layer({ filename })))
 type Snapshot = Effect.Success<ReturnType<typeof inspect>>
 const logs = (snapshot: Snapshot, kind: string) => snapshot.audit.filter((row) => row.kind === kind)
@@ -123,7 +106,8 @@ const run = <E, R>(
     )
     assert.strictEqual(yield* second.exitCode, 0)
     const after = yield* inspect(filename)
-    assert.isAbove(after.state.nextSeq, before.state.nextSeq)
+    if (scenario.includes('commit-')) assert.isAtLeast(after.state.nextSeq, before.state.nextSeq)
+    else assert.isAbove(after.state.nextSeq, before.state.nextSeq)
     yield* verify(before, after)
     const third = yield* worker.spawn('verify')
     yield* marker(third, 'HARNESS_DONE:')
@@ -151,6 +135,81 @@ const completed = (snapshot: Snapshot) => {
 }
 
 describe('GenerationHarnessRestart', () => {
+  for (const scenario of [
+    'commit-admission',
+    'commit-answer',
+    'commit-failure',
+    'commit-deferred',
+    'compaction-commit-usage',
+    'compaction-commit-placement',
+    'compaction-commit-failure',
+  ] as const)
+    it.live(
+      `recovers ${scenario} after the domain commit and before the native Activity reply`,
+      () =>
+        run(scenario, (before, after) =>
+          Effect.sync(() => {
+            const prefix = new Map([
+              ['commit-admission', 'workflow/submission/admit/'],
+              ['commit-answer', 'workflow/generation/answer/'],
+              ['commit-failure', 'workflow/generation/failure/'],
+              ['commit-deferred', 'workflow/generation/deferred/'],
+              ['compaction-commit-usage', 'workflow/compaction/usage/'],
+              ['compaction-commit-placement', 'workflow/compaction/placement/'],
+              ['compaction-commit-failure', 'workflow/compaction/failure/'],
+            ]).get(scenario)
+            assert.ok(prefix)
+            const saved = before.state.receipts.find((receipt) => receipt.key.startsWith(prefix))
+            assert.ok(saved)
+            assert.deepStrictEqual(
+              after.state.receipts.find((receipt) => receipt.key === saved.key),
+              saved,
+            )
+            assert.strictEqual(logs(after, 'domain-commit').length, 1)
+            assert.isTrue(after.state.tasks.every((task) => task.state.status === 'terminal'))
+            if (scenario === 'compaction-commit-failure') {
+              assert.strictEqual(logs(after, 'summary').length, 2)
+              assert.strictEqual(
+                after.state.entries.filter((entry) => entry.entry.kind === 'harness.compaction')
+                  .length,
+                0,
+              )
+              assert.match(JSON.stringify(saved.result), /503/)
+              assert.match(JSON.stringify(after.state.tasks[0]?.state.outcome), /503/)
+            } else if (scenario.startsWith('compaction')) {
+              assert.strictEqual(logs(after, 'summary').length, 1)
+              assert.strictEqual(
+                after.state.entries.filter((entry) => entry.entry.kind === 'harness.compaction')
+                  .length,
+                1,
+              )
+            } else {
+              if (scenario === 'commit-failure') {
+                assert.strictEqual(
+                  after.state.submissions.find((submission) => submission.requestId === 'primary')
+                    ?.status,
+                  'unanswered',
+                )
+                assert.strictEqual(logs(after, 'request').length, 2)
+                assert.match(JSON.stringify(saved.result), /503/)
+              } else {
+                completed(after)
+                assert.strictEqual(logs(after, 'request').length, 1)
+              }
+              if (scenario === 'commit-deferred') {
+                assert.strictEqual(logs(after, 'fetch').length, 1)
+                const deadline = before.live?.generation?.deferred?.pollAt
+                assert.isDefined(deadline)
+                if (deadline === undefined) throw new Error('Saved deadline missing')
+                assert.deepStrictEqual(saved.result, {
+                  at: deadline,
+                  handle: { job: 'pinned-job' },
+                })
+              }
+            }
+          }),
+        ),
+    )
   for (const scenario of ['prepare', 'request', 'partial', 'retry', 'deferred'] as const) {
     // SIGKILL, child stdout and independent SQL COMMIT progress use host processes outside TestClock.
     it.live(`recovers ${scenario} through actual Generation and Submission executors`, () =>

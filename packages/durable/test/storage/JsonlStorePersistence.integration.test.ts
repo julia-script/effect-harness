@@ -1,6 +1,4 @@
 import * as Option from 'effect/Option'
-import * as Scope from 'effect/Scope'
-import * as Exit from 'effect/Exit'
 import { NodeFileSystem } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { assert, describe, it } from '@effect/vitest'
@@ -9,14 +7,12 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Path from 'effect/Path'
 import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/sql/SqlClient'
 import * as Document from '@effect-harness/durable/Document'
 import * as Record from '@effect-harness/durable/Record'
 import * as Session from '@effect-harness/durable/Session'
 import { Store } from '@effect-harness/durable/Store'
-import { StorageError } from '@effect-harness/durable/StorageError'
 import * as Jsonl from '@effect-harness/durable/storage/JsonlStore'
-import * as Sqlite from '@effect-harness/durable/storage/SqliteStore'
+import * as Sqlite from './TestStore.ts'
 const token = Document.defineUnsafe({
   kind: 'counter',
   version: 1,
@@ -24,7 +20,6 @@ const token = Document.defineUnsafe({
   schema: Schema.Struct({ count: Schema.Finite.pipe(Schema.mutableKey) }),
   initial: () => ({ count: 0 }),
 })
-const firstSeq = Schema.decodeSync(Record.Seq)(1)
 const env = Layer.merge(NodeFileSystem.layer, Path.layer)
 const setup = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
@@ -226,118 +221,6 @@ describe('JsonlStorePersistence', () => {
             )
           }),
         )
-      }).pipe(Effect.provide(client)),
-    )
-    it.effect('upgrades schema v1 in place and preserves preexisting JSON receipts', () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        yield* Sqlite.migrate(Sqlite.MIGRATIONS.slice(0, 1))
-        const state: Record.State = {
-          ...Record.emptyState(),
-          nextSeq: 2,
-          receipts: [{ key: 'old', fingerprint: 'input', result: { count: 1 }, seq: firstSeq }],
-        }
-        yield* sql`INSERT INTO durable_state VALUES(1,1,2,${JSON.stringify(state)})`
-        yield* sql`INSERT INTO durable_receipt VALUES(${JSON.stringify('old')},${JSON.stringify('input')},${JSON.stringify({ count: 1 })},1)`
-        const resourceScope = yield* Effect.acquireRelease(Scope.make(), (scope, exit) =>
-          Scope.close(scope, exit),
-        )
-        const store = yield* Sqlite.make.pipe(Scope.provide(resourceScope))
-        const session = yield* Session.make.pipe(
-          Effect.provideService(Store, store),
-          Scope.provide(resourceScope),
-        )
-        assert.strictEqual(
-          (yield* sql<{ version: number }>`SELECT version FROM durable_schema`)[0]?.version,
-          Sqlite.CURRENT_SCHEMA_VERSION,
-        )
-        assert.deepStrictEqual(
-          yield* session.transaction(() => Effect.die('old receipt reran'), {
-            key: 'old',
-            fingerprint: 'input',
-          }),
-          { count: 1 },
-        )
-        assert.strictEqual(
-          yield* session.transaction(() => Effect.void, { key: 'void' }),
-          undefined,
-        )
-        yield* Scope.close(resourceScope, Exit.void)
-        const reopened = yield* Sqlite.make
-        const session2 = yield* Session.make.pipe(Effect.provideService(Store, reopened))
-        assert.strictEqual(
-          yield* session2.transaction(() => Effect.die('void replay ran'), { key: 'void' }),
-          undefined,
-        )
-      }).pipe(Effect.provide(client)),
-    )
-    it.effect(
-      'rejects missing metadata and future schemas instead of silently creating fresh state',
-      () =>
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          yield* Effect.scoped(Sqlite.make)
-          yield* sql`DELETE FROM durable_state`
-          assert.strictEqual((yield* fail(Effect.scoped(Sqlite.make))).reason._tag, 'Corrupt')
-          yield* sql`UPDATE durable_schema SET version=999`
-          assert.strictEqual((yield* fail(Effect.scoped(Sqlite.make))).reason._tag, 'Corrupt')
-        }).pipe(Effect.provide(client)),
-    )
-    it.effect('rolls schema upgrades back atomically when any statement fails', () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        const error = yield* fail(
-          Sqlite.migrate([
-            {
-              version: 1,
-              statements: ['CREATE TABLE first(id INTEGER PRIMARY KEY)', 'INVALID SQL'],
-            },
-          ]),
-        )
-        assert.strictEqual(error.certainty, 'rejected')
-        assert.deepStrictEqual(
-          yield* sql`SELECT name FROM sqlite_master WHERE type='table' AND name IN ('first','durable_schema')`,
-          [],
-        )
-        yield* Sqlite.migrate()
-        assert.strictEqual(
-          (yield* sql<{ version: number }>`SELECT version FROM durable_schema`)[0]?.version,
-          Sqlite.CURRENT_SCHEMA_VERSION,
-        )
-      }).pipe(Effect.provide(client)),
-    )
-    it.effect(
-      'constraints reject duplicate receipt keys and invalid JSON, keeping all writes rolled back',
-      () =>
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          const store = yield* Sqlite.make
-          yield* commit(store)
-          const before = yield* store.read
-          yield* fail(
-            sql.withTransaction(
-              Effect.gen(function* () {
-                yield* sql`UPDATE durable_state SET next_seq=90`
-                yield* sql`INSERT INTO durable_journal(seq,frame) VALUES(90,'invalid json')`
-              }),
-            ),
-          )
-          assert.deepStrictEqual(yield* store.read, before)
-          const receipt = (yield* sql<{ key: string }>`SELECT key FROM durable_receipt`)[0]
-          assert.ok(receipt)
-          yield* fail(
-            sql`INSERT INTO durable_receipt(key,fingerprint,result,seq) VALUES(${receipt.key},'', '{}',1)`,
-          )
-        }).pipe(Effect.provide(client)),
-    )
-    it.effect('missing schema version row is corruption', () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        yield* Sqlite.migrate()
-        yield* sql`DELETE FROM durable_schema`
-        const error = yield* fail(Sqlite.migrate())
-        assert.ok(error instanceof StorageError)
-        assert.strictEqual(error.reason._tag, 'Corrupt')
       }).pipe(Effect.provide(client)),
     )
   })

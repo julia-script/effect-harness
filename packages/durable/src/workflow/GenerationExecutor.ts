@@ -36,7 +36,6 @@ import * as Stream from 'effect/Stream'
 import * as Prompt from 'effect/ai/Prompt'
 import { ToolCallPart, AllParts, type FinishReason, type AnyPart } from 'effect/ai/Response'
 import * as Toolkit from 'effect/ai/Toolkit'
-import * as ClusterSchema from 'effect/cluster/ClusterSchema'
 import * as Activity from 'effect/workflow/Activity'
 import * as DurableClock from 'effect/workflow/DurableClock'
 import * as Conversation from '../Conversation.ts'
@@ -102,6 +101,7 @@ const Settlement = Schema.Struct({
   result: Result,
   notify: Schema.Array(Record.SubmissionId),
   next: Schema.optionalKey(Generation.payloadSchema),
+  failure: Schema.optionalKey(Schema.Struct({ reason: Schema.String, detail: Schema.String })),
 })
 const RoundCall = Schema.Struct({
   id: Schema.String,
@@ -269,12 +269,12 @@ export const layer: Layer.Layer<
                 detail,
               }
               yield* Structured.hold(tx, task, result, graph)
-              return { result, notify: [] }
+              return { result, notify: [], failure: { reason, detail } }
             }),
             { key: `workflow/generation/failure/${executionId}` },
           )
           .pipe(Effect.mapError(domainError)),
-      }).annotate(ClusterSchema.WithTransaction, true)
+      })
       // The live tool slots remain available until owned work has settled. In
       // particular, an abort after restart must reconcile each tool's committed
       // progress before removing the enclosing run.
@@ -289,14 +289,14 @@ export const layer: Layer.Layer<
               const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
               return yield* Inbox.endRun(tx, live, payload.taskId, {
                 status: 'unanswered',
-                reason,
-                detail,
+                reason: settled.failure?.reason ?? reason,
+                detail: settled.failure?.detail ?? detail,
               })
             }),
             { key: `workflow/generation/failure/end-run/${executionId}` },
           )
           .pipe(Effect.mapError(domainError)),
-      }).annotate(ClusterSchema.WithTransaction, true)
+      })
       yield* SubmissionExecutor.notify(session, notify)
       return result
     })
@@ -317,7 +317,6 @@ export const layer: Layer.Layer<
                 payload,
                 session,
                 Effect.gen(function* () {
-                  yield* active
                   // Domain commit can survive a crash before the native Activity reply is cached.
                   // Reuse its exact result before current registry hooks or model planning run again.
                   const receipts = (yield* session.committed.pipe(
@@ -347,6 +346,7 @@ export const layer: Layer.Layer<
                         compactionReceipt.value.result,
                       ).pipe(Effect.mapError(codecError)),
                     }
+                  yield* active
                   const state: Agent.State = yield* session
                     .snapshot(Conversation.AgentDoc, { owner: payload.conversationId })
                     .pipe(
@@ -752,30 +752,42 @@ export const layer: Layer.Layer<
               name: `deferred/${cycle}/${fetch}`,
               success: Schema.Struct({ handle: Schema.Json, at: Time.EpochMillis }),
               error: ExecutionErrorCodec,
-              execute: Effect.gen(function* () {
-                const at = Model.pollAt(
-                  yield* DateTime.now,
-                  previousAt,
-                  disposition._tag === 'deferred' ? disposition.decision.pollAfterMs : undefined,
+              execute: session
+                .transaction(
+                  Effect.fnUntraced(function* (tx) {
+                    const at = Model.pollAt(
+                      yield* DateTime.now,
+                      previousAt,
+                      disposition._tag === 'deferred'
+                        ? disposition.decision.pollAfterMs
+                        : undefined,
+                    )
+                    const handle =
+                      disposition._tag === 'deferred' ? disposition.decision.handle : null
+                    const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
+                    const request = yield* tx.doc(RequestDoc, { owner: payload.taskId })
+                    request.handle = yield* Document.copyEffect(handle)
+                    live.generation = {
+                      attempt,
+                      model: yield* Document.copyEffect(pinned.request.model),
+                      deferred: { pollAt: DateTime.toEpochMillis(at) },
+                    }
+                    return { at: DateTime.toEpochMillis(at), handle }
+                  }),
+                  { key: `workflow/generation/deferred/${executionId}/${cycle}/${fetch}` },
                 )
-                const handle = disposition._tag === 'deferred' ? disposition.decision.handle : null
-                yield* session
-                  .transaction(
-                    Effect.fnUntraced(function* (tx) {
-                      const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
-                      const request = yield* tx.doc(RequestDoc, { owner: payload.taskId })
-                      request.handle = yield* Document.copyEffect(handle)
-                      live.generation = {
-                        attempt,
-                        model: yield* Document.copyEffect(pinned.request.model),
-                        deferred: { pollAt: DateTime.toEpochMillis(at) },
-                      }
-                    }),
-                  )
-                  .pipe(Effect.mapError(domainError))
-                return { at, handle }
-              }),
-            }).annotate(ClusterSchema.WithTransaction, true)
+                .pipe(
+                  Effect.mapError(domainError),
+                  Effect.flatMap(
+                    Schema.decodeEffect(
+                      Schema.Struct({ handle: Schema.Json, at: Time.EpochMillis }),
+                    ),
+                  ),
+                  Effect.mapError((cause) =>
+                    cause instanceof ExecutionError ? cause : codecError(cause),
+                  ),
+                ),
+            })
           }
           if (disposition._tag === 'failure') {
             const failure = disposition
@@ -892,7 +904,7 @@ export const layer: Layer.Layer<
                     ),
                   )
               }),
-            }).annotate(ClusterSchema.WithTransaction, true)
+            })
             if (failed.compaction !== undefined) {
               yield* Ref.set(compacted, true)
               const summary = yield* Effect.result(Compaction.execute(failed.compaction))
@@ -994,7 +1006,7 @@ export const layer: Layer.Layer<
                   { key: `workflow/generation/answer/${executionId}` },
                 )
                 .pipe(Effect.mapError(domainError)),
-            }).annotate(ClusterSchema.WithTransaction, true)
+            })
             return yield* finish(settlement)
           }
           const tools = disposition
@@ -1069,7 +1081,7 @@ export const layer: Layer.Layer<
                 { key: `workflow/generation/round/${executionId}` },
               )
               .pipe(Effect.mapError(domainError)),
-          }).annotate(ClusterSchema.WithTransaction, true)
+          })
           const executions = yield* Effect.forEach(
             round.calls,
             Effect.fnUntraced(function* (call, index) {
@@ -1144,7 +1156,7 @@ export const layer: Layer.Layer<
                     { key: `workflow/generation/tool/${executionId}/${index}` },
                   )
                   .pipe(Effect.mapError(domainError)),
-              }).annotate(ClusterSchema.WithTransaction, true)
+              })
               yield* ToolCall.execute(child)
               const task = yield* session.task(child.taskId).pipe(Effect.mapError(domainError))
               return (yield* Schema.decodeEffect(Schema.toCodecJson(ToolExecutor.Outcome))(
@@ -1259,7 +1271,7 @@ export const layer: Layer.Layer<
                 { key: `workflow/generation/after-round/${executionId}` },
               )
               .pipe(Effect.mapError(domainError)),
-          }).annotate(ClusterSchema.WithTransaction, true)
+          })
           return yield* finish(settlement)
         }
       })
@@ -1268,6 +1280,41 @@ export const layer: Layer.Layer<
         Effect.catchTag('ModelRetry', (cause) => Effect.fail(codecError(cause))),
       )
     })
+    // A settlement can commit before the engine caches its Activity reply.
+    // Register that same native Activity before task-terminal fencing or current
+    // model/registry lookup, then finish its recorded notifications and children.
+    const receipts = (yield* session.committed.pipe(Effect.mapError(domainError))).receipts
+    for (const name of ['answer', 'after-round'] as const) {
+      const saved = Arr.findFirst(
+        receipts,
+        (receipt) => receipt.key === `workflow/generation/${name}/${executionId}`,
+      )
+      if (Option.isSome(saved)) {
+        const settlement = yield* Activity.make({
+          name,
+          success: Settlement,
+          error: ExecutionErrorCodec,
+          execute: Schema.decodeUnknownEffect(Settlement)(saved.value.result).pipe(
+            Effect.mapError(codecError),
+          ),
+        })
+        return yield* finish(settlement)
+      }
+    }
+    const failed = Arr.findFirst(
+      receipts,
+      (receipt) => receipt.key === `workflow/generation/failure/${executionId}`,
+    )
+    if (Option.isSome(failed)) {
+      const settled = yield* Schema.decodeUnknownEffect(Settlement)(failed.value.result).pipe(
+        Effect.mapError(codecError),
+      )
+      return yield* fail(
+        settled.failure?.reason ??
+          (settled.result.status === 'aborted' ? 'aborted' : 'model_error'),
+        settled.failure?.detail ?? settled.result.detail ?? '',
+      )
+    }
     return yield* Cancellation.run(payload, session, run).pipe(
       Effect.mapError(domainError),
       Effect.catch((error) => {
