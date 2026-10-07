@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import { validate } from '../storage/State.ts'
 import * as Effect from 'effect/Effect'
 import * as Record from '../Record.ts'
@@ -35,7 +36,7 @@ export interface Dataset {
   readonly deepestConversationId: Record.ConversationId
   readonly ancestorHeadEntryId: Record.EntryId
 }
-export const storageBenchmarkPrimaryRecordCount = (scale: Scale) =>
+export const storageBenchmarkPrimaryRecordCount = (scale: Scale): number =>
   1 + scale.entryCount + scale.taskCount + scale.documentCount + TAILS.length + 1 + 8 * 33
 const task = (id: Record.TaskId, index: number): Record.Task => {
   const status = (['pending', 'running', 'terminal'] as const)[index % 3] ?? 'pending'
@@ -213,7 +214,16 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
   {
     name: 'exact entry lookup',
     run: (d) =>
-      Session.use((s) => s.entry(d.firstEntryId).pipe(Effect.map((e) => e?.entry.id ?? -1))),
+      Session.use((s) =>
+        s.entry(d.firstEntryId).pipe(
+          Effect.map((entry) =>
+            entry.pipe(
+              Option.map((e) => e.entry.id),
+              Option.getOrElse(() => -1),
+            ),
+          ),
+        ),
+      ),
     expected: (d) => d.firstEntryId,
   },
   {
@@ -246,7 +256,14 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
             key: d.exactDocumentKey,
             scope: { kind: 'session' },
           })
-          .pipe(Effect.map((r) => r?.id ?? -1)),
+          .pipe(
+            Effect.map((record) =>
+              record.pipe(
+                Option.map((r) => r.id),
+                Option.getOrElse(() => -1),
+              ),
+            ),
+          ),
       ),
     expected: (d) => d.exactDocumentId,
   },
@@ -254,10 +271,19 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
     name: `document replay tail (${tail})`,
     run: (d) =>
       Session.use((s) => {
-        const id = d.replayDocumentIds.get(tail)
-        return id === undefined
-          ? rejected('Missing replay benchmark')
-          : s.document(id).pipe(Effect.map((r) => Number(r?.value.count)))
+        const id = Option.fromUndefinedOr(d.replayDocumentIds.get(tail))
+        return Option.match(id, {
+          onNone: () => rejected('Missing replay benchmark'),
+          onSome: (id) =>
+            s.document(id).pipe(
+              Effect.map((record) =>
+                record.pipe(
+                  Option.map((r) => Number(r.value.count)),
+                  Option.getOrElse(() => Number.NaN),
+                ),
+              ),
+            ),
+        })
       }),
     expected: () => tail,
   })),
@@ -265,9 +291,14 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
     name: 'ancient historical read before newer base',
     run: (d) =>
       Session.use((s) =>
-        s
-          .document(d.historicalDocumentId, d.ancientAt)
-          .pipe(Effect.map((r) => Number(r?.value.count))),
+        s.document(d.historicalDocumentId, d.ancientAt).pipe(
+          Effect.map((record) =>
+            record.pipe(
+              Option.map((r) => Number(r.value.count)),
+              Option.getOrElse(() => Number.NaN),
+            ),
+          ),
+        ),
       ),
     expected: () => 128,
   },
@@ -275,9 +306,14 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
     name: 'recent historical read after newer base',
     run: (d) =>
       Session.use((s) =>
-        s
-          .document(d.historicalDocumentId, d.recentAt)
-          .pipe(Effect.map((r) => Number(r?.value.count))),
+        s.document(d.historicalDocumentId, d.recentAt).pipe(
+          Effect.map((record) =>
+            record.pipe(
+              Option.map((r) => Number(r.value.count)),
+              Option.getOrElse(() => Number.NaN),
+            ),
+          ),
+        ),
       ),
     expected: () => 256,
   },
@@ -296,7 +332,14 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
     run: (d) =>
       Session.use((s) =>
         s.transaction((tx) =>
-          tx.latestHeadMarker(d.deepestConversationId).pipe(Effect.map((r) => r?.id ?? -1)),
+          tx.latestHeadMarker(d.deepestConversationId).pipe(
+            Effect.map((record) =>
+              record.pipe(
+                Option.map((r) => r.id),
+                Option.getOrElse(() => -1),
+              ),
+            ),
+          ),
         ),
       ),
     expected: (d) => d.ancestorHeadEntryId,

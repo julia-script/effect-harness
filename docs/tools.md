@@ -1,6 +1,6 @@
 # Use portable coding tools
 
-The generic harness offers native Effect AI `read`, `write`, `edit` and `bash` declarations in `@effect-harness/harness/tools`. `tools.make()` binds them as a `coding-tools` extension; supply `Env.Env` before adding that extension to the Registry. A separate PowerShell toolkit/handler is available when the host selects that shell. Custom tools use the same Toolkit binding shown in the [runnable example](../apps/example/src/main.ts).
+The generic harness offers native Effect AI `read`, `write`, `edit` and `bash` declarations in `@effect-harness/harness/tools`. `tools.make()` binds them as a `coding-tools` extension; supply `Env.Env` and the host's shared `MutationLocks` before adding that extension to the Registry. A separate PowerShell toolkit/handler is available when the host selects that shell. Custom tools use the same Toolkit binding shown in the [runnable example](../apps/example/src/main.ts).
 
 `Env.layer({ id, cwd, home?, shell?, watch?, env? })` consumes native FileSystem, Path, ChildProcessSpawner and NativeFiles. NativeFiles supplies directory watching, lstat and bounded readers that the generic FileSystem interface cannot express. The Node adapter `harness/env/Node.nativeLayer` implements that narrow capability boundary. `Node.layer(options)` provides NativeFiles and leaves FileSystem, Path and ChildProcessSpawner to the caller; supply `NodeServices.layer` at the application edge or substitute your own platform services. Portable callers supply their own native capability Layer. File/process failures remain typed, readers and watchers are scoped, and cancellation terminates process work and joins cleanup.
 
@@ -19,6 +19,8 @@ Text truncation defaults to 2,000 lines and 50 KiB and respects UTF-8 character 
 Shell execution requires a configured usable shell. It supports timeout, environment inheritance control and scoped cancellation; nonzero command exits are represented in results, while spawn/timeout/output-callback failures use typed errors. Built-in coding tools use unsafe replay by default. Repeating a filesystem mutation or shell command after a crash may be unacceptable; native activity persistence cannot undo an external action that occurred before its receipt committed.
 
 Library timeout and polling options accept `Duration.Input`, such as `'5 seconds'`; the model-facing `bash` timeout remains a number of seconds. File modification instants use `DateTime.Utc` and retain native fractional millisecond precision. `read` retries one detected file change within its existing reader Scope and propagates genuine I/O errors immediately.
+
+`TextLineReader.readLine` returns an Effect containing `Option<TextLine>`: `None` marks end of input, while read failures remain typed errors. Custom environment adapters construct owned reader and watcher handles through the public factories, retaining their nominal contracts.
 
 See [harness tool tests](../packages/harness/test/tools) for path, image, truncation, environment, shell spill, native watch and cancellation cases.
 

@@ -109,7 +109,7 @@ const matches = (value: OpaqueOAuth) =>
 export const layer = (options?: {
   readonly authorizationLifetimeMs?: Duration.Input
   readonly refreshSkewMs?: Duration.Input
-}) =>
+}): Layer.Layer<OAuth, AuthError, CredentialStore | Crypto.Crypto | HttpClient.HttpClient> =>
   Layer.effect(OAuth)(
     Effect.gen(function* () {
       const message = 'Authorization and refresh durations must be finite valid durations'
@@ -284,12 +284,13 @@ export const layer = (options?: {
         }),
         complete: Effect.fnUntraced(function* (secretState, input) {
           const state = secretState
-          const attempt = Option.getOrUndefined(HashMap.get(yield* Ref.get(pending), state))
-          if (attempt === undefined)
+          const current = HashMap.get(yield* Ref.get(pending), state)
+          if (Option.isNone(current))
             return yield* failure('callback', 'Unknown or consumed Anthropic authorization')
+          const attempt = current.value
           if (DateTime.isLessThanOrEqualTo(attempt.authorization.expiresAt, yield* DateTime.now)) {
             yield* Ref.update(pending, (attempts) =>
-              Option.getOrUndefined(HashMap.get(attempts, state)) === attempt
+              Option.exists(HashMap.get(attempts, state), (current) => current === attempt)
                 ? HashMap.remove(attempts, state)
                 : attempts,
             )
@@ -340,7 +341,7 @@ export const layer = (options?: {
             return yield* failure('callback', 'Missing Anthropic authorization code')
           // Consume before yielding: an attempt cannot exchange twice, even concurrently or after failure.
           const consumed = yield* Ref.modify(pending, (attempts) =>
-            Option.getOrUndefined(HashMap.get(attempts, state)) === attempt
+            Option.exists(HashMap.get(attempts, state), (current) => current === attempt)
               ? ([true, HashMap.remove(attempts, state)] as const)
               : ([false, attempts] as const),
           )
@@ -378,7 +379,9 @@ export class Callback extends Context.Service<
 >()('@effect-harness/provider-anthropic/OAuth/Callback') {}
 
 /** Opt-in browser listener. Caller provides a scoped native HttpServer bound to 127.0.0.1:53692. */
-export const layerCallback = (options: { readonly account: string }) =>
+export const layerCallback = (options: {
+  readonly account: string
+}): Layer.Layer<Callback, AuthError, HttpServer.HttpServer | OAuth> =>
   Layer.effect(Callback)(
     Effect.gen(function* () {
       const server = yield* HttpServer.HttpServer

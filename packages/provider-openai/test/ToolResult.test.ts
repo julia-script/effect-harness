@@ -1,4 +1,4 @@
-import { assert, describe, expectTypeOf, it } from '@effect/vitest'
+import { assert, describe, it } from '@effect/vitest'
 import * as OpenAiLanguageModel from '@effect/ai-openai/OpenAiLanguageModel'
 import * as Canonical from '@effect-harness/harness/ToolResult'
 import * as Model from '@effect-harness/harness/Model'
@@ -10,7 +10,6 @@ import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
-import type * as AiError from 'effect/ai/AiError'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
@@ -184,21 +183,8 @@ describe('OpenAI canonical tool media', () => {
       const prompt = history(yield* mixed())
       const withHandlers = yield* toolkit
       const generated = model.generateText({ prompt, toolkit: withHandlers })
-      expectTypeOf(generated).toEqualTypeOf<
-        Effect.Effect<
-          LanguageModel.GenerateTextResponse<Toolkit.Tools<typeof toolkit>, 'opaque'>,
-          AiError.AiError | Tool.HandlerError<typeof convert>,
-          Audit
-        >
-      >()
       yield* generated.pipe(Effect.provideService(Audit, { record: () => Effect.void }))
       const encoded = model.generateText({ prompt, toolkit, disableToolCallResolution: true })
-      expectTypeOf(encoded).toEqualTypeOf<
-        Effect.Effect<
-          LanguageModel.GenerateTextResponse<Toolkit.Tools<typeof toolkit>, 'encoded'>,
-          AiError.AiError
-        >
-      >()
       yield* encoded
       const request = f.requests[0]
       if (request === undefined) return yield* Effect.die('Missing request')

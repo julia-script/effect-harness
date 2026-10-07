@@ -29,7 +29,13 @@ const receipt = Schema.decodeUnknownOption(
 const error = Schema.decodeUnknownOption(
   Schema.Struct({ message: Schema.optionalKey(Schema.Json) }),
 )
-export const classify = (input: unknown) => {
+export interface Classification {
+  readonly rawDirectStatus: Schema.Json | undefined
+  readonly directStatus: string | undefined
+  readonly status: string | undefined
+  readonly message: string | undefined
+}
+export const classify = (input: unknown): Classification | undefined => {
   const decoded = envelope(input)
   if (Option.isNone(decoded)) return undefined
   const value = decoded.value
@@ -47,7 +53,7 @@ export const classify = (input: unknown) => {
     message: typeof detail === 'string' ? detail : undefined,
   }
 }
-export const failed = (input: unknown) => {
+export const failed = (input: unknown): boolean => {
   const status = classify(input)?.status
   return (
     status === 'failed' || status === 'faulted' || status === 'orphaned' || status === 'aborted'
@@ -64,7 +70,9 @@ const generation = Schema.decodeUnknownOption(GenerationResult)
 const tool = Schema.decodeUnknownOption(ToolOutcome)
 const compaction = Schema.decodeUnknownOption(CompactionResult)
 /** Fully decode built-in outcomes first. Legacy/custom metadata uses the explicit extension convention; no result payload is claimed by that fallback. */
-export const classifyTask = (task: Pick<Record.Task, 'kind' | 'state'>) => {
+export const classifyTask = (
+  task: Pick<Record.Task, 'kind' | 'state'>,
+): Classification | undefined => {
   const input = task.state.outcome
   if (Option.isSome(structured(input))) return classify(input)
   const kind = task.kind

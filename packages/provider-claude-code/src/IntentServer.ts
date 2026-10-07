@@ -1,3 +1,4 @@
+import * as Arr from 'effect/Array'
 import * as Ref from 'effect/Ref'
 import * as HashMap from 'effect/HashMap'
 import * as Option from 'effect/Option'
@@ -41,7 +42,11 @@ export const layerDisabled: Layer.Layer<IntentServer, never, never> = Layer.succ
 )
 
 /** Serves native MCP descriptors; every tools/call handler waits forever and never runs a real tool. */
-export const layer = Layer.effect(IntentServer)(
+export const layer: Layer.Layer<
+  IntentServer,
+  AiError.AiError,
+  Crypto.Crypto | HttpServer.HttpServer
+> = Layer.effect(IntentServer)(
   Effect.gen(function* () {
     const server = yield* HttpServer.HttpServer
     const crypto = yield* Crypto.Crypto
@@ -60,12 +65,16 @@ export const layer = Layer.effect(IntentServer)(
     yield* server.serve(
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
-        const match = /^\/mcp\/([a-f0-9-]+)(?:\?|$)/.exec(request.url)
-        const handler =
-          match?.[1] === undefined
-            ? undefined
-            : Option.getOrUndefined(HashMap.get(yield* Ref.get(sessions), match[1]))
-        return handler === undefined ? HttpServerResponse.empty({ status: 404 }) : yield* handler
+        const token = Option.flatMap(
+          Option.fromNullishOr(/^\/mcp\/([a-f0-9-]+)(?:\?|$)/.exec(request.url)),
+          (match) => Arr.get(match, 1),
+        )
+        const handler = Option.isNone(token)
+          ? Option.none<Handler>()
+          : HashMap.get(yield* Ref.get(sessions), token.value)
+        return Option.isNone(handler)
+          ? HttpServerResponse.empty({ status: 404 })
+          : yield* handler.value
       }),
     )
     return IntentServer.of({

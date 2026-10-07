@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -14,12 +15,12 @@ import { ToolError, ToolExecution } from '../../src/Error.ts'
 describe('native response reduction and tool controls', () => {
   it('partial copies, tool argument fragments, final block order and final native Prompt', () => {
     let state = Response.append(Response.empty(), AiResponse.makePart('text-start', { id: 'text' }))
-    assert.strictEqual(Response.partial(state), undefined)
+    assert.isTrue(Option.isNone(Response.partial(state)))
     state = Response.append(
       state,
       AiResponse.makePart('text-delta', { id: 'text', delta: 'hello' }),
     )
-    const previous = Response.partial(state)
+    const previous = Option.getOrThrow(Response.partial(state))
     state = Response.append(
       state,
       AiResponse.makePart('tool-params-start', {
@@ -32,7 +33,7 @@ describe('native response reduction and tool controls', () => {
       state,
       AiResponse.makePart('tool-params-delta', { id: 'call', delta: '{"x":' }),
     )
-    const incomplete = Response.partial(state)
+    const incomplete = Option.getOrThrow(Response.partial(state))
     assert.strictEqual(
       incomplete?.content[1]?.type === 'tool-call' ? incomplete.content[1].params : null,
       '{"x":',

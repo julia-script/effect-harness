@@ -1,4 +1,4 @@
-import { assert, describe, expectTypeOf, it } from '@effect/vitest'
+import { assert, describe, it } from '@effect/vitest'
 import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
 import * as Model from '@effect-harness/harness/Model'
@@ -11,7 +11,6 @@ import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
-import type * as AiError from 'effect/ai/AiError'
 import * as NativePrompt from 'effect/ai/Prompt'
 import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
@@ -299,13 +298,6 @@ describe('faithful native Anthropic system normalization', () => {
         const model = original
         const withHandlers = yield* convertToolkit
         const pending = model.generateText({ prompt: history, toolkit: withHandlers })
-        expectTypeOf(pending).toEqualTypeOf<
-          Effect.Effect<
-            LanguageModel.GenerateTextResponse<Toolkit.Tools<typeof convertToolkit>, 'opaque'>,
-            AiError.AiError | Tool.HandlerError<typeof convert>,
-            Audit
-          >
-        >()
         const text = yield* pending
         assert.deepEqual(
           text.toolResults.map((part) => part.result),
@@ -317,12 +309,6 @@ describe('faithful native Anthropic system normalization', () => {
           toolkit: convertToolkit,
           disableToolCallResolution: true,
         })
-        expectTypeOf(intents).toEqualTypeOf<
-          Effect.Effect<
-            LanguageModel.GenerateTextResponse<Toolkit.Tools<typeof convertToolkit>, 'encoded'>,
-            AiError.AiError
-          >
-        >()
         const intent = yield* intents
         const params: { readonly value: string } | undefined = intent.toolCalls[0]?.params
         assert.deepEqual(params, { value: '7' })

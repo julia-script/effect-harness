@@ -1,3 +1,5 @@
+import * as HashMap from 'effect/HashMap'
+import * as Option from 'effect/Option'
 import type * as HttpClient from 'effect/http/HttpClient'
 import * as Config from 'effect/Config'
 import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
@@ -171,8 +173,23 @@ const usage = (
   }
 }
 
+export interface Descriptor {
+  readonly ref: { provider: string; modelId: string }
+  readonly model: Model.Descriptor['model']
+  readonly contextWindow: number
+  readonly maxOutputTokens: number
+  readonly configure: (
+    options: Model.RequestOptions,
+  ) => Effect.Effect<Context.Context<AnthropicLanguageModel.Config>, ModelError>
+  readonly usage: NonNullable<Model.Descriptor['usage']>
+  readonly classify: NonNullable<Model.Descriptor['classify']>
+}
+
 /** Captures the standard native client; public user metadata correlates UUID7 requests without private affinity headers. */
-export const descriptor = Effect.fnUntraced(function* (entry: Entry, provider = 'anthropic') {
+export const descriptor = Effect.fnUntraced(function* (
+  entry: Entry,
+  provider: string = 'anthropic',
+): Effect.fn.Return<Descriptor, ModelError, AnthropicClient.AnthropicClient> {
   const defaults = yield* decode(entry.config ?? {})
   yield* Schema.decodeEffect(Entry)({ ...entry, config: defaults }).pipe(
     Effect.mapError((cause) =>
@@ -286,7 +303,7 @@ export const descriptor = Effect.fnUntraced(function* (entry: Entry, provider = 
 export const layer = (options: {
   readonly models: ReadonlyArray<Entry>
   readonly provider?: string | undefined
-}) =>
+}): Layer.Layer<Model.Catalog, ModelError, AnthropicClient.AnthropicClient> =>
   Layer.effect(Model.Catalog)(
     Effect.gen(function* () {
       if (new Set(options.models.map((entry) => entry.modelId)).size !== options.models.length)
@@ -294,12 +311,12 @@ export const layer = (options: {
       const entries = yield* Effect.forEach(options.models, (entry) =>
         descriptor(entry, options.provider),
       )
-      const byId = new Map(entries.map((entry) => [entry.ref.modelId, entry]))
+      const byId = HashMap.fromIterable(entries.map((entry) => [entry.ref.modelId, entry]))
       return Model.Catalog.of({
         resolve: (ref) => {
-          const found = byId.get(ref.modelId)
-          return found !== undefined && found.ref.provider === ref.provider
-            ? Effect.succeed(found)
+          const found = HashMap.get(byId, ref.modelId)
+          return Option.isSome(found) && found.value.ref.provider === ref.provider
+            ? Effect.succeed(found.value)
             : Effect.fail(
                 new ModelError({
                   reason: new ModelNoModel({
@@ -317,7 +334,11 @@ export const layerApiKey = (
     readonly models: ReadonlyArray<Entry>
     readonly provider?: string | undefined
   },
-) => layer(options).pipe(Layer.provideMerge(AnthropicClient.layer(options)))
+): Layer.Layer<
+  Model.Catalog | AnthropicClient.AnthropicClient,
+  ModelError,
+  HttpClient.HttpClient
+> => layer(options).pipe(Layer.provideMerge(AnthropicClient.layer(options)))
 
 /** Resolves all layer options through the caller's ConfigProvider. */
 export const layerConfig = (

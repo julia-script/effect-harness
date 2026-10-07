@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -12,7 +13,13 @@ import * as Session from '@effect-harness/durable/Session'
 import * as View from '@effect-harness/durable/View'
 import * as Memory from '@effect-harness/durable/storage/Memory'
 
-const base = ['docs', 'harness.live', 'generation', 'message', 'content']
+const base: readonly [string, ...string[]] = [
+  'docs',
+  'harness.live',
+  'generation',
+  'message',
+  'content',
+]
 const message = (text: string) =>
   Prompt.assistantMessage({
     content: [
@@ -232,7 +239,9 @@ describe('Event.messageChanges', () => {
         { type: 'toolcall_delta', contentIndex: 2, path: ['path'], delta: 'bc' },
         { type: 'toolcall_delta', contentIndex: 2, path: ['other'], delta: 'bc' },
       ])
-      const current = yield* session.snapshot(Inbox.LiveDoc, { owner: root.id })
+      const current = yield* session
+        .snapshot(Inbox.LiveDoc, { owner: root.id })
+        .pipe(Effect.map(Option.getOrUndefined))
       const final = current?.value.generation?.message
       assert.ok(final !== undefined)
       assert.deepStrictEqual(yield* Schema.decodeEffect(codec)(final), message('abc'))

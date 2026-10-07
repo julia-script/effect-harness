@@ -138,7 +138,7 @@ describe('native process boundaries and complete spill output', () => {
           yield* Fiber.interrupt(first)
           const exit = yield* Fiber.await(first)
           assert.strictEqual(exit._tag, 'Failure')
-          if (exit._tag === 'Failure') assert.strictEqual(Cause.hasInterrupts(exit.cause), true)
+          if (exit._tag === 'Failure') assert.strictEqual(Cause.hasInterruptsOnly(exit.cause), true)
           assert.strictEqual((yield* env.exec('exit 0')).exitCode, 0)
         }),
       ),
@@ -299,6 +299,23 @@ describe('native process boundaries and complete spill output', () => {
           const fs = yield* FileSystem.FileSystem
           const path = yield* Path.Path
           const spawner = yield* ChildProcessSpawner
+          const finalizing = yield* Deferred.make<void>()
+          const releaseChild = yield* Deferred.make<void>()
+          const controlled: ChildProcessSpawner['Service'] = {
+            ...spawner,
+            spawn: (command) =>
+              Effect.gen(function* () {
+                // Capture the actual native child scope: cancellation must enter
+                // and join this finalizer before the interrupt waiter can settle.
+                const nativeScope = yield* Effect.acquireRelease(Scope.make(), (scope, exit) =>
+                  Deferred.succeed(finalizing, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseChild)),
+                    Effect.andThen(Scope.close(scope, exit)),
+                  ),
+                )
+                return yield* spawner.spawn(command).pipe(Scope.provide(nativeScope))
+              }),
+          }
           const admitted = yield* Deferred.make<string>()
           const release = yield* Deferred.make<void>()
           const slow: FileSystem.FileSystem = {
@@ -310,7 +327,7 @@ describe('native process boundaries and complete spill output', () => {
                 yield* fs.writeFile(file, bytes, options)
               }),
           }
-          const custom = yield* Exec.make(slow, path, spawner, {
+          const custom = yield* Exec.make(slow, path, controlled, {
             id: 'slow',
             cwd: env.cwd,
             shell: '/bin/sh',
@@ -319,16 +336,26 @@ describe('native process boundaries and complete spill output', () => {
             .exec('printf prefix; sleep 10', { spill: { afterBytes: 0, afterLines: 10 } })
             .pipe(Effect.forkChild)
           const file = yield* Deferred.await(admitted)
-          yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined).pipe(Effect.asVoid))
+          yield* Effect.addFinalizer(() =>
+            Effect.all(
+              [Deferred.succeed(release, undefined), Deferred.succeed(releaseChild, undefined)],
+              { discard: true },
+            ),
+          )
           const stopped = yield* Ref.make(false)
           const stopping = yield* Fiber.interrupt(running).pipe(
             Effect.andThen(Ref.set(stopped, true)),
             Effect.forkChild,
           )
-          yield* Effect.sleep(20)
-          assert.strictEqual(yield* Ref.get(stopped), false)
           yield* Deferred.succeed(release, undefined)
+          yield* Deferred.await(finalizing).pipe(Effect.timeout(3000))
+          assert.strictEqual(yield* env.readTextFile(file), 'prefix')
+          assert.strictEqual(yield* Ref.get(stopped), false)
+          yield* Deferred.succeed(releaseChild, undefined)
           yield* Fiber.join(stopping)
+          const cancelled = yield* Fiber.await(running)
+          assert.isTrue(Exit.isFailure(cancelled))
+          if (Exit.isFailure(cancelled)) assert.isTrue(Cause.hasInterruptsOnly(cancelled.cause))
           assert.strictEqual(yield* env.readTextFile(file), 'prefix')
           yield* env.remove(file)
         }),

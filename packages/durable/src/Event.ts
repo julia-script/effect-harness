@@ -321,9 +321,9 @@ export function messageChanges(
 export function outputChange(
   before: string | undefined,
   after: string | undefined,
-): Extract<AgentEvent, { type: 'tool_execution_update' }>['output'] {
-  if (before === after) return undefined
-  if (before === undefined || after === undefined) return { set: after ?? '' }
+): Option.Option<NonNullable<Extract<AgentEvent, { type: 'tool_execution_update' }>['output']>> {
+  if (before === after) return Option.none()
+  if (before === undefined || after === undefined) return Option.some({ set: after ?? '' })
   const prefix = new Uint32Array(after.length)
   for (let index = 1; index < after.length; index++) {
     let matched = prefix[index - 1] ?? 0
@@ -338,12 +338,12 @@ export function outputChange(
   }
   if (overlap > 0) {
     const trimStart = before.length - overlap
-    return {
+    return Option.some({
       ...(trimStart === 0 ? {} : { trimStart }),
       ...(overlap === after.length ? {} : { append: after.slice(overlap) }),
-    }
+    })
   }
-  return { set: after }
+  return Option.some({ set: after })
 }
 
 /** Translate one domain commit in progress/end/submission/state/start order; held generations end their turn once. */
@@ -433,12 +433,12 @@ export const translate = Effect.fnUntraced(function* (
     const output = outputChange(previous.output, slot.output)
     const detailsChanged = previous.details !== slot.details
     const diagnosticsChanged = previous.diagnostics !== slot.diagnostics
-    if (output === undefined && !detailsChanged && !diagnosticsChanged) continue
+    if (Option.isNone(output) && !detailsChanged && !diagnosticsChanged) continue
     events.push({
       type: 'tool_execution_update',
       toolCallId: slot.callId,
       toolName: slot.name,
-      ...(output === undefined ? {} : { output }),
+      ...Option.match(output, { onNone: () => ({}), onSome: (output) => ({ output }) }),
       ...(detailsChanged ? { details: slot.details ?? null } : {}),
       ...(diagnosticsChanged ? { diagnostics: slot.diagnostics ?? [] } : {}),
     })
@@ -583,34 +583,39 @@ export const make: Effect.Effect<Service, never, View.View> = Effect.gen(functio
               .map((task) => task.id),
           ),
         )
-      const subscription = yield* views.observe<Batch>(id, {
-        initial: Effect.fnUntraced(function* (value, tasks) {
-          yield* seedHeld(tasks)
-          initial = yield* snapshot(value)
-          return [initial]
+      const subscription = yield* views.observe<Batch>(
+        id,
+        View.makeProjection<Batch>({
+          initial: Effect.fnUntraced(function* (value, tasks) {
+            yield* seedHeld(tasks)
+            initial = yield* snapshot(value)
+            return [initial]
+          }),
+          project: (change) =>
+            translate(id, change, held).pipe(
+              Effect.map((batch) => (batch.length === 0 ? undefined : batch)),
+            ),
+          reset: Effect.fnUntraced(function* (value, _seq, tasks) {
+            yield* seedHeld(tasks)
+            return [yield* snapshot(value)]
+          }),
         }),
-        project: (change) =>
-          translate(id, change, held).pipe(
-            Effect.map((batch) => (batch.length === 0 ? undefined : batch)),
-          ),
-        reset: Effect.fnUntraced(function* (value, _seq, tasks) {
-          yield* seedHeld(tasks)
-          return [yield* snapshot(value)]
-        }),
-      })
+      )
       if (initial === undefined)
         return yield* rejected('Event snapshot was not initialized', Corrupt)
-      return {
-        get value() {
-          return subscription.value
-        },
-        snapshot: initial,
-        changes: subscription.changes,
-        closed: subscription.closed,
-        stop: subscription.stop,
-        listen: subscription.listen,
-      }
+      return Object.assign(
+        View.makeProjectionWatch({
+          get value() {
+            return subscription.value
+          },
+          changes: subscription.changes,
+          closed: subscription.closed,
+          stop: subscription.stop,
+          listen: subscription.listen,
+        }),
+        { snapshot: initial },
+      )
     }),
   })
 })
-export const layer = Layer.effect(Event, make)
+export const layer: Layer.Layer<Event, never, View.View> = Layer.effect(Event, make)

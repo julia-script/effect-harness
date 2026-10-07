@@ -1,10 +1,11 @@
+import * as Option from 'effect/Option'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Result from 'effect/Result'
 import * as FileSystem from 'effect/FileSystem'
 import * as Exit from 'effect/Exit'
 import * as Scope from 'effect/Scope'
-import { Env } from '../../src/Env.ts'
+import { Env, FileError } from '../../src/Env.ts'
 import * as Decode from '../../src/env/Decode.ts'
 import * as Scanner from '../../src/env/LineScan.ts'
 import { withEnv } from './Helpers.ts'
@@ -141,7 +142,10 @@ describe('portable native Env filesystem resources', () => {
           const text = yield* env
             .openTextLineReader('buffered')
             .pipe(Effect.provideService(Scope.Scope, textScope))
-          assert.deepStrictEqual(yield* text.readLine, { text: 'first', terminated: true })
+          assert.deepStrictEqual(Option.getOrThrow(yield* text.readLine), {
+            text: 'first',
+            terminated: true,
+          })
           yield* Scope.close(textScope, Exit.void)
           assert.strictEqual((yield* Effect.flip(text.readLine)).code, 'invalid')
         }),
@@ -157,10 +161,19 @@ describe('portable native Env filesystem resources', () => {
             yield* env.writeFile('lines', '\ufeffa\r\nb\n\ufeffc')
             const readerScope = yield* Scope.fork(yield* Scope.Scope)
             const reader = yield* env.openTextLineReader('lines').pipe(Scope.provide(readerScope))
-            assert.deepStrictEqual(yield* reader.readLine, { text: 'a\r', terminated: true })
-            assert.deepStrictEqual(yield* reader.readLine, { text: 'b', terminated: true })
-            assert.deepStrictEqual(yield* reader.readLine, { text: '\ufeffc', terminated: false })
-            assert.strictEqual(yield* reader.readLine, undefined)
+            assert.deepStrictEqual(Option.getOrThrow(yield* reader.readLine), {
+              text: 'a\r',
+              terminated: true,
+            })
+            assert.deepStrictEqual(Option.getOrThrow(yield* reader.readLine), {
+              text: 'b',
+              terminated: true,
+            })
+            assert.deepStrictEqual(Option.getOrThrow(yield* reader.readLine), {
+              text: '\ufeffc',
+              terminated: false,
+            })
+            assert.isTrue(Option.isNone(yield* reader.readLine))
             yield* Scope.close(readerScope, Exit.void)
             assert.strictEqual((yield* Effect.flip(reader.readLine)).code, 'invalid')
             yield* env.writeFile('empty', '')
@@ -168,10 +181,12 @@ describe('portable native Env filesystem resources', () => {
             yield* env.writeFile('empty', '\n')
             assert.deepStrictEqual(yield* env.readTextLines('empty'), [''])
             assert.deepStrictEqual(yield* env.readTextLines('lines', { maxLines: 1 }), ['a\r'])
-            assert.strictEqual(
-              Exit.isFailure(yield* Effect.exit(env.readTextLines('lines', { maxLines: -1 }))),
-              true,
-            )
+            const invalid = yield* Effect.flip(env.readTextLines('lines', { maxLines: -1 }))
+            assert.instanceOf(invalid, FileError)
+            assert.strictEqual(invalid.reason._tag, 'FileInvalid')
+            assert.strictEqual(invalid.message, 'Invalid maxLines')
+            assert.strictEqual(invalid.path, 'lines')
+            assert.strictEqual(invalid.cause, undefined)
           }),
         ),
       ),

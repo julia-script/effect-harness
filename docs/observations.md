@@ -2,6 +2,8 @@
 
 For a UI or integration that needs coherent conversation state, supply `View.layer` from the domain Store and `Event.layer` from View. Public subpaths are `@effect-harness/durable/View` and `/Event`. Acquire watches inside an Effect scope.
 
+Partial lookups and acquisitions return `Option`: `None` means the requested conversation, document or incarnation is absent. Narrow or match the result before using the watch or snapshot. Storage and acquisition errors remain in the Effect error channel.
+
 `View.watch(conversationId)` returns an initial `value`, a Stream of changes, a closed result, `stop` and an effectful `listen`. Its value contains the conversation, visible entries and the built-in singleton documents: agent configuration, live execution, inbox, provider affinity and usage. Those document fields carry their owning schema types. Changes contain before/after values, structural operations, commit sequence and reset information. `View.state` maintains a live committed value; projections share a conversation mount and driver instead of starting independent storage polling for every consumer.
 
 `Event.watch(conversationId)` returns an initial semantic snapshot and ordered batches of subsequent events. Snapshots include entries, run/generation/tool/compaction state, queued submissions, agent and usage. Events describe run/turn/message boundaries, message content deltas, tool output/details/diagnostics, queue updates, submission settlement, retry/compaction and configuration changes. Event batches derive from the same committed frame as their structural changes. They do not expose a provider's uncommitted token stream.

@@ -57,5 +57,6 @@ export const layerDefaultConfig = (
     }),
   )
 
-/** Applies native Anthropic options to a single Effect or Stream request. */
-export const withConfigOverride = AnthropicLanguageModel.withConfigOverride
+/** Applies native Anthropic options to a single request Effect. */
+export const withConfigOverride: typeof AnthropicLanguageModel.withConfigOverride =
+  AnthropicLanguageModel.withConfigOverride

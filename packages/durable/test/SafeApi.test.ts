@@ -12,7 +12,7 @@ import * as Session from '@effect-harness/durable/Session'
 import * as Memory from '@effect-harness/durable/storage/Memory'
 import { sessionLayer } from '@effect-harness/durable/testing/Storage'
 
-const definition: Document.Definition<{ count: number }> = {
+const definition: Document.DefinitionInput<{ count: number }> = {
   kind: 'counter',
   version: 1,
   scope: 'session',
@@ -80,7 +80,7 @@ describe('durable safe APIs', () => {
         ['set', ['docs', 'absent', 'field'], 1],
         ['delete', []],
         ['splice', ['conversation'], 0, 1, []],
-      ] satisfies View.Op[])
+      ] as unknown as View.Op[])
         assert.strictEqual(Result.isFailure(View.apply(view, [op])), true)
     }),
   )

@@ -19,7 +19,8 @@
     "build": "tsc",
     "dev": "tsc --watch --preserveWatchOutput",
     "typecheck": "tsc --noEmit",
-    "test": "cd ../.. && vitest run packages/provider-claude-code/test"
+    "test": "cd ../.. && vitest run packages/provider-claude-code/test",
+    "typetest": "cd ../.. && tstyche packages/provider-claude-code/typetest"
   },
   "dependencies": {
     "@effect-harness/harness": "workspace:*",

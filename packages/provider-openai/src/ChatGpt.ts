@@ -66,6 +66,7 @@ export const Model = Schema.Struct({
   visibility: Schema.String,
 })
 export type Model = typeof Model.Type
+export const isModel: (value: unknown) => value is Model = Schema.is(Model)
 const ModelList = Schema.Struct({ models: Schema.Array(Model) })
 
 export interface Service {
@@ -141,7 +142,11 @@ export const layer = (options: {
   readonly appName: string
   readonly authorizationLifetimeMs?: Duration.Input | undefined
   readonly refreshSkewMs?: Duration.Input | undefined
-}) =>
+}): Layer.Layer<
+  ChatGpt,
+  AuthError,
+  CredentialStore | Jwt | Crypto.Crypto | HttpClient.HttpClient
+> =>
   Layer.effect(ChatGpt)(
     Effect.gen(function* () {
       if (options.appName.trim().length === 0)
@@ -367,16 +372,15 @@ export const layer = (options: {
         complete: Effect.fnUntraced(function* (callbackUrl) {
           const callback = yield* parseUrl(callbackUrl)
           const state = callback.searchParams.get('state')
-          const attempt =
-            state === null
-              ? undefined
-              : Option.getOrUndefined(HashMap.get(yield* Ref.get(pending), state))
-          if (attempt === undefined || state === null)
+          const current =
+            state === null ? Option.none<Pending>() : HashMap.get(yield* Ref.get(pending), state)
+          if (Option.isNone(current) || state === null)
             return yield* new AuthError({
               reason: new AuthCallbackError({
                 message: 'Authorization state does not match a pending attempt',
               }),
             })
+          const attempt = current.value
           const expected = yield* parseUrl(attempt.authorization.redirectUri)
           if (
             callback.origin !== expected.origin ||
@@ -398,7 +402,7 @@ export const layer = (options: {
                 }),
               })
           const consumed = yield* Ref.modify(pending, (attempts) =>
-            Option.getOrUndefined(HashMap.get(attempts, state)) === attempt
+            Option.exists(HashMap.get(attempts, state), (current) => current === attempt)
               ? ([true, HashMap.remove(attempts, state)] as const)
               : ([false, attempts] as const),
           )

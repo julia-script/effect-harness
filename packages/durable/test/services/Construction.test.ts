@@ -94,9 +94,9 @@ describe('contextual durable service construction', () => {
           )
           const root = yield* first.root()
           assert.strictEqual(
-            (yield* (yield* directory.resolve(Identity.SessionId.make('first'))).conversation(
-              root.id,
-            ))?.id,
+            (yield* (yield* directory.resolve(Identity.SessionId.make('first')))
+              .conversation(root.id)
+              .pipe(Effect.map(Option.getOrUndefined)))?.id,
             root.id,
           )
           const single = yield* Directory.SessionDirectory.pipe(
@@ -159,7 +159,7 @@ describe('contextual durable service construction', () => {
             Effect.provideService(Decoder, captured),
             Effect.provideService(WorkflowEngine.WorkflowInstance, stale),
           )
-          assert.strictEqual(metadata.get(Work._tag), Work)
+          assert.strictEqual(Option.getOrUndefined(metadata.get(Work._tag)), Work)
           assert.strictEqual(Object.hasOwn(metadata, 'execute'), false)
           assert.strictEqual(seen.length, 0)
           const layer = Work.toLayer(({ n }) => Effect.succeed(n)).pipe(

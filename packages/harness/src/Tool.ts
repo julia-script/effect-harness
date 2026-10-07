@@ -1,8 +1,9 @@
+import * as Array from 'effect/Array'
+import * as Option from 'effect/Option'
 import * as SchemaField from './SchemaField.ts'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
-import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as AiTool from 'effect/ai/Tool'
 import type * as Toolkit from 'effect/ai/Toolkit'
@@ -284,7 +285,7 @@ export const makeIntent = Effect.fnUntraced(function* (
   id: string,
   decoded: unknown,
   encoded?: Schema.Json,
-) {
+): Effect.fn.Return<Intent, ToolError> {
   const args = yield* Schema.decodeUnknownEffect(Schema.Json)(decoded).pipe(
     Effect.mapError((cause) => error(registration.tool, ToolInvalidParameters, cause)),
   )
@@ -340,13 +341,13 @@ export function boundResult(result: ToolResult, limits: Output.OutputLimits): To
   if (bounded.droppedBytes === 0 && bounded.droppedLines === 0) return result
   const anchor =
     limits.retain === 'head'
-      ? content.findIndex((part) => part.type === 'text')
-      : content.findLastIndex((part) => part.type === 'text')
+      ? Array.findFirstIndex(content, (part) => part.type === 'text')
+      : Array.findLastIndex(content, (part) => part.type === 'text')
   return {
     ...result,
     content: content.flatMap((part, index): ReadonlyArray<Prompt.UserMessagePart> => {
       if (part.type !== 'text') return [part]
-      return index === anchor ? [{ ...part, text: bounded.text }] : []
+      return Option.contains(anchor, index) ? [{ ...part, text: bounded.text }] : []
     }),
     diagnostics: [
       ...(result.diagnostics ?? []),
@@ -399,3 +400,7 @@ export function outputLimits(metadata: Metadata): Output.OutputLimits {
     retain: metadata.output?.retain ?? Output.defaults.retain,
   }
 }
+
+export const isIntent: (input: unknown) => input is Intent = Schema.is(Intent)
+
+export const isExecution: (input: unknown) => input is Execution = Schema.is(Execution)

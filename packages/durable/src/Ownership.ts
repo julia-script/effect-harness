@@ -1,3 +1,4 @@
+import type { StorageError } from './StorageError.ts'
 import * as Id from './Identity.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -23,7 +24,7 @@ export type Binding = typeof Binding.Type
 export class Declarations extends Context.Service<
   Declarations,
   {
-    readonly get: (name: string) => Workflow.Any | undefined
+    readonly get: (name: string) => Option.Option<Workflow.Any>
     /** Schema context captured when the heterogeneous declaration registry is constructed. */
     readonly schemaContext: Context.Context<never>
   }
@@ -44,7 +45,7 @@ export const layerDeclarations = <const W extends ReadonlyArray<Workflow.Any>>(
       const context = yield* Effect.context<DeclarationServices<W[number]>>()
       const declarations = new Map(workflows.map((workflow) => [workflow._tag, workflow]))
       return Declarations.of({
-        get: (name) => declarations.get(name),
+        get: (name) => Option.fromUndefinedOr(declarations.get(name)),
         // Never retain a construction-time native execution identity or engine.
         schemaContext: context.pipe(
           Context.omit(WorkflowEngine.WorkflowInstance, WorkflowEngine.WorkflowEngine),
@@ -58,11 +59,12 @@ export const execute = Effect.fnUntraced(function* (
   binding: Binding,
 ): Effect.fn.Return<unknown, ExecutionError, Declarations | WorkflowEngine.WorkflowEngine> {
   const declarations = yield* Declarations
-  const declaration = declarations.get(binding.workflow)
-  if (declaration === undefined)
+  const declarationOption = declarations.get(binding.workflow)
+  if (Option.isNone(declarationOption))
     return yield* new ExecutionError({
       reason: new InvalidState({ message: `Workflow ${binding.workflow} is not declared` }),
     })
+  const declaration = declarationOption.value
   const workflow = Workflow.make(declaration._tag, {
     payload: declaration.payloadSchema,
     success: declaration.successSchema,
@@ -75,14 +77,19 @@ export const execute = Effect.fnUntraced(function* (
   // Native Workflow.Any erases heterogeneous schema service requirements. The
   // registry's Layer required every declaration service and captured their exact
   // Context; only this execution boundary restores that erased schema environment.
-  // oxlint-disable effecttsgo/any-unknown-in-error-context
+  // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Workflow.Any erases services already required and captured by layerDeclarations.
   return yield* Effect.gen(function* () {
+    // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Workflow.Any erases heterogeneous schema channels; layerDeclarations requires and captures every schema service, and this boundary supplies that Context and maps native failures.
     const decode = Schema.decodeEffect(Schema.toCodecJson(workflow.payloadSchema))(binding.payload)
+    // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Workflow.Any erases heterogeneous schema channels; layerDeclarations requires and captures every schema service, and this boundary supplies that Context and maps native failures.
     const payload = yield* Option.isSome(parent)
-      ? Workflow.wrapActivityResult(decode, () => false).pipe(
+      ? // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Workflow.Any erases heterogeneous schema channels; layerDeclarations requires and captures every schema service, and this boundary supplies that Context and maps native failures.
+        Workflow.wrapActivityResult(decode, () => false).pipe(
           Effect.provideService(WorkflowEngine.WorkflowInstance, parent.value),
         )
-      : decode
+      : // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- This native decoder has erased schema services, all captured and supplied by the enclosing execution boundary.
+        decode
+    // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Workflow.Any erases heterogeneous schema channels; layerDeclarations requires and captures every schema service, and this boundary supplies that Context and maps native failures.
     return yield* engine.execute(workflow, {
       executionId: binding.executionId,
       payload,
@@ -101,7 +108,6 @@ export const execute = Effect.fnUntraced(function* (
           }),
     ),
   )
-  // oxlint-enable effecttsgo/any-unknown-in-error-context
 })
 
 export interface Identity {
@@ -142,11 +148,12 @@ export const layerCurrent = (identity: Identity): Layer.Layer<Current, never, Se
     }),
   )
 
-function writable(task: Record.Task | undefined): Effect.Effect<Record.Task, ExecutionError> {
-  if (task === undefined)
+function writable(option: Option.Option<Record.Task>): Effect.Effect<Record.Task, ExecutionError> {
+  if (Option.isNone(option))
     return Effect.fail(
       new ExecutionError({ reason: new InvalidState({ message: 'Task projection is absent' }) }),
     )
+  const task = option.value
   if (task.abortRequested || task.state.status === 'terminal' || task.state.status === 'completing')
     return Effect.fail(
       new ExecutionError({
@@ -161,18 +168,23 @@ export const memo = Effect.fnUntraced(function* <S extends Schema.Constraint, E,
   name: string,
   schema: S,
   produce: Effect.Effect<S['Type'], E, R>,
-) {
+): Effect.fn.Return<
+  S['Type'],
+  E | ExecutionError | Schema.SchemaError | StorageError,
+  R | Current | S['DecodingServices'] | S['EncodingServices']
+> {
   const current = yield* Current
   yield* current.check
-  const task = yield* current.session.task(current.taskId)
-  if (task === undefined)
+  const taskOption = yield* current.session.task(current.taskId)
+  if (Option.isNone(taskOption))
     return yield* new ExecutionError({
       reason: new InvalidState({ message: 'Task projection is absent' }),
     })
+  const task = taskOption.value
   const codec = Schema.toCodecJson(schema)
   if (task.memos !== undefined && Object.hasOwn(task.memos, name))
     return yield* Schema.decodeEffect(codec)(task.memos[name] ?? null)
-  yield* writable(task)
+  yield* writable(taskOption)
   const value = yield* produce
   const encoded = yield* Schema.encodeEffect(codec)(value)
   const committed = yield* current.session.transaction(
@@ -210,15 +222,21 @@ export interface Reached {
 }
 
 /** Read-only ownership traversal. Background roots fence their entire subtree unless explicitly selected or included. */
-export function reach(graph: Graph, target: Target, background = false): Reached | undefined {
+export function reach(graph: Graph, target: Target, background = false): Option.Option<Reached> {
   const tasks = new Map(graph.tasks.map((task) => [task.id, task]))
   const conversations = new Map(
     graph.conversations.map((conversation) => [conversation.id, conversation]),
   )
   if (target.kind === 'task' ? !tasks.has(target.id) : !conversations.has(target.id))
-    return undefined
-  if (target.kind === 'task' && tasks.get(target.id)?.state.status === 'terminal')
-    return { tasks: [], conversations: [] }
+    return Option.none()
+  if (
+    target.kind === 'task' &&
+    Option.exists(
+      Option.fromUndefinedOr(tasks.get(target.id)),
+      (task) => task.state.status === 'terminal',
+    )
+  )
+    return Option.some({ tasks: [], conversations: [] })
   const seenTasks = new Set<Record.TaskId>()
   const seenConversations = new Set<Record.ConversationId>()
   const ordered: Record.Task[] = []
@@ -240,8 +258,9 @@ export function reach(graph: Graph, target: Target, background = false): Reached
     }
     if (item.type === 'conversation') {
       if (seenConversations.has(item.id)) continue
-      const conversation = conversations.get(item.id)
-      if (conversation === undefined) continue
+      const foundConversation = Option.fromUndefinedOr(conversations.get(item.id))
+      if (Option.isNone(foundConversation)) continue
+      const conversation = foundConversation.value
       seenConversations.add(item.id)
       selected.push(conversation)
       for (const task of graph.tasks.toReversed())
@@ -250,9 +269,10 @@ export function reach(graph: Graph, target: Target, background = false): Reached
       continue
     }
     if (seenTasks.has(item.id)) continue
-    const task = tasks.get(item.id)
+    const foundTask = Option.fromUndefinedOr(tasks.get(item.id))
+    if (Option.isNone(foundTask)) continue
+    const task = foundTask.value
     if (
-      task === undefined ||
       (target.kind === 'task' && task.state.status === 'terminal') ||
       (task.background && !background && !item.direct)
     )
@@ -265,7 +285,7 @@ export function reach(graph: Graph, target: Target, background = false): Reached
     for (const child of graph.tasks.toReversed())
       if (child.owner === task.id) work.push({ type: 'task', id: child.id, direct: false })
   }
-  return { tasks: ordered, conversations: selected }
+  return Option.some({ tasks: ordered, conversations: selected })
 }
 
 /** Table reads are collected before any abort marks or inbox withdrawal are written. */

@@ -183,8 +183,8 @@ const main = Effect.gen(function* () {
           first &&
           (base === 'deferred' || scenario === 'abort-deferred') &&
           parts.some((part) => part.type === 'finish')
-            ? { handle: { job: 'pinned-job' }, pollAfterMs: Duration.millis(1200) }
-            : undefined,
+            ? Option.some({ handle: { job: 'pinned-job' }, pollAfterMs: Duration.millis(1200) })
+            : Option.none(),
         fetch: (handle, options) =>
           Stream.unwrap(
             audit('fetch', { handle, options }).pipe(
@@ -479,9 +479,11 @@ const main = Effect.gen(function* () {
             if (scenario === 'compaction-select') return (yield* count('beforeCompact')) > 0
             if (scenario === 'prepare') return (yield* count('section')) > 0
             const state = yield* session.committed
-            const live = (yield* session.snapshot(Inbox.LiveDoc, {
-              owner: Record.ROOT_CONVERSATION_ID,
-            }))?.value
+            const live = (yield* session
+              .snapshot(Inbox.LiveDoc, {
+                owner: Record.ROOT_CONVERSATION_ID,
+              })
+              .pipe(Effect.map(Option.getOrUndefined)))?.value
             if (scenario === 'partial')
               return (JSON.stringify(live?.generation?.message) ?? '').includes('committed partial')
             if (scenario === 'retry') return live?.generation?.retry !== undefined

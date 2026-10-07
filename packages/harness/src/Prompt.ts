@@ -1,3 +1,5 @@
+import * as Array from 'effect/Array'
+import * as Option from 'effect/Option'
 // Positional prompt planning adapted from pi-durable (MIT), pinned 636703a0.
 import * as Schema from 'effect/Schema'
 import * as AiPrompt from 'effect/ai/Prompt'
@@ -30,14 +32,15 @@ export function planSections(
     ...[...shown.keys()].filter((key) => desired.has(key)),
     ...[...desired.keys()].filter((key) => !shown.has(key)),
   ]
-  if (patched.some((key, index) => key !== [...desired.keys()][index]))
+  if (patched.some((key, index) => !Option.contains(Array.get([...desired.keys()], index), key)))
     return [
       Object.fromEntries([...shown.keys()].map((key) => [key, null])),
       Object.fromEntries(desired),
     ]
   const pairs: Array<readonly [string, string | null]> = []
   for (const [key, value] of shown)
-    if (desired.get(key) !== value) pairs.push([key, desired.get(key) ?? null])
+    if (!Option.contains(Option.fromUndefinedOr(desired.get(key)), value))
+      pairs.push([key, Option.getOrElse(Option.fromUndefinedOr(desired.get(key)), () => null)])
   for (const [key, value] of desired) if (!shown.has(key)) pairs.push([key, value])
   return pairs.length === 0 ? [] : [Object.fromEntries(pairs)]
 }
@@ -48,12 +51,17 @@ export function planTools(
 ): Pick<Context.SystemPatch, 'toolsRemoved' | 'toolsAdded'> {
   const wanted = new Map(desired.map((tool) => [tool.name, tool]))
   const kept = offered.filter((tool) => {
-    const next = wanted.get(tool.name)
-    return next !== undefined && equalDeclaration(tool, next)
+    const next = Option.fromUndefinedOr(wanted.get(tool.name))
+    return Option.exists(next, (value) => equalDeclaration(tool, value))
   })
   const names = new Set(kept.map((tool) => tool.name))
   const added = desired.filter((tool) => !names.has(tool.name))
-  if ([...kept, ...added].some((tool, index) => tool.name !== desired[index]?.name))
+  if (
+    [...kept, ...added].some(
+      (tool, index) =>
+        !Option.exists(Array.get(desired, index), (value) => tool.name === value.name),
+    )
+  )
     return { toolsRemoved: offered.map((tool) => tool.name), toolsAdded: desired }
   return {
     toolsRemoved: offered.filter((tool) => !names.has(tool.name)).map((tool) => tool.name),

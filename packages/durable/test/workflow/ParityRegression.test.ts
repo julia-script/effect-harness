@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as Structured from '../../src/workflow/Structured.ts'
 import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
@@ -277,7 +278,7 @@ describe('independent parity regressions', () => {
                   assert.ok(session)
                   const stored = yield* session
                     .snapshot(Conversation.ProviderDoc, { owner: Record.ROOT_CONVERSATION_ID })
-                    .pipe(Effect.orDie)
+                    .pipe(Effect.map(Option.getOrUndefined), Effect.orDie)
                   assert.strictEqual(stored?.value.sessionId, options.sessionId)
                   assert.match(options.sessionId ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-7/)
                   affinities.push(options.sessionId!)
@@ -292,9 +293,11 @@ describe('independent parity regressions', () => {
                 tx.retire(Conversation.ProviderDoc, { owner: Record.ROOT_CONVERSATION_ID }),
               )
               assert.isUndefined(
-                yield* session.snapshot(Conversation.ProviderDoc, {
-                  owner: Record.ROOT_CONVERSATION_ID,
-                }),
+                yield* session
+                  .snapshot(Conversation.ProviderDoc, {
+                    owner: Record.ROOT_CONVERSATION_ID,
+                  })
+                  .pipe(Effect.map(Option.getOrUndefined)),
               )
               const receipt = yield* Submission.execute(input(`classifier-${failure}`))
               assert.strictEqual(receipt.status, 'done')
@@ -308,8 +311,9 @@ describe('independent parity regressions', () => {
                 }),
               )
               assert.notStrictEqual(
-                (yield* session.snapshot(Conversation.ProviderDoc, { owner: fork.id }))?.value
-                  .sessionId,
+                (yield* session
+                  .snapshot(Conversation.ProviderDoc, { owner: fork.id })
+                  .pipe(Effect.map(Option.getOrUndefined)))?.value.sessionId,
                 affinities[0],
               )
             }).pipe(Effect.provide(runtime(model, Registry.layer([]))))
@@ -391,7 +395,7 @@ describe('independent parity regressions', () => {
                 assert.ok(session)
                 const stored = yield* session
                   .snapshot(Conversation.ProviderDoc, { owner: Record.ROOT_CONVERSATION_ID })
-                  .pipe(Effect.orDie)
+                  .pipe(Effect.map(Option.getOrUndefined), Effect.orDie)
                 assert.strictEqual(stored?.value.sessionId, options.sessionId)
                 ids.push(options.sessionId!)
                 return Context.empty()
@@ -479,7 +483,6 @@ describe('independent parity regressions', () => {
               tools.toLayer({
                 slow: () =>
                   Deferred.await(fast).pipe(
-                    Effect.andThen(Effect.sleep('20 millis')),
                     Effect.andThen(
                       Effect.sync(() => {
                         finished.push('slow')
@@ -499,7 +502,7 @@ describe('independent parity regressions', () => {
                   Effect.sync(() => {
                     finished.push('fast')
                     return { content: [Prompt.textPart({ text: 'fast' })] }
-                  }).pipe(Effect.tap(() => Deferred.succeed(fast, undefined))),
+                  }),
                 broken: () =>
                   Effect.fail(
                     new ToolError({
@@ -516,10 +519,12 @@ describe('independent parity regressions', () => {
                   const current = yield* Ownership.Current
                   yield* current.check
                   for (const result of results) {
-                    const entry = yield* current.session.entry(
-                      yield* Schema.decodeEffect(Record.EntryId)(result.entryId),
-                      current.conversationId,
-                    )
+                    const entry = yield* current.session
+                      .entry(
+                        yield* Schema.decodeEffect(Record.EntryId)(result.entryId),
+                        current.conversationId,
+                      )
+                      .pipe(Effect.map(Option.getOrUndefined))
                     assert.isDefined(entry)
                     assert.strictEqual(entry?.entry.kind, 'harness.tool')
                     seen.push(result)
@@ -564,6 +569,25 @@ describe('independent parity regressions', () => {
             const session = yield* Session.Session
             yield* session.root()
             yield* selectModel(session)
+            // The committed ledger, rather than handler return or elapsed time, proves entry ID order.
+            yield* Effect.gen(function* () {
+              while (true) {
+                const state = yield* session.committed
+                if (
+                  state.entries.some(
+                    ({ entry }) =>
+                      entry.kind === 'harness.tool' &&
+                      Schema.is(Schema.Struct({ callId: Schema.Literal('fast') }))(entry.data),
+                  )
+                ) {
+                  yield* Deferred.succeed(fast, undefined)
+                  return
+                }
+                // Native Workflow execution advances outside the deciding transaction;
+                // each positive poll inspects actual committed state before releasing slow.
+                yield* Effect.sleep('1 millis')
+              }
+            }).pipe(Effect.forkScoped)
             const receipt = yield* Submission.execute(input('parallel-hooks'))
             assert.strictEqual(receipt.status, 'done', JSON.stringify(receipt))
             assert.deepStrictEqual(finished, ['fast', 'slow'])
@@ -819,7 +843,9 @@ describe('independent parity regressions', () => {
               }),
             )
             const receipt = yield* ToolCall.execute(payload)
-            const entry = yield* session.entry(receipt.entryId, payload.conversationId)
+            const entry = yield* session
+              .entry(receipt.entryId, payload.conversationId)
+              .pipe(Effect.map(Option.getOrUndefined))
             const messages = yield* Schema.decodeEffect(
               Schema.toCodecJson(Schema.Array(Prompt.Message)),
             )(entry?.entry.model ?? [])
@@ -919,8 +945,15 @@ it.live('preserves terminal projection failure instead of settling an interrupte
         const failure = yield* ToolCall.execute(payload).pipe(Effect.flip)
         assert.strictEqual(failure.reason._tag, 'InvalidState')
         assert.strictEqual(failure.message, 'Tool terminal projection failed')
-        assert.strictEqual((yield* session.task(payload.taskId))?.state.status, 'running')
-        assert.isUndefined((yield* session.task(payload.taskId))?.state.outcome)
+        assert.strictEqual(
+          (yield* session.task(payload.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+            .status,
+          'running',
+        )
+        assert.isUndefined(
+          (yield* session.task(payload.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+            .outcome,
+        )
       }).pipe(
         Effect.provide(
           runtime(descriptor(native), Registry.layer([{ name: 'invalid-projection', tools }])),

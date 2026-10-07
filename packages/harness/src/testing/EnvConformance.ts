@@ -1,3 +1,6 @@
+import * as Arrays from 'effect/Array'
+import * as Option from 'effect/Option'
+import * as Deferred from 'effect/Deferred'
 import * as Duration from 'effect/Duration'
 import * as DateTime from 'effect/DateTime'
 // Environment conformance adapted from pi-durable (MIT), pinned 636703a0; see package NOTICE.
@@ -106,8 +109,8 @@ const watching = Effect.fnUntraced(function* <E, R>(
     yield* change
     const deadline = DateTime.addDuration(yield* DateTime.now, '3 seconds')
     while (!(yield* Ref.get(changes)).slice(from).some((value) => covers(value, absolute))) {
-      const error = (yield* Ref.get(changes)).find((value) => 'error' in value)
-      if (error !== undefined && 'error' in error) return yield* error.error
+      const error = Arrays.findFirst(yield* Ref.get(changes), (value) => 'error' in value)
+      if (Option.isSome(error) && 'error' in error.value) return yield* error.value.error
       if (DateTime.isGreaterThanOrEqualTo(yield* DateTime.now, deadline))
         return yield* Effect.die(`No watch change reported ${absolute}`)
       yield* Effect.sleep('20 millis')
@@ -432,6 +435,8 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
         yield* Scope.close(watcherScope, Exit.void)
         yield* Scope.close(watcherScope, Exit.void)
         yield* env.writeFile('file.txt', 'x')
+        // Negative native/polling delivery window: OS event delivery and actual
+        // adapter polling use the host clock; virtual time cannot exercise them.
         yield* Effect.sleep('300 millis')
         assert.deepStrictEqual(yield* Ref.get(changes), [])
       }),
@@ -533,11 +538,21 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
           (yield* failure(env.exec([...shell, 'sleep 2'], { timeout: '100 millis' }))).code,
           'timeout',
         )
-        const fiber = yield* env.exec([...shell, 'sleep 2']).pipe(Effect.forkScoped)
-        yield* Effect.sleep('100 millis')
+        const started = yield* Deferred.make<void>()
+        const fiber = yield* env
+          .exec([...shell, 'printf admitted; sleep 2'], {
+            onOutput: () => Deferred.succeed(started, undefined).pipe(Effect.asVoid),
+          })
+          .pipe(Effect.forkScoped)
+        yield* Deferred.await(started).pipe(
+          Effect.timeoutOrElse({
+            duration: '3 seconds',
+            orElse: () => Effect.die('Native process output was not admitted'),
+          }),
+        )
         yield* Fiber.interrupt(fiber)
         const exit = yield* Fiber.await(fiber)
-        assert.ok(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause))
+        assert.ok(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause))
       }),
     ),
   ]

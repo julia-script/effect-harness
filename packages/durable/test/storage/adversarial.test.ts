@@ -1,3 +1,7 @@
+import * as TestClock from 'effect/testing/TestClock'
+import * as Cause from 'effect/Cause'
+import * as Exit from 'effect/Exit'
+import * as Option from 'effect/Option'
 import { assert, describe, it } from '@effect/vitest'
 import * as Data from 'effect/Data'
 import * as Deferred from 'effect/Deferred'
@@ -82,10 +86,13 @@ describe('transaction adversarial boundaries', () => {
             return null
           }),
         )
-        assert.deepStrictEqual((yield* session.snapshot(token))?.value, {
-          count: 1,
-          nested: { items: [2, 3] },
-        })
+        assert.deepStrictEqual(
+          (yield* session.snapshot(token).pipe(Effect.map(Option.getOrUndefined)))?.value,
+          {
+            count: 1,
+            nested: { items: [2, 3] },
+          },
+        )
         assert.throws(() => retained?.nested.items.push(5), /revoked/)
         assert.throws(() => Object.keys(retained ?? {}), /revoked/)
         assert.throws(() => Reflect.deleteProperty(retained ?? {}, 'count'), /revoked/)
@@ -106,11 +113,13 @@ describe('transaction adversarial boundaries', () => {
           ),
         )
         assert.strictEqual(error.reason._tag, 'Invalid')
-        assert.strictEqual(yield* session.snapshot(token), undefined)
-        const exit = yield* session
-          .transaction(() => Effect.die(new TypeError('unrelated defect')))
-          .pipe(Effect.exit)
-        assert.strictEqual(exit._tag, 'Failure')
+        assert.strictEqual(
+          yield* session.snapshot(token).pipe(Effect.map(Option.getOrUndefined)),
+          undefined,
+        )
+        const defect = new TypeError('unrelated defect')
+        const exit = yield* session.transaction(() => Effect.die(defect)).pipe(Effect.exit)
+        assert.deepStrictEqual(exit, Exit.failCause(Cause.die(defect)))
       }),
     ),
   )
@@ -161,7 +170,11 @@ describe('transaction adversarial boundaries', () => {
             d.nested.items.length = 0
           }),
         )
-        assert.deepStrictEqual((yield* session.snapshot(token))?.value.nested.items, [])
+        assert.deepStrictEqual(
+          (yield* session.snapshot(token).pipe(Effect.map(Option.getOrUndefined)))?.value.nested
+            .items,
+          [],
+        )
         yield* session.transaction(
           Effect.fnUntraced(function* (tx) {
             const d = yield* tx.doc(token)
@@ -169,7 +182,11 @@ describe('transaction adversarial boundaries', () => {
             Object.defineProperty(d.nested.items, 'length', { value: 1 })
           }),
         )
-        assert.deepStrictEqual((yield* session.snapshot(token))?.value.nested.items, [1])
+        assert.deepStrictEqual(
+          (yield* session.snapshot(token).pipe(Effect.map(Option.getOrUndefined)))?.value.nested
+            .items,
+          [1],
+        )
       }),
     ),
   )
@@ -209,14 +226,20 @@ describe('transaction adversarial boundaries', () => {
               })
             }),
           )
-          assert.deepStrictEqual((yield* session.snapshot(nested))?.value, {
-            items: [{ label: 'changed' }, { label: 'third' }],
-            copied: { label: 'second' },
-          })
-          assert.deepStrictEqual((yield* session.entry(entry.id))?.entry.data, {
-            items: [{ label: 'changed' }, { label: 'third' }],
-            copied: { label: 'second' },
-          })
+          assert.deepStrictEqual(
+            (yield* session.snapshot(nested).pipe(Effect.map(Option.getOrUndefined)))?.value,
+            {
+              items: [{ label: 'changed' }, { label: 'third' }],
+              copied: { label: 'second' },
+            },
+          )
+          assert.deepStrictEqual(
+            (yield* session.entry(entry.id).pipe(Effect.map(Option.getOrUndefined)))?.entry.data,
+            {
+              items: [{ label: 'changed' }, { label: 'third' }],
+              copied: { label: 'second' },
+            },
+          )
         }),
       ),
   )
@@ -245,7 +268,7 @@ describe('transaction adversarial boundaries', () => {
             return null
           }),
         )
-        const snapshot = yield* session.snapshot(dynamic)
+        const snapshot = yield* session.snapshot(dynamic).pipe(Effect.map(Option.getOrUndefined))
         assert.ok(snapshot)
         assert.strictEqual(snapshot.value.count, 2)
         assert.deepStrictEqual(Reflect.get(snapshot.value, '__proto__'), { safe: true })
@@ -279,10 +302,19 @@ describe('transaction adversarial boundaries', () => {
             return null
           }),
         )
-        assert.strictEqual((yield* session.snapshot(family, { key: '' }))?.value.count, 5)
-        assert.strictEqual((yield* session.snapshot(family, { key: '\ud800' }))?.value.count, 6)
+        assert.strictEqual(
+          (yield* session.snapshot(family, { key: '' }).pipe(Effect.map(Option.getOrUndefined)))
+            ?.value.count,
+          5,
+        )
+        assert.strictEqual(
+          (yield* session
+            .snapshot(family, { key: '\ud800' })
+            .pipe(Effect.map(Option.getOrUndefined)))?.value.count,
+          6,
+        )
         yield* fail(session.transaction((tx) => tx.doc(family).pipe(Effect.as(null))))
-        yield* fail(session.snapshot(token, { key: '' }))
+        yield* fail(session.snapshot(token, { key: '' }).pipe(Effect.map(Option.getOrUndefined)))
       }),
     ),
   )
@@ -301,8 +333,8 @@ describe('transaction adversarial boundaries', () => {
             return { count: Number(value.count) + 1, nested: { items: [1] } }
           },
         })
-        yield* session.snapshot(newer)
-        yield* session.snapshot(newer)
+        yield* session.snapshot(newer).pipe(Effect.map(Option.getOrUndefined))
+        yield* session.snapshot(newer).pipe(Effect.map(Option.getOrUndefined))
         assert.strictEqual(calls, 1)
         yield* fail(
           session.transaction(
@@ -313,11 +345,17 @@ describe('transaction adversarial boundaries', () => {
             }),
           ),
         )
-        assert.strictEqual((yield* session.snapshot(newer))?.value.count, 1)
+        assert.strictEqual(
+          (yield* session.snapshot(newer).pipe(Effect.map(Option.getOrUndefined)))?.value.count,
+          1,
+        )
         assert.strictEqual(calls, 1)
         assert.strictEqual((yield* store.read).documents[0]?.revisions[0]?.content.version, 1)
         yield* session.transaction((tx) => tx.doc(newer).pipe(Effect.as(null)))
-        assert.strictEqual((yield* session.snapshot(newer))?.value.count, 1)
+        assert.strictEqual(
+          (yield* session.snapshot(newer).pipe(Effect.map(Option.getOrUndefined)))?.value.count,
+          1,
+        )
         assert.strictEqual(calls, 1)
       }),
     ),
@@ -395,7 +433,9 @@ describe('creation initializer', () => {
         )
         assert.strictEqual(calls, 3)
         for (const owner of [root, child.id, fork.id])
-          assert.ok(yield* session.snapshot(hookDoc, { owner }))
+          assert.ok(
+            yield* session.snapshot(hookDoc, { owner }).pipe(Effect.map(Option.getOrUndefined)),
+          )
         const before = yield* store.read
         rejectNext = true
         yield* fail(
@@ -447,8 +487,18 @@ describe('creation initializer', () => {
           const fork = yield* session.transaction((tx) =>
             tx.forkConversation(root, cutoff.id, { ownership: { kind: 'ownerless' } }),
           )
-          assert.strictEqual((yield* session.snapshot(copied, { owner: fork.id }))?.value.count, 6)
-          assert.strictEqual((yield* session.snapshot(copied, { owner: root }))?.value.count, 9)
+          assert.strictEqual(
+            (yield* session
+              .snapshot(copied, { owner: fork.id })
+              .pipe(Effect.map(Option.getOrUndefined)))?.value.count,
+            6,
+          )
+          assert.strictEqual(
+            (yield* session
+              .snapshot(copied, { owner: root })
+              .pipe(Effect.map(Option.getOrUndefined)))?.value.count,
+            9,
+          )
         }),
       ),
   )
@@ -485,7 +535,7 @@ describe('creation initializer', () => {
   )
 })
 describe('watch lifecycle', () => {
-  it.live(
+  it.effect(
     'retains acquisition value until started, isolates listener error and settles stop during in-flight delivery',
     () =>
       Effect.scoped(
@@ -493,8 +543,8 @@ describe('watch lifecycle', () => {
           const store = yield* Memory.make
           const session = yield* Session.make.pipe(Effect.provideService(Store, store))
           yield* session.transaction((tx) => tx.doc(token).pipe(Effect.as(null)))
-          const first = yield* session.watchDoc(token)
-          const second = yield* session.watchDoc(token)
+          const first = yield* session.watchDoc(token).pipe(Effect.map(Option.getOrUndefined))
+          const second = yield* session.watchDoc(token).pipe(Effect.map(Option.getOrUndefined))
           assert.ok(first)
           assert.ok(second)
           yield* session.transaction(
@@ -504,9 +554,13 @@ describe('watch lifecycle', () => {
               return null
             }),
           )
-          yield* Effect.sleep('30 millis')
+          yield* TestClock.adjust('30 millis')
           assert.strictEqual(first.value?.count, 0)
-          const error = yield* fail(first.listen(() => new DomainError({ message: 'listener' })))
+          const failing = yield* fail(
+            first.listen(() => new DomainError({ message: 'listener' })),
+          ).pipe(Effect.forkScoped)
+          yield* TestClock.adjust('30 millis')
+          const error = yield* Fiber.join(failing)
           assert.ok(error instanceof DomainError)
           assert.strictEqual(yield* first.closed, 'listener_error')
           const entered = yield* Deferred.make<void>()
@@ -516,12 +570,16 @@ describe('watch lifecycle', () => {
               Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
             )
             .pipe(Effect.forkScoped)
+          yield* TestClock.adjust('30 millis')
           yield* Deferred.await(entered)
           yield* second.stop
           assert.strictEqual(yield* second.closed, 'stopped')
           yield* Deferred.succeed(release, undefined)
           yield* Fiber.join(running)
-          assert.strictEqual((yield* session.snapshot(token))?.value.count, 1)
+          assert.strictEqual(
+            (yield* session.snapshot(token).pipe(Effect.map(Option.getOrUndefined)))?.value.count,
+            1,
+          )
         }),
       ),
   )
@@ -530,7 +588,7 @@ describe('watch lifecycle', () => {
       Effect.gen(function* () {
         const session = yield* Session.Session
         yield* session.transaction((tx) => tx.doc(token).pipe(Effect.as(null)))
-        const watch = yield* session.watchDoc(token)
+        const watch = yield* session.watchDoc(token).pipe(Effect.map(Option.getOrUndefined))
         assert.ok(watch)
         yield* session.transaction(
           Effect.fnUntraced(function* (tx) {

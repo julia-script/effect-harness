@@ -1,3 +1,4 @@
+import type { StorageError } from './StorageError.ts'
 import { cursor as journalCursor } from './storage/State.ts'
 import * as Outcome from './workflow/Outcome.ts'
 import * as Effect from 'effect/Effect'
@@ -28,7 +29,9 @@ export const Value = Schema.Struct({
 export type Value = typeof Value.Type
 
 /** Inspect committed facts and declaration metadata without invoking handlers, codecs, migrations, or the engine. */
-export const get = Effect.fnUntraced(function* (session: Session.Service) {
+export const get = Effect.fnUntraced(function* (
+  session: Session.Service,
+): Effect.fn.Return<Value, StorageError, Ownership.Declarations> {
   const state = yield* session.committed
   const declarations = yield* Ownership.Declarations
   const tasks = state.tasks
@@ -39,7 +42,7 @@ export const get = Effect.fnUntraced(function* (session: Session.Service) {
       return { kind: 'completing', outcome: task.state.outcome ?? null }
     const binding = Schema.decodeUnknownOption(Ownership.Binding)(task.input)
     if (Option.isNone(binding)) return { kind: 'blocked', reason: 'invalid_binding' }
-    if (declarations.get(binding.value.workflow) === undefined)
+    if (Option.isNone(declarations.get(binding.value.workflow)))
       return { kind: 'blocked', reason: 'missing_workflow' }
     if (task.state.status === 'running') return { kind: 'running' }
     if (task.state.status === 'waiting') {

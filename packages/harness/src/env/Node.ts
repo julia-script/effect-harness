@@ -26,6 +26,8 @@ import {
   type ShellConfiguration,
   type WatchTarget,
   NativeFiles,
+  makeBinaryReader,
+  makeDirReader,
   type BinaryReader,
   type FileInfo,
   type Options as EnvOptions,
@@ -203,7 +205,7 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
         },
         (effect) => lock.withPermit(live(effect)),
       )
-      const reader: BinaryReader = {
+      const reader: BinaryReader = makeBinaryReader({
         info: lock.withPermit(
           live(
             // Handle metadata is freshly sampled on every use, including after a read or replacement.
@@ -237,7 +239,7 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
           }
           return LineScan.finish(scanner)
         }),
-      }
+      })
       return reader
     }),
     // Each directory acquisition/pages owns its cursor; there is no bulk atomic native metadata snapshot.
@@ -260,7 +262,7 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
           ),
       )
       const done = yield* Ref.make(false)
-      return {
+      return makeDirReader({
         next: Effect.fnUntraced(
           function* (maxEntries) {
             const isClosed = yield* Ref.get(closed)
@@ -294,7 +296,7 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
           },
           (effect) => lock.withPermit(effect),
         ),
-      }
+      })
     }),
     // Each subscription installs a scoped native producer with its own startup acknowledgement; it cannot be batched.
     watchDirectory: Effect.fnUntraced(function* (path) {

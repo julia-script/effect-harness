@@ -8,6 +8,7 @@ import * as Exit from 'effect/Exit'
 import * as Ref from 'effect/Ref'
 import { TestClock } from 'effect/testing'
 import * as Output from '../../src/Output.ts'
+import { OutputError, OutputFailure } from '../../src/Error.ts'
 import * as Progress from '../../src/Progress.ts'
 const limits = (retain: 'head' | 'tail', maxLines = 2, maxBytes = 100): Output.OutputLimits => ({
   retain,
@@ -76,18 +77,17 @@ describe('bounded UTF8 output and adaptive progress', () => {
   )
   it.effect('skip requires tail, clears prior stored suffix and retains raw skipped counts', () =>
     Effect.gen(function* () {
-      assert.strictEqual(
-        Exit.isFailure(
-          yield* Effect.exit(
-            Output.push(Output.make(limits('head')), 'x', {
-              bytes: 3,
-              newlines: 1,
-              endsWithNewline: true,
-            }),
-          ),
-        ),
-        true,
+      const failure = yield* Effect.flip(
+        Output.push(Output.make(limits('head')), 'x', {
+          bytes: 3,
+          newlines: 1,
+          endsWithNewline: true,
+        }),
       )
+      assert.instanceOf(failure, OutputError)
+      assert.instanceOf(failure.reason, OutputFailure)
+      assert.strictEqual(failure.message, 'Skipped output requires tail retention')
+      assert.strictEqual(failure.cause, undefined)
       const buffer = Output.make(limits('tail', 1, 3))
       yield* Output.push(buffer, 'old\n')
       yield* Output.push(buffer, 'new', { bytes: 100, newlines: 10, endsWithNewline: true })

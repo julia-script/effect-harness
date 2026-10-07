@@ -1,3 +1,5 @@
+import * as Arrays from 'effect/Array'
+import * as Option from 'effect/Option'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -78,7 +80,9 @@ function validate(
   }
   return Effect.void
 }
-export const make = Effect.fnUntraced(function* (initial: ReadonlyArray<Extension.Extension> = []) {
+export const make = Effect.fnUntraced(function* (
+  initial: ReadonlyArray<Extension.Extension> = [],
+): Effect.fn.Return<Registry['Service'], RegistryError> {
   yield* validate(initial)
   const merged = new Map(initial.map((extension) => [extension.name, extension]))
   const ref = yield* SubscriptionRef.make<Snapshot>({
@@ -101,8 +105,8 @@ export const make = Effect.fnUntraced(function* (initial: ReadonlyArray<Extensio
           yield* validate([...candidate.values()])
           if (
             extensions.length === 0 ||
-            ([...candidate.values()].every(
-              (extension, index) => extension === before.extensions[index],
+            ([...candidate.values()].every((extension, index) =>
+              Option.contains(Arrays.get(before.extensions, index), extension),
             ) &&
               candidate.size === before.extensions.length)
           )
@@ -136,14 +140,13 @@ export const resolve = Effect.fnUntraced(function* (
   snapshot: Snapshot,
   state: Agent.State,
   settings: Agent.Settings,
-) {
+): Effect.fn.Return<Resolved, never, Invocation> {
   const installed = new Map(snapshot.extensions.map((extension) => [extension.name, extension]))
   const selected = Agent.select(
     state.extensions,
     settings.extensions ?? [...installed.keys()],
   ).flatMap((name) => {
-    const extension = installed.get(name)
-    return extension === undefined ? [] : [extension]
+    return Option.toArray(Option.fromUndefinedOr(installed.get(name)))
   })
   const tools = new Map<string, Tool.Registration>()
   const sections = new Map<string, Extension.Section>()
@@ -153,9 +156,11 @@ export const resolve = Effect.fnUntraced(function* (
   }
   for (const extension of selected) {
     for (const wrapper of extension.toolWraps ?? []) {
-      const current = tools.get(wrapper.name)
-      if (current === undefined) continue
-      const next = yield* Hook.recover(Effect.suspend(() => wrapper.wrap.call(wrapper, current)))
+      const current = Option.fromUndefinedOr(tools.get(wrapper.name))
+      if (Option.isNone(current)) continue
+      const next = yield* Hook.recover(
+        Effect.suspend(() => wrapper.wrap.call(wrapper, current.value)),
+      )
       if (next === undefined) tools.delete(wrapper.name)
       else if (next.tool.name !== wrapper.name) {
         tools.delete(wrapper.name)
@@ -167,9 +172,11 @@ export const resolve = Effect.fnUntraced(function* (
       } else tools.set(wrapper.name, next)
     }
     for (const wrapper of extension.sectionWraps ?? []) {
-      const current = sections.get(wrapper.key)
-      if (current === undefined) continue
-      const next = yield* Hook.recover(Effect.suspend(() => wrapper.wrap.call(wrapper, current)))
+      const current = Option.fromUndefinedOr(sections.get(wrapper.key))
+      if (Option.isNone(current)) continue
+      const next = yield* Hook.recover(
+        Effect.suspend(() => wrapper.wrap.call(wrapper, current.value)),
+      )
       if (next === undefined) sections.delete(wrapper.key)
       else if (next.key !== wrapper.key) {
         sections.delete(wrapper.key)
@@ -184,8 +191,7 @@ export const resolve = Effect.fnUntraced(function* (
   let offered: ReadonlyArray<Tool.Registration> = [...tools.values()]
   if (Array.isArray(state.tools))
     offered = [...new Set(state.tools)].flatMap((name) => {
-      const tool = tools.get(name)
-      return tool === undefined ? [] : [tool]
+      return Option.toArray(Option.fromUndefinedOr(tools.get(name)))
     })
   else if (state.tools !== undefined) {
     const remove = new Set((state.tools as { readonly remove: ReadonlyArray<string> }).remove)
@@ -217,7 +223,7 @@ export const render = Effect.fnUntraced(function* (
   agent: Resolved,
   view: import('./Context.ts').View,
   shown: ReadonlyMap<string, string>,
-) {
+): Effect.fn.Return<Map<string, string>, never, Invocation> {
   const invocation = yield* Invocation
   const input = { view, tools: agent.tools, cwd: agent.state.cwd ?? invocation.cwd }
   const desired = new Map<string, string>()
@@ -225,8 +231,8 @@ export const render = Effect.fnUntraced(function* (
     const result = yield* Effect.exit(Effect.suspend(() => section.render.call(section, input)))
     if (result._tag === 'Failure') {
       yield* Hook.recover(Effect.failCause(result.cause))
-      const kept = shown.get(section.key)
-      if (kept !== undefined) desired.set(section.key, kept)
+      const kept = Option.fromUndefinedOr(shown.get(section.key))
+      if (Option.isSome(kept)) desired.set(section.key, kept.value)
     } else if (result.value !== undefined)
       desired.set(
         section.key,

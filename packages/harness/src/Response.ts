@@ -1,3 +1,5 @@
+import * as Array from 'effect/Array'
+import * as Option from 'effect/Option'
 import * as AiPrompt from 'effect/ai/Prompt'
 import * as AiResponse from 'effect/ai/Response'
 import type { Part } from './Executor.ts'
@@ -49,8 +51,7 @@ function completed(
     order,
     parts: [
       ...order.flatMap((item) => {
-        const value = values.get(key(item.type, item.id))
-        return value === undefined ? [] : [value]
+        return Option.toArray(Option.fromUndefinedOr(values.get(key(item.type, item.id))))
       }),
       ...state.other,
     ],
@@ -74,14 +75,18 @@ export function append(state: State, part: Part): State {
     case 'text-delta':
       return {
         ...state,
-        text: new Map(state.text).set(part.id, (state.text.get(part.id) ?? '') + part.delta),
+        text: new Map(state.text).set(
+          part.id,
+          Option.getOrElse(Option.fromUndefinedOr(state.text.get(part.id)), () => '') + part.delta,
+        ),
       }
     case 'reasoning-delta':
       return {
         ...state,
         reasoning: new Map(state.reasoning).set(
           part.id,
-          (state.reasoning.get(part.id) ?? '') + part.delta,
+          Option.getOrElse(Option.fromUndefinedOr(state.reasoning.get(part.id)), () => '') +
+            part.delta,
         ),
       }
     case 'text-end':
@@ -90,7 +95,7 @@ export function append(state: State, part: Part): State {
         'text',
         part.id,
         AiResponse.makePart('text', {
-          text: state.text.get(part.id) ?? '',
+          text: Option.getOrElse(Option.fromUndefinedOr(state.text.get(part.id)), () => ''),
           metadata: metadata(part.metadata),
         }),
       )
@@ -100,7 +105,7 @@ export function append(state: State, part: Part): State {
         'reasoning',
         part.id,
         AiResponse.makePart('reasoning', {
-          text: state.reasoning.get(part.id) ?? '',
+          text: Option.getOrElse(Option.fromUndefinedOr(state.reasoning.get(part.id)), () => ''),
           metadata: metadata(part.metadata),
         }),
       )
@@ -115,14 +120,14 @@ export function append(state: State, part: Part): State {
         order: [...state.order, { type: 'tool-call', id: part.id }],
       }
     case 'tool-params-delta': {
-      const previous = state.toolParams.get(part.id)
-      return previous === undefined
+      const previous = Option.fromUndefinedOr(state.toolParams.get(part.id))
+      return Option.isNone(previous)
         ? state
         : {
             ...state,
             toolParams: new Map(state.toolParams).set(part.id, {
-              ...previous,
-              raw: previous.raw + part.delta,
+              ...previous.value,
+              raw: previous.value.raw + part.delta,
             }),
           }
     }
@@ -135,41 +140,43 @@ export function append(state: State, part: Part): State {
   }
 }
 /** Incomplete tool argument JSON is retained as a native params string with a harness partial annotation. It is UI history, never model context. */
-export function partial(state: State): AiPrompt.AssistantMessage | undefined {
+export function partial(state: State): Option.Option<AiPrompt.AssistantMessage> {
   const content: AiPrompt.AssistantMessagePart[] = []
   for (const item of state.order) {
     if (item.type === 'tool-call') {
-      const final = state.completed.get(key(item.type, item.id))
-      const pending = state.toolParams.get(item.id)
-      if (final?.type === 'tool-call')
+      const final = Option.fromUndefinedOr(state.completed.get(key(item.type, item.id)))
+      const pending = Option.fromUndefinedOr(state.toolParams.get(item.id))
+      if (Option.isSome(final) && final.value.type === 'tool-call')
         content.push(
           AiPrompt.toolCallPart({
-            id: final.id,
-            name: final.name,
-            params: final.params,
-            providerExecuted: final.providerExecuted,
+            id: final.value.id,
+            name: final.value.name,
+            params: final.value.params,
+            providerExecuted: final.value.providerExecuted,
           }),
         )
-      else if (pending !== undefined)
+      else if (Option.isSome(pending))
         content.push(
           AiPrompt.toolCallPart({
             id: item.id,
-            name: pending.name,
-            params: pending.raw,
-            providerExecuted: pending.providerExecuted,
+            name: pending.value.name,
+            params: pending.value.raw,
+            providerExecuted: pending.value.providerExecuted,
             options: { harness: { partial: true } },
           }),
         )
       continue
     }
     const text =
-      item.type === 'text' ? (state.text.get(item.id) ?? '') : (state.reasoning.get(item.id) ?? '')
+      item.type === 'text'
+        ? Option.getOrElse(Option.fromUndefinedOr(state.text.get(item.id)), () => '')
+        : Option.getOrElse(Option.fromUndefinedOr(state.reasoning.get(item.id)), () => '')
     if (text !== '')
       content.push(
         item.type === 'text' ? AiPrompt.textPart({ text }) : AiPrompt.reasoningPart({ text }),
       )
   }
-  return content.length === 0 ? undefined : AiPrompt.assistantMessage({ content })
+  return content.length === 0 ? Option.none() : Option.some(AiPrompt.assistantMessage({ content }))
 }
 export const message = (state: State): AiPrompt.Prompt => AiPrompt.fromResponseParts(state.parts)
 export type Change = {
@@ -190,11 +197,12 @@ export function delta(
     return [{ type: 'set', path: [], value: after }]
   const changes: Change[] = []
   for (const [index, part] of after.content.entries()) {
-    const previous = before.content[index]
-    if (previous === undefined) {
+    const found = Array.get(before.content, index)
+    if (Option.isNone(found)) {
       changes.push({ type: 'set', path: ['content', index], value: part })
       continue
     }
+    const previous = found.value
     if (samePart(previous, part)) continue
     if (
       previous.type === part.type &&

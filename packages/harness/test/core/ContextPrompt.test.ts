@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Identity from '../../src/Identity.ts'
 import * as Layer from 'effect/Layer'
@@ -350,16 +351,18 @@ describe('canonical context, prompt protocol and cuts', () => {
       { id: entryId(4), messages: [result('a', 'done')] },
       { id: entryId(5), messages: [assistant('last')] },
     ])
-    assert.notStrictEqual(
-      Compaction.selectCut(view, 3, () => 1),
-      2,
+    assert.isFalse(
+      Option.contains(
+        Compaction.selectCut(view, 3, () => 1),
+        2,
+      ),
     )
-    assert.strictEqual(
+    assert.deepStrictEqual(
       Compaction.selectCut(
         Context.derive([{ id: entryId(1), head: entryId(1), messages: [user('summary')] }]),
         0,
       ),
-      undefined,
+      Option.none(),
     )
   })
   it('thresholds are strict, background zero disables, manual selection does not inspect enabled', () => {
@@ -367,16 +370,16 @@ describe('canonical context, prompt protocol and cuts', () => {
       reserveTokens: 10,
       backgroundTokens: 20,
     })
-    assert.strictEqual(Compaction.threshold(90, 100, policy), 'background')
-    assert.strictEqual(Compaction.threshold(91, 100, policy), 'blocking')
-    assert.strictEqual(Compaction.threshold(70, 100, policy), undefined)
-    assert.strictEqual(
+    assert.deepStrictEqual(Compaction.threshold(90, 100, policy), Option.some('background'))
+    assert.deepStrictEqual(Compaction.threshold(91, 100, policy), Option.some('blocking'))
+    assert.deepStrictEqual(Compaction.threshold(70, 100, policy), Option.none())
+    assert.deepStrictEqual(
       Compaction.threshold(89, 100, Object.assign({}, policy, { backgroundTokens: 0 })),
-      undefined,
+      Option.none(),
     )
-    assert.strictEqual(
+    assert.deepStrictEqual(
       Compaction.threshold(100, 100, Object.assign({}, policy, { enabled: false })),
-      undefined,
+      Option.none(),
     )
   })
   it('summary source omits systems/files, preserves reasoning/calls, bounds tool text', () => {

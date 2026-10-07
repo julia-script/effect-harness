@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -38,15 +39,16 @@ interface Count {
 const countProjection = (
   projected: (n: number) => Effect.Effect<void>,
   reset: (tasks: ReadonlyArray<Record.Task>) => Effect.Effect<void> = () => Effect.void,
-): View.Projection<Count> => ({
-  initial: (value) => Effect.succeed({ n: value.entries.length, reset: false }),
-  project: (change) =>
-    projected(change.value.entries.length).pipe(
-      Effect.as({ n: change.value.entries.length, reset: false }),
-    ),
-  reset: (value, _seq, tasks) =>
-    reset(tasks).pipe(Effect.as({ n: value.entries.length, reset: true })),
-})
+): View.Projection<Count> =>
+  View.makeProjection<Count>({
+    initial: (value) => Effect.succeed({ n: value.entries.length, reset: false }),
+    project: (change) =>
+      projected(change.value.entries.length).pipe(
+        Effect.as({ n: change.value.entries.length, reset: false }),
+      ),
+    reset: (value, _seq, tasks) =>
+      reset(tasks).pipe(Effect.as({ n: value.entries.length, reset: true })),
+  })
 
 describe('typed scoped observation channels', () => {
   it.live(
@@ -58,15 +60,18 @@ describe('typed scoped observation channels', () => {
           const release = yield* Deferred.make<void>()
           yield* Effect.gen(function* () {
             const { session, views, root } = yield* initialize
-            const slow = yield* views.observe(root.id, {
-              initial: () => Effect.succeed(0),
-              project: () =>
-                Deferred.succeed(entered, undefined).pipe(
-                  Effect.andThen(Deferred.await(release)),
-                  Effect.as(1),
-                ),
-              reset: () => Effect.succeed(0),
-            })
+            const slow = yield* views.observe(
+              root.id,
+              View.makeProjection<number>({
+                initial: () => Effect.succeed(0),
+                project: () =>
+                  Deferred.succeed(entered, undefined).pipe(
+                    Effect.andThen(Deferred.await(release)),
+                    Effect.as(1),
+                  ),
+                reset: () => Effect.succeed(0),
+              }),
+            )
             const fast = yield* views.watch(root.id)
             yield* append(session, root.id)
             const late = yield* views.watch(root.id).pipe(Effect.timeout('2 seconds'))
@@ -241,7 +246,7 @@ describe('typed scoped observation channels', () => {
             for (let n = 0; n < 100; n++) yield* append(session, root.id)
             yield* session.transaction((tx) =>
               Effect.gen(function* () {
-                const task = yield* tx.task(taskId)
+                const task = yield* tx.task(taskId).pipe(Effect.map(Option.getOrUndefined))
                 assert.ok(task)
                 yield* tx.write({
                   type: 'task',
@@ -252,11 +257,14 @@ describe('typed scoped observation channels', () => {
                 })
               }),
             )
-            const baseline = yield* views.observe(root.id, {
-              initial: (_value, tasks) => Effect.succeed(tasks),
-              project: () => Effect.as(Effect.void, undefined),
-              reset: (_value, _seq, tasks) => Effect.succeed(tasks),
-            })
+            const baseline = yield* views.observe(
+              root.id,
+              View.makeProjection<ReadonlyArray<Record.Task>>({
+                initial: (_value, tasks) => Effect.succeed(tasks),
+                project: () => Effect.as(Effect.void, undefined),
+                reset: (_value, _seq, tasks) => Effect.succeed(tasks),
+              }),
+            )
             assert.strictEqual(
               baseline.value.find((task) => task.id === taskId)?.state.status,
               'terminal',
@@ -332,11 +340,14 @@ describe('typed scoped observation channels', () => {
     Effect.scoped(
       Effect.gen(function* () {
         const { session, views, root } = yield* initialize
-        const failure = yield* views.observe(root.id, {
-          initial: () => Effect.succeed(0),
-          project: () => Effect.fail(rejected('projection fixture')),
-          reset: () => Effect.succeed(0),
-        })
+        const failure = yield* views.observe(
+          root.id,
+          View.makeProjection<number>({
+            initial: () => Effect.succeed(0),
+            project: () => Effect.fail(rejected('projection fixture')),
+            reset: () => Effect.succeed(0),
+          }),
+        )
         const healthy = yield* views.watch(root.id)
         yield* append(session, root.id)
         const refreshed = yield* views.watch(root.id)

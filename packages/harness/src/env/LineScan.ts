@@ -1,3 +1,4 @@
+import * as Predicate from 'effect/Predicate'
 // Adapted from pi-durable (MIT), pinned 636703a0; see ../LICENSE.pi.txt.
 import { rangeDecoder, startsWithBom } from './Decode.ts'
 import { FileError, FileInvalid, type LineScan } from '../Env.ts'
@@ -5,7 +6,9 @@ import * as Result from 'effect/Result'
 const NEWLINE = 10
 const encoder = new TextEncoder()
 const decodedBytes = (text: string): number => encoder.encode(text).length
+const TypeId = '~@effect-harness/harness/env/LineScan'
 export interface State {
+  readonly [TypeId]: typeof TypeId
   readonly startLine: number
   readonly endLine: number
   position: number
@@ -22,6 +25,7 @@ export interface State {
   head: number[] | undefined
   bom: boolean
 }
+export const isState = (input: unknown): input is State => Predicate.hasProperty(input, TypeId)
 export function make(startLine: number, endLine = Infinity): Result.Result<State, FileError> {
   if (
     !Number.isSafeInteger(startLine) ||
@@ -33,6 +37,7 @@ export function make(startLine: number, endLine = Infinity): Result.Result<State
       new FileError({ reason: new FileInvalid({ message: 'Invalid line range' }) }),
     )
   const state: State = {
+    [TypeId]: TypeId,
     startLine,
     endLine,
     position: 0,
@@ -49,6 +54,7 @@ export function make(startLine: number, endLine = Infinity): Result.Result<State
     head: [],
     bom: false,
   }
+  Object.defineProperty(state, TypeId, { enumerable: false })
   if (startLine === 0) begin(state, 0)
   return Result.succeed(state)
 }

@@ -26,7 +26,7 @@ const base64 = (data: string | Uint8Array) =>
 export const content = Effect.fnUntraced(function* (
   parts: ReadonlyArray<Prompt.UserMessagePart>,
   prefixes: ReadonlyArray<string> = [],
-) {
+): Effect.fn.Return<Array<typeof OpenAiSchema.InputContent.Encoded>, AiError.AiError> {
   return yield* Effect.forEach(parts, (part, index) => {
     let block: unknown
     if (part.type === 'text')
@@ -74,7 +74,7 @@ export const content = Effect.fnUntraced(function* (
 export const request = Effect.fnUntraced(function* (
   payload: typeof OpenAiSchema.CreateResponse.Encoded,
   prefixes: ReadonlyArray<string> = [],
-) {
+): Effect.fn.Return<typeof OpenAiSchema.CreateResponse.Encoded, AiError.AiError> {
   if (payload.input == null || typeof payload.input === 'string') return payload
   const input = yield* Effect.forEach(
     payload.input,

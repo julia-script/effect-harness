@@ -1,3 +1,5 @@
+import * as HashMap from 'effect/HashMap'
+import * as Option from 'effect/Option'
 import type * as HttpClient from 'effect/http/HttpClient'
 import type { ChatGpt } from './ChatGpt.ts'
 import * as Config from 'effect/Config'
@@ -127,11 +129,23 @@ const priced = (value: Response.Usage, prices?: Prices): Usage.Usage => {
   }
 }
 
+export interface Descriptor {
+  readonly ref: { provider: string; modelId: string }
+  readonly model: Model.Descriptor['model']
+  readonly contextWindow: number
+  readonly maxOutputTokens: number
+  readonly configure: (
+    options: Model.RequestOptions,
+  ) => Effect.Effect<Context.Context<OpenAiLanguageModel.Config>, ModelError>
+  readonly usage: NonNullable<Model.Descriptor['usage']>
+  readonly classify: NonNullable<Model.Descriptor['classify']>
+}
+
 /** Captures the native client now; configuration pins each request to this exact model ID. */
 export const descriptor = Effect.fnUntraced(function* (
   entry: Entry,
   options?: { readonly provider?: string | undefined; readonly account?: boolean | undefined },
-) {
+): Effect.fn.Return<Descriptor, ModelError, OpenAiClient.OpenAiClient> {
   const defaults = yield* validate(entry)
   const account = options?.account === true
   if (account && defaults.store === true)
@@ -221,18 +235,18 @@ export const layer = (options: {
   readonly models: ReadonlyArray<Entry>
   readonly provider?: string | undefined
   readonly account?: boolean | undefined
-}) =>
+}): Layer.Layer<Model.Catalog, ModelError, OpenAiClient.OpenAiClient> =>
   Layer.effect(Model.Catalog)(
     Effect.gen(function* () {
       if (new Set(options.models.map((entry) => entry.modelId)).size !== options.models.length)
         return yield* fail('Duplicate OpenAI catalogue model IDs')
       const entries = yield* Effect.forEach(options.models, (entry) => descriptor(entry, options))
-      const byId = new Map(entries.map((entry) => [entry.ref.modelId, entry]))
+      const byId = HashMap.fromIterable(entries.map((entry) => [entry.ref.modelId, entry]))
       return Model.Catalog.of({
         resolve: (ref) => {
-          const found = byId.get(ref.modelId)
-          return found !== undefined && found.ref.provider === ref.provider
-            ? Effect.succeed(found)
+          const found = HashMap.get(byId, ref.modelId)
+          return Option.isSome(found) && found.value.ref.provider === ref.provider
+            ? Effect.succeed(found.value)
             : Effect.fail(
                 new ModelError({
                   reason: new ModelNoModel({
@@ -250,12 +264,17 @@ export const layerApiKey = (
     readonly models: ReadonlyArray<Entry>
     readonly provider?: string | undefined
   },
-) => layer(options).pipe(Layer.provideMerge(OpenAiClient.layer(options)))
+): Layer.Layer<Model.Catalog | OpenAiClient.OpenAiClient, ModelError, HttpClient.HttpClient> =>
+  layer(options).pipe(Layer.provideMerge(OpenAiClient.layer(options)))
 export const layerChatGpt = (options: {
   readonly account: string
   readonly models: ReadonlyArray<Entry>
   readonly provider?: string | undefined
-}) =>
+}): Layer.Layer<
+  Model.Catalog | OpenAiClient.OpenAiClient,
+  ModelError,
+  ChatGpt | HttpClient.HttpClient
+> =>
   layer({ ...options, account: true }).pipe(
     Layer.provideMerge(Provider.layerChatGptClient({ account: options.account })),
   )

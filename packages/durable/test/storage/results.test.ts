@@ -69,25 +69,23 @@ for (const backend of [
             }),
           )
           const before = yield* store.read
-          const invalid = { bad: () => true }
-          const rejected: Effect.Effect<unknown, StorageError> = session.transaction(
-            // @ts-expect-error Receipt results must be JSON-safe or void; runtime also rejects JavaScript misuse.
-            (tx) => tx.ensureRoot.pipe(Effect.as(invalid)),
-            { key: 'invalid' },
-          )
-          const error = yield* rejected.pipe(Effect.flip, Effect.orDie)
-          assert.ok(error instanceof StorageError)
-          assert.strictEqual(error.reason._tag, 'Invalid')
-          assert.deepStrictEqual(yield* store.read, before)
-          const classReceipt: Effect.Effect<unknown, StorageError> = session.transaction(
-            // @ts-expect-error Class instances cannot satisfy the JSON receipt result contract.
-            () => Effect.succeed(new Date()),
-            { key: 'date' },
-          )
-          assert.strictEqual(
-            (yield* classReceipt.pipe(Effect.flip, Effect.orDie)).reason._tag,
-            'Invalid',
-          )
+          // Deliberate JavaScript misuse enters through this isolated unknown boundary; normal APIs remain strict.
+          const runtimeReceipt = session.transaction as unknown as (
+            change: (tx: Session.Transaction) => Effect.Effect<unknown, StorageError>,
+            options: { readonly key: string },
+          ) => Effect.Effect<unknown, StorageError>
+          for (const [key, invalid] of [
+            ['invalid', { bad: () => true }],
+            ['date', new Date()],
+          ] as const) {
+            // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Deliberate malformed JavaScript has unknown success; flipping it here asserts the exact typed Invalid rejection.
+            const error = yield* runtimeReceipt((tx) => tx.ensureRoot.pipe(Effect.as(invalid)), {
+              key,
+            }).pipe(Effect.flip)
+            assert.strictEqual(error._tag, 'StorageError')
+            assert.strictEqual(error.reason._tag, 'Invalid')
+            assert.deepStrictEqual(yield* store.read, before)
+          }
         }).pipe(Effect.provide(sessionLayer(backend))),
       ),
   )

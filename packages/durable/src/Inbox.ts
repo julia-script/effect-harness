@@ -1,3 +1,5 @@
+import type { StorageError } from './StorageError.ts'
+import * as Option from 'effect/Option'
 import * as Time from '@effect-harness/harness/Time'
 import * as DateTime from 'effect/DateTime'
 // Queue boundary rules adapted from pi-durable (MIT), pinned 636703a0.
@@ -153,8 +155,12 @@ export const prepare = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   conversationId: Record.ConversationId,
   modes: Boundary['modes'],
-) {
-  const head = (yield* tx.latestHeadMarker(conversationId))?.head
+): Effect.fn.Return<Boundary, StorageError> {
+  // Boundary.head is an optional persisted/native draft field; absence is unwrapped only at this DTO boundary.
+  const head = (yield* tx.latestHeadMarker(conversationId)).pipe(
+    Option.flatMap((entry) => Option.fromUndefinedOr(entry.head)),
+    Option.getOrUndefined,
+  )
   const inbox = yield* tx.doc(InboxDoc, { owner: conversationId })
   return { conversationId, inbox, modes, head } satisfies Boundary
 })
@@ -165,7 +171,10 @@ export const apply = Effect.fnUntraced(function* (
   boundary: Boundary,
   at: 'postTools' | 'final',
   now: DateTime.Utc,
-) {
+): Effect.fn.Return<
+  { users: Record.SubmissionId[]; settled: Record.SubmissionId[]; reset: boolean },
+  StorageError
+> {
   const items = boundary.inbox.items
   const reset = items.some((item) => item.mode === 'write' && item.entry.head === 'self')
   const final = at === 'final' || reset
@@ -215,7 +224,7 @@ export const apply = Effect.fnUntraced(function* (
 export const withdraw = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   conversationId: Record.ConversationId,
-) {
+): Effect.fn.Return<Record.SubmissionId[], StorageError> {
   const inbox = yield* tx.doc(InboxDoc, { owner: conversationId })
   const settled: Record.SubmissionId[] = []
   for (let index = inbox.items.length - 1; index >= 0; index--) {
@@ -234,7 +243,7 @@ export const endRun = Effect.fnUntraced(function* (
   live: Document.Draft<LiveState>,
   taskId: Record.TaskId,
   settlement: Parameters<Session.Transaction['settleSubmission']>[1],
-) {
+): Effect.fn.Return<Record.SubmissionId[], StorageError> {
   const settled: Record.SubmissionId[] = []
   if (live.run?.taskId === taskId) {
     for (const id of live.run.inputs) {

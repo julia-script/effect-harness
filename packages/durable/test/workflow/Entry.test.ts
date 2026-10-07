@@ -1,6 +1,6 @@
+import * as Option from 'effect/Option'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
-import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as Prompt from 'effect/ai/Prompt'
@@ -33,7 +33,7 @@ describe('public native built-in entry tokens', () => {
         )
         assert.isTrue(Entry.UserEntry.is(storedUser))
         const decodedUser = yield* Entry.UserEntry.decode(
-          (yield* session.entry(storedUser.id))?.entry,
+          (yield* session.entry(storedUser.id).pipe(Effect.map(Option.getOrUndefined)))?.entry,
         )
         assert.strictEqual(decodedUser.model[0].role, 'user')
         assert.strictEqual(decodedUser.model[0].content[0]?.type, 'text')
@@ -74,7 +74,7 @@ describe('public native built-in entry tokens', () => {
           ),
         )
         const decodedTool = yield* Entry.ToolResultEntry.decode(
-          (yield* session.entry(tool.id))?.entry,
+          (yield* session.entry(tool.id).pipe(Effect.map(Option.getOrUndefined)))?.entry,
         )
         assert.strictEqual(decodedTool.data.execution.outcome, 'unavailable')
         assert.strictEqual(
@@ -119,22 +119,21 @@ describe('public native built-in entry tokens', () => {
           'new',
         )
         assert.strictEqual((yield* Entry.ResetEntry.decode(entries.reset)).head, entries.reset.id)
-        assert.isTrue(
-          Exit.isFailure(
-            yield* Entry.ResetEntry.decode({ ...entries.reset, head: entries.system.id }).pipe(
-              Effect.exit,
-            ),
-          ),
-        )
+        const invalidHead = yield* Entry.ResetEntry.decode({
+          ...entries.reset,
+          head: entries.system.id,
+        }).pipe(Effect.flip)
+        assert.strictEqual(invalidHead._tag, 'SchemaError')
+        assert.include(invalidHead.message, 'filter')
         assert.strictEqual(
           (yield* Entry.CompactionEntry.decode(entries.compact)).data.reason,
           'manual',
         )
         assert.isFalse(Entry.ToolResultEntry.is(entries.compact))
         assert.isFalse(Entry.UserEntry.is(undefined))
-        assert.isTrue(
-          Exit.isFailure(yield* Entry.UserEntry.decode(entries.system).pipe(Effect.exit)),
-        )
+        const invalidKind = yield* Entry.UserEntry.decode(entries.system).pipe(Effect.flip)
+        assert.strictEqual(invalidKind._tag, 'SchemaError')
+        assert.include(invalidKind.message, 'harness.user')
       }).pipe(Effect.provide(sessionLayer)),
     ),
   )
@@ -152,24 +151,25 @@ describe('public native built-in entry tokens', () => {
           }),
         )
         assert.isTrue(Entry.ToolResultEntry.is(malformed))
-        assert.isTrue(
-          Exit.isFailure(yield* Entry.ToolResultEntry.decode(malformed).pipe(Effect.exit)),
-        )
-        assert.isTrue(
-          Exit.isFailure(
-            yield* Entry.CompactionEntry.decode({
-              ...malformed,
-              kind: Entry.CompactionEntry.kind,
-              data: { reason: 'bogus' },
-            }).pipe(Effect.exit),
-          ),
+        const invalidTool = yield* Entry.ToolResultEntry.decode(malformed).pipe(Effect.flip)
+        assert.strictEqual(invalidTool._tag, 'SchemaError')
+        assert.strictEqual(invalidTool.message, 'Expected ToolMessage\n  at ["model"][0]')
+        const invalidCompaction = yield* Entry.CompactionEntry.decode({
+          id: malformed.id,
+          conversationId: malformed.conversationId,
+          kind: Entry.CompactionEntry.kind,
+          head: malformed.id,
+          model: [yield* encodeUser(user)],
+          data: { reason: 'bogus' },
+        }).pipe(Effect.flip)
+        assert.strictEqual(invalidCompaction._tag, 'SchemaError')
+        assert.strictEqual(
+          invalidCompaction.message,
+          'Expected "manual" | "threshold" | "overflow"\n  at ["data"]["reason"]',
         )
         if (Entry.ToolResultEntry.is(malformed)) {
           const raw: Schema.Json | undefined = malformed.data
           assert.deepStrictEqual(raw, { execution: false })
-          // @ts-expect-error Kind alone cannot establish an execution's metadata shape.
-          const execution: { readonly outcome: string } = malformed.data.execution
-          void execution
         }
       }).pipe(Effect.provide(sessionLayer)),
     ),

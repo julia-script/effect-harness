@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import { assert, describe, it } from '@effect/vitest'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -59,10 +60,12 @@ const inspect = (filename: string) =>
     const documents = yield* Effect.gen(function* () {
       const session = yield* Session.Session
       return {
-        usage: (yield* session.snapshot(Usage.UsageDoc, { owner: Record.ROOT_CONVERSATION_ID }))
-          ?.value,
-        live: (yield* session.snapshot(Inbox.LiveDoc, { owner: Record.ROOT_CONVERSATION_ID }))
-          ?.value,
+        usage: (yield* session
+          .snapshot(Usage.UsageDoc, { owner: Record.ROOT_CONVERSATION_ID })
+          .pipe(Effect.map(Option.getOrUndefined)))?.value,
+        live: (yield* session
+          .snapshot(Inbox.LiveDoc, { owner: Record.ROOT_CONVERSATION_ID })
+          .pipe(Effect.map(Option.getOrUndefined)))?.value,
       }
     }).pipe(Effect.provide(Session.layer.pipe(Layer.provide(SqlStore.layer))))
     return { ...physical, ...documents }

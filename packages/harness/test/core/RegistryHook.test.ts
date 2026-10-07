@@ -1,6 +1,8 @@
+import * as Option from 'effect/Option'
 import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
+import * as Cause from 'effect/Cause'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Ref from 'effect/Ref'
@@ -9,7 +11,7 @@ import * as Stream from 'effect/Stream'
 import * as AiTool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
 import * as AiPrompt from 'effect/ai/Prompt'
-import { HookError, HookFailure } from '../../src/Error.ts'
+import { HookError, HookFailure, RegistryError, RegistryFailure } from '../../src/Error.ts'
 import * as Agent from '../../src/Agent.ts'
 import * as Hook from '../../src/Hook.ts'
 import { Invocation } from '../../src/Invocation.ts'
@@ -58,24 +60,24 @@ describe('atomic registry and selected code', () => {
     Effect.gen(function* () {
       const registry = yield* Registry.make([{ name: 'a' }])
       const before = yield* registry.snapshot
-      const result = yield* Effect.exit(
+      const result = yield* Effect.flip(
         registry.install([
           { name: 'b' },
           { name: 'c', sections: [section('instructions', 'invalid')] },
         ]),
       )
-      assert.strictEqual(Exit.isFailure(result), true)
+      assert.instanceOf(result, RegistryError)
+      assert.instanceOf(result.reason, RegistryFailure)
+      assert.strictEqual(result.message, 'Invalid or reserved section instructions')
+      assert.strictEqual(result.cause, undefined)
       assert.strictEqual(yield* registry.snapshot, before)
-      assert.strictEqual(
-        Exit.isFailure(
-          yield* Effect.exit(
-            registry.install([
-              { name: 'b', sections: [section('same', '1'), section('same', '2')] },
-            ]),
-          ),
-        ),
-        true,
+      const duplicate = yield* Effect.flip(
+        registry.install([{ name: 'b', sections: [section('same', '1'), section('same', '2')] }]),
       )
+      assert.instanceOf(duplicate, RegistryError)
+      assert.instanceOf(duplicate.reason, RegistryFailure)
+      assert.strictEqual(duplicate.message, 'Duplicate section same in b')
+      assert.strictEqual(yield* registry.snapshot, before)
     }),
   )
   it.effect(
@@ -86,15 +88,15 @@ describe('atomic registry and selected code', () => {
         const before = yield* registry.snapshot
         const invalid = { name: 'a', sections: [section('instructions', 'invalid')] }
         const valid = { name: 'a', sections: [section('rules', 'last')] }
-        assert.strictEqual(
-          Exit.isFailure(yield* Effect.exit(registry.install([invalid, valid]))),
-          true,
-        )
+        const invalidInstall = yield* Effect.flip(registry.install([invalid, valid]))
+        assert.instanceOf(invalidInstall, RegistryError)
+        assert.instanceOf(invalidInstall.reason, RegistryFailure)
+        assert.strictEqual(invalidInstall.message, 'Invalid or reserved section instructions')
         assert.strictEqual(yield* registry.snapshot, before)
-        assert.strictEqual(
-          Exit.isFailure(yield* Effect.exit(Registry.make([invalid, valid]))),
-          true,
-        )
+        const invalidMake = yield* Effect.flip(Registry.make([invalid, valid]))
+        assert.instanceOf(invalidMake, RegistryError)
+        assert.instanceOf(invalidMake.reason, RegistryFailure)
+        assert.strictEqual(invalidMake.message, 'Invalid or reserved section instructions')
         yield* registry.install([{ name: 'a', sections: [section('rules', 'first')] }, valid])
         const after = yield* registry.snapshot
         assert.strictEqual(after.extensions[0], valid)
@@ -312,7 +314,7 @@ describe('atomic registry and selected code', () => {
             view: { head: undefined, entries: [], contributions: [], messages: [] },
           },
         )
-        assert.deepStrictEqual(decision, { decline: true })
+        assert.deepStrictEqual(decision, Option.some({ decline: true }))
       }).pipe(Effect.provideService(Invocation, quiet)),
   )
   it.effect('hook interruption propagates instead of being reported and omitted', () =>
@@ -326,7 +328,8 @@ describe('atomic registry and selected code', () => {
           }),
         ),
       )
-      assert.strictEqual(Exit.isFailure(outcome), true)
+      assert.isTrue(Exit.isFailure(outcome))
+      if (Exit.isFailure(outcome)) assert.isTrue(Cause.hasInterruptsOnly(outcome.cause))
       assert.strictEqual(yield* Ref.get(reports), 0)
     }),
   )

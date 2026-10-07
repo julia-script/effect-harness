@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -150,10 +151,10 @@ describe('native coding tools', () => {
         view.setUint32(14, 40, true)
         view.setUint16(26, 1, true)
         view.setUint16(28, 24, true)
-        assert.strictEqual(Image.detectSupportedImageMimeType(bmp), 'image/bmp')
+        assert.deepStrictEqual(Image.detectSupportedImageMimeType(bmp), Option.some('image/bmp'))
         const invalidBmp = bmp.slice()
         invalidBmp[26] = 2
-        assert.strictEqual(Image.detectSupportedImageMimeType(invalidBmp), undefined)
+        assert.isTrue(Option.isNone(Image.detectSupportedImageMimeType(invalidBmp)))
         for (const truncated of [
           bmp.subarray(0, 25),
           png.subarray(0, 15),
@@ -161,7 +162,7 @@ describe('native coding tools', () => {
           new TextEncoder().encode('GIF89'),
           new TextEncoder().encode('RIFF0000WEB'),
         ])
-          assert.strictEqual(Image.detectSupportedImageMimeType(truncated), undefined)
+          assert.isTrue(Option.isNone(Image.detectSupportedImageMimeType(truncated)))
         for (const bytes of [
           bmp,
           png,
@@ -179,9 +180,9 @@ describe('native coding tools', () => {
         apng.set(new TextEncoder().encode('acTL'), 37)
         yield* env.writeFile('image.txt', apng)
         assert.notStrictEqual((yield* Read.handler({ path: 'image.txt' })).isError, true)
-        assert.strictEqual(
+        assert.deepStrictEqual(
           Image.detectSupportedImageMimeType(new Uint8Array([255, 216, 255, 247])),
-          undefined,
+          Option.none(),
         )
       }),
     ),

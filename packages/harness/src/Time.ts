@@ -111,4 +111,8 @@ export const DurationInput = Schema.Unknown.pipe(
     encode: SchemaGetter.passthroughSubtype<unknown, Duration.Duration>(),
   }),
 )
-export const duration = Schema.decodeUnknownEffect(DurationInput)
+export const duration: (
+  input: unknown,
+  options?: import('effect/SchemaAST').ParseOptions,
+) => Effect.Effect<Duration.Duration, Schema.SchemaError> =
+  Schema.decodeUnknownEffect(DurationInput)

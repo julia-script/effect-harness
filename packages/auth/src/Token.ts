@@ -20,6 +20,7 @@ export const TokenResponse = Schema.Struct({
   earliest_refresh_at: Schema.optionalKey(Schema.Finite),
 })
 export type TokenResponse = typeof TokenResponse.Type
+export const isTokenResponse: (value: unknown) => value is TokenResponse = Schema.is(TokenResponse)
 /** Sensitive protocol fields stay wrapped until the final HTTP body serialization. */
 export interface Fields {
   readonly [key: string]: string | Redacted.Redacted<string> | undefined

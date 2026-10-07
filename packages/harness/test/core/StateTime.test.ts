@@ -16,8 +16,7 @@ import * as Time from '../../src/Time.ts'
 import { Invocation } from '../../src/Invocation.ts'
 
 class Example extends Context.Service<Example, string>()('StateTime/Example') {}
-const recoverWithContext: Effect.Effect<number | undefined, never, Example | Invocation> =
-  Hook.recover(Effect.map(Example, (value) => value.length))
+const recoverWithContext = Hook.recover(Effect.map(Example, (value) => value.length))
 
 const containsCause = (issue: SchemaIssue.Issue, cause: unknown): boolean => {
   if ('annotations' in issue && issue.annotations?.cause === cause) return true

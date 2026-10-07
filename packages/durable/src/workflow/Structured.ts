@@ -29,7 +29,10 @@ export const domainBinding = Effect.fnUntraced(function* <
   P extends Workflow.AnyStructSchema,
   A extends Schema.Top,
   E extends Schema.Top,
->(workflow: Workflow.Workflow<N, P, A, E>, payload: P['Type']) {
+>(
+  workflow: Workflow.Workflow<N, P, A, E>,
+  payload: P['Type'],
+): Effect.fn.Return<Ownership.Binding, Schema.SchemaError, P['EncodingServices']> {
   const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(workflow.payloadSchema))(payload)
   const executionId = yield* workflow.executionId(payload)
   return Ownership.Binding.make({ workflow: workflow._tag, executionId, payload: encoded })
@@ -46,7 +49,7 @@ export const bind = Effect.fnUntraced(function* <
   task: Record.Task,
   workflow: Workflow.Workflow<N, P, A, E>,
   payload: P['Type'],
-) {
+): Effect.fn.Return<Ownership.Binding, StorageError | Schema.SchemaError, P['EncodingServices']> {
   const binding = yield* domainBinding(workflow, payload)
   yield* tx.write({ type: 'task', value: { ...task, input: binding } })
   return binding
@@ -73,19 +76,26 @@ export class DrainConversations extends Context.Service<
     ) => Effect.Effect<void, ExecutionError | import('../StorageError.ts').StorageError>
   }
 >()('@effect-harness/durable/Structured/DrainConversations') {}
-export const layerDrainConversations = (drain: DrainConversations['Service']['drain']) =>
+export const layerDrainConversations = (
+  drain: DrainConversations['Service']['drain'],
+): Layer.Layer<DrainConversations> =>
   Layer.succeed(DrainConversations, DrainConversations.of({ drain }))
 
-const pendingConversations = (graph: Ownership.Graph, reached: Ownership.Reached | undefined) =>
-  (reached?.conversations ?? []).flatMap((conversation) => {
-    const submissions =
-      graph.submissions?.filter(
-        (submission) =>
-          submission.conversationId === conversation.id &&
-          (submission.status === 'queued' || submission.status === 'placed'),
-      ) ?? []
-    return submissions.length === 0 ? [] : [{ conversation, submissions }]
-  })
+const pendingConversations = (graph: Ownership.Graph, reached: Option.Option<Ownership.Reached>) =>
+  reached
+    .pipe(
+      Option.map((value) => value.conversations),
+      Option.getOrElse(() => []),
+    )
+    .flatMap((conversation) => {
+      const submissions =
+        graph.submissions?.filter(
+          (submission) =>
+            submission.conversationId === conversation.id &&
+            (submission.status === 'queued' || submission.status === 'placed'),
+        ) ?? []
+      return submissions.length === 0 ? [] : [{ conversation, submissions }]
+    })
 
 /**
  * Persist a held outcome. Pass a graph collected before any table writes when
@@ -96,10 +106,13 @@ export const hold = Effect.fnUntraced(function* (
   task: Record.Task,
   outcome: Record.Json,
   graph: Ownership.Graph,
-) {
+): Effect.fn.Return<Record.Task, StorageError> {
   if (task.state.status === 'terminal' || task.state.status === 'completing') return task
   const reached = Ownership.reach(graph, { kind: 'task', id: task.id })
-  const children = reached?.tasks.filter((child) => child.id !== task.id) ?? []
+  const children = reached.pipe(
+    Option.map((value) => value.tasks.filter((child) => child.id !== task.id)),
+    Option.getOrElse(() => []),
+  )
   const pending = pendingConversations(graph, reached)
   const value: Record.Task = {
     ...task,
@@ -126,7 +139,7 @@ const execute = Effect.fnUntraced(function* (
     Effect.mapError((cause) => invalid(`Task ${task.id} has no native Workflow binding`, cause)),
   )
   const declarations = yield* Ownership.Declarations
-  if (declarations.get(binding.workflow) === undefined) {
+  if (Option.isNone(declarations.get(binding.workflow))) {
     if (!task.abortRequested) {
       // Missing code is a recoverable registration boundary. Preserve the work
       // and let the ordinary native parent resume once its declaration returns.
@@ -159,7 +172,11 @@ export const join = Effect.fnUntraced(function* (
   ownerId: Record.TaskId,
   ids: ReadonlyArray<Record.TaskId>,
   policy: 'failFast' | 'allSettled' = 'allSettled',
-) {
+): Effect.fn.Return<
+  Record.Json[],
+  StorageError | ExecutionError,
+  Cancellation.Cancellation | WorkflowEngine.WorkflowEngine | Ownership.Declarations
+> {
   const state = yield* session.committed
   const owner = state.tasks.find((task) => task.id === ownerId)
   if (owner === undefined) return yield* invalid('Join owner is absent')
@@ -188,14 +205,15 @@ export const join = Effect.fnUntraced(function* (
   }
   yield* session.transaction(
     Effect.fnUntraced(function* (tx) {
-      const current = yield* tx.task(ownerId)
+      const currentOption = yield* tx.task(ownerId)
       if (
-        current === undefined ||
-        current.abortRequested ||
-        current.state.status === 'terminal' ||
-        current.state.status === 'completing'
+        Option.isNone(currentOption) ||
+        currentOption.value.abortRequested ||
+        currentOption.value.state.status === 'terminal' ||
+        currentOption.value.state.status === 'completing'
       )
         return yield* invalid('Join requires a live owner')
+      const current = currentOption.value
       yield* tx.write({
         type: 'task',
         value: {
@@ -241,8 +259,9 @@ export const join = Effect.fnUntraced(function* (
       const latest = yield* session.committed
       yield* session.transaction(
         Effect.fnUntraced(function* (tx) {
-          const current = yield* tx.task(ownerId)
-          if (current === undefined || current.state.status !== 'waiting') return
+          const currentOption = yield* tx.task(ownerId)
+          if (Option.isNone(currentOption) || currentOption.value.state.status !== 'waiting') return
+          const current = currentOption.value
           yield* tx.write({
             type: 'task',
             value: {
@@ -290,7 +309,10 @@ export const drain = Effect.fnUntraced(function* (
     if (task.state.status === 'terminal') return task.state.outcome ?? null
     if (task.state.status !== 'completing') return yield* invalid('Task has no held outcome')
     const reached = Ownership.reach(state, { kind: 'task', id: taskId })
-    const children = reached?.tasks.filter((child) => child.id !== taskId) ?? []
+    const children = reached.pipe(
+      Option.map((value) => value.tasks.filter((child) => child.id !== taskId)),
+      Option.getOrElse(() => []),
+    )
     const pending = pendingConversations(state, reached)
     if (pending.length > 0) {
       const callback = yield* Effect.serviceOption(DrainConversations)
@@ -366,7 +388,7 @@ export const drain = Effect.fnUntraced(function* (
           return { done: true, outcome: current.state.outcome ?? null }
         const remaining = Ownership.reach(graph, { kind: 'task', id: taskId })
         const pending =
-          remaining?.tasks.some((item) => item.id !== taskId) ||
+          Option.exists(remaining, (value) => value.tasks.some((item) => item.id !== taskId)) ||
           pendingConversations(graph, remaining).length > 0
         if (pending) return { done: false, outcome: null }
         yield* tx.write({
@@ -418,20 +440,25 @@ export const child = Effect.fnUntraced(function* <
   workflow: Workflow.Workflow<N, P, A, E>,
   payload: (taskId: Record.TaskId) => P['Type'],
   key: string,
-) {
+): Effect.fn.Return<
+  { id: Record.TaskId; binding: Ownership.Binding },
+  StorageError | ExecutionError | Schema.SchemaError,
+  Ownership.Current | P['EncodingServices']
+> {
   const current = yield* Ownership.Current
   yield* current.check
   return yield* current.session.transaction(
     Effect.fnUntraced(function* (tx) {
       yield* current.check
-      const owner = yield* tx.task(current.taskId)
+      const ownerOption = yield* tx.task(current.taskId)
       if (
-        owner === undefined ||
-        owner.abortRequested ||
-        owner.state.status === 'completing' ||
-        owner.state.status === 'terminal'
+        Option.isNone(ownerOption) ||
+        ownerOption.value.abortRequested ||
+        ownerOption.value.state.status === 'completing' ||
+        ownerOption.value.state.status === 'terminal'
       )
         return yield* invalid('Child creation requires a live owner')
+
       const projection = {
         conversationId: current.conversationId,
         kind: workflow._tag,

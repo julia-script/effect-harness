@@ -1,3 +1,5 @@
+import * as TestClock from 'effect/testing/TestClock'
+import * as Option from 'effect/Option'
 import { ResourceScope, withLayer } from '../../src/testing/Storage.ts'
 import * as Exit from 'effect/Exit'
 import * as Scope from 'effect/Scope'
@@ -44,7 +46,15 @@ const initialize = Effect.gen(function* () {
   return { session, events, views, root }
 })
 const collect = (watch: Event.Watch, count: number) =>
-  Stream.runCollect(watch.changes.pipe(Stream.take(count))).pipe(Effect.timeout('3 seconds'))
+  Effect.gen(function* () {
+    const consumer = yield* Stream.runCollect(watch.changes.pipe(Stream.take(count))).pipe(
+      Effect.timeout('3 seconds'),
+      Effect.forkScoped,
+    )
+    // The fork admits the consumer before modeled journal polls and mount monitoring advance.
+    yield* TestClock.adjust('100 millis')
+    return yield* Fiber.join(consumer)
+  })
 const task = (
   tx: Session.Transaction,
   id: Record.ConversationId,
@@ -61,7 +71,7 @@ const task = (
     state: { status: 'running' },
   })
 describe('ordered committed semantic events', () => {
-  it.live('keeps an earlier partial batch across101 attempt-only document mutations', () =>
+  it.effect('keeps an earlier partial batch across101 attempt-only document mutations', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { session, events, root } = yield* initialize
@@ -98,7 +108,7 @@ describe('ordered committed semantic events', () => {
     ),
   )
 
-  it.live('retains one meaningful event across same-conversation eventless task noise', () =>
+  it.effect('retains one meaningful event across same-conversation eventless task noise', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { session, events, views, root } = yield* initialize
@@ -125,7 +135,11 @@ describe('ordered committed semantic events', () => {
           ['task_failed'],
         )
         yield* session.transaction((tx) => tx.appendEntry(root.id, { kind: 'after-noise' }))
-        const frame = (yield* Stream.runCollect(structural.changes.pipe(Stream.take(1))))[0]
+        const collected = yield* Stream.runCollect(structural.changes.pipe(Stream.take(1))).pipe(
+          Effect.forkScoped,
+        )
+        yield* TestClock.adjust('100 millis')
+        const frame = (yield* Fiber.join(collected))[0]
         assert.strictEqual(frame?.reset, false)
         assert.deepStrictEqual(
           frame?.value.entries.map((entry) => entry.kind),
@@ -135,7 +149,7 @@ describe('ordered committed semantic events', () => {
     ),
   )
 
-  it.live('counts submission batches independently from structural view frames', () =>
+  it.effect('counts submission batches independently from structural view frames', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { session, events, views, root } = yield* initialize
@@ -148,12 +162,16 @@ describe('ordered committed semantic events', () => {
           yield* session.transaction((tx) =>
             tx.createSubmission({ conversationId: root.id, type: 'write', status: 'queued' }),
           )
-        yield* Effect.sleep('60 millis')
+        yield* TestClock.adjust('60 millis')
         assert.strictEqual((yield* collect(semantic, 1))[0]?.[0]?.type, 'snapshot')
         yield* session.transaction((tx) =>
           tx.appendEntry(root.id, { kind: 'only-structural-frame' }),
         )
-        const frames = yield* Stream.runCollect(structural.changes.pipe(Stream.take(2)))
+        const collected = yield* Stream.runCollect(structural.changes.pipe(Stream.take(2))).pipe(
+          Effect.forkScoped,
+        )
+        yield* TestClock.adjust('100 millis')
+        const frames = yield* Fiber.join(collected)
         const frame = frames[1]
         assert.strictEqual(frame?.reset, false)
         assert.deepStrictEqual(
@@ -165,7 +183,7 @@ describe('ordered committed semantic events', () => {
     ),
   )
 
-  it.live('reports usage-only partial changes and exact object replacement noops', () =>
+  it.effect('reports usage-only partial changes and exact object replacement noops', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { session, events, root } = yield* initialize
@@ -216,7 +234,7 @@ describe('ordered committed semantic events', () => {
     ),
   )
 
-  it.live('orders user admission, partials, answer settlement and lifecycle events exactly', () =>
+  it.effect('orders user admission, partials, answer settlement and lifecycle events exactly', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { session, events, root } = yield* initialize
@@ -261,7 +279,7 @@ describe('ordered committed semantic events', () => {
         )
         const answer = yield* session.transaction(
           Effect.fnUntraced(function* (tx) {
-            const record = yield* tx.task(ids.taskId)
+            const record = yield* tx.task(ids.taskId).pipe(Effect.map(Option.getOrUndefined))
             assert.ok(record)
             const live = yield* tx.doc(Inbox.LiveDoc, { owner: root.id })
             const entry = yield* tx.appendEntry(root.id, {
@@ -302,7 +320,7 @@ describe('ordered committed semantic events', () => {
     ),
   )
 
-  it.live(
+  it.effect(
     'orders tools, retries, deferred polls, failures, compactions and new runs in one batch',
     () =>
       Effect.scoped(
@@ -348,7 +366,7 @@ describe('ordered committed semantic events', () => {
           assert.strictEqual(watch.snapshot.tools[0]?.output, 'abc')
           yield* session.transaction(
             Effect.fnUntraced(function* (tx) {
-              const old = yield* tx.task(initial.generation)
+              const old = yield* tx.task(initial.generation).pipe(Effect.map(Option.getOrUndefined))
               assert.ok(old)
               const live = yield* tx.doc(Inbox.LiveDoc, { owner: root.id })
               const next = yield* task(tx, root.id)
@@ -430,7 +448,7 @@ describe('ordered committed semantic events', () => {
       ),
   )
 
-  it.live(
+  it.effect(
     'updates retained output/details/diagnostics and reports vanished or created-done tool calls',
     () =>
       Effect.scoped(
@@ -491,7 +509,7 @@ describe('ordered committed semantic events', () => {
       ),
   )
 
-  it.live(
+  it.effect(
     'ends held turns once, including late joins, and starts successor turns without restarting a run',
     () =>
       Effect.scoped(
@@ -513,7 +531,7 @@ describe('ordered committed semantic events', () => {
           const first = yield* events.watch(root.id)
           yield* session.transaction(
             Effect.fnUntraced(function* (tx) {
-              const record = yield* tx.task(ids.id)
+              const record = yield* tx.task(ids.id).pipe(Effect.map(Option.getOrUndefined))
               assert.ok(record)
               yield* tx.write({
                 type: 'task',
@@ -522,10 +540,12 @@ describe('ordered committed semantic events', () => {
             }),
           )
           assert.deepStrictEqual((yield* collect(first, 1))[0], [{ type: 'turn_end' }])
-          const late = yield* events.watch(root.id)
+          const acquiring = yield* events.watch(root.id).pipe(Effect.forkScoped)
+          yield* TestClock.adjust('60 millis')
+          const late = yield* Fiber.join(acquiring)
           yield* session.transaction(
             Effect.fnUntraced(function* (tx) {
-              const record = yield* tx.task(ids.id)
+              const record = yield* tx.task(ids.id).pipe(Effect.map(Option.getOrUndefined))
               assert.ok(record)
               const live = yield* tx.doc(Inbox.LiveDoc, { owner: root.id })
               const next = yield* task(tx, root.id)
@@ -541,32 +561,34 @@ describe('ordered committed semantic events', () => {
       ),
   )
 
-  it.live('preserves task and submission events despite an unrelated global journal overflow', () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { session, events, root } = yield* initialize
-        const other = yield* session.transaction((tx) =>
-          tx.createConversation({ ownership: { kind: 'ownerless' } }),
-        )
-        const watch = yield* events.watch(root.id)
-        const own = yield* session.transaction((tx) =>
-          tx.createSubmission({ conversationId: root.id, type: 'write', status: 'queued' }),
-        )
-        for (let index = 0; index < 110; index++)
-          yield* session.transaction((tx) => task(tx, other.id, 'noise'))
-        yield* session.transaction((tx) =>
-          tx.settleSubmission(own.id, { status: 'unanswered', reason: 'withdrawn' }),
-        )
-        const batches = yield* collect(watch, 2)
-        assert.deepStrictEqual(
-          batches.map((batch) => batch.map((event) => event.type)),
-          [['submission'], ['submission']],
-        )
-      }).pipe(Effect.provide(layers)),
-    ),
+  it.effect(
+    'preserves task and submission events despite an unrelated global journal overflow',
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { session, events, root } = yield* initialize
+          const other = yield* session.transaction((tx) =>
+            tx.createConversation({ ownership: { kind: 'ownerless' } }),
+          )
+          const watch = yield* events.watch(root.id)
+          const own = yield* session.transaction((tx) =>
+            tx.createSubmission({ conversationId: root.id, type: 'write', status: 'queued' }),
+          )
+          for (let index = 0; index < 110; index++)
+            yield* session.transaction((tx) => task(tx, other.id, 'noise'))
+          yield* session.transaction((tx) =>
+            tx.settleSubmission(own.id, { status: 'unanswered', reason: 'withdrawn' }),
+          )
+          const batches = yield* collect(watch, 2)
+          assert.deepStrictEqual(
+            batches.map((batch) => batch.map((event) => event.type)),
+            [['submission'], ['submission']],
+          )
+        }).pipe(Effect.provide(layers)),
+      ),
   )
 
-  it.live(
+  it.effect(
     'replaces101 pending semantic batches with a current snapshot then resumes with exact changes',
     () =>
       Effect.scoped(
@@ -575,7 +597,7 @@ describe('ordered committed semantic events', () => {
           const watch = yield* events.watch(root.id)
           for (let index = 0; index < 101; index++)
             yield* session.transaction((tx) => tx.appendEntry(root.id, { kind: `entry-${index}` }))
-          yield* Effect.sleep('60 millis')
+          yield* TestClock.adjust('60 millis')
           const batch = (yield* collect(watch, 1))[0]
           assert.strictEqual(batch?.length, 1)
           assert.strictEqual(batch?.[0]?.type, 'snapshot')
@@ -584,7 +606,7 @@ describe('ordered committed semantic events', () => {
       ),
   )
 
-  it.live(
+  it.effect(
     'overflows only pending batches while a listener is in flight and closes at Session shutdown',
     () =>
       Effect.scoped(
@@ -606,12 +628,13 @@ describe('ordered committed semantic events', () => {
             )
             .pipe(Effect.forkScoped)
           yield* session.transaction((tx) => tx.appendEntry(root.id, { kind: 'inflight' }))
+          yield* TestClock.adjust('60 millis')
           yield* Deferred.await(entered)
           for (let index = 0; index < 101; index++)
             yield* session.transaction((tx) => tx.appendEntry(root.id, { kind: 'pending' }))
-          yield* Effect.sleep('60 millis')
+          yield* TestClock.adjust('60 millis')
           yield* Deferred.succeed(release, undefined)
-          yield* Effect.sleep('60 millis')
+          yield* TestClock.adjust('60 millis')
           assert.strictEqual(batches.length, 2)
           assert.strictEqual(batches[1]?.[0]?.type, 'snapshot')
           assert.strictEqual(
@@ -619,6 +642,7 @@ describe('ordered committed semantic events', () => {
             102,
           )
           yield* Scope.close(yield* ResourceScope, Exit.void)
+          yield* TestClock.adjust('60 millis')
           assert.strictEqual(yield* watch.closed, 'session_closed')
           yield* Fiber.join(listening)
         }).pipe((effect) =>
@@ -683,8 +707,10 @@ describe('ordered committed semantic events', () => {
           ),
           [{ type: 'message', message: after }],
         )
-        assert.deepStrictEqual(Event.outputChange('abc', 'abcXYZ'), { append: 'XYZ' })
-        assert.deepStrictEqual(Event.outputChange('abc', 'z'), { set: 'z' })
+        assert.deepStrictEqual(Option.getOrUndefined(Event.outputChange('abc', 'abcXYZ')), {
+          append: 'XYZ',
+        })
+        assert.deepStrictEqual(Option.getOrUndefined(Event.outputChange('abc', 'z')), { set: 'z' })
       }),
   )
 })

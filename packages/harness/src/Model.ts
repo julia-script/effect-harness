@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as DateTime from 'effect/DateTime'
 import * as Duration from 'effect/Duration'
 import * as Time from './Time.ts'
@@ -53,16 +54,17 @@ export function layer(descriptors: ReadonlyArray<Descriptor>): Layer.Layer<Catal
     Catalog,
     Catalog.of({
       resolve: (ref) => {
-        const descriptor = entries.get(key(ref))
-        return descriptor === undefined
-          ? Effect.fail(
+        const descriptor = Option.fromUndefinedOr(entries.get(key(ref)))
+        return Effect.fromOption(descriptor).pipe(
+          Effect.mapError(
+            () =>
               new ModelError({
                 reason: new ModelNoModel({
                   message: `Model ${ref.provider}/${ref.modelId} is not available`,
                 }),
               }),
-            )
-          : Effect.succeed(descriptor)
+          ),
+        )
       },
     }),
   )
@@ -92,7 +94,7 @@ export const DeferredDecision = Schema.Struct({
 })
 export type DeferredDecision = typeof DeferredDecision.Type
 export interface DeferredCapability {
-  readonly inspect: (parts: ReadonlyArray<Response.AnyPart>) => DeferredDecision | undefined
+  readonly inspect: (parts: ReadonlyArray<Response.AnyPart>) => Option.Option<DeferredDecision>
   readonly fetch: (
     handle: Schema.Json,
     options: RequestOptions,
@@ -325,3 +327,9 @@ export function classify(
     retryable: typed.isRetryable,
   }
 }
+
+export const isRequestOptions: (input: unknown) => input is RequestOptions =
+  Schema.is(RequestOptions)
+
+export const isDeferredDecision: (input: unknown) => input is DeferredDecision =
+  Schema.is(DeferredDecision)

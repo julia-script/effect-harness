@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as Outcome from '../workflow/Outcome.ts'
 import * as Effect from 'effect/Effect'
 import * as FiberHandle from 'effect/FiberHandle'
@@ -9,7 +10,7 @@ import { StrictReceiptJson } from './StrictReceiptJson.ts'
 import * as Semaphore from 'effect/Semaphore'
 import * as Record from '../Record.ts'
 import { rejected, StorageError, Invalid, Closed, Poisoned, Conflict } from '../StorageError.ts'
-import { Store, type CommitOptions, type Candidate } from '../Store.ts'
+import { makeCandidate, Store, type CommitOptions, type Candidate } from '../Store.ts'
 import { applyWrites, detachedEffect, materialize, validate } from './State.ts'
 
 export interface Snapshot {
@@ -99,7 +100,7 @@ const receiptResult = (input: unknown) =>
 export const make = Effect.fnUntraced(function* (
   backend: Backend,
   release: Effect.Effect<void, StorageError> = Effect.void,
-) {
+): Effect.fn.Return<Store['Service'], never, Scope.Scope> {
   const semaphore = yield* Semaphore.make(1)
   const cleanupScope = yield* Effect.acquireRelease(Scope.make(), (scope, exit) =>
     Scope.close(scope, exit),
@@ -242,8 +243,9 @@ export const make = Effect.fnUntraced(function* (
                       publications.push({ record: document.record, value: null, ops: [] })
                       continue
                     }
-                    const snapshotValue = yield* materialize(document, 'current')
-                    if (snapshotValue === undefined) continue
+                    const snapshotOption = yield* materialize(document, 'current')
+                    if (Option.isNone(snapshotOption)) continue
+                    const snapshotValue = snapshotOption.value
                     const write = candidate.writes.find(
                       (item) => item.type === 'document.change' && item.id === id,
                     )
@@ -293,7 +295,7 @@ export const make = Effect.fnUntraced(function* (
     options?: CommitOptions,
   ) {
     return yield* transact(
-      (state) => Effect.succeed({ state, writes, result: state.nextSeq }),
+      (state) => Effect.succeed(makeCandidate({ state, writes, result: state.nextSeq })),
       options,
     ).pipe(Effect.flatMap((seq) => validate(Record.Seq, seq)))
   })

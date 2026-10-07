@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as Identity from '../Identity.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import type * as Layer from 'effect/Layer'
@@ -46,7 +47,7 @@ const Admission = Schema.Struct({
   generation: Schema.optionalKey(Generation.payloadSchema),
   receipt: Schema.optionalKey(Result),
 })
-export const storageError = (error: StorageError) =>
+export const storageError = (error: StorageError): ExecutionError =>
   new ExecutionError({
     reason: new (error.reason._tag === 'Closed' ? Closed : Storage)({
       message: error.message,
@@ -62,7 +63,7 @@ export const createGeneration = Effect.fnUntraced(function* (
   conversationId: Record.ConversationId,
   inputs: ReadonlyArray<Record.SubmissionId>,
   runId?: Identity.RunId,
-) {
+): Effect.fn.Return<typeof Generation.payloadSchema.Type, StorageError> {
   const taskId = yield* tx.mint(Record.TaskId)
   const payload = {
     sessionId,
@@ -97,15 +98,17 @@ export const createGeneration = Effect.fnUntraced(function* (
 export const notify = Effect.fnUntraced(function* (
   session: Session.Service,
   ids: ReadonlyArray<Record.SubmissionId>,
-) {
+): Effect.fn.Return<void, ExecutionError, WorkflowEngine.WorkflowEngine> {
   const receipts = yield* Effect.forEach(
     ids,
     (id) => session.submission(id).pipe(Effect.mapError(storageError)),
     { concurrency: 16 },
   )
-  const settled = receipts.filter(
-    (receipt) =>
-      receipt !== undefined && (receipt.status === 'done' || receipt.status === 'unanswered'),
+  const settled = receipts.flatMap((receipt) =>
+    Option.isSome(receipt) &&
+    (receipt.value.status === 'done' || receipt.value.status === 'unanswered')
+      ? [receipt.value]
+      : [],
   )
   const linksByReceipt = yield* Effect.forEach(
     settled,
@@ -126,7 +129,12 @@ export const notify = Effect.fnUntraced(function* (
           }),
       ),
     )
-    for (const executionId of links?.value.executions ?? [])
+    for (const executionId of links === undefined
+      ? []
+      : links.pipe(
+          Option.map((snapshot) => snapshot.value.executions),
+          Option.getOrElse(() => []),
+        ))
       yield* DurableDeferred.succeed(Settled, {
         token: DurableDeferred.tokenFromExecutionId(Settled, { workflow: Submission, executionId }),
         value,
@@ -141,9 +149,10 @@ export const admitInTransaction = Effect.fnUntraced(function* (
   payload: typeof Submission.payloadSchema.Type,
   executionId: string,
 ): Effect.fn.Return<typeof Admission.Type, StorageError | ExecutionError> {
-  const existing = yield* tx.submissionByRequest(payload.conversationId, payload.requestId)
+  const existingOption = yield* tx.submissionByRequest(payload.conversationId, payload.requestId)
   // Domain request identity takes precedence over the busy rule and ignores changed same-kind content.
-  if (existing !== undefined) {
+  if (Option.isSome(existingOption)) {
+    const existing = existingOption.value
     if (existing.type !== payload.submission.type)
       return yield* new ExecutionError({
         reason: new RequestConflict({
@@ -156,7 +165,7 @@ export const admitInTransaction = Effect.fnUntraced(function* (
       return { id: existing.id, notify: [], receipt: existing }
     return { id: existing.id, notify: [] }
   }
-  if ((yield* tx.conversation(payload.conversationId)) === undefined)
+  if (Option.isNone(yield* tx.conversation(payload.conversationId)))
     return yield* new ExecutionError({
       reason: new InvalidState({ message: 'Conversation is absent' }),
     })

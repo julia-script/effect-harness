@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as Identity from './Identity.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -26,10 +27,9 @@ export const layer: Layer.Layer<SessionDirectory, never, Registrations> = Layer.
     const entries = new Map(yield* Registrations)
     return SessionDirectory.of({
       resolve: (sessionId) => {
-        const session = entries.get(sessionId)
-        return session === undefined
-          ? Effect.fail(rejected(`Session ${sessionId} is not registered`, NotFound))
-          : Effect.succeed(session)
+        return Effect.fromOption(Option.fromUndefinedOr(entries.get(sessionId)), () =>
+          rejected(`Session ${sessionId} is not registered`, NotFound),
+        )
       },
     })
   }),

@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import type * as AiPrompt from 'effect/ai/Prompt'
@@ -28,7 +29,7 @@ export interface SettledTool {
   readonly outcome: 'completed' | 'failed' | 'interrupted' | 'unavailable'
   readonly result: ToolResult
 }
-export interface Handlers<R = Invocation> {
+export interface Handlers<out R = Invocation> {
   readonly conversationCreated?:
     | ((conversationId: ConversationId) => Effect.Effect<void, HookError, R>)
     | undefined
@@ -78,7 +79,7 @@ export const recover = <A, E, R>(
 export const beforeRequest = Effect.fnUntraced(function* (
   handlers: ReadonlyArray<Handlers>,
   initial: AiPrompt.Prompt,
-) {
+): Effect.fn.Return<AiPrompt.Prompt, never, Invocation> {
   let prompt = initial
   for (const handler of handlers) {
     const callback = handler.beforeRequest
@@ -92,7 +93,7 @@ export const afterTool = Effect.fnUntraced(function* (
   handlers: ReadonlyArray<Handlers>,
   input: ToolInput,
   initial: ToolResult,
-) {
+): Effect.fn.Return<ToolResult, never, Invocation> {
   let result = initial
   for (const handler of handlers) {
     const callback = handler.afterTool
@@ -105,31 +106,31 @@ export const afterTool = Effect.fnUntraced(function* (
 export const beforeCompact = Effect.fnUntraced(function* (
   handlers: ReadonlyArray<Handlers>,
   input: CompactInput,
-) {
+): Effect.fn.Return<Option.Option<CompactDecision>, never, Invocation> {
   for (const handler of handlers) {
     const callback = handler.beforeCompact
     if (callback === undefined) continue
     const decision = yield* recover(Effect.suspend(() => callback.call(handler, input)))
-    if (decision !== undefined) return decision
+    if (decision !== undefined) return Option.some(decision)
   }
-  return undefined
+  return Option.none()
 })
 export const onYield = Effect.fnUntraced(function* (
   handlers: ReadonlyArray<Handlers>,
   parts: ReadonlyArray<Response.AnyPart>,
-) {
+): Effect.fn.Return<Option.Option<AiPrompt.UserMessage>, never, Invocation> {
   for (const handler of handlers) {
     const callback = handler.onYield
     if (callback === undefined) continue
     const message = yield* recover(Effect.suspend(() => callback.call(handler, parts)))
-    if (message !== undefined) return message
+    if (message !== undefined) return Option.some(message)
   }
-  return undefined
+  return Option.none()
 })
 export const afterResponse = Effect.fnUntraced(function* (
   handlers: ReadonlyArray<Handlers>,
   parts: ReadonlyArray<Response.AnyPart>,
-) {
+): Effect.fn.Return<void, never, Invocation> {
   for (const handler of handlers)
     if (handler.afterResponse !== undefined)
       yield* recover(
@@ -139,7 +140,7 @@ export const afterResponse = Effect.fnUntraced(function* (
 export const afterTools = Effect.fnUntraced(function* (
   handlers: ReadonlyArray<Handlers>,
   results: ReadonlyArray<SettledTool>,
-) {
+): Effect.fn.Return<void, never, Invocation> {
   for (const handler of handlers)
     if (handler.afterTools !== undefined)
       yield* recover(
@@ -149,7 +150,7 @@ export const afterTools = Effect.fnUntraced(function* (
 export const conversationCreated = Effect.fnUntraced(function* (
   handlers: ReadonlyArray<Handlers>,
   conversationId: ConversationId,
-) {
+): Effect.fn.Return<void, never, Invocation> {
   for (const handler of handlers)
     if (handler.conversationCreated !== undefined)
       yield* recover(

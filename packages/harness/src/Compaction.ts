@@ -1,3 +1,4 @@
+import * as Array from 'effect/Array'
 // Cut selection/serialization adapted from pi-durable (MIT), pinned 636703a0.
 import * as AiPrompt from 'effect/ai/Prompt'
 import * as Result from 'effect/Result'
@@ -12,40 +13,58 @@ export function selectCut(
   view: Context.View,
   keepRecentTokens: number,
   tokenize = Context.estimateMessage,
-): number | undefined {
+): Option.Option<number> {
   const start = view.head === undefined ? 0 : 1
   const candidates: number[] = []
   for (let index = start; index < view.contributions.length; index++)
     if (candidate(view.contributions, index)) candidates.push(index)
   let kept = 0
-  let cut: number | undefined
+  let cut = Option.none<number>()
   for (let index = view.contributions.length - 1; index >= start; index--) {
-    kept += (view.contributions[index] ?? []).reduce((sum, message) => sum + tokenize(message), 0)
+    kept += Option.getOrElse(Array.get(view.contributions, index), () => []).reduce(
+      (sum, message) => sum + tokenize(message),
+      0,
+    )
     if (kept < keepRecentTokens) continue
-    cut = candidates.find((value) => value >= index) ?? candidates.at(-1)
+    cut = Array.findFirst(candidates, (value) => value >= index).pipe(
+      Option.orElse(() => Array.last(candidates)),
+    )
     break
   }
-  if (cut === undefined) return undefined
-  for (let index = start; index < cut; index++)
-    if ((view.contributions[index]?.length ?? 0) > 0) return cut
-  return undefined
+  if (Option.isNone(cut)) return cut
+  for (let index = start; index < cut.value; index++)
+    if (
+      Option.getOrElse(
+        Option.map(Array.get(view.contributions, index), (value) => value.length),
+        () => 0,
+      ) > 0
+    )
+      return cut
+  return Option.none()
 }
 function candidate(contributions: Context.View['contributions'], index: number): boolean {
-  const first = contributions[index]?.[0]
-  if (first?.role === 'assistant') return true
-  if (first?.role !== 'user') return false
+  const first = Array.get(contributions, index).pipe(Option.flatMap(Array.head))
+  if (Option.isSome(first) && first.value.role === 'assistant') return true
+  if (Option.isNone(first) || first.value.role !== 'user') return false
   let calls = new Set<string>()
   for (let before = index - 1; before >= 0; before--) {
-    const assistant = contributions[before]?.findLast((message) => message.role === 'assistant')
-    if (assistant?.role !== 'assistant') continue
+    const assistant = Array.get(contributions, before).pipe(
+      Option.flatMap((messages) =>
+        Array.findLast(messages, (message) => message.role === 'assistant'),
+      ),
+    )
+    if (Option.isNone(assistant) || assistant.value.role !== 'assistant') continue
     calls = new Set(
-      assistant.content.flatMap((part) => (part.type === 'tool-call' ? [part.id] : [])),
+      assistant.value.content.flatMap((part) => (part.type === 'tool-call' ? [part.id] : [])),
     )
     break
   }
   if (calls.size === 0) return true
   for (let after = index; after < contributions.length; after++)
-    for (const [position, message] of (contributions[after] ?? []).entries()) {
+    for (const [position, message] of Option.getOrElse(
+      Array.get(contributions, after),
+      () => [],
+    ).entries()) {
       if (message.role === 'assistant' && (after > index || position > 0)) return true
       if (
         message.role === 'tool' &&
@@ -55,6 +74,7 @@ function candidate(contributions: Context.View['contributions'], index: number):
     }
   return true
 }
+
 export const summarizedMessages = (
   view: Context.View,
   cut: number,
@@ -64,13 +84,13 @@ export function threshold(
   tokens: number,
   contextWindow: number,
   policy: Agent.CompactionPolicy,
-): 'blocking' | 'background' | undefined {
-  if (!policy.enabled || contextWindow <= 0) return undefined
-  if (tokens > contextWindow - policy.reserveTokens) return 'blocking'
+): Option.Option<'blocking' | 'background'> {
+  if (!policy.enabled || contextWindow <= 0) return Option.none()
+  if (tokens > contextWindow - policy.reserveTokens) return Option.some('blocking')
   return policy.backgroundTokens !== 0 &&
     tokens > contextWindow - policy.reserveTokens - policy.backgroundTokens
-    ? 'background'
-    : undefined
+    ? Option.some('background')
+    : Option.none()
 }
 export function serializeConversation(messages: ReadonlyArray<AiPrompt.Message>): string {
   const lines: string[] = []

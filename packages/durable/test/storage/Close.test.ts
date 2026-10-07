@@ -66,7 +66,10 @@ describe('scoped Session and Store cleanup', () => {
           assert.strictEqual(releases, 0)
           const waiter = yield* session.awaitClosed.pipe(Effect.forkScoped)
           yield* Fiber.interrupt(waiter)
-          assert.ok(Exit.isFailure(yield* Fiber.await(waiter)))
+          const cancelled = yield* Fiber.await(waiter)
+          assert.ok(Exit.isFailure(cancelled))
+          // Only this receipt waiter is cancelled; runtime-assigned fiber IDs vary.
+          if (Exit.isFailure(cancelled)) assert.ok(Cause.hasInterruptsOnly(cancelled.cause))
           const repeated = yield* session.awaitClosed.pipe(Effect.forkScoped)
           yield* Deferred.succeed(release, undefined)
           const entry = yield* Fiber.join(admitted)
@@ -79,7 +82,9 @@ describe('scoped Session and Store cleanup', () => {
             saved.state.entries.map((item) => item.entry.id),
             [entry.id],
           )
-          assert.strictEqual((yield* session.committed.pipe(Effect.result))._tag, 'Failure')
+          const sealed = yield* session.committed.pipe(Effect.flip)
+          assert.strictEqual(sealed.reason._tag, 'Closed')
+          assert.strictEqual(sealed.message, 'Session is closed')
         }),
       ),
   )
@@ -119,7 +124,9 @@ describe('scoped Session and Store cleanup', () => {
           assert.strictEqual(releases, 0)
           yield* Deferred.succeed(release, undefined)
           assert.deepStrictEqual(yield* Fiber.join(reader), value.state)
-          assert.ok(Exit.isFailure(yield* Fiber.join(closing)))
+          const closed = yield* Fiber.join(closing)
+          assert.ok(Exit.isFailure(closed))
+          if (Exit.isFailure(closed)) assert.strictEqual(Cause.squash(closed.cause), failure)
           for (let repeat = 0; repeat < 2; repeat++) {
             const receipt = yield* store.awaitClosed.pipe(Effect.result)
             assert.strictEqual(receipt._tag, 'Failure')

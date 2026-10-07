@@ -1,6 +1,6 @@
 import * as AiError from 'effect/ai/AiError'
 
-export const unsupported = (capability: string) =>
+export const unsupported = (capability: string): AiError.AiError =>
   new AiError.AiError({
     module: 'ClaudeCode',
     method: 'request',
@@ -8,19 +8,19 @@ export const unsupported = (capability: string) =>
       description: `Claude Code CLI does not support ${capability} through this adapter`,
     }),
   })
-export const protocol = (description: string) =>
+export const protocol = (description: string): AiError.AiError =>
   new AiError.AiError({
     module: 'ClaudeCode',
     method: 'protocol',
     reason: new AiError.InvalidOutputError({ description }),
   })
-export const processError = (description: string) =>
+export const processError = (description: string): AiError.AiError =>
   new AiError.AiError({
     module: 'ClaudeCode',
     method: 'process',
     reason: new AiError.UnknownError({ description }),
   })
-export const authentication = () =>
+export const authentication = (): AiError.AiError =>
   new AiError.AiError({
     module: 'ClaudeCode',
     method: 'account',

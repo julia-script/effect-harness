@@ -12,7 +12,9 @@ export class ModelRetry extends Data.TaggedError('ModelRetry')<{
 }> {}
 
 /** Sample the wall clock once; fractional epoch values remain exact. */
-export const remaining = Effect.fnUntraced(function* (at: DateTime.Utc) {
+export const remaining = Effect.fnUntraced(function* (
+  at: DateTime.Utc,
+): Effect.fn.Return<Duration.Duration> {
   const now = yield* DateTime.now
   return DateTime.isLessThanOrEqualTo(at, now) ? Duration.zero : DateTime.distance(now, at)
 })

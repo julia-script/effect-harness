@@ -1,4 +1,6 @@
+import * as Arr from 'effect/Array'
 import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import type * as AiError from 'effect/ai/AiError'
@@ -116,19 +118,20 @@ export const translate = <E, R>(
             },
           ]
         case 'tool_use': {
-          const name = aliases.get(source.name)
-          if (name === undefined)
+          const name = Option.fromUndefinedOr(aliases.get(source.name))
+          if (Option.isNone(name))
             return yield* protocol('Claude Code requested a tool outside the supplied toolkit')
           if ([...blocks.values()].filter((b) => b.id === id).length > 1)
             return yield* protocol('Duplicate Claude Code tool call ID')
-          return [{ type: 'tool-params-start', id, name }]
+          return [{ type: 'tool-params-start', id, name: name.value }]
         }
       }
     })
     const close = Effect.fnUntraced(function* (index: number) {
-      const block = blocks.get(index)
-      if (block === undefined || block.closed)
+      const current = Option.fromUndefinedOr(blocks.get(index))
+      if (Option.isNone(current) || current.value.closed)
         return yield* protocol('Claude Code ended an unknown or closed block')
+      const block = current.value
       block.closed = true
       switch (block.source.type) {
         case 'text':
@@ -154,12 +157,12 @@ export const translate = <E, R>(
           const params = yield* Schema.decodeUnknownEffect(Schema.JsonObject)(raw).pipe(
             Effect.mapError(() => protocol('Claude Code tool parameters must be a JSON object')),
           )
-          const name = aliases.get(block.source.name)
-          if (name === undefined) return yield* protocol('Unknown Claude Code tool alias')
+          const name = Option.fromUndefinedOr(aliases.get(block.source.name))
+          if (Option.isNone(name)) return yield* protocol('Unknown Claude Code tool alias')
           completedTools.set(block.id, {
             type: 'tool-call',
             id: block.id,
-            name,
+            name: name.value,
             params,
             providerExecuted: false,
           })
@@ -286,11 +289,13 @@ export const translate = <E, R>(
                 return (
                   block.source.type === 'redacted_thinking' && block.source.data === source.data
                 )
-              const call = completedTools.get(source.id)
+              const call = Option.fromUndefinedOr(completedTools.get(source.id))
+              const name = Option.fromUndefinedOr(aliases.get(source.name))
               return (
-                call !== undefined &&
-                call.name === aliases.get(source.name) &&
-                sameJson(call.params, source.input)
+                Option.isSome(call) &&
+                Option.isSome(name) &&
+                call.value.name === name.value &&
+                sameJson(call.value.params, source.input)
               )
             })
             if (!matches)
@@ -328,9 +333,10 @@ export const translate = <E, R>(
           return yield* start(frame.index, frame.content_block)
         }
         case 'content_block_delta': {
-          const block = blocks.get(frame.index)
-          if (block === undefined || block.closed)
+          const current = Option.fromUndefinedOr(blocks.get(frame.index))
+          if (Option.isNone(current) || current.value.closed)
             return yield* protocol('Claude Code delta outside an active block')
+          const block = current.value
           const delta = frame.delta
           if (delta.type === 'text_delta' && block.source.type === 'text') {
             block.text += delta.text
@@ -438,26 +444,26 @@ export const collect = Effect.fnUntraced(function* <E, R>(
             metadata: { claudeCode: part.metadata?.claudeCode ?? {} },
           })
         } else if (part.type === 'text-delta' || part.type === 'reasoning-delta') {
-          const index = positions.get(part.id)
-          const current = index === undefined ? undefined : parts[index]
+          const index = Option.fromUndefinedOr(positions.get(part.id))
+          const current = Option.flatMap(index, (index) => Arr.get(parts, index))
           if (
-            index !== undefined &&
-            current !== undefined &&
-            (current.type === 'text' || current.type === 'reasoning')
+            Option.isSome(index) &&
+            Option.isSome(current) &&
+            (current.value.type === 'text' || current.value.type === 'reasoning')
           )
-            parts[index] = { ...current, text: current.text + part.delta }
+            parts[index.value] = { ...current.value, text: current.value.text + part.delta }
         } else if (part.type === 'text-end' || part.type === 'reasoning-end') {
-          const index = positions.get(part.id)
-          const current = index === undefined ? undefined : parts[index]
+          const index = Option.fromUndefinedOr(positions.get(part.id))
+          const current = Option.flatMap(index, (index) => Arr.get(parts, index))
           if (
-            index !== undefined &&
-            current !== undefined &&
-            (current.type === 'text' || current.type === 'reasoning')
+            Option.isSome(index) &&
+            Option.isSome(current) &&
+            (current.value.type === 'text' || current.value.type === 'reasoning')
           )
-            parts[index] = {
-              ...current,
+            parts[index.value] = {
+              ...current.value,
               metadata: {
-                claudeCode: part.metadata?.claudeCode ?? current.metadata?.claudeCode ?? {},
+                claudeCode: part.metadata?.claudeCode ?? current.value.metadata?.claudeCode ?? {},
               },
             }
         } else if (

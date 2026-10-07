@@ -61,7 +61,14 @@ export const tool = AiTool.make('edit', {
     repair,
     project: (result) => Metadata.decodeResult('edit', result),
   })
-export const handler = Effect.fnUntraced(function* (input: Input) {
+export const handler = Effect.fnUntraced(function* (input: Input): Effect.fn.Return<
+  {
+    content: Prompt.TextPart[]
+    details: { diff: string; patch: string; firstChangedLine?: number }
+  },
+  ToolError,
+  Env | Invocation | MutationLocks
+> {
   const env = yield* Env
   const absolute = yield* Path.resolve(input.path).pipe(
     Effect.mapError(
@@ -133,3 +140,5 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
     ),
   )
 })
+
+export const isInput: (input: unknown) => input is typeof Parameters.Type = Schema.is(Parameters)

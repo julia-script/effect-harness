@@ -25,7 +25,7 @@ export function renderDiagnostics(diagnostics: ReadonlyArray<Diagnostic>): strin
 }
 
 /** Retains text/file blocks and their native options; bookkeeping stays in the committed entry's data. */
-export const encode = (result: ToolResult) =>
+export const encode = (result: ToolResult): Effect.Effect<Schema.Json, Schema.SchemaError> =>
   Schema.encodeEffect(Schema.toCodecJson(Envelope))({
     _tag: '@effect-harness/ToolContent',
     content: [
@@ -37,4 +37,11 @@ export const encode = (result: ToolResult) =>
   }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Json)))
 
 /** Decode only the explicit harness envelope; unrelated native tool results are handled by the native provider. */
-export const decode = Schema.decodeUnknownEffect(Schema.toCodecJson(Envelope))
+export const decode: (
+  input: unknown,
+  options?: import('effect/SchemaAST').ParseOptions,
+) => Effect.Effect<Envelope, Schema.SchemaError> = Schema.decodeUnknownEffect(
+  Schema.toCodecJson(Envelope),
+)
+
+export const isEnvelope: (input: unknown) => input is Envelope = Schema.is(Envelope)

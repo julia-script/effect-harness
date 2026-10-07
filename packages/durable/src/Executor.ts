@@ -1,3 +1,8 @@
+import type * as Record from './Record.ts'
+import type * as Model from '@effect-harness/harness/Model'
+import type * as Harness from '@effect-harness/harness/Executor'
+import type { SessionDirectory } from './SessionDirectory.ts'
+import * as Option from 'effect/Option'
 import * as Identity from './Identity.ts'
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
@@ -25,7 +30,11 @@ import * as ToolExecutor from './workflow/ToolExecutor.ts'
 export const workflows = [Submission, Generation, ToolCall, Compaction, Abort] as const
 
 /** Pending work in owned conversations is dispatched and joined using native Workflow executions. */
-export const layerConversationDrain = Layer.effect(
+export const layerConversationDrain: Layer.Layer<
+  Structured.DrainConversations,
+  never,
+  Conversation.Configuration | WorkflowEngine.WorkflowEngine
+> = Layer.effect(
   Structured.DrainConversations,
   Effect.gen(function* () {
     const config = yield* Conversation.Configuration
@@ -43,10 +52,13 @@ export const layerConversationDrain = Layer.effect(
           Effect.fnUntraced(function* (tx) {
             const prepared = yield* Inbox.prepare(tx, conversation.id, config.settings)
             const live = yield* tx.doc(Inbox.LiveDoc, { owner: conversation.id })
-            const running = live.run?.taskId
-            const task = running === undefined ? undefined : yield* tx.task(running)
-            if (task !== undefined && task.state.status !== 'terminal')
-              return { binding: task.input, notify: [] }
+            const running = Option.fromUndefinedOr(live.run?.taskId)
+            const task = yield* Option.match(running, {
+              onNone: () => Effect.succeed(Option.none<Record.Task>()),
+              onSome: (id) => tx.task(id),
+            })
+            if (Option.isSome(task) && task.value.state.status !== 'terminal')
+              return { binding: task.value.input, notify: [] }
             const selected = yield* Inbox.apply(tx, prepared, 'final', yield* DateTime.now)
             const generation =
               selected.users.length > 0
@@ -107,7 +119,16 @@ export const layerConversationDrain = Layer.effect(
  * Provide SessionDirectory, Conversation.Configuration and the generic harness/provider Layers.
  * For custom owned work, provide an extended Ownership.Declarations instead of the built-in declarations Layer.
  */
-export const layerExecutors = Layer.mergeAll(
+export const layerExecutors: Layer.Layer<
+  Structured.DrainConversations | Cancellation.Cancellation,
+  never,
+  | Model.Catalog
+  | Conversation.Configuration
+  | Harness.Executor
+  | SessionDirectory
+  | WorkflowEngine.WorkflowEngine
+  | Ownership.Declarations
+> = Layer.mergeAll(
   SubmissionExecutor.layer,
   GenerationExecutor.layer,
   ToolExecutor.layer,
@@ -115,4 +136,12 @@ export const layerExecutors = Layer.mergeAll(
   AbortExecutor.layer,
 ).pipe(Layer.provideMerge(layerConversationDrain), Layer.provideMerge(Cancellation.layer))
 
-export const layer = layerExecutors.pipe(Layer.provideMerge(Ownership.layerDeclarations(workflows)))
+export const layer: Layer.Layer<
+  Structured.DrainConversations | Cancellation.Cancellation | Ownership.Declarations,
+  never,
+  | Model.Catalog
+  | Conversation.Configuration
+  | Harness.Executor
+  | SessionDirectory
+  | WorkflowEngine.WorkflowEngine
+> = layerExecutors.pipe(Layer.provideMerge(Ownership.layerDeclarations(workflows)))

@@ -26,15 +26,11 @@ export const CompactionData = Schema.Struct({
   reason: Schema.Literals(['manual', 'threshold', 'overflow']),
 })
 
-const token = <K extends string, S extends Schema.Top>(kind: K, schema: S) => ({
-  kind,
-  /** Checks only identity. Decode before trusting model or data payloads. */
-  is: (entry: Record.Entry | undefined): entry is Record.Entry & { readonly kind: K } =>
-    entry?.kind === kind,
-  schema,
-  /** Validates stored JSON and decodes native Prompt parts without narrowing on kind alone. */
-  decode: Schema.decodeUnknownEffect(schema),
-})
+/** Checks identity only; the attached decoder validates stored JSON before exposing native parts. */
+const token = <K extends string, S extends Schema.Top>(
+  kind: K,
+  schema: S,
+): Record.DecodedEntryToken<K, S> => Record.defineEntryUnsafe(kind, schema)
 const user = Schema.Tuple([Schema.toCodecJson(Prompt.UserMessage)])
 
 export const UserEntry = token(

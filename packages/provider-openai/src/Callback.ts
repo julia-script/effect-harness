@@ -28,7 +28,9 @@ export class Callback extends Context.Service<
 >()('@effect-harness/provider-openai/Callback') {}
 
 /** Starts the listener before exposing the authorization URL; callers provide a scoped loopback HttpServer adapter. */
-export const layer = (options?: { readonly account?: string | undefined }) =>
+export const layer = (options?: {
+  readonly account?: string | undefined
+}): Layer.Layer<Callback, AuthError, ChatGpt | HttpServer.HttpServer> =>
   Layer.effect(Callback)(
     Effect.gen(function* () {
       const server = yield* HttpServer.HttpServer

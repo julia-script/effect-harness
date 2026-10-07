@@ -34,7 +34,11 @@ export const make = Effect.fnUntraced(function* (
   path: Path.Path,
   spawner: ChildProcessSpawner['Service'],
   defaults: Options,
-) {
+): Effect.fn.Return<
+  Pick<import('../Env.ts').Env['Service'], 'exec'>,
+  never,
+  import('effect/Scope').Scope
+> {
   const active = yield* Ref.make(HashSet.empty<ChildProcessHandle>())
   const admission = yield* Semaphore.make(1)
   const closed = yield* Ref.make(false)

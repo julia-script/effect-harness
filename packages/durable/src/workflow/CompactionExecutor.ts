@@ -1,3 +1,5 @@
+import type { StorageError } from '../StorageError.ts'
+import * as Option from 'effect/Option'
 import * as Time from '@effect-harness/harness/Time'
 import * as Schedule from 'effect/Schedule'
 import { ModelRetry, policy as retryPolicy } from './ModelRetry.ts'
@@ -81,10 +83,14 @@ export const create = Effect.fnUntraced(function* (
   reason: (typeof Compaction.payloadSchema.Type)['reason'],
   owner?: Record.TaskId,
   instructions?: string,
-) {
+): Effect.fn.Return<typeof Compaction.payloadSchema.Type, StorageError | ExecutionError> {
   if (owner !== undefined) {
-    const task = yield* tx.task(owner)
-    if (task === undefined || task.abortRequested || task.state.status === 'terminal')
+    const taskOption = yield* tx.task(owner)
+    if (
+      Option.isNone(taskOption) ||
+      taskOption.value.abortRequested ||
+      taskOption.value.state.status === 'terminal'
+    )
       return yield* new ExecutionError({
         reason: new Aborted({ message: 'Compaction owner has ended' }),
       })
@@ -151,10 +157,11 @@ export const layer: Layer.Layer<
       progress: () => Effect.void,
     })
     const active = Effect.gen(function* () {
-      const task = yield* session
+      const taskOption = yield* session
         .task(payload.taskId)
         .pipe(Effect.mapError(SubmissionExecutor.storageError))
-      if (task === undefined) return yield* invalid()
+      if (Option.isNone(taskOption)) return yield* invalid()
+      const task = taskOption.value
       if (task.abortRequested || task.state.status === 'terminal')
         return yield* new ExecutionError({
           reason: new Aborted({ message: 'Compaction has ended' }),
@@ -177,8 +184,9 @@ export const layer: Layer.Layer<
           .transaction(
             Effect.fnUntraced(function* (tx) {
               const graph = yield* Ownership.readGraph(tx)
-              const task = yield* tx.task(payload.taskId)
-              if (task === undefined) return yield* invalid()
+              const taskOption = yield* tx.task(payload.taskId)
+              if (Option.isNone(taskOption)) return yield* invalid()
+              const task = taskOption.value
               if (task.abortRequested)
                 return yield* new ExecutionError({
                   reason: new Aborted({ message: 'Compaction aborted' }),
@@ -249,27 +257,32 @@ export const layer: Layer.Layer<
           session,
           Effect.gen(function* () {
             yield* active
-            const state =
-              (yield* session
-                .snapshot(Conversation.AgentDoc, { owner: payload.conversationId })
-                .pipe(Effect.mapError(SubmissionExecutor.storageError)))?.value ?? {}
-            let provider = yield* session
+            const state: Agent.State = yield* session
+              .snapshot(Conversation.AgentDoc, { owner: payload.conversationId })
+              .pipe(
+                Effect.mapError(SubmissionExecutor.storageError),
+                Effect.map(
+                  Option.match({ onNone: () => ({}), onSome: (snapshot) => snapshot.value }),
+                ),
+              )
+            let providerOption = yield* session
               .snapshot(Conversation.ProviderDoc, { owner: payload.conversationId })
               .pipe(Effect.mapError(SubmissionExecutor.storageError))
-            if (provider === undefined || provider.value.sessionId === '') {
+            if (Option.isNone(providerOption) || providerOption.value.value.sessionId === '') {
               yield* session
                 .initialize(payload.conversationId)
                 .pipe(Effect.mapError(SubmissionExecutor.storageError))
-              provider = yield* session
+              providerOption = yield* session
                 .snapshot(Conversation.ProviderDoc, { owner: payload.conversationId })
                 .pipe(Effect.mapError(SubmissionExecutor.storageError))
             }
-            if (provider === undefined || provider.value.sessionId === '')
+            if (Option.isNone(providerOption) || providerOption.value.value.sessionId === '')
               return yield* new ExecutionError({
                 reason: new InvalidState({
                   message: 'Provider identity requires Conversation.layerCreation',
                 }),
               })
+            const provider = providerOption.value
             const view = yield* Conversation.context(session, payload.conversationId).pipe(
               Effect.mapError(domainError),
             )
@@ -318,11 +331,12 @@ export const layer: Layer.Layer<
               yield* session
                 .transaction(
                   Effect.fnUntraced(function* (tx) {
-                    const task = yield* tx.task(payload.taskId)
-                    if (task === undefined || task.abortRequested)
+                    const taskOption = yield* tx.task(payload.taskId)
+                    if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                       return yield* new ExecutionError({
                         reason: new Aborted({ message: 'Compaction aborted' }),
                       })
+                    const task = taskOption.value
                     const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
                     const status = live.compactions?.find(
                       (status) => status.taskId === payload.taskId,
@@ -367,11 +381,12 @@ export const layer: Layer.Layer<
           execute: session
             .transaction(
               Effect.fnUntraced(function* (tx) {
-                const task = yield* tx.task(payload.taskId)
-                if (task === undefined || task.abortRequested)
+                const taskOption = yield* tx.task(payload.taskId)
+                if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                   return yield* new ExecutionError({
                     reason: new Aborted({ message: 'Compaction aborted' }),
                   })
+
                 const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
                 const usage = response.type === 'summary' ? response.summary.usage : response.usage
                 if (usage !== undefined)
@@ -434,13 +449,14 @@ export const layer: Layer.Layer<
             .transaction(
               Effect.fnUntraced(function* (tx) {
                 const graph = yield* Ownership.readGraph(tx)
-                const task = yield* tx.task(payload.taskId)
+                const taskOption = yield* tx.task(payload.taskId)
                 if (
-                  task === undefined ||
-                  task.state.status === 'terminal' ||
-                  task.state.status === 'completing'
+                  Option.isNone(taskOption) ||
+                  taskOption.value.state.status === 'terminal' ||
+                  taskOption.value.state.status === 'completing'
                 )
                   return
+                const task = taskOption.value
                 removeStatus(yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId }))
                 yield* Structured.hold(
                   tx,

@@ -1,4 +1,3 @@
-import * as Time from './Time.ts'
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -7,7 +6,7 @@ import * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
 import { createLocalJWKSet, jwtVerify } from 'jose'
 import { AuthIdentityError, AuthNetworkError, AuthError } from './Credential.ts'
-import { Jwt } from './Jwt.ts'
+import { Identity, Jwt } from './Jwt.ts'
 export const KeySet = Schema.Struct({
   keys: Schema.Array(
     Schema.Struct({
@@ -24,6 +23,7 @@ export const KeySet = Schema.Struct({
   ),
 })
 export type KeySet = typeof KeySet.Type
+export const isKeySet: (value: unknown) => value is KeySet = Schema.is(KeySet)
 export const Claims = Schema.Struct({
   sub: Schema.NonEmptyString,
   iss: Schema.NonEmptyString,
@@ -32,6 +32,7 @@ export const Claims = Schema.Struct({
   email: Schema.optionalKey(Schema.String),
 })
 export type Claims = typeof Claims.Type
+export const isClaims: (value: unknown) => value is Claims = Schema.is(Claims)
 export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClient> = Effect.gen(
   function* () {
     const client = yield* HttpClient.HttpClient
@@ -125,7 +126,9 @@ export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClien
               message: 'ID token nonce does not match the authorization attempt',
             }),
           })
-        const exp = yield* Schema.decodeEffect(Time.EpochMillis)(claims.exp * 1000).pipe(
+        // Claims is raw JWT seconds. Identity owns the portable UTC domain shape;
+        // decode the same exact fractional millisecond codec once at this boundary.
+        return yield* Schema.decodeEffect(Identity)({ ...claims, exp: claims.exp * 1000 }).pipe(
           Effect.mapError(
             (cause) =>
               new AuthError({
@@ -133,7 +136,6 @@ export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClien
               }),
           ),
         )
-        return { ...claims, exp }
       }),
     })
   },

@@ -1,3 +1,4 @@
+import type * as Scope from 'effect/Scope'
 import * as Effect from 'effect/Effect'
 import * as Ref from 'effect/Ref'
 import * as Config from 'effect/Config'
@@ -20,7 +21,13 @@ export const SnapshotSchema = Schema.Struct({
   frames: Schema.Array(Record.Frame),
 })
 
-export const make = Effect.fnUntraced(function* (options: Options) {
+export const make = Effect.fnUntraced(function* (
+  options: Options,
+): Effect.fn.Return<
+  Store['Service'],
+  StorageError,
+  Scope.Scope | FileSystem.FileSystem | Path.Path
+> {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const directory = path.resolve(options.directory)
@@ -99,7 +106,10 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     atomic: (effect) => effect,
   })
 })
-export const layer = (options: Options) => Layer.effect(Store, make(options))
+export const layer = (
+  options: Options,
+): Layer.Layer<Store, StorageError, FileSystem.FileSystem | Path.Path> =>
+  Layer.effect(Store, make(options))
 
 /** Resolve journal options through the caller's ConfigProvider without changing storage ownership. */
 export const layerConfig = (

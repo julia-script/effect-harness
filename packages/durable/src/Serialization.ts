@@ -3,7 +3,9 @@ import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
 
 /** Bridge a known domain schema to JSON through its own encoder, retaining JSON's omission of undefined object fields. */
-export const json = <S extends Schema.Constraint>(schema: S) =>
+export const json = <S extends Schema.Constraint>(
+  schema: S,
+): Schema.decodeTo<Schema.fromJsonString<S>, typeof Schema.Json, never, never> =>
   Schema.Json.pipe(
     Schema.decodeTo(Schema.fromJsonString(schema), {
       decode: SchemaGetter.transformEffect((input) =>
@@ -19,7 +21,9 @@ export const json = <S extends Schema.Constraint>(schema: S) =>
     }),
   )
 /** Object-only storage boundary; decoded models need not themselves have a JSON index signature. */
-export const object = <S extends Schema.Constraint>(schema: S) =>
+export const object = <S extends Schema.Constraint>(
+  schema: S,
+): Schema.decodeTo<Schema.fromJsonString<S>, typeof Schema.JsonObject, never, never> =>
   Schema.JsonObject.pipe(
     Schema.decodeTo(Schema.fromJsonString(schema), {
       decode: SchemaGetter.transformEffect((input) =>

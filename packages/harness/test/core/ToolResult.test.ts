@@ -97,14 +97,6 @@ describe('native AI caller-owned unavailable tools', () => {
     parameters: Schema.Struct({ value: Schema.Finite }),
     success: Schema.String,
   })
-  const literal: NativeModel.GenerateTextOptions<{ known: typeof known }> = {
-    prompt: 'request',
-    toolkit: Toolkit.make(known),
-    disableToolCallResolution: true,
-    // @ts-expect-error Opting into unknown names requires a toolkit whose public result name/parameters are already broad.
-    allowUnknownToolCalls: true,
-  }
-  void literal
   for (const mode of ['text', 'stream'] as const) {
     for (const scenario of ['default', 'automatic', 'unavailable', 'invalid-offered'] as const) {
       it.effect(`${mode} ${scenario} preserves native validation and never invokes a handler`, () =>

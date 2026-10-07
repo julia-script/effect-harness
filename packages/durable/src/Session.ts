@@ -1,4 +1,5 @@
 import * as Request from 'effect/Request'
+import * as Arr from 'effect/Array'
 import * as RequestResolver from 'effect/RequestResolver'
 import * as Identity from './Identity.ts'
 import * as Context from 'effect/Context'
@@ -30,7 +31,7 @@ import {
   NotFound,
   Invalid,
 } from './StorageError.ts'
-import { Store, type CommitOptions, type UnkeyedOptions } from './Store.ts'
+import { makeCandidate, Store, type CommitOptions, type UnkeyedOptions } from './Store.ts'
 import {
   detached,
   detachedEffect,
@@ -70,12 +71,12 @@ export interface Transaction {
   ) => Effect.Effect<S['Type'], StorageError, S['DecodingServices']>
   readonly conversation: (
     id: Record.ConversationId,
-  ) => Effect.Effect<Record.Conversation | undefined, StorageError>
-  readonly entry: (id: Record.EntryId) => Effect.Effect<Record.Entry | undefined, StorageError>
-  readonly task: (id: Record.TaskId) => Effect.Effect<Record.Task | undefined, StorageError>
+  ) => Effect.Effect<Option.Option<Record.Conversation>, StorageError>
+  readonly entry: (id: Record.EntryId) => Effect.Effect<Option.Option<Record.Entry>, StorageError>
+  readonly task: (id: Record.TaskId) => Effect.Effect<Option.Option<Record.Task>, StorageError>
   readonly submission: (
     id: Record.SubmissionId,
-  ) => Effect.Effect<Record.Submission | undefined, StorageError>
+  ) => Effect.Effect<Option.Option<Record.Submission>, StorageError>
   readonly scanConversations: (
     query: ConversationQuery,
     limit: number,
@@ -99,11 +100,11 @@ export interface Transaction {
   readonly submissionByRequest: (
     conversationId: Record.ConversationId,
     requestId: Identity.RequestId,
-  ) => Effect.Effect<Record.Submission | undefined, StorageError>
+  ) => Effect.Effect<Option.Option<Record.Submission>, StorageError>
   readonly latestHeadMarker: (
     conversationId: Record.ConversationId,
     atOrBefore?: Record.EntryId,
-  ) => Effect.Effect<Record.Entry | undefined, StorageError>
+  ) => Effect.Effect<Option.Option<Record.Entry>, StorageError>
   readonly createConversation: (options: {
     readonly ownership: Ownership
   }) => Effect.Effect<Record.Conversation, StorageError>
@@ -164,36 +165,44 @@ export interface Service {
   readonly snapshot: <T extends object>(
     token: Document.Document<T>,
     target?: Document.Target,
-  ) => Effect.Effect<Document.Snapshot<T> | undefined, StorageError>
+  ) => Effect.Effect<Option.Option<Document.Snapshot<T>>, StorageError>
   readonly snapshotAsOf: <T extends object>(
     token: Document.Document<T>,
     conversationId: Record.ConversationId,
     at: Record.EntryId,
     target?: Omit<Document.Target, 'owner'>,
-  ) => Effect.Effect<Document.Snapshot<T> | undefined, StorageError>
+  ) => Effect.Effect<Option.Option<Document.Snapshot<T>>, StorageError>
   readonly state: <T extends object>(
     token: Document.Document<T>,
     target?: Document.Target,
-  ) => Effect.Effect<Observation.State<T> | undefined, StorageError, import('effect/Scope').Scope>
+  ) => Effect.Effect<
+    Option.Option<Observation.State<T>>,
+    StorageError,
+    import('effect/Scope').Scope
+  >
   readonly watchDoc: <T extends object>(
     token: Document.Document<T>,
     target?: Document.Target,
-  ) => Effect.Effect<Observation.Watch<T> | undefined, StorageError, import('effect/Scope').Scope>
+  ) => Effect.Effect<
+    Option.Option<Observation.Watch<T>>,
+    StorageError,
+    import('effect/Scope').Scope
+  >
   readonly commits: Stream.Stream<Record.Frame, StorageError>
   readonly conversation: (
     id: Record.ConversationId,
-  ) => Effect.Effect<Record.Conversation | undefined, StorageError>
+  ) => Effect.Effect<Option.Option<Record.Conversation>, StorageError>
   readonly entry: (
     id: Record.EntryId,
     conversationId?: Record.ConversationId,
   ) => Effect.Effect<
-    { readonly entry: Record.Entry; readonly commitSeq: Record.Seq } | undefined,
+    Option.Option<{ readonly entry: Record.Entry; readonly commitSeq: Record.Seq }>,
     StorageError
   >
-  readonly task: (id: Record.TaskId) => Effect.Effect<Record.Task | undefined, StorageError>
+  readonly task: (id: Record.TaskId) => Effect.Effect<Option.Option<Record.Task>, StorageError>
   readonly submission: (
     id: Record.SubmissionId,
-  ) => Effect.Effect<Record.Submission | undefined, StorageError>
+  ) => Effect.Effect<Option.Option<Record.Submission>, StorageError>
   readonly submissionByRequest: Transaction['submissionByRequest']
   readonly latestHeadMarker: Transaction['latestHeadMarker']
   readonly scanConversations: Transaction['scanConversations']
@@ -208,11 +217,11 @@ export interface Service {
   readonly findDocument: (
     address: Record.Address,
     at?: Record.Point,
-  ) => Effect.Effect<Record.Document | undefined, StorageError>
+  ) => Effect.Effect<Option.Option<Record.Document>, StorageError>
   readonly document: (
     id: Record.DocumentId,
     at?: Record.Point,
-  ) => Effect.Effect<Document.Snapshot | undefined, StorageError>
+  ) => Effect.Effect<Option.Option<Document.Snapshot>, StorageError>
   /** Sealed at the start of owning Scope release, before handler or storage cleanup finishes. */
   readonly isClosed: Effect.Effect<boolean>
   /** Register an owner-local body cleanup in the invocation caller Scope. */
@@ -302,11 +311,19 @@ const entryPage = Effect.fnUntraced(function* (
   )).filter((item) => cursor === undefined || item.id < cursor.after)
   const items = entries.slice(0, limit)
   const last = items.at(-1)
-  return {
+  return Record.makePage({
     items,
     ...(entries.length > limit && last !== undefined ? { next: { after: last.id } } : {}),
-  }
+  })
 })
+const detachedOptional = <A>(
+  option: Option.Option<A>,
+): Effect.Effect<Option.Option<A>, StorageError> =>
+  Option.match(option, {
+    onNone: () => Effect.succeed(Option.none<A>()),
+    onSome: (value) => detachedEffect(value).pipe(Effect.asSome),
+  })
+
 class DraftMutationError extends Schema.TaggedError<DraftMutationError>(
   '@effect-harness/durable/Session/DraftMutationError',
 )('DraftMutationError', { message: Schema.String, cause: Schema.optionalKey(Schema.Defect()) }) {}
@@ -400,14 +417,14 @@ const draft = <T extends object>(value: T, active: () => boolean, ops: Array<Rec
           configurable: true,
           writable: true,
         })
-        ops.push(['set', [...path, segment], cloneDraft(valid)])
+        ops.push(['set', Arr.append(path, segment), cloneDraft(valid)])
         return true
       },
       deleteProperty(target, key) {
         check()
         const segment = Array.isArray(target) ? Number(key) : String(key)
         Reflect.deleteProperty(target, key)
-        ops.push(['delete', [...path, segment]])
+        ops.push(['delete', Arr.append(path, segment)])
         return true
       },
       defineProperty(target, key, descriptor) {
@@ -445,7 +462,7 @@ const draft = <T extends object>(value: T, active: () => boolean, ops: Array<Rec
         })
         ops.push([
           'set',
-          [...path, Array.isArray(target) ? Number(key) : String(key)],
+          Arr.append(path, Array.isArray(target) ? Number(key) : String(key)),
           cloneDraft(valid),
         ])
         return true
@@ -584,7 +601,7 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
     journal: (after) => usable.pipe(Effect.andThen(underlying.journal(after))),
   })
   const migrationCache = yield* Document.makeMigrationCache
-  const creationHook = Option.getOrUndefined(yield* Effect.serviceOption(CreationHook))
+  const creationHook = yield* Effect.serviceOption(CreationHook)
   // Public overloads constrain keyed results; runtime validation is authoritative at the Store boundary.
   const transact: <A, E, R>(
     change: (state: Record.State) => Effect.Effect<import('./Store.ts').Candidate<A>, E, R>,
@@ -634,21 +651,24 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
           conversationId: Record.ConversationId,
         ) {
           const seen = new Set<Record.TaskId>()
-          let owner = Option.getOrUndefined(
-            HashMap.get(yield* Ref.get(localConversations), conversationId),
-          )?.owner?.taskId
-          while (owner !== undefined && !seen.has(owner)) {
-            seen.add(owner)
-            const task = Option.getOrUndefined(HashMap.get(yield* Ref.get(localTasks), owner))
-            if (task === undefined) return false
+          const ownerOf = (conversation: Record.Conversation) =>
+            Option.fromUndefinedOr(conversation.owner?.taskId)
+          let owner = HashMap.get(yield* Ref.get(localConversations), conversationId).pipe(
+            Option.flatMap(ownerOf),
+          )
+          while (Option.isSome(owner) && !seen.has(owner.value)) {
+            seen.add(owner.value)
+            const taskOption = HashMap.get(yield* Ref.get(localTasks), owner.value)
+            if (Option.isNone(taskOption)) return false
+            const task = taskOption.value
             if (task.state.status === 'terminal') return false
             if (task.abortRequested) return true
             if (task.background) return false
-            owner =
-              task.owner ??
-              Option.getOrUndefined(
-                HashMap.get(yield* Ref.get(localConversations), task.conversationId),
-              )?.owner?.taskId
+            if (task.owner !== undefined) owner = Option.some(task.owner)
+            else
+              owner = HashMap.get(yield* Ref.get(localConversations), task.conversationId).pipe(
+                Option.flatMap(ownerOf),
+              )
           }
           return false
         })
@@ -684,13 +704,11 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
               valid = { type: 'task', value: task }
             }
             if (valid.type === 'task') {
-              const previous = Option.getOrUndefined(
-                HashMap.get(yield* Ref.get(localTasks), valid.value.id),
-              )
+              const previous = HashMap.get(yield* Ref.get(localTasks), valid.value.id)
               if (
-                previous !== undefined &&
-                (previous.state.status === 'terminal' ||
-                  previous.conversationId !== valid.value.conversationId)
+                Option.isSome(previous) &&
+                (previous.value.state.status === 'terminal' ||
+                  previous.value.conversationId !== valid.value.conversationId)
               )
                 return yield* rejected('Task is terminal or cannot change conversations')
             }
@@ -722,16 +740,16 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
         )
         const owner = Effect.fnUntraced(function* (ownership: Ownership) {
           if (ownership.kind === 'ownerless') return {}
-          const task = Option.getOrUndefined(
-            HashMap.get(yield* Ref.get(localTasks), ownership.taskId),
-          )
+          const taskOption = HashMap.get(yield* Ref.get(localTasks), ownership.taskId)
+
           if (
-            task === undefined ||
-            task.abortRequested ||
-            task.state.status === 'terminal' ||
-            task.state.status === 'completing'
+            Option.isNone(taskOption) ||
+            taskOption.value.abortRequested ||
+            taskOption.value.state.status === 'terminal' ||
+            taskOption.value.state.status === 'completing'
           )
             return yield* rejected('Conversation owner must be a live task')
+          const task = taskOption.value
           return { owner: { taskId: task.id, conversationId: task.conversationId } }
         })
         const doc = Effect.fnUntraced(function* <T extends object>(
@@ -743,8 +761,8 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
           const key = Record.addressKey(logical)
           const { acquisition } = yield* acquisitionPermit.withPermit(
             Effect.gen(function* () {
-              const cached = Option.getOrUndefined(HashMap.get(yield* Ref.get(acquisitions), key))
-              if (cached !== undefined) return { acquisition: cached }
+              const cached = HashMap.get(yield* Ref.get(acquisitions), key)
+              if (Option.isSome(cached)) return { acquisition: cached.value }
               const acquisition = yield* Effect.cached(
                 Effect.gen(function* () {
                   yield* open
@@ -754,38 +772,51 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
                   )
                     return yield* rejected('Document conversation is absent', NotFound)
                   if (logical.scope.kind === 'task') {
-                    const task = Option.getOrUndefined(
-                      HashMap.get(yield* Ref.get(localTasks), logical.scope.taskId),
-                    )
-                    if (task === undefined || task.state.status === 'terminal')
+                    const taskOption = HashMap.get(yield* Ref.get(localTasks), logical.scope.taskId)
+
+                    if (Option.isNone(taskOption) || taskOption.value.state.status === 'terminal')
                       return yield* rejected('Document task is absent or settled', NotFound)
                   }
                   const staged = HashSet.has(yield* Ref.get(retiredAddresses), key)
-                    ? undefined
-                    : (yield* Ref.get(stagedWrites)).findLast(
+                    ? Option.none()
+                    : Arr.findLast(
+                        yield* Ref.get(stagedWrites),
                         (write) =>
                           (write.type === 'document.create' || write.type === 'document.copy') &&
                           Record.addressKey(write.record) === key,
                       )
                   const persisted = HashSet.has(yield* Ref.get(retiredAddresses), key)
-                    ? undefined
+                    ? Option.none()
                     : findDocument(original, logical, 'current')
-                  let stored =
-                    persisted === undefined ? undefined : yield* materialize(persisted, 'current')
+                  let stored = yield* Option.match(persisted, {
+                    onNone: () =>
+                      Effect.succeed(Option.none<Document.Snapshot<Record.JsonObject>>()),
+                    onSome: (document) => materialize(document, 'current'),
+                  })
                   let stagedRecord: Record.DocumentCreate | undefined
-                  if (staged?.type === 'document.create' || staged?.type === 'document.copy') {
-                    stagedRecord = staged.record
+                  if (
+                    Option.isSome(staged) &&
+                    (staged.value.type === 'document.create' ||
+                      staged.value.type === 'document.copy')
+                  ) {
+                    const stagedWrite = staged.value
+                    stagedRecord = stagedWrite.record
                     let content: Record.Content
-                    if (staged.type === 'document.create') content = staged.content
+                    if (stagedWrite.type === 'document.create') content = stagedWrite.content
                     else {
-                      const source = original.documents.find(
-                        (item) => item.record.id === staged.source.id,
+                      const source = Arr.findFirst(
+                        original.documents,
+                        (item) => item.record.id === stagedWrite.source.id,
                       )
-                      if (source === undefined)
+                      if (Option.isNone(source))
                         return yield* rejected('Staged copy source is absent', NotFound)
-                      const sourceValue = yield* materialize(source, staged.source.at)
-                      if (sourceValue === undefined)
+                      const sourceValueOption = yield* materialize(
+                        source.value,
+                        stagedWrite.source.at,
+                      )
+                      if (Option.isNone(sourceValueOption))
                         return yield* rejected('Staged copy source is not alive', NotFound)
+                      const sourceValue = sourceValueOption.value
                       content = {
                         kind: 'base',
                         version: sourceValue.version,
@@ -794,19 +825,21 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
                     }
                     if (content.kind !== 'base')
                       return yield* rejected('Staged document creation requires a base')
-                    stored = {
-                      record: {
-                        ...staged.record,
-                        createdAt: yield* validate(Record.Seq, original.nextSeq),
-                      },
-                      version: content.version,
-                      value: yield* detachedEffect(content.value),
-                      deltasSinceBase: 0,
-                    }
+                    stored = Option.some(
+                      Document.makeSnapshot({
+                        record: {
+                          ...stagedWrite.record,
+                          createdAt: yield* validate(Record.Seq, original.nextSeq),
+                        },
+                        version: content.version,
+                        value: yield* detachedEffect(content.value),
+                        deltasSinceBase: 0,
+                      }),
+                    )
                   }
                   let value: T
                   let id: Record.DocumentId
-                  if (stored === undefined) {
+                  if (Option.isNone(stored)) {
                     value = yield* Effect.try({
                       try: () => token.definition.initial(target.seed),
                       catch: (cause) => rejected('Document initializer failed', Invalid, cause),
@@ -815,8 +848,8 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
                     yield* Document.encode(token, value)
                     id = yield* mint(Record.DocumentId)
                   } else {
-                    value = (yield* typed(token, stored, migrationCache)).value
-                    id = stored.record.id
+                    value = (yield* typed(token, stored.value, migrationCache)).value
+                    id = stored.value.record.id
                   }
                   yield* open
                   const ops: Array<Record.Op> = []
@@ -834,11 +867,17 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
                     checkpoint: Effect.try({
                       try: () =>
                         token.definition.checkpointWhen?.(mutable, ops, {
-                          deltasSinceBase: stored?.deltasSinceBase ?? 0,
+                          deltasSinceBase: stored.pipe(
+                            Option.map((snapshot) => snapshot.deltasSinceBase),
+                            Option.getOrElse(() => 0),
+                          ),
                         }) ?? false,
                       catch: (cause) => rejected('Checkpoint predicate failed', Invalid, cause),
                     }),
-                    ...(stored === undefined ? {} : { stored }),
+                    ...Option.match(stored, {
+                      onNone: () => ({}),
+                      onSome: (stored) => ({ stored }),
+                    }),
                     ...(stagedRecord === undefined ? {} : { staged: stagedRecord }),
                   }
                   yield* Ref.update(acquired, HashMap.set(key, record))
@@ -857,33 +896,45 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
           write,
           doc,
           ensureRoot: Effect.gen(function* () {
-            const existing = Option.getOrUndefined(
-              HashMap.get(yield* Ref.get(localConversations), Record.ROOT_CONVERSATION_ID),
+            const existing = HashMap.get(
+              yield* Ref.get(localConversations),
+              Record.ROOT_CONVERSATION_ID,
             )
-            if (existing !== undefined) return yield* detachedEffect(existing)
+            if (Option.isSome(existing)) return yield* detachedEffect(existing.value)
             const root = { id: Record.ROOT_CONVERSATION_ID }
             return yield* write({ type: 'conversation', value: root }).pipe(
-              Effect.andThen(creationHook?.run(tx, root) ?? Effect.void),
+              Effect.andThen(
+                Option.match(creationHook, {
+                  onNone: () => Effect.void,
+                  onSome: (hook) => hook.run(tx, root),
+                }),
+              ),
               Effect.as(root),
             )
           }),
           conversation: Effect.fnUntraced(function* (id) {
             yield* read
-            return yield* detachedEffect(original.conversations.find((item) => item.id === id))
+            return yield* detachedOptional(
+              Arr.findFirst(original.conversations, (item) => item.id === id),
+            )
           }),
           entry: Effect.fnUntraced(function* (id) {
             yield* read
-            return yield* detachedEffect(
-              original.entries.find((item) => item.entry.id === id)?.entry,
+            return yield* detachedOptional(
+              Arr.findFirst(original.entries, (item) => item.entry.id === id).pipe(
+                Option.map((item) => item.entry),
+              ),
             )
           }),
           task: Effect.fnUntraced(function* (id) {
             yield* read
-            return yield* detachedEffect(original.tasks.find((item) => item.id === id))
+            return yield* detachedOptional(Arr.findFirst(original.tasks, (item) => item.id === id))
           }),
           submission: Effect.fnUntraced(function* (id) {
             yield* read
-            return yield* detachedEffect(original.submissions.find((item) => item.id === id))
+            return yield* detachedOptional(
+              Arr.findFirst(original.submissions, (item) => item.id === id),
+            )
           }),
           scanConversations: Effect.fnUntraced(function* (query, limit, cursor) {
             yield* read
@@ -903,14 +954,16 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
           }),
           latestHeadMarker: Effect.fnUntraced(function* (conversationId, atOrBefore) {
             yield* read
-            return (yield* visibleEntries(original, conversationId, 0, atOrBefore)).find(
+            return Arr.findFirst(
+              yield* visibleEntries(original, conversationId, 0, atOrBefore),
               (item) => item.head !== undefined,
             )
           }),
           submissionByRequest: Effect.fnUntraced(function* (conversationId, requestId) {
             yield* read
-            return yield* detachedEffect(
-              original.submissions.find(
+            return yield* detachedOptional(
+              Arr.findFirst(
+                original.submissions,
                 (item) => item.conversationId === conversationId && item.requestId === requestId,
               ),
             )
@@ -920,17 +973,19 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             const id = yield* mint(Record.ConversationId)
             const value = { id, ...ownership }
             yield* write({ type: 'conversation', value })
-            if (creationHook !== undefined) yield* creationHook.run(tx, value)
+            if (Option.isSome(creationHook)) yield* creationHook.value.run(tx, value)
             return yield* detachedEffect(value)
           }),
           forkConversation: Effect.fnUntraced(function* (parent, at, options) {
             yield* open
             yield* Ref.update(forkParents, HashSet.add(parent))
             const visible = yield* visibleEntries(original, parent)
-            const entry = visible.find((item) => item.id === at)
-            const committed = original.entries.find((item) => item.entry.id === at)
-            if (entry === undefined || committed === undefined)
+            const entryOption = Arr.findFirst(visible, (item) => item.id === at)
+            const committedOption = Arr.findFirst(original.entries, (item) => item.entry.id === at)
+            if (Option.isNone(entryOption) || Option.isNone(committedOption))
               return yield* rejected('Fork cutoff is not visible', NotFound)
+            const entry = entryOption.value
+            const committed = committedOption.value
             const ownership = yield* owner(options.ownership)
             const id = yield* mint(Record.ConversationId)
             const selected = new Map<
@@ -982,7 +1037,7 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             }
             const value = { id, parent: { conversationId: parent, at }, ...ownership }
             yield* write({ type: 'conversation', value })
-            if (creationHook !== undefined) yield* creationHook.run(tx, value)
+            if (Option.isSome(creationHook)) yield* creationHook.value.run(tx, value)
             return yield* detachedEffect(value)
           }),
           appendEntry: Effect.fnUntraced(function* (conversationId, input) {
@@ -1007,15 +1062,14 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             if (yield* abortingAncestor(input.conversationId))
               return yield* rejected('Task conversation has an aborting ancestor')
             if (input.owner !== undefined) {
-              const parent = Option.getOrUndefined(
-                HashMap.get(yield* Ref.get(localTasks), input.owner),
-              )
+              const parentOption = HashMap.get(yield* Ref.get(localTasks), input.owner)
+
               if (
-                parent === undefined ||
-                parent.abortRequested ||
-                parent.conversationId !== input.conversationId ||
-                parent.state.status === 'terminal' ||
-                parent.state.status === 'completing' ||
+                Option.isNone(parentOption) ||
+                parentOption.value.abortRequested ||
+                parentOption.value.conversationId !== input.conversationId ||
+                parentOption.value.state.status === 'terminal' ||
+                parentOption.value.state.status === 'completing' ||
                 input.background
               )
                 return yield* rejected('Invalid task owner')
@@ -1037,8 +1091,10 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
           }),
           placeSubmission: Effect.fnUntraced(function* (id, entry) {
             yield* open
-            const current = Option.getOrUndefined(HashMap.get(yield* Ref.get(localSubmissions), id))
-            if (current === undefined) return yield* rejected('Submission is absent', NotFound)
+            const currentOption = HashMap.get(yield* Ref.get(localSubmissions), id)
+            if (Option.isNone(currentOption))
+              return yield* rejected('Submission is absent', NotFound)
+            const current = currentOption.value
             if (current.status === 'done' || current.status === 'unanswered') return
             if (current.status !== 'queued')
               return yield* rejected('Only queued submissions may be placed')
@@ -1050,8 +1106,10 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
           }),
           settleSubmission: Effect.fnUntraced(function* (id, settlement) {
             yield* open
-            const current = Option.getOrUndefined(HashMap.get(yield* Ref.get(localSubmissions), id))
-            if (current === undefined) return yield* rejected('Submission is absent', NotFound)
+            const currentOption = HashMap.get(yield* Ref.get(localSubmissions), id)
+            if (Option.isNone(currentOption))
+              return yield* rejected('Submission is absent', NotFound)
+            const current = currentOption.value
             if (current.status === 'done' || current.status === 'unanswered') return
             if (
               settlement.status === 'done' &&
@@ -1066,8 +1124,9 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             const logical = yield* address(token, target)
             const key = Record.addressKey(logical)
             yield* Ref.update(retiredAddresses, HashSet.add(key))
-            const item = Option.getOrUndefined(HashMap.get(yield* Ref.get(acquired), key))
-            if (item !== undefined) {
+            const itemOption = HashMap.get(yield* Ref.get(acquired), key)
+            if (Option.isSome(itemOption)) {
+              const item = itemOption.value
               yield* Ref.update(acquisitions, HashMap.remove(key))
               yield* Ref.update(acquired, HashMap.remove(key))
               yield* Ref.update(acquiredOrder, (keys) => [
@@ -1081,12 +1140,12 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             }
             const stored = findDocument(original, logical, 'current')
             if (
-              stored !== undefined &&
+              Option.isSome(stored) &&
               !(yield* Ref.get(stagedWrites)).some(
-                (write) => write.type === 'document.retire' && write.id === stored.record.id,
+                (write) => write.type === 'document.retire' && write.id === stored.value.record.id,
               )
             )
-              yield* write({ type: 'document.retire', id: stored.record.id })
+              yield* write({ type: 'document.retire', id: stored.value.record.id })
           }),
         }
         const tx: Transaction = {
@@ -1128,8 +1187,9 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
           return yield* rejected('Transaction callback settled before its pending operations')
         const writes = [...(yield* Ref.get(stagedWrites))]
         for (const key of yield* Ref.get(acquiredOrder)) {
-          const item = Option.getOrUndefined(HashMap.get(yield* Ref.get(acquired), key))
-          if (item === undefined) continue
+          const itemOption = HashMap.get(yield* Ref.get(acquired), key)
+          if (Option.isNone(itemOption)) continue
+          const item = itemOption.value
           const definition = item.definition
           const value = yield* item.prepare
           if (item.staged !== undefined) {
@@ -1190,10 +1250,13 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             (yield* abortingAncestor(write.value.conversationId))
           )
             return yield* rejected('New work cannot enter an aborting owned conversation')
-          let affected: Record.DocumentCreate | undefined
-          if (write.type === 'document.create') affected = write.record
+          let affected: Option.Option<Record.DocumentCreate> = Option.none()
+          if (write.type === 'document.create') affected = Option.some(write.record)
           else if (write.type === 'document.change' || write.type === 'document.retire')
-            affected = original.documents.find((item) => item.record.id === write.id)?.record
+            affected = Arr.findFirst(
+              original.documents,
+              (item) => item.record.id === write.id,
+            ).pipe(Option.map((item) => item.record))
           if (
             (write.type === 'document.change' || write.type === 'document.retire') &&
             HashSet.has(yield* Ref.get(forkDocuments), write.id)
@@ -1202,9 +1265,10 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
               'Cannot change a copied fork source document in its fork transaction',
             )
           if (
-            affected?.scope.kind === 'conversation' &&
-            affected.fork === 'current' &&
-            HashSet.has(yield* Ref.get(forkParents), affected.scope.conversationId)
+            Option.isSome(affected) &&
+            affected.value.scope.kind === 'conversation' &&
+            affected.value.fork === 'current' &&
+            HashSet.has(yield* Ref.get(forkParents), affected.value.scope.conversationId)
           )
             return yield* rejected(
               'Cannot change current-policy documents in their fork transaction',
@@ -1217,19 +1281,20 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
           )
             ownerId = write.value.owner
           if (ownerId !== undefined) {
-            const task = Option.getOrUndefined(HashMap.get(yield* Ref.get(localTasks), ownerId))
+            const taskOption = HashMap.get(yield* Ref.get(localTasks), ownerId)
             if (
-              task === undefined ||
-              task.abortRequested ||
-              task.state.status === 'terminal' ||
-              task.state.status === 'completing'
+              Option.isNone(taskOption) ||
+              taskOption.value.abortRequested ||
+              taskOption.value.state.status === 'terminal' ||
+              taskOption.value.state.status === 'completing'
             )
               return yield* rejected('New owned work requires a live non-aborting owner')
           }
         }
         for (const id of yield* Ref.get(taskOrder)) {
-          const task = Option.getOrUndefined(HashMap.get(yield* Ref.get(localTasks), id))
-          if (task?.state.status === 'terminal') {
+          const taskOption = HashMap.get(yield* Ref.get(localTasks), id)
+          if (Option.isSome(taskOption) && taskOption.value.state.status === 'terminal') {
+            const task = taskOption.value
             for (const document of original.documents)
               if (
                 document.record.scope.kind === 'task' &&
@@ -1252,7 +1317,11 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
                 writes.push({ type: 'document.retire', id: write.record.id })
           }
         }
-        return { state: { ...original, nextId: yield* Ref.get(nextId) }, writes, result }
+        return makeCandidate({
+          state: { ...original, nextId: yield* Ref.get(nextId) },
+          writes,
+          result,
+        })
       }),
       options,
     )
@@ -1288,11 +1357,10 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
     return yield* project(
       Effect.fnUntraced(function* (state) {
         const document = findDocument(state, logical, 'current')
-        const snapshotValue =
-          document === undefined ? undefined : yield* materialize(document, 'current')
-        return snapshotValue === undefined
-          ? undefined
-          : yield* typed(token, snapshotValue, migrationCache)
+        if (Option.isNone(document)) return Option.none()
+        const snapshotValue = yield* materialize(document.value, 'current')
+        if (Option.isNone(snapshotValue)) return Option.none()
+        return Option.some(yield* typed(token, snapshotValue.value, migrationCache))
       }),
     )
   })
@@ -1301,9 +1369,12 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
     initialize: (conversationId) =>
       transaction(
         Effect.fnUntraced(function* (tx) {
-          const conversation = yield* tx.conversation(conversationId)
-          if (conversation === undefined) return yield* rejected('Conversation is absent', NotFound)
-          if (creationHook?.recover !== undefined) yield* creationHook.recover(tx, conversation)
+          const conversationOption = yield* tx.conversation(conversationId)
+          if (Option.isNone(conversationOption))
+            return yield* rejected('Conversation is absent', NotFound)
+          const conversation = conversationOption.value
+          if (Option.isSome(creationHook) && creationHook.value.recover !== undefined)
+            yield* creationHook.value.recover(tx, conversation)
         }),
       ),
     transaction,
@@ -1312,7 +1383,7 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
       transaction(
         Effect.fnUntraced(function* (tx) {
           const existing = yield* tx.conversation(Record.ROOT_CONVERSATION_ID)
-          if (existing !== undefined) return existing
+          if (Option.isSome(existing)) return existing.value
           const root = yield* tx.ensureRoot
           if (initialize !== undefined) yield* initialize(tx)
           return root
@@ -1324,17 +1395,18 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
       return yield* project(
         Effect.fnUntraced(function* (state) {
           const visible = yield* visibleEntries(state, conversationId)
-          const entry = visible.find((item) => item.id === at)
-          const persisted = state.entries.find((item) => item.entry.id === at)
-          if (entry === undefined || persisted === undefined)
+          const entryOption = Arr.findFirst(visible, (item) => item.id === at)
+          const persistedOption = Arr.findFirst(state.entries, (item) => item.entry.id === at)
+          if (Option.isNone(entryOption) || Option.isNone(persistedOption))
             return yield* rejected('Historical entry is not visible', NotFound)
+          const entry = entryOption.value
+          const persisted = persistedOption.value
           const logical = yield* address(token, { ...target, owner: entry.conversationId })
           const document = findDocument(state, logical, persisted.commitSeq)
-          const snapshotValue =
-            document === undefined ? undefined : yield* materialize(document, persisted.commitSeq)
-          return snapshotValue === undefined
-            ? undefined
-            : yield* typed(token, snapshotValue, migrationCache)
+          if (Option.isNone(document)) return Option.none()
+          const snapshotValue = yield* materialize(document.value, persisted.commitSeq)
+          if (Option.isNone(snapshotValue)) return Option.none()
+          return Option.some(yield* typed(token, snapshotValue.value, migrationCache))
         }),
       )
     }),
@@ -1342,7 +1414,9 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
     watchDoc: (token, target) => Observation.watch(store, token, target, migrationCache),
     commits: Observation.commits(store),
     conversation: (id) =>
-      project((state) => detachedEffect(state.conversations.find((item) => item.id === id))),
+      project((state) =>
+        detachedOptional(Arr.findFirst(state.conversations, (item) => item.id === id)),
+      ),
     entry: Effect.fnUntraced(function* (id, conversationId) {
       return yield* project(
         Effect.fnUntraced(function* (state) {
@@ -1350,18 +1424,24 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             conversationId !== undefined &&
             !(yield* visibleEntries(state, conversationId)).some((item) => item.id === id)
           )
-            return undefined
-          return yield* detachedEffect(state.entries.find((item) => item.entry.id === id))
+            return Option.none()
+          return yield* detachedOptional(
+            Arr.findFirst(state.entries, (item) => item.entry.id === id),
+          )
         }),
       )
     }),
-    task: (id) => project((state) => detachedEffect(state.tasks.find((item) => item.id === id))),
+    task: (id) =>
+      project((state) => detachedOptional(Arr.findFirst(state.tasks, (item) => item.id === id))),
     submission: (id) =>
-      project((state) => detachedEffect(state.submissions.find((item) => item.id === id))),
+      project((state) =>
+        detachedOptional(Arr.findFirst(state.submissions, (item) => item.id === id)),
+      ),
     submissionByRequest: (conversationId, requestId) =>
       project((state) =>
-        detachedEffect(
-          state.submissions.find(
+        detachedOptional(
+          Arr.findFirst(
+            state.submissions,
             (item) => item.conversationId === conversationId && item.requestId === requestId,
           ),
         ),
@@ -1369,7 +1449,8 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
     latestHeadMarker: Effect.fnUntraced(function* (conversationId, atOrBefore) {
       return yield* project(
         Effect.fnUntraced(function* (state) {
-          return (yield* visibleEntries(state, conversationId, 0, atOrBefore)).find(
+          return Arr.findFirst(
+            yield* visibleEntries(state, conversationId, 0, atOrBefore),
             (item) => item.head !== undefined,
           )
         }),
@@ -1393,12 +1474,19 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
         ),
       ),
     findDocument: (logical, at = 'current') =>
-      project((state) => detachedEffect(findDocument(state, logical, at)?.record)),
+      project((state) =>
+        detachedOptional(
+          findDocument(state, logical, at).pipe(Option.map((document) => document.record)),
+        ),
+      ),
     document: Effect.fnUntraced(function* (id, at = 'current') {
       return yield* project(
         Effect.fnUntraced(function* (state) {
-          const document = state.documents.find((item) => item.record.id === id)
-          return document === undefined ? undefined : yield* materialize(document, at)
+          const document = Arr.findFirst(state.documents, (item) => item.record.id === id)
+          return yield* Option.match(document, {
+            onNone: () => Effect.succeed(Option.none<Document.Snapshot>()),
+            onSome: (document) => materialize(document, at),
+          })
         }),
       )
     }),
@@ -1408,4 +1496,4 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
   })
   return service
 })
-export const layer = Layer.effect(Session, make)
+export const layer: Layer.Layer<Session, never, Store> = Layer.effect(Session, make)

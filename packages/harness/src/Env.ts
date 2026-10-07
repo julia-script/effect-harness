@@ -1,3 +1,4 @@
+import * as Predicate from 'effect/Predicate'
 import * as DateTime from 'effect/DateTime'
 import * as Ref from 'effect/Ref'
 import type * as Duration from 'effect/Duration'
@@ -39,7 +40,9 @@ export interface LineScan {
   readonly selectedBytes: number
   readonly firstLineBytes: number
 }
+const BinaryReaderTypeId = '~@effect-harness/harness/Env/BinaryReader'
 export interface BinaryReader {
+  readonly [BinaryReaderTypeId]: typeof BinaryReaderTypeId
   readonly info: Effect.Effect<FileInfo, FileError>
   readonly read: (offset: number, length: number) => Effect.Effect<Uint8Array, FileError>
   readonly scanLines: (options: {
@@ -47,14 +50,58 @@ export interface BinaryReader {
     readonly endLine?: number | undefined
   }) => Effect.Effect<LineScan, FileError>
 }
+/** Attach the owned handle identity while preserving capability getters. */
+export const makeBinaryReader = (
+  input: Omit<BinaryReader, typeof BinaryReaderTypeId>,
+): BinaryReader => {
+  const handle: BinaryReader = {
+    [BinaryReaderTypeId]: BinaryReaderTypeId,
+    get info() {
+      return input.info
+    },
+    get read() {
+      return input.read
+    },
+    get scanLines() {
+      return input.scanLines
+    },
+  }
+  Object.defineProperties(handle, Object.getOwnPropertyDescriptors(input))
+  Object.defineProperty(handle, BinaryReaderTypeId, { enumerable: false })
+  return handle
+}
+export const isBinaryReader = (input: unknown): input is BinaryReader =>
+  Predicate.hasProperty(input, BinaryReaderTypeId)
+
 export interface TextLine {
   readonly text: string
   readonly terminated: boolean
 }
+const TextLineReaderTypeId = '~@effect-harness/harness/Env/TextLineReader'
 export interface TextLineReader {
-  readonly readLine: Effect.Effect<TextLine | undefined, FileError>
+  readonly [TextLineReaderTypeId]: typeof TextLineReaderTypeId
+  readonly readLine: Effect.Effect<Option.Option<TextLine>, FileError>
 }
+/** Attach the owned handle identity while preserving capability getters. */
+export const makeTextLineReader = (
+  input: Omit<TextLineReader, typeof TextLineReaderTypeId>,
+): TextLineReader => {
+  const handle: TextLineReader = {
+    [TextLineReaderTypeId]: TextLineReaderTypeId,
+    get readLine() {
+      return input.readLine
+    },
+  }
+  Object.defineProperties(handle, Object.getOwnPropertyDescriptors(input))
+  Object.defineProperty(handle, TextLineReaderTypeId, { enumerable: false })
+  return handle
+}
+export const isTextLineReader = (input: unknown): input is TextLineReader =>
+  Predicate.hasProperty(input, TextLineReaderTypeId)
+
+const DirReaderTypeId = '~@effect-harness/harness/Env/DirReader'
 export interface DirReader {
+  readonly [DirReaderTypeId]: typeof DirReaderTypeId
   readonly next: (
     maxEntries: number,
   ) => Effect.Effect<
@@ -62,6 +109,21 @@ export interface DirReader {
     FileError
   >
 }
+/** Attach the owned handle identity while preserving capability getters. */
+export const makeDirReader = (input: Omit<DirReader, typeof DirReaderTypeId>): DirReader => {
+  const handle: DirReader = {
+    [DirReaderTypeId]: DirReaderTypeId,
+    get next() {
+      return input.next
+    },
+  }
+  Object.defineProperties(handle, Object.getOwnPropertyDescriptors(input))
+  Object.defineProperty(handle, DirReaderTypeId, { enumerable: false })
+  return handle
+}
+export const isDirReader = (input: unknown): input is DirReader =>
+  Predicate.hasProperty(input, DirReaderTypeId)
+
 export interface WatchTarget {
   readonly path: string
   readonly recursive?: boolean | undefined
@@ -73,10 +135,30 @@ export type WatchChange =
   | { readonly paths: ReadonlyArray<string> }
   | { readonly overflow: true }
   | { readonly error: FileError }
+const WatcherTypeId = '~@effect-harness/harness/Env/Watcher'
 export interface Watcher {
+  readonly [WatcherTypeId]: typeof WatcherTypeId
   readonly mode: 'native' | 'polling'
   readonly changes: Stream.Stream<WatchChange>
 }
+/** Attach the owned handle identity while preserving capability getters. */
+export const makeWatcher = (input: Omit<Watcher, typeof WatcherTypeId>): Watcher => {
+  const handle: Watcher = {
+    [WatcherTypeId]: WatcherTypeId,
+    get mode() {
+      return input.mode
+    },
+    get changes() {
+      return input.changes
+    },
+  }
+  Object.defineProperties(handle, Object.getOwnPropertyDescriptors(input))
+  Object.defineProperty(handle, WatcherTypeId, { enumerable: false })
+  return handle
+}
+export const isWatcher = (input: unknown): input is Watcher =>
+  Predicate.hasProperty(input, WatcherTypeId)
+
 export interface WatchOptions {
   readonly mode?: 'native' | 'polling' | undefined
   readonly pollIntervalMs?: Duration.Input | undefined
@@ -228,7 +310,13 @@ export const fromPlatform = (error: PlatformError.PlatformError, path?: string):
     }),
   })
 }
-export const make = Effect.fnUntraced(function* (options: Options) {
+export const make = Effect.fnUntraced(function* (
+  options: Options,
+): Effect.fn.Return<
+  Env['Service'],
+  never,
+  FileSystem.FileSystem | Path.Path | NativeFiles | ChildProcessSpawner | Scope.Scope
+> {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const native = yield* NativeFiles
@@ -293,12 +381,12 @@ export const make = Effect.fnUntraced(function* (options: Options) {
               ...value,
               pending: current.pending.slice(index + 1),
             }))
-            return { text, terminated: true }
+            return Option.some({ text, terminated: true })
           }
           if (current.eof) {
-            if (current.pending === '') return undefined
+            if (current.pending === '') return Option.none()
             yield* Ref.update(state, (value) => ({ ...value, pending: '' }))
-            return { text: current.pending, terminated: false }
+            return Option.some({ text: current.pending, terminated: false })
           }
           const bytes = yield* reader.read(current.position, 65536)
           const decoded =
@@ -314,7 +402,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     )
     const close = lock.withPermit(Ref.update(state, (value) => ({ ...value, closed: true })))
     yield* Effect.addFinalizer(() => close)
-    return { readLine }
+    return makeTextLineReader({ readLine })
   })
   const append = (value: string, content: string | Uint8Array) =>
     io(value, (resolved) =>
@@ -354,8 +442,8 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       const lines: string[] = []
       while (lines.length < max) {
         const line = yield* reader.readLine
-        if (line === undefined) break
-        lines.push(line.text)
+        if (Option.isNone(line)) break
+        lines.push(line.value.text)
       }
       return lines
     }, Effect.scoped),

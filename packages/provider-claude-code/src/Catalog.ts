@@ -1,3 +1,8 @@
+import type * as AiError from 'effect/ai/AiError'
+import type * as Cli from './Cli.ts'
+import type * as IntentServer from './IntentServer.ts'
+import * as HashMap from 'effect/HashMap'
+import * as Option from 'effect/Option'
 import * as Model from '@effect-harness/harness/Model'
 import { ModelError, ModelNoModel, ModelUnsupported } from '@effect-harness/harness/Error'
 import * as Usage from '@effect-harness/harness/Usage'
@@ -65,11 +70,23 @@ const usage = (value: Response.Usage, provider: Response.ProviderMetadata): Usag
   )
 }
 
+export interface Descriptor {
+  readonly ref: { provider: string; modelId: string }
+  readonly model: Model.Descriptor['model']
+  readonly contextWindow: number
+  readonly maxOutputTokens: number
+  readonly configure: (
+    options: Model.RequestOptions,
+  ) => Effect.Effect<Context.Context<never>, ModelError>
+  readonly usage: NonNullable<Model.Descriptor['usage']>
+  readonly classify: NonNullable<Model.Descriptor['classify']>
+}
+
 /** Native CLI catalogue. Transport and policy/history opt-ins remain explicit caller-owned Layers. */
 export const descriptor = Effect.fnUntraced(function* (
   entry: Entry,
   options?: Omit<Options, 'models'>,
-) {
+): Effect.fn.Return<Descriptor, ModelError | AiError.AiError, Cli.Cli | IntentServer.IntentServer> {
   yield* Schema.decodeEffect(Entry)(entry).pipe(
     Effect.mapError((cause) => fail('Invalid CLI catalogue entry or declared limits', cause)),
   )
@@ -136,18 +153,20 @@ export const descriptor = Effect.fnUntraced(function* (
     classify: (error) => Model.classify(error, 'claude-code'),
   } satisfies Model.Descriptor
 })
-export const layer = (options: Options) =>
+export const layer = (
+  options: Options,
+): Layer.Layer<Model.Catalog, ModelError | AiError.AiError, Cli.Cli | IntentServer.IntentServer> =>
   Layer.effect(Model.Catalog)(
     Effect.gen(function* () {
       if (new Set(options.models.map((entry) => entry.modelId)).size !== options.models.length)
         return yield* fail('Duplicate CLI catalogue model IDs')
       const entries = yield* Effect.forEach(options.models, (entry) => descriptor(entry, options))
-      const byId = new Map(entries.map((entry) => [entry.ref.modelId, entry]))
+      const byId = HashMap.fromIterable(entries.map((entry) => [entry.ref.modelId, entry]))
       return Model.Catalog.of({
         resolve: (ref) => {
-          const found = byId.get(ref.modelId)
-          return found !== undefined && found.ref.provider === ref.provider
-            ? Effect.succeed(found)
+          const found = HashMap.get(byId, ref.modelId)
+          return Option.isSome(found) && found.value.ref.provider === ref.provider
+            ? Effect.succeed(found.value)
             : Effect.fail(
                 new ModelError({
                   reason: new ModelNoModel({

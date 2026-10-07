@@ -1,3 +1,4 @@
+import * as Array from 'effect/Array'
 // Context projection adapted from pi-durable (MIT), pinned 636703a0.
 import * as Schema from 'effect/Schema'
 import * as Prompt from 'effect/ai/Prompt'
@@ -42,17 +43,20 @@ export const empty = (): View => ({ head: undefined, entries: [], contributions:
 /** Newest head marker precedes non-head range; every range entry's edits count, including removed old markers. */
 export function derive(visible: ReadonlyArray<Entry>, at?: EntryId): View {
   const upto = visible.filter((entry) => at === undefined || entry.id <= at)
-  const head = upto.findLast((entry) => entry.head !== undefined)
-  const range = upto.filter((entry) => head?.head === undefined || entry.id >= head.head)
+  const head = Array.findLast(upto, (entry) => entry.head !== undefined)
+  const range = upto.filter(
+    (entry) => Option.isNone(head) || head.value.head === undefined || entry.id >= head.value.head,
+  )
   const edits = new Map<EntryId, Edit>()
   for (const entry of range) for (const edit of entry.edits ?? []) edits.set(edit.target, edit)
-  const entries =
-    head === undefined ? range : [head, ...range.filter((entry) => entry.head === undefined)]
+  const entries = Option.isNone(head)
+    ? range
+    : [head.value, ...range.filter((entry) => entry.head === undefined)]
   const contributions = entries.map((entry) => {
-    const edit = edits.get(entry.id)
-    if (edit?.action === 'omit') return []
+    const edit = Option.fromUndefinedOr(edits.get(entry.id))
+    if (Option.isSome(edit) && edit.value.action === 'omit') return []
     let messages = entry.messages ?? []
-    if (edit?.action === 'replace') messages = edit.messages
+    if (Option.isSome(edit) && edit.value.action === 'replace') messages = edit.value.messages
     else if (entry.system !== undefined)
       messages = [
         ...systemMessages(entry.system),
@@ -65,7 +69,7 @@ export function derive(visible: ReadonlyArray<Entry>, at?: EntryId): View {
     )
   })
   return {
-    head,
+    head: Option.getOrUndefined(head),
     entries,
     contributions,
     messages: orderToolResults(contributions.flat()),
@@ -81,9 +85,13 @@ export function systemPatches(view: View): ReadonlyArray<SystemPatch> {
 /** Native managed messages to remove when projecting the effective named sections. Edited replacements remain normal native messages. */
 export function managedMessages(view: View): ReadonlyArray<Prompt.Message> {
   return view.entries.flatMap((entry, index) =>
-    (view.systems === undefined ? entry.system : view.systems[index]) === undefined
+    Option.isNone(
+      view.systems === undefined
+        ? Option.fromUndefinedOr(entry.system)
+        : Array.get(view.systems, index).pipe(Option.flatMap(Option.fromUndefinedOr)),
+    )
       ? []
-      : (view.contributions[index] ?? []),
+      : Option.getOrElse(Array.get(view.contributions, index), () => []),
   )
 }
 /** Move results into call order; first matching result before the next assistant wins; orphan results disappear. */
@@ -107,7 +115,7 @@ export function orderToolResults(
       ordered.push(
         Prompt.toolMessage({
           content: [
-            found.get(call.id) ??
+            Option.getOrElse(Option.fromUndefinedOr(found.get(call.id)), () =>
               Prompt.toolResultPart({
                 id: call.id,
                 name: call.name,
@@ -118,6 +126,7 @@ export function orderToolResults(
                   message: 'Tool result unavailable: history ends before this call completed.',
                 },
               }),
+            ),
           ],
         }),
       )
@@ -186,20 +195,24 @@ export function estimate(
   let tokens = 0
   let from = 0
   for (let index = view.entries.length - 1; index >= 0; index--) {
-    const entry = view.entries[index]
-    const contribution = view.contributions[index]
+    const entry = Array.get(view.entries, index)
+    const contribution = Array.get(view.contributions, index)
     if (
-      entry === undefined ||
-      entry.id <= (view.head?.id ?? -Infinity) ||
-      entry.usage === undefined ||
-      contribution === undefined
+      Option.isNone(entry) ||
+      entry.value.id <= (view.head?.id ?? -Infinity) ||
+      entry.value.usage === undefined ||
+      Option.isNone(contribution)
     )
       continue
-    const assistant = contribution.findLast((message) => message.role === 'assistant')
-    const measured = Usage.contextTokens(entry.usage)
-    if (assistant === undefined || measured <= 0) continue
+    const assistant = Array.findLast(contribution.value, (message) => message.role === 'assistant')
+    const measured = Usage.contextTokens(entry.value.usage)
+    if (Option.isNone(assistant) || measured <= 0) continue
     tokens = measured
-    from = view.messages.lastIndexOf(assistant) + 1
+    from =
+      Option.getOrElse(
+        Array.findLastIndex(view.messages, (message) => message === assistant.value),
+        () => -1,
+      ) + 1
     break
   }
   for (const message of [...view.messages.slice(from), ...extra]) tokens += tokenize(message)
@@ -221,3 +234,5 @@ export function delta(
     added: current.entries.filter((entry) => !before.has(entry.id)),
   }
 }
+
+export const isEdit: (input: unknown) => input is Edit = Schema.is(Edit)

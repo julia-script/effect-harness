@@ -39,7 +39,9 @@ describe('public observer/native compensation lifetime', () => {
         )
         const structural = yield* (yield* View.View).watch(root.id)
         const semantic = yield* (yield* Event.Event).watch(root.id)
-        const document = yield* session.watchDoc(Conversation.AgentDoc, { owner: root.id })
+        const document = yield* session
+          .watchDoc(Conversation.AgentDoc, { owner: root.id })
+          .pipe(Effect.map(Option.getOrUndefined))
         assert.ok(document)
         const started = yield* Deferred.make<void>()
         const release = yield* Deferred.make<void>()

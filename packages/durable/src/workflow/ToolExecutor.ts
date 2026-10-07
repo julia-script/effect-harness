@@ -1,3 +1,7 @@
+import * as Arr from 'effect/Array'
+import type * as Agent from '@effect-harness/harness/Agent'
+import type { StorageError } from '../StorageError.ts'
+import * as Option from 'effect/Option'
 import * as Entry from '../Entry.ts'
 import * as Serialization from '../Serialization.ts'
 import { ToolCheckpoint } from './Outcome.ts'
@@ -53,7 +57,7 @@ export const appendResult = Effect.fnUntraced(function* (
     'conversationId' | 'assistantId' | 'callId' | 'name'
   > & { readonly taskId?: Record.TaskId },
   execution: Tool.Execution,
-) {
+): Effect.fn.Return<Record.Entry, StorageError | ExecutionError> {
   const result = yield* ToolResult.encode(execution.result).pipe(Effect.mapError(codecError))
   const model = yield* Schema.encodeEffect(Schema.toCodecJson(Schema.Array(Prompt.Message)))([
     Prompt.toolMessage({
@@ -100,8 +104,14 @@ const progress =
     session
       .transaction(
         Effect.fnUntraced(function* (tx) {
-          const task = yield* tx.task(payload.taskId)
-          if (task === undefined || task.state.status === 'terminal' || task.abortRequested) return
+          const taskOption = yield* tx.task(payload.taskId)
+          if (
+            Option.isNone(taskOption) ||
+            taskOption.value.state.status === 'terminal' ||
+            taskOption.value.abortRequested
+          )
+            return
+
           const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
           const slot = live.tools?.find((slot) => slot.callId === payload.callId)
           if (slot === undefined) return
@@ -145,10 +155,12 @@ export const layer: Layer.Layer<
     const settlementContext = yield* Effect.context<
       Cancellation.Cancellation | Ownership.Declarations | WorkflowEngine.WorkflowEngine
     >()
-    const state =
-      (yield* session
-        .snapshot(Conversation.AgentDoc, { owner: payload.conversationId })
-        .pipe(Effect.mapError(storageError)))?.value ?? {}
+    const state: Agent.State = yield* session
+      .snapshot(Conversation.AgentDoc, { owner: payload.conversationId })
+      .pipe(
+        Effect.mapError(storageError),
+        Effect.map(Option.match({ onNone: () => ({}), onSome: (snapshot) => snapshot.value })),
+      )
     const invocation = Invocation.Invocation.of({
       cwd: state.cwd ?? config.cwd,
       report: config.report,
@@ -166,15 +178,15 @@ export const layer: Layer.Layer<
         session,
         Effect.gen(function* () {
           const task = yield* session.task(payload.taskId).pipe(Effect.mapError(storageError))
-          if (task?.abortRequested)
+          if (Option.exists(task, (value) => value.abortRequested))
             return yield* new ExecutionError({
               reason: new Aborted({ message: 'Tool aborted before intent' }),
             })
           const persisted = yield* session
             .snapshot(IntentDoc, { owner: payload.taskId })
             .pipe(Effect.mapError(storageError))
-          if (persisted !== undefined)
-            return { type: 'intent' as const, intent: persisted.value.intent }
+          if (Option.isSome(persisted))
+            return { type: 'intent' as const, intent: persisted.value.value.intent }
           const intent = yield* Effect.result(
             executor
               .prepareTool(agent, {
@@ -221,8 +233,9 @@ export const layer: Layer.Layer<
         .transaction(
           Effect.fnUntraced(function* (tx) {
             const graph = yield* Ownership.readGraph(tx)
-            const task = yield* tx.task(payload.taskId)
-            if (task === undefined) return yield* invalid('Tool task projection is absent')
+            const taskOption = yield* tx.task(payload.taskId)
+            if (Option.isNone(taskOption)) return yield* invalid('Tool task projection is absent')
+            const task = taskOption.value
             if (task.state.status === 'terminal' || task.state.status === 'completing')
               return task.state.outcome ?? null
             const entry = yield* appendResult(tx, payload, execution)
@@ -261,14 +274,17 @@ export const layer: Layer.Layer<
       error: ExecutionErrorCodec,
       execute: Effect.gen(function* () {
         const task = yield* session.task(payload.taskId).pipe(Effect.mapError(storageError))
-        if (task?.state.status === 'terminal' || task?.state.status === 'completing') {
+        if (
+          Option.isSome(task) &&
+          (task.value.state.status === 'terminal' || task.value.state.status === 'completing')
+        ) {
           yield* Structured.drain(session, payload.taskId, payload.sessionId).pipe(
             Effect.mapError((error) =>
               error._tag === 'StorageError' ? storageError(error) : error,
             ),
           )
           return yield* Schema.decodeEffect(Schema.toCodecJson(Outcome))(
-            task.state.outcome ?? null,
+            task.value.state.outcome ?? null,
           ).pipe(Effect.mapError(codecError))
         }
         const committed = yield* Ref.make<Record.Json | undefined>(undefined)
@@ -288,8 +304,10 @@ export const layer: Layer.Layer<
           const recovering = yield* session
             .transaction(
               Effect.fnUntraced(function* (tx) {
-                const task = yield* tx.task(payload.taskId)
-                if (task === undefined) return yield* invalid('Tool task projection is absent')
+                const taskOption = yield* tx.task(payload.taskId)
+                if (Option.isNone(taskOption))
+                  return yield* invalid('Tool task projection is absent')
+                const task = taskOption.value
                 if (task.abortRequested)
                   return yield* new ExecutionError({
                     reason: new Aborted({ message: 'Tool aborted before execution' }),
@@ -320,8 +338,10 @@ export const layer: Layer.Layer<
             )
           const previous = (yield* session
             .snapshot(Inbox.LiveDoc, { owner: payload.conversationId })
-            .pipe(Effect.mapError(storageError)))?.value.tools?.find(
-            (slot) => slot.callId === payload.callId,
+            .pipe(Effect.mapError(storageError))).pipe(
+            Option.flatMap((snapshot) =>
+              Arr.findFirst(snapshot.value.tools ?? [], (slot) => slot.callId === payload.callId),
+            ),
           )
           const execution = yield* Cancellation.run(
             payload,
@@ -331,14 +351,17 @@ export const layer: Layer.Layer<
                 recovering,
                 settings: config.settings,
                 commit,
-                previous: {
-                  content:
-                    previous?.output === undefined
-                      ? []
-                      : [Prompt.textPart({ text: previous.output })],
-                  ...(previous?.details === undefined ? {} : { details: previous.details }),
-                  diagnostics: previous?.diagnostics ?? [],
-                },
+                previous: Option.match(previous, {
+                  onNone: () => ({ content: [], diagnostics: [] }),
+                  onSome: (previous) => ({
+                    content:
+                      previous.output === undefined
+                        ? []
+                        : [Prompt.textPart({ text: previous.output })],
+                    ...(previous.details === undefined ? {} : { details: previous.details }),
+                    diagnostics: previous.diagnostics ?? [],
+                  }),
+                }),
               })
               .pipe(Effect.provideService(Invocation.Invocation, invocation)),
           ).pipe(
@@ -348,16 +371,36 @@ export const layer: Layer.Layer<
                   const live = yield* session
                     .snapshot(Inbox.LiveDoc, { owner: payload.conversationId })
                     .pipe(Effect.mapError(storageError))
-                  const slot = live?.value.tools?.find((slot) => slot.callId === payload.callId)
+                  const slot = live.pipe(
+                    Option.flatMap((snapshot) =>
+                      Arr.findFirst(
+                        snapshot.value.tools ?? [],
+                        (slot) => slot.callId === payload.callId,
+                      ),
+                    ),
+                  )
                   return {
                     outcome: 'interrupted' as const,
                     result: {
                       isError: true,
                       content: [
-                        Prompt.textPart({ text: slot?.output ?? 'Tool execution interrupted' }),
+                        Prompt.textPart({
+                          text: slot.pipe(
+                            Option.map((value) => value.output ?? 'Tool execution interrupted'),
+                            Option.getOrElse(() => 'Tool execution interrupted'),
+                          ),
+                        }),
                       ],
-                      ...(slot?.details === undefined ? {} : { details: slot.details }),
-                      ...(slot?.diagnostics === undefined ? {} : { diagnostics: slot.diagnostics }),
+                      ...Option.match(slot, {
+                        onNone: () => ({}),
+                        onSome: (slot) =>
+                          slot.details === undefined ? {} : { details: slot.details },
+                      }),
+                      ...Option.match(slot, {
+                        onNone: () => ({}),
+                        onSome: (slot) =>
+                          slot.diagnostics === undefined ? {} : { diagnostics: slot.diagnostics },
+                      }),
                     },
                   }
                 }),

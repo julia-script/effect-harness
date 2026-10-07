@@ -6,7 +6,9 @@ import type { StorageError } from '../StorageError.ts'
 import type { Store } from '../Store.ts'
 import * as Sqlite from './Sqlite.ts'
 
-export const layer = (options: SqliteClient.SqliteClientConfig) =>
+export const layer = (
+  options: SqliteClient.SqliteClientConfig,
+): Layer.Layer<Store, StorageError | SqlError.SqlError> =>
   Sqlite.layer.pipe(Layer.provide(SqliteClient.layer(options)))
 
 /** Resolve native database options through the caller's ConfigProvider, retaining acquisition errors. */

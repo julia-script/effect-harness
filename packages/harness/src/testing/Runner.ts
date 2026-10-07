@@ -4,7 +4,7 @@ import type * as Layer from 'effect/Layer'
 import type { Env, ExecutionError, FileError } from '../Env.ts'
 import { createEnvConformance, withEnv, type Options } from './EnvConformance.ts'
 
-export interface Runner<E, R> {
+export interface Runner<in E, in R> {
   readonly describe: (name: string, suite: () => void) => unknown
   readonly test: (
     name: string,

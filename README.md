@@ -22,6 +22,8 @@ bun run --cwd apps/example test
 
 It uses a deterministic native LanguageModel and AI Toolkit, all harness Workflow executors, and a real SQLite-backed native Workflow engine. It prints `native-workflow-example-ok` without credentials or inference requests. Keeping `EXAMPLE_DB` across runs demonstrates persisted receipt replay.
 
+`bun run check` checks formatting, strict lint, source and runtime-test types, and public type assertions against freshly built declarations. Source builds use native TypeScript `7.0.2`; the pinned TSTyche runner uses TypeScript `6.0.3` for its compiler-API assertions. Run `bun run test` for the full behavioral and physical-restart suites.
+
 This checkout requires the [pinned Effect patch](patches/effect@4.0.1.patch), applied by Bun through root `patchedDependencies`. It adds an opt-in native AI `allowUnknownToolCalls` flag for caller-owned unavailable-tool settlement, and moves native Cluster Activity readiness before SQL transaction acquisition to avoid a reproduced recovery deadlock. Activity body/reply storage remains in the native transaction; ordinary Workflow authoring APIs stay the same. Installing these packages with an unpatched Effect dependency elsewhere does not supply these behaviors; no published npm distribution is assumed. See [dependency requirements and parity scope](docs/parity.md).
 
 Applications declare Workflows with `Workflow.make`, implement them with `toLayer`, and supply a native WorkflowEngine. The durable package supplies domain state and executor Layers. Effect owns execution identities, activity replay, suspension, timers and workflow results; the harness records conversation facts and controls recovery at external side-effect boundaries.

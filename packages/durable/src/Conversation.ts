@@ -111,7 +111,11 @@ export const layerConfiguration = (
   )
 
 /** Provide this to Session.layer so raw transaction creation and native Workflow creation share atomic initialization. */
-export const layerCreation = Layer.effect(Session.CreationHook)(
+export const layerCreation: Layer.Layer<
+  Session.CreationHook,
+  never,
+  Configuration | Crypto.Crypto
+> = Layer.effect(Session.CreationHook)(
   Effect.gen(function* () {
     const config = yield* Configuration
     const crypto = yield* Crypto.Crypto
@@ -226,8 +230,8 @@ export const context = Effect.fnUntraced(function* (
   session: Session.Service,
   conversationId: Record.ConversationId,
   at?: Record.EntryId,
-) {
-  if (at !== undefined && (yield* session.entry(at, conversationId)) === undefined)
+): Effect.fn.Return<ConversationContext.View, StorageError | ExecutionError> {
+  if (at !== undefined && Option.isNone(yield* session.entry(at, conversationId)))
     return yield* new ExecutionError({
       reason: new InvalidArguments({
         message: 'Context cutoff is not visible in this conversation',
@@ -258,7 +262,9 @@ export const context = Effect.fnUntraced(function* (
 })
 
 /** Reset is an ordinary entry draft admitted by Submission; transcript, agent, usage and provider identity remain durable. */
-export const resetDraft = Effect.fnUntraced(function* (note?: string) {
+export const resetDraft = Effect.fnUntraced(function* (
+  note?: string,
+): Effect.fn.Return<Record.EntryDraft, ExecutionError> {
   const message =
     note === undefined ? [] : [Prompt.userMessage({ content: [Prompt.textPart({ text: note })] })]
   const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(Schema.Array(Prompt.Message)))(
@@ -308,7 +314,7 @@ export class Conversation extends Context.Service<
   }
 >()('@effect-harness/durable/Conversation') {}
 
-export const layer = Layer.effect(Conversation)(
+export const layer: Layer.Layer<Conversation, never, Session.Session> = Layer.effect(Conversation)(
   Effect.gen(function* () {
     const session = yield* Session.Session
     return Conversation.of({
@@ -320,7 +326,7 @@ export const layer = Layer.effect(Conversation)(
       configure: (id, change) =>
         session.transaction(
           Effect.fnUntraced(function* (tx) {
-            if ((yield* tx.conversation(id)) === undefined)
+            if (Option.isNone(yield* tx.conversation(id)))
               return yield* rejected('Conversation is absent', NotFound)
             const draft = yield* tx.doc(AgentDoc, { owner: id })
             const next = Agent.configure(draft, change)
@@ -358,14 +364,16 @@ export const awaitIdle = Effect.fnUntraced(function* (
             : [id]
         const tasks = new Map<Record.TaskId, Record.Task>()
         for (const root of roots) {
-          const reached = Ownership.reach(state, { kind: 'conversation', id: root })
-          if (reached === undefined) return yield* rejected('Conversation is absent', NotFound)
+          const reachedOption = Ownership.reach(state, { kind: 'conversation', id: root })
+          if (Option.isNone(reachedOption))
+            return yield* rejected('Conversation is absent', NotFound)
+          const reached = reachedOption.value
           for (const task of reached.tasks) tasks.set(task.id, task)
         }
         if (tasks.size === 0) return
         for (const task of tasks.values()) {
-          const failure = Option.getOrUndefined(HashMap.get(yield* Ref.get(failures), task.id))
-          if (failure !== undefined) return yield* failure
+          const failure = HashMap.get(yield* Ref.get(failures), task.id)
+          if (Option.isSome(failure)) return yield* failure.value
           if (HashSet.has(yield* Ref.get(started), task.id)) continue
           const binding = yield* Schema.decodeUnknownEffect(Ownership.Binding)(task.input).pipe(
             Effect.mapError(
@@ -378,7 +386,7 @@ export const awaitIdle = Effect.fnUntraced(function* (
                 }),
             ),
           )
-          if (declarations.get(binding.workflow) === undefined) continue
+          if (Option.isNone(declarations.get(binding.workflow))) continue
           yield* Ref.update(started, HashSet.add(task.id))
           yield* Ownership.execute(binding).pipe(
             Effect.catch((error) => Ref.update(failures, HashMap.set(task.id, error))),

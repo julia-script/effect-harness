@@ -1,3 +1,6 @@
+import { identity } from 'effect/Function'
+import * as Types from 'effect/Types'
+import * as Predicate from 'effect/Predicate'
 import * as Schema from 'effect/Schema'
 import * as Result from 'effect/Result'
 import * as Struct from 'effect/Struct'
@@ -182,12 +185,12 @@ export type Point = Seq | 'current'
 export const Op = Schema.Union([
   Schema.Tuple([
     Schema.Literal('set'),
-    Schema.Array(Schema.Union([Schema.String, Schema.Finite])),
+    Schema.NonEmptyArray(Schema.Union([Schema.String, Schema.Finite])),
     Schema.Json,
   ]),
   Schema.Tuple([
     Schema.Literal('delete'),
-    Schema.Array(Schema.Union([Schema.String, Schema.Finite])),
+    Schema.NonEmptyArray(Schema.Union([Schema.String, Schema.Finite])),
   ]),
   Schema.Tuple([Schema.Literal('replace'), Schema.JsonObject]),
 ])
@@ -262,27 +265,30 @@ export const Frame = Schema.Struct({
   documents: Schema.Array(Publication),
 })
 export type Frame = typeof Frame.Type
-export interface Page<A> {
+const PageTypeId = '~@effect-harness/durable/Record/Page'
+export interface Page<out A> {
+  readonly [PageTypeId]: { readonly _A: Types.Covariant<A> }
+
   readonly items: ReadonlyArray<A>
   readonly next?: { readonly after: number }
 }
 export type Cursor = { readonly after: number }
-export const addressKey = (address: Address) =>
+export const addressKey = (address: Address): string =>
   JSON.stringify([
     address.kind,
     scopeKey(address.scope),
     address.key === undefined ? ['singleton'] : ['family', address.key],
   ])
-export const scopeKey = (scope: Scope) => {
+export const scopeKey = (scope: Scope): string => {
   if (scope.kind === 'session') return 'session'
   if (scope.kind === 'conversation') return `conversation:${scope.conversationId}`
   return `task:${scope.taskId}`
 }
-export const isAlive = (record: Document, at: Point) =>
+export const isAlive = (record: Document, at: Point): boolean =>
   at === 'current'
     ? record.retiredAt === undefined
     : record.createdAt <= at && (record.retiredAt === undefined || at < record.retiredAt)
-export const currentOnly = (record: DocumentCreate) =>
+export const currentOnly = (record: DocumentCreate): boolean =>
   record.scope.kind !== 'conversation' || record.history === 'latest'
 export const emptyState = (): State => ({
   format: 1,
@@ -300,7 +306,9 @@ export type TypedEntry<D extends Json> = Omit<Entry, 'data'> &
   ([D] extends [never] ? { readonly data?: never } : { readonly data: D })
 export type TypedEntryDraft<D extends Json> = Omit<EntryDraft, 'kind' | 'data'> &
   ([D] extends [never] ? { readonly data?: never } : { readonly data: D })
-export interface EntryToken<K extends string = string> {
+const EntryTokenTypeId = '~@effect-harness/durable/Record/EntryToken'
+export interface EntryToken<out K extends string = string> {
+  readonly [EntryTokenTypeId]: { readonly _K: Types.Covariant<K> }
   readonly kind: K
   readonly is: (entry: Entry | undefined) => entry is Entry & { readonly kind: K }
 }
@@ -322,15 +330,37 @@ export const defineEntry = <const K extends string, S extends Schema.Constraint>
 ): Result.Result<DecodedEntryToken<K, S>, EntryDefinitionError> =>
   kind.length === 0
     ? Result.fail(new EntryDefinitionError({ message: 'Entry kind must be nonempty' }))
-    : Result.succeed({
-        kind,
-        is: (entry: Entry | undefined): entry is Entry & { readonly kind: K } =>
-          entry?.kind === kind,
-        schema,
-        decode: Schema.decodeUnknownEffect(schema),
-      })
+    : Result.succeed(
+        makeEntryToken({
+          kind,
+          is: (entry: Entry | undefined): entry is Entry & { readonly kind: K } =>
+            entry?.kind === kind,
+          schema,
+          decode: Schema.decodeUnknownEffect(schema),
+        }),
+      )
 export const defineEntryUnsafe = <const K extends string, S extends Schema.Constraint>(
   kind: K,
   schema: S,
 ): DecodedEntryToken<K, S> => Result.getOrThrow(defineEntry(kind, schema))
 export const SubmissionStatus = Schema.Literals(['queued', 'placed', 'done', 'unanswered'])
+
+export const makePage = <A>(input: Omit<Page<A>, typeof PageTypeId>): Page<A> => {
+  const value = Object.assign({}, input, { [PageTypeId]: { _A: identity } })
+  Object.defineProperties(value, Object.getOwnPropertyDescriptors(input))
+  Object.defineProperty(value, PageTypeId, { enumerable: false })
+  return value
+}
+export const isPage = (input: unknown): input is Page<unknown> =>
+  Predicate.hasProperty(input, PageTypeId)
+
+export const makeEntryToken = <K extends string, S extends Schema.Constraint>(
+  input: Omit<DecodedEntryToken<K, S>, typeof EntryTokenTypeId>,
+): DecodedEntryToken<K, S> => {
+  const value = Object.assign({}, input, { [EntryTokenTypeId]: { _K: identity } })
+  Object.defineProperties(value, Object.getOwnPropertyDescriptors(input))
+  Object.defineProperty(value, EntryTokenTypeId, { enumerable: false })
+  return value
+}
+export const isEntryToken = (input: unknown): input is EntryToken =>
+  Predicate.hasProperty(input, EntryTokenTypeId)

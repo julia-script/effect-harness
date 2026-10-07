@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as DateTime from 'effect/DateTime'
 // Read selection/truncation adapted from pi-durable (MIT), pinned 636703a0; see ../LICENSE.pi.txt.
 import * as SchemaField from '../SchemaField.ts'
@@ -65,7 +66,7 @@ const readText = Effect.fnUntraced(function* (
 ): Effect.fn.Return<ToolResult, import('../Env.ts').FileError | ToolError> {
   const { path, offset, limit } = input
   const mime = yield* Image.detectSupportedImageMimeTypeOf({ size: info.size, read: reader.read })
-  if (mime !== undefined)
+  if (Option.isSome(mime))
     return {
       content: [],
       isError: true,
@@ -73,7 +74,7 @@ const readText = Effect.fnUntraced(function* (
         {
           kind: 'unsupported_image',
           detail: { severity: 'error' },
-          message: `${path} is an image (${mime}); reading images is not supported`,
+          message: `${path} is an image (${mime.value}); reading images is not supported`,
         },
       ],
     }
@@ -158,7 +159,9 @@ const readText = Effect.fnUntraced(function* (
 class FileChanged extends Schema.TaggedError<FileChanged>(
   '@effect-harness/harness/tools/Read/FileChanged',
 )('FileChanged', {}) {}
-export const handler = Effect.fnUntraced(function* (input: Input) {
+export const handler = Effect.fnUntraced(function* (
+  input: Input,
+): Effect.fn.Return<ToolResult, ToolError, Env | Invocation> {
   const env = yield* Env
   const absolute = yield* Path.resolveRead(input.path).pipe(
     Effect.mapError(
@@ -208,3 +211,5 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
     ),
   )
 })
+
+export const isInput: (input: unknown) => input is typeof Parameters.Type = Schema.is(Parameters)

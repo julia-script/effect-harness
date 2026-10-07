@@ -1,3 +1,5 @@
+// These integration cases exercise native Workflow Activity execution and AI stream callbacks on their captured runtime; live waits below admit those engine/stream transitions, while retry deadline arithmetic is tested with an explicitly supplied modeled Clock.
+import * as Option from 'effect/Option'
 import * as Duration from 'effect/Duration'
 import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
@@ -102,7 +104,7 @@ const fakeGeneration = (
         execute: session
           .transaction(
             Effect.fnUntraced(function* (tx) {
-              const task = yield* tx.task(payload.taskId)
+              const task = yield* tx.task(payload.taskId).pipe(Effect.map(Option.getOrUndefined))
               if (task === undefined)
                 return yield* new ExecutionError({
                   reason: new InvalidState({ message: 'Missing generation' }),
@@ -199,11 +201,11 @@ describe('native submission executor', () => {
                 deferred: {
                   inspect: (parts) =>
                     parts.some((part) => part.type === 'finish' && part.reason === 'other')
-                      ? {
+                      ? Option.some({
                           handle: { job: 'pinned' },
                           pollAfterMs: Duration.millis(abort ? 60000 : 0),
-                        }
-                      : undefined,
+                        })
+                      : Option.none(),
                   fetch: (handle, options) =>
                     Stream.unwrap(
                       Effect.gen(function* () {
@@ -254,9 +256,12 @@ describe('native submission executor', () => {
               if (abort) {
                 yield* Effect.gen(function* () {
                   while (
-                    (yield* session.snapshot(Inbox.LiveDoc, { owner: Record.ROOT_CONVERSATION_ID }))
-                      ?.value.generation?.deferred === undefined
+                    (yield* session
+                      .snapshot(Inbox.LiveDoc, { owner: Record.ROOT_CONVERSATION_ID })
+                      .pipe(Effect.map(Option.getOrUndefined)))?.value.generation?.deferred ===
+                    undefined
                   )
+                    // The native Workflow must commit its deferred checkpoint before an external Abort may target it; poll physical admission on the engine clock.
                     yield* Effect.sleep('5 millis')
                 }).pipe(Effect.timeout('3 seconds'))
                 const reached = yield* Abort.execute({
@@ -437,7 +442,9 @@ describe('native submission executor', () => {
             )
             if (scenario !== 'overflow-incomplete')
               assert.isTrue((yield* Ref.get(yielded)).every((text) => text.startsWith('answer-')))
-            const live = yield* session.snapshot(Inbox.LiveDoc, { owner: root.id })
+            const live = yield* session
+              .snapshot(Inbox.LiveDoc, { owner: root.id })
+              .pipe(Effect.map(Option.getOrUndefined))
             assert.strictEqual(live?.value.run, undefined)
             assert.strictEqual(live?.value.generation, undefined)
             if (scenario === 'eof-retry' || scenario === 'eof-exhaustion') {
@@ -554,18 +561,23 @@ describe('native submission executor', () => {
               assert.strictEqual(options?.maxTokens, 80)
               assert.strictEqual(options?.cache, 'none')
               assert.match(options?.sessionId ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-7/)
-              const ledger = yield* session.snapshot(DurableUsage.UsageDoc, { owner: root.id })
+              const ledger = yield* session
+                .snapshot(DurableUsage.UsageDoc, { owner: root.id })
+                .pipe(Effect.map(Option.getOrUndefined))
               assert.strictEqual(ledger?.value.models['test/summary']?.totalTokens, 13)
               assert.strictEqual(
-                (yield* session.snapshot(Inbox.LiveDoc, { owner: root.id }))?.value.compactions
-                  ?.length,
+                (yield* session
+                  .snapshot(Inbox.LiveDoc, { owner: root.id })
+                  .pipe(Effect.map(Option.getOrUndefined)))?.value.compactions?.length,
                 0,
               )
               if (reason === 'stop') {
                 assert.strictEqual(result._tag, 'Success')
                 if (result._tag !== 'Success') return
                 assert.isDefined(result.success.submissionId)
-                const submission = yield* session.submission(result.success.submissionId!)
+                const submission = yield* session
+                  .submission(result.success.submissionId!)
+                  .pipe(Effect.map(Option.getOrUndefined))
                 assert.strictEqual(submission?.status, 'done')
                 const view = yield* Conversation.context(session, root.id)
                 assert.isDefined(view.head)
@@ -699,9 +711,11 @@ describe('native submission executor', () => {
           assert.strictEqual(ids.length, 2)
           assert.strictEqual(ids[0], ids[1])
           assert.match(ids[0] ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-7/)
-          const ledger = yield* session.snapshot(DurableUsage.UsageDoc, {
-            owner: Record.ROOT_CONVERSATION_ID,
-          })
+          const ledger = yield* session
+            .snapshot(DurableUsage.UsageDoc, {
+              owner: Record.ROOT_CONVERSATION_ID,
+            })
+            .pipe(Effect.map(Option.getOrUndefined))
           assert.strictEqual(ledger?.value.models['test/model']?.totalTokens, 30)
           assert.strictEqual(ledger?.value.models['test/model']?.cost.known, false)
         }).pipe(Effect.provide(layers))
@@ -814,15 +828,25 @@ describe('native submission executor', () => {
             assert.strictEqual(result.status, mode === 'unsafe-recovery' ? 'aborted' : 'completed')
             assert.strictEqual(yield* Ref.get(calls), mode === 'unsafe-recovery' ? 0 : 1)
             assert.strictEqual(yield* Ref.get(hooks), mode === 'fresh' ? 1 : 0)
-            const entry = yield* session.entry(result.entryId)
+            const entry = yield* session
+              .entry(result.entryId)
+              .pipe(Effect.map(Option.getOrUndefined))
             assert.isDefined(entry)
-            assert.strictEqual((yield* session.task(payload.taskId))?.state.status, 'terminal')
+            assert.strictEqual(
+              (yield* session.task(payload.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+                .status,
+              'terminal',
+            )
             assert.isUndefined(
-              yield* session.snapshot(ToolExecutor.IntentDoc, { owner: payload.taskId }),
+              yield* session
+                .snapshot(ToolExecutor.IntentDoc, { owner: payload.taskId })
+                .pipe(Effect.map(Option.getOrUndefined)),
             )
             assert.deepStrictEqual(yield* ToolCall.execute(payload), result)
             assert.strictEqual(yield* Ref.get(calls), mode === 'unsafe-recovery' ? 0 : 1)
-            const outcome = (yield* session.task(payload.taskId))?.state.outcome
+            const outcome = (yield* session
+              .task(payload.taskId)
+              .pipe(Effect.map(Option.getOrUndefined)))?.state.outcome
             const decoded = yield* Schema.decodeEffect(Schema.toCodecJson(ToolExecutor.Outcome))(
               outcome ?? null,
             )
@@ -863,7 +887,9 @@ describe('native submission executor', () => {
         assert.isDefined(receipt.entry)
         const session = yield* Session.Session
         assert.deepStrictEqual(
-          (yield* session.snapshot(Inbox.LiveDoc, { owner: receipt.conversationId }))?.value,
+          (yield* session
+            .snapshot(Inbox.LiveDoc, { owner: receipt.conversationId })
+            .pipe(Effect.map(Option.getOrUndefined)))?.value,
           {},
         )
         const tasks = (yield* session.scanTasks({}, 10)).items
@@ -959,22 +985,20 @@ describe('ownership domain capabilities', () => {
       ],
     }
     assert.deepStrictEqual(
-      Ownership.reach(graph, { kind: 'conversation', id: Record.ROOT_CONVERSATION_ID })?.tasks.map(
-        (value) => value.id,
-      ),
+      Option.getOrUndefined(
+        Ownership.reach(graph, { kind: 'conversation', id: Record.ROOT_CONVERSATION_ID }),
+      )?.tasks.map((value) => value.id),
       [3, 7, 2],
     )
     assert.deepStrictEqual(
-      Ownership.reach(graph, { kind: 'task', id: Schema.decodeSync(Record.TaskId)(4) })?.tasks.map(
-        (value) => value.id,
-      ),
+      Option.getOrUndefined(
+        Ownership.reach(graph, { kind: 'task', id: Schema.decodeSync(Record.TaskId)(4) }),
+      )?.tasks.map((value) => value.id),
       [5, 4],
     )
     assert.deepStrictEqual(
-      Ownership.reach(
-        graph,
-        { kind: 'conversation', id: Record.ROOT_CONVERSATION_ID },
-        true,
+      Option.getOrUndefined(
+        Ownership.reach(graph, { kind: 'conversation', id: Record.ROOT_CONVERSATION_ID }, true),
       )?.tasks.map((value) => value.id),
       [3, 5, 4, 7, 2],
     )
@@ -1020,7 +1044,12 @@ describe('ownership domain capabilities', () => {
             assert.strictEqual(second, 'saved')
             assert.strictEqual(yield* Ref.get(count), 1)
           }).pipe(Effect.provide(scope))
-          assert.isTrue(Object.hasOwn((yield* session.task(taskId))?.memos ?? {}, '__proto__'))
+          assert.isTrue(
+            Object.hasOwn(
+              (yield* session.task(taskId).pipe(Effect.map(Option.getOrUndefined)))?.memos ?? {},
+              '__proto__',
+            ),
+          )
         }),
       ),
   )

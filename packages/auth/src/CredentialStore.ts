@@ -1,3 +1,4 @@
+import * as Arr from 'effect/Array'
 import * as Ref from 'effect/Ref'
 import * as Config from 'effect/Config'
 import * as Context from 'effect/Context'
@@ -46,7 +47,9 @@ const Snapshot = Schema.Struct({
 type Snapshot = typeof Snapshot.Type
 const empty: Snapshot = { version: 1, entries: [], hosts: [] }
 const find = (snapshot: Snapshot, key: string) =>
-  Option.fromUndefinedOr(snapshot.entries.find((entry) => entry.key === key)?.value)
+  Arr.findFirst(snapshot.entries, (entry) => entry.key === key).pipe(
+    Option.map((entry) => entry.value),
+  )
 const replace = (snapshot: Snapshot, key: string, value: Credential | undefined): Snapshot => ({
   ...snapshot,
   entries: [
@@ -89,8 +92,8 @@ const makeService = (
       modify,
       hostId: Effect.fnUntraced(function* (provider) {
         const snapshot = yield* read
-        const existing = snapshot.hosts.find((host) => host.provider === provider)
-        if (existing !== undefined) return existing.id
+        const existing = Arr.findFirst(snapshot.hosts, (host) => host.provider === provider)
+        if (Option.isSome(existing)) return existing.value.id
         const id = `urn:uuid:${yield* uuid}`
         yield* write({ ...snapshot, hosts: [...snapshot.hosts, { provider, id }] })
         return id
@@ -98,7 +101,9 @@ const makeService = (
     })
   })
 
-export const layerMemory = Layer.effect(CredentialStore)(
+export const layerMemory: Layer.Layer<CredentialStore, never, Crypto.Crypto> = Layer.effect(
+  CredentialStore,
+)(
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto
     const mutex = yield* Semaphore.make(1)
@@ -116,7 +121,7 @@ export const layerMemory = Layer.effect(CredentialStore)(
 export const layerProtectedFile = (options: {
   readonly path: string
   readonly lockRetries?: number | undefined
-}) =>
+}): Layer.Layer<CredentialStore, AuthError, Crypto.Crypto | FileSystem.FileSystem | Path.Path> =>
   Layer.effect(CredentialStore)(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem

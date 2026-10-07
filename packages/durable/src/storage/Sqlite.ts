@@ -72,7 +72,7 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
 ]
 export const migrate = Effect.fnUntraced(function* (
   migrations: ReadonlyArray<Migration> = MIGRATIONS,
-) {
+): Effect.fn.Return<void, StorageError, SqlClient.SqlClient> {
   const sql = yield* SqlClient.SqlClient
   if (migrations.some((migration, index) => migration.version !== index + 1))
     return yield* rejected('Migrations must have contiguous versions starting at 1')
@@ -221,4 +221,7 @@ export const make: Effect.Effect<
         ),
   })
 })
-export const layer = Layer.effect(Store, make)
+export const layer: Layer.Layer<Store, StorageError, SqlClient.SqlClient> = Layer.effect(
+  Store,
+  make,
+)

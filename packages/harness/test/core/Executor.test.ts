@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as Duration from 'effect/Duration'
 import * as DateTime from 'effect/DateTime'
 import * as Time from '../../src/Time.ts'
@@ -9,7 +10,6 @@ import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
-import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
@@ -30,7 +30,14 @@ import {
   Disposition,
 } from '../../src/Executor.ts'
 import type * as Extension from '../../src/Extension.ts'
-import { HookError, ToolError, HookFailure, ToolExecution } from '../../src/Error.ts'
+import {
+  HookError,
+  ToolError,
+  HookFailure,
+  ToolExecution,
+  ModelError,
+  ModelNoModel,
+} from '../../src/Error.ts'
 import { Invocation, ToolCall, Result } from '../../src/Invocation.ts'
 import * as Model from '../../src/Model.ts'
 import * as Registry from '../../src/Registry.ts'
@@ -650,19 +657,17 @@ describe('native AI executor intent/request boundaries', () => {
             ],
           },
         ])
-        assert.strictEqual(
-          Exit.isFailure(
-            yield* Effect.exit(
-              executor.prepareCompaction({
-                state: {},
-                settings,
-                view: ConversationContext.empty(),
-                reason: 'manual',
-              }),
-            ),
-          ),
-          true,
+        const unconfigured = yield* Effect.flip(
+          executor.prepareCompaction({
+            state: {},
+            settings,
+            view: ConversationContext.empty(),
+            reason: 'manual',
+          }),
         )
+        assert.instanceOf(unconfigured, ModelError)
+        assert.instanceOf(unconfigured.reason, ModelNoModel)
+        assert.strictEqual(unconfigured.message, 'No model is configured')
         const selected = yield* executor.prepareCompaction({
           state,
           settings: yield* Agent.settings({ compaction: { keepRecentTokens: 1 } }),
@@ -777,12 +782,18 @@ describe('native AI executor intent/request boundaries', () => {
         )
         const api = yield* Ref.get(saved)
         if (api === undefined) return yield* Effect.die('Tool capabilities were not supplied')
-        assert.strictEqual(Exit.isFailure(yield* Effect.exit(api.output('late'))), true)
-        assert.strictEqual(Exit.isFailure(yield* Effect.exit(api.details(null))), true)
-        assert.strictEqual(
-          Exit.isFailure(yield* Effect.exit(api.diagnostic({ kind: 'late' }))),
-          true,
-        )
+        for (const operation of [
+          api.output('late'),
+          api.details(null),
+          api.diagnostic({ kind: 'late' }),
+        ]) {
+          const failure = yield* Effect.flip(operation)
+          assert.instanceOf(failure, ToolError)
+          assert.instanceOf(failure.reason, ToolExecution)
+          assert.strictEqual(failure.name, 'echo')
+          assert.strictEqual(failure.message, 'Tool call c has settled')
+          assert.strictEqual(failure.cause, undefined)
+        }
       }).pipe(Effect.provideService(Invocation, quiet)),
   )
 
@@ -919,8 +930,11 @@ describe('native AI executor intent/request boundaries', () => {
         const capability: Model.DeferredCapability = {
           inspect: (parts) =>
             parts.some((part) => part.type === 'finish')
-              ? undefined
-              : { handle: { request: 'provider-request' }, pollAfterMs: Duration.millis(-10) },
+              ? Option.none()
+              : Option.some({
+                  handle: { request: 'provider-request' },
+                  pollAfterMs: Duration.millis(-10),
+                }),
           fetch: (handle, options) =>
             Stream.fromEffect(Ref.update(seen, (values) => [...values, { handle, options }])).pipe(
               Stream.flatMap(() => Stream.empty),

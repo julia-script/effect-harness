@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as FileSystem from 'effect/FileSystem'
 import * as Path from 'effect/Path'
@@ -67,9 +68,6 @@ describe('authoritative durable schemas', () => {
       assert.isFalse(Schema.is(schema)(Number.MAX_SAFE_INTEGER + 1))
     }
     const session = Identity.SessionId.make('')
-    // @ts-expect-error Distinct owned identities are not interchangeable.
-    const request: Identity.RequestId = session
-    void request
     assert.strictEqual(session, '')
     assert.strictEqual(Identity.RequestId.make('\ud800'), '\ud800')
   })
@@ -91,15 +89,7 @@ describe('authoritative durable schemas', () => {
           data: 42,
         }
         assert.isTrue(token.is(invalid))
-        const decoding: Effect.Effect<typeof schema.Type, Schema.SchemaError, DecoderValue> =
-          token.decode(invalid)
-        type Services = Effect.Services<ReturnType<typeof token.decode>>
-        const exactServices: [Services] extends [DecoderValue]
-          ? [DecoderValue] extends [Services]
-            ? true
-            : false
-          : false = true
-        void exactServices
+        const decoding = token.decode(invalid)
         assert.strictEqual(
           (yield* decoding.pipe(
             Effect.provideService(DecoderValue, { prefix: 'decoded:' }),
@@ -288,7 +278,9 @@ describe('Unknown-before-Json receipt policy', () => {
           },
         )
         const failure = yield* store
-          .transact((state) => Effect.succeed({ state, writes: [], result }), { key: 'reflection' })
+          .transact((state) => Effect.succeed(Store.makeCandidate({ state, writes: [], result })), {
+            key: 'reflection',
+          })
           .pipe(Effect.flip)
         assert.strictEqual(failure.reason._tag, 'Invalid')
         assert.strictEqual(failure.certainty, 'rejected')
@@ -355,7 +347,7 @@ it.effect(
       assert.isFalse(JSON.stringify(row).includes('null'))
       const reopened = yield* Sqlite.make
       const next = yield* Session.make.pipe(Effect.provideService(Store.Store, reopened))
-      const snapshot = yield* next.snapshot(token)
+      const snapshot = yield* next.snapshot(token).pipe(Effect.map(Option.getOrUndefined))
       assert.deepStrictEqual(snapshot?.value, { value: 'kept' })
       const copied: { value: string; note?: string | undefined } = Document.copyUnsafe({
         value: 'kept',
@@ -556,10 +548,13 @@ it.effect(
       Object.defineProperty(result, '__proto__', { value: 'own', enumerable: true })
       const key = 'key:\ud800'
       const fingerprint = 'fingerprint:"\\'
-      yield* store.transact((state) => Effect.succeed({ state, writes: [], result }), {
-        key,
-        fingerprint,
-      })
+      yield* store.transact(
+        (state) => Effect.succeed(Store.makeCandidate({ state, writes: [], result })),
+        {
+          key,
+          fingerprint,
+        },
+      )
       const state = yield* store.read
       const frame = (yield* store.journal(0)).frames[0]
       const sql = yield* SqlClient.SqlClient

@@ -1,8 +1,9 @@
+import * as Option from 'effect/Option'
 import * as Identity from '../Identity.ts'
 import * as Effect from 'effect/Effect'
 import * as Scope from 'effect/Scope'
 import * as Exit from 'effect/Exit'
-import { ResourceScope } from './Storage.ts'
+import { makeCase, ResourceScope } from './Storage.ts'
 import * as Schema from 'effect/Schema'
 import * as Document from '../Document.ts'
 import * as Record from '../Record.ts'
@@ -73,7 +74,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
     name: string,
     run: Effect.Effect<void, StorageError, Store | Session.Session | ResourceScope>,
   ) => {
-    cases.push({ name, run })
+    cases.push(makeCase({ name, run }))
   }
   test(
     'reserves root 1, creates it lazily, initializes once atomically',
@@ -91,7 +92,10 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
       assert.deepStrictEqual(yield* session.root(initialize), { id: root })
       yield* session.root(initialize)
       assert.strictEqual(calls, 1)
-      assert.strictEqual((yield* session.snapshot(counter))?.value.count, 7)
+      assert.strictEqual(
+        (yield* session.snapshot(counter).pipe(Effect.map(Option.getOrThrow)))?.value.count,
+        7,
+      )
       assert.strictEqual(
         (yield* failure(
           store.commit([
@@ -130,7 +134,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
         ]),
       )
       assert.deepStrictEqual(yield* store.read, before)
-      assert.strictEqual(yield* session.entry(eid(4)), undefined)
+      assert.strictEqual(yield* session.entry(eid(4)).pipe(Effect.map(Option.isNone)), true)
       assert.strictEqual((yield* session.scanTasks({ status: 'pending' }, 10)).items.length, 1)
     }),
   )
@@ -150,13 +154,16 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
         { type: 'entry', value: { id: eid(2), conversationId: root, kind: 'data', data } },
       ])
       data.constructor.push(3)
-      const first = yield* session.entry(eid(2))
+      const first = yield* session.entry(eid(2)).pipe(Effect.map(Option.getOrThrow))
       assert.ok(first)
       assert.deepStrictEqual(first.entry.data, yield* parse)
       assert.strictEqual(Object.getPrototypeOf(first.entry.data), Object.prototype)
       const state = yield* store.read
       Reflect.set(state.entries[0]?.entry ?? {}, 'kind', 'mutated')
-      assert.strictEqual((yield* session.entry(eid(2)))?.entry.kind, 'data')
+      assert.strictEqual(
+        (yield* session.entry(eid(2)).pipe(Effect.map(Option.getOrThrow)))?.entry.kind,
+        'data',
+      )
     }),
   )
   test(
@@ -199,12 +206,21 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
       )
       assert.strictEqual(
         yield* session.transaction((tx) =>
-          tx.latestHeadMarker(root).pipe(Effect.map((entry) => entry?.id ?? 0)),
+          tx.latestHeadMarker(root).pipe(
+            Effect.map(Option.getOrThrow),
+            Effect.map((entry) => entry?.id ?? 0),
+          ),
         ),
         3,
       )
-      assert.strictEqual((yield* session.latestHeadMarker(root, eid(8)))?.id, 3)
-      assert.strictEqual(yield* session.latestHeadMarker(root, eid(2)), undefined)
+      assert.strictEqual(
+        (yield* session.latestHeadMarker(root, eid(8)).pipe(Effect.map(Option.getOrThrow)))?.id,
+        3,
+      )
+      assert.strictEqual(
+        yield* session.latestHeadMarker(root, eid(2)).pipe(Effect.map(Option.isNone)),
+        true,
+      )
     }),
   )
   test(
@@ -268,8 +284,11 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
         (yield* session.scanEntries({ conversationId: cid(7) }, 10)).items.map((e) => e.id),
         [8, 5, 2],
       )
-      assert.strictEqual(yield* session.entry(eid(3), cid(7)), undefined)
-      assert.strictEqual((yield* session.entry(eid(2), cid(7)))?.commitSeq, first)
+      assert.strictEqual(yield* session.entry(eid(3), cid(7)).pipe(Effect.map(Option.isNone)), true)
+      assert.strictEqual(
+        (yield* session.entry(eid(2), cid(7)).pipe(Effect.map(Option.getOrThrow)))?.commitSeq,
+        first,
+      )
     }),
   )
   test(
@@ -300,8 +319,14 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
         4,
       )
       yield* store.commit([{ type: 'task', value: pending(tid(2)) }])
-      assert.strictEqual((yield* session.task(tid(2)))?.owner, undefined)
-      assert.strictEqual((yield* session.task(tid(2)))?.memos, undefined)
+      assert.strictEqual(
+        (yield* session.task(tid(2)).pipe(Effect.map(Option.getOrThrow)))?.owner,
+        undefined,
+      )
+      assert.strictEqual(
+        (yield* session.task(tid(2)).pipe(Effect.map(Option.getOrThrow)))?.memos,
+        undefined,
+      )
     }),
   )
   test(
@@ -335,17 +360,19 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
       assert.strictEqual((yield* store.read).submissions.find((s) => s.id === ids[1])?.entry, 101)
       assert.strictEqual(
         yield* session.transaction((tx) =>
-          tx
-            .submissionByRequest(root, Identity.RequestId.make('\ud800'))
-            .pipe(Effect.map((s) => s?.answer ?? 0)),
+          tx.submissionByRequest(root, Identity.RequestId.make('\ud800')).pipe(
+            Effect.map(Option.getOrThrow),
+            Effect.map((s) => s?.answer ?? 0),
+          ),
         ),
         102,
       )
       assert.strictEqual(
         yield* session.transaction((tx) =>
-          tx
-            .submissionByRequest(root, Identity.RequestId.make('\ud801'))
-            .pipe(Effect.map((s) => s?.answer ?? 0)),
+          tx.submissionByRequest(root, Identity.RequestId.make('\ud801')).pipe(
+            Effect.map(Option.getOrThrow),
+            Effect.map((s) => s?.answer ?? 0),
+          ),
         ),
         0,
       )
@@ -381,11 +408,15 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
         },
       ])
       assert.strictEqual(
-        (yield* session.submissionByRequest(root, Identity.RequestId.make('same')))?.id,
+        (yield* session
+          .submissionByRequest(root, Identity.RequestId.make('same'))
+          .pipe(Effect.map(Option.getOrThrow)))?.id,
         3,
       )
       assert.strictEqual(
-        (yield* session.submissionByRequest(cid(2), Identity.RequestId.make('same')))?.id,
+        (yield* session
+          .submissionByRequest(cid(2), Identity.RequestId.make('same'))
+          .pipe(Effect.map(Option.getOrThrow)))?.id,
         4,
       )
       const before = yield* store.read
@@ -417,11 +448,15 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
         },
       ])
       assert.strictEqual(
-        yield* session.submissionByRequest(root, Identity.RequestId.make('same')),
-        undefined,
+        yield* session
+          .submissionByRequest(root, Identity.RequestId.make('same'))
+          .pipe(Effect.map(Option.isNone)),
+        true,
       )
       assert.strictEqual(
-        (yield* session.submissionByRequest(root, Identity.RequestId.make('other')))?.entry,
+        (yield* session
+          .submissionByRequest(root, Identity.RequestId.make('other'))
+          .pipe(Effect.map(Option.getOrThrow)))?.entry,
         9,
       )
       const page = yield* session.scanSubmissions({}, 1)
@@ -461,9 +496,18 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
           content: { kind: 'base', version: 2, value: { n: 2 } },
         },
       ])
-      assert.strictEqual((yield* session.document(did(2), creation))?.value.n, 0)
-      assert.strictEqual((yield* session.document(did(2), update))?.value.n, 1)
-      assert.strictEqual((yield* session.document(did(2), replacement))?.version, 2)
+      assert.strictEqual(
+        (yield* session.document(did(2), creation).pipe(Effect.map(Option.getOrThrow)))?.value.n,
+        0,
+      )
+      assert.strictEqual(
+        (yield* session.document(did(2), update).pipe(Effect.map(Option.getOrThrow)))?.value.n,
+        1,
+      )
+      assert.strictEqual(
+        (yield* session.document(did(2), replacement).pipe(Effect.map(Option.getOrThrow)))?.version,
+        2,
+      )
       const retired = yield* store.commit([
         { type: 'document.retire', id: did(2) },
         {
@@ -472,9 +516,18 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
           content: { kind: 'base', version: 2, value: { n: 3 } },
         },
       ])
-      assert.strictEqual(yield* session.document(did(2), retired), undefined)
-      assert.strictEqual((yield* session.findDocument(document(2), update))?.id, 2)
-      assert.strictEqual((yield* session.findDocument(document(2)))?.id, 3)
+      assert.strictEqual(
+        yield* session.document(did(2), retired).pipe(Effect.map(Option.isNone)),
+        true,
+      )
+      assert.strictEqual(
+        (yield* session.findDocument(document(2), update).pipe(Effect.map(Option.getOrThrow)))?.id,
+        2,
+      )
+      assert.strictEqual(
+        (yield* session.findDocument(document(2)).pipe(Effect.map(Option.getOrThrow)))?.id,
+        3,
+      )
     }),
   )
   test(
@@ -502,8 +555,14 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
             },
           },
         ])
-      assert.strictEqual((yield* session.document(did(2)))?.value.n, 110)
-      assert.strictEqual((yield* session.document(did(2), seq(2)))?.value.n, 0)
+      assert.strictEqual(
+        (yield* session.document(did(2)).pipe(Effect.map(Option.getOrThrow)))?.value.n,
+        110,
+      )
+      assert.strictEqual(
+        (yield* session.document(did(2), seq(2)).pipe(Effect.map(Option.getOrThrow)))?.value.n,
+        0,
+      )
     }),
   )
   test(
@@ -633,13 +692,18 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
         [2, 3, 4, 5, 6],
       )
       for (const record of records)
-        assert.strictEqual((yield* session.findDocument(record))?.id, record.id)
+        assert.strictEqual(
+          (yield* session.findDocument(record).pipe(Effect.map(Option.getOrThrow)))?.id,
+          record.id,
+        )
       assert.strictEqual(
-        yield* session.findDocument({
-          kind: 'doc',
-          scope: { kind: 'conversation', conversationId: root },
-        }),
-        undefined,
+        yield* session
+          .findDocument({
+            kind: 'doc',
+            scope: { kind: 'conversation', conversationId: root },
+          })
+          .pipe(Effect.map(Option.isNone)),
+        true,
       )
     }),
   )
@@ -670,8 +734,14 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
           source: { id: did(2), at: created },
         },
       ])
-      assert.strictEqual((yield* session.document(did(3)))?.value.n, 1)
-      assert.strictEqual((yield* session.document(did(3)))?.record.fork, 'asOf')
+      assert.strictEqual(
+        (yield* session.document(did(3)).pipe(Effect.map(Option.getOrThrow)))?.value.n,
+        1,
+      )
+      assert.strictEqual(
+        (yield* session.document(did(3)).pipe(Effect.map(Option.getOrThrow)))?.record.fork,
+        'asOf',
+      )
     }),
   )
   test(
@@ -710,7 +780,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
           }),
         ),
       )
-      assert.strictEqual(yield* session.snapshot(counter), undefined)
+      assert.strictEqual(yield* session.snapshot(counter).pipe(Effect.map(Option.isNone)), true)
       assert.throws(() => {
         if (draft !== undefined) draft.count = 1
       }, /revoked/)
@@ -757,7 +827,10 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
         )).reason._tag,
         'Conflict',
       )
-      assert.strictEqual((yield* session.snapshot(counter))?.value.count, 1)
+      assert.strictEqual(
+        (yield* session.snapshot(counter).pipe(Effect.map(Option.getOrThrow)))?.value.count,
+        1,
+      )
     }),
   )
   test(
@@ -771,7 +844,10 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
         version: 2,
         migrate: (value) => ({ count: Number(value.count) + 1 }),
       })
-      assert.strictEqual((yield* session.snapshot(newer))?.value.count, 1)
+      assert.strictEqual(
+        (yield* session.snapshot(newer).pipe(Effect.map(Option.getOrThrow)))?.value.count,
+        1,
+      )
       assert.strictEqual((yield* store.read).documents[0]?.revisions[0]?.content.version, 1)
       yield* session.transaction((tx) => tx.doc(newer).pipe(Effect.as(null)))
       assert.strictEqual((yield* store.read).documents[0]?.revisions.at(-1)?.content.kind, 'base')
@@ -784,7 +860,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
     Effect.gen(function* () {
       const session = yield* Session.Session
       yield* session.transaction((tx) => tx.doc(counter).pipe(Effect.as(null)))
-      const before = yield* session.snapshot(counter)
+      const before = yield* session.snapshot(counter).pipe(Effect.map(Option.getOrThrow))
       yield* session.transaction(
         Effect.fnUntraced(function* (tx) {
           const old = yield* tx.doc(counter)
@@ -795,7 +871,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
           return null
         }),
       )
-      const after = yield* session.snapshot(counter)
+      const after = yield* session.snapshot(counter).pipe(Effect.map(Option.getOrThrow))
       assert.ok(before)
       assert.ok(after)
       assert.notStrictEqual(after.record.id, before.record.id)
@@ -828,11 +904,25 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
       const fork = yield* session.transaction((tx) =>
         tx.forkConversation(root, entry.id, { ownership: { kind: 'ownerless' } }),
       )
-      assert.strictEqual((yield* session.snapshot(historical, { owner: fork.id }))?.value.count, 1)
-      assert.strictEqual((yield* session.snapshot(current, { owner: fork.id }))?.value.count, 2)
-      assert.strictEqual(yield* session.snapshot(initial, { owner: fork.id }), undefined)
       assert.strictEqual(
-        (yield* session.snapshotAsOf(historical, fork.id, entry.id))?.value.count,
+        (yield* session
+          .snapshot(historical, { owner: fork.id })
+          .pipe(Effect.map(Option.getOrThrow)))?.value.count,
+        1,
+      )
+      assert.strictEqual(
+        (yield* session.snapshot(current, { owner: fork.id }).pipe(Effect.map(Option.getOrThrow)))
+          ?.value.count,
+        2,
+      )
+      assert.strictEqual(
+        yield* session.snapshot(initial, { owner: fork.id }).pipe(Effect.map(Option.isNone)),
+        true,
+      )
+      assert.strictEqual(
+        (yield* session
+          .snapshotAsOf(historical, fork.id, entry.id)
+          .pipe(Effect.map(Option.getOrThrow)))?.value.count,
         1,
       )
     }),
@@ -858,19 +948,25 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
           }),
         ),
       )
-      assert.strictEqual((yield* session.task(task))?.state.status, 'pending')
+      assert.strictEqual(
+        (yield* session.task(task).pipe(Effect.map(Option.getOrThrow)))?.state.status,
+        'pending',
+      )
       yield* session.transaction((tx) =>
         tx
           .write({ type: 'task', value: { ...pending(task), state: { status: 'completing' } } })
           .pipe(Effect.as(null)),
       )
-      assert.ok(yield* session.snapshot(token, { owner: task }))
+      assert.ok(yield* session.snapshot(token, { owner: task }).pipe(Effect.map(Option.getOrThrow)))
       yield* session.transaction((tx) =>
         tx
           .write({ type: 'task', value: { ...pending(task), state: { status: 'terminal' } } })
           .pipe(Effect.as(null)),
       )
-      assert.strictEqual(yield* session.snapshot(token, { owner: task }), undefined)
+      assert.strictEqual(
+        yield* session.snapshot(token, { owner: task }).pipe(Effect.map(Option.isNone)),
+        true,
+      )
       yield* failure(
         session.transaction((tx) => tx.doc(token, { owner: task }).pipe(Effect.as(null))),
       )
@@ -891,7 +987,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
         store.committed.pipe(Effect.as(null)),
         store.commit([]).pipe(Effect.as(null)),
         mintId(Record.EntryId).pipe(Effect.as(null)),
-        session.conversation(root).pipe(Effect.as(null)),
+        session.conversation(root).pipe(Effect.map(Option.getOrThrow), Effect.as(null)),
         store.journal(0).pipe(Effect.as(null)),
       ])
         assert.strictEqual((yield* failure(operation)).reason._tag, 'Closed')

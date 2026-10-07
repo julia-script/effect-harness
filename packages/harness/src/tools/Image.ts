@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 // Adapted from pi-durable (MIT), pinned 636703a0; see ../LICENSE.pi.txt.
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 /** Bytes every check except the APNG chunk walk needs: BMP reads up to offset 29. */
@@ -5,16 +6,16 @@ const HEADER_BYTES = 32
 const BLOCK_BYTES = 64 * 1024
 
 import * as Effect from 'effect/Effect'
-export interface ByteSource<E, R> {
+export interface ByteSource<out E, out R> {
   readonly size: number
   readonly read: (offset: number, length: number) => Effect.Effect<Uint8Array, E, R>
 }
 export const detectSupportedImageMimeTypeOf = Effect.fnUntraced(function* <E, R>(
   source: ByteSource<E, R>,
-): Effect.fn.Return<string | undefined, E, R> {
+): Effect.fn.Return<Option.Option<string>, E, R> {
   const header = yield* source.read(0, HEADER_BYTES)
   if (!startsWith(header, PNG_SIGNATURE)) return detectSupportedImageMimeType(header)
-  if (!isPng(header)) return undefined
+  if (!isPng(header)) return Option.none()
   let block: Uint8Array = new Uint8Array(0)
   let blockStart = 0
   let offset = PNG_SIGNATURE.length
@@ -25,24 +26,26 @@ export const detectSupportedImageMimeTypeOf = Effect.fnUntraced(function* <E, R>
     }
     const chunkHeader = block.subarray(offset - blockStart, offset - blockStart + 8)
     const length = readUint32BE(chunkHeader, 0)
-    if (startsWithAscii(chunkHeader, 4, 'acTL')) return undefined
-    if (startsWithAscii(chunkHeader, 4, 'IDAT')) return 'image/png'
+    if (startsWithAscii(chunkHeader, 4, 'acTL')) return Option.none()
+    if (startsWithAscii(chunkHeader, 4, 'IDAT')) return Option.some('image/png')
     const next = offset + 8 + length + 4
     if (next <= offset || next > source.size) break
     offset = next
   }
-  return 'image/png'
+  return Option.some('image/png')
 })
 
-export function detectSupportedImageMimeType(buffer: Uint8Array): string | undefined {
-  if (startsWith(buffer, [0xff, 0xd8, 0xff])) return buffer[3] === 0xf7 ? undefined : 'image/jpeg'
+export function detectSupportedImageMimeType(buffer: Uint8Array): Option.Option<string> {
+  if (startsWith(buffer, [0xff, 0xd8, 0xff]))
+    return buffer[3] === 0xf7 ? Option.none() : Option.some('image/jpeg')
   if (startsWith(buffer, PNG_SIGNATURE))
-    return isPng(buffer) && !isAnimatedPng(buffer) ? 'image/png' : undefined
+    return isPng(buffer) && !isAnimatedPng(buffer) ? Option.some('image/png') : Option.none()
   if (startsWithAscii(buffer, 0, 'GIF87a') || startsWithAscii(buffer, 0, 'GIF89a'))
-    return 'image/gif'
-  if (startsWithAscii(buffer, 0, 'RIFF') && startsWithAscii(buffer, 8, 'WEBP')) return 'image/webp'
-  if (startsWithAscii(buffer, 0, 'BM') && isBmp(buffer)) return 'image/bmp'
-  return undefined
+    return Option.some('image/gif')
+  if (startsWithAscii(buffer, 0, 'RIFF') && startsWithAscii(buffer, 8, 'WEBP'))
+    return Option.some('image/webp')
+  if (startsWithAscii(buffer, 0, 'BM') && isBmp(buffer)) return Option.some('image/bmp')
+  return Option.none()
 }
 
 function isPng(buffer: Uint8Array): boolean {

@@ -1,3 +1,5 @@
+import type { StorageError } from './StorageError.ts'
+import * as Option from 'effect/Option'
 import * as Totals from '@effect-harness/harness/Usage'
 import * as Effect from 'effect/Effect'
 import * as Document from './Document.ts'
@@ -22,7 +24,7 @@ export const record = Effect.fnUntraced(function* (
   bucket: keyof Totals.State,
   key: string,
   usage: Totals.Usage,
-) {
+): Effect.fn.Return<void, StorageError> {
   const state = yield* tx.doc(UsageDoc, { owner: conversationId })
   const totals = state[bucket]
   const previous = Object.hasOwn(totals, key) ? totals[key] : undefined
@@ -31,7 +33,9 @@ export const record = Effect.fnUntraced(function* (
 })
 
 /** Include only each conversation's own ledger; inherited transcript entries are never counted again. */
-export const sessionTotals = Effect.fnUntraced(function* (session: Session.Service) {
+export const sessionTotals = Effect.fnUntraced(function* (
+  session: Session.Service,
+): Effect.fn.Return<Totals.State, StorageError> {
   const states: Totals.State[] = []
   let cursor: Record.Cursor | undefined
   do {
@@ -42,7 +46,7 @@ export const sessionTotals = Effect.fnUntraced(function* (session: Session.Servi
       (conversation) => session.snapshot(UsageDoc, { owner: conversation.id }),
       { concurrency: 16 },
     )
-    for (const snapshot of snapshots) if (snapshot !== undefined) states.push(snapshot.value)
+    for (const snapshot of snapshots) if (Option.isSome(snapshot)) states.push(snapshot.value.value)
     cursor = page.next
   } while (cursor !== undefined)
   return Totals.sum(states)

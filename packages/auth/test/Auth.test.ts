@@ -188,7 +188,16 @@ describe('auth', () => {
       }
       const identity = yield* verifier.verify(tokens[0]!, options)
       assert.strictEqual(identity.sub, 'first')
+      assert.isTrue(Jwt.isIdentity(identity))
       assert.strictEqual(DateTime.toEpochMillis(identity.exp), expiry * 1000)
+      assert.isFalse(JoseJwt.isClaims(identity))
+      assert.deepEqual(yield* Schema.encodeEffect(Jwt.Identity)(identity), {
+        sub: 'first',
+        iss: 'https://issuer.test',
+        exp: expiry * 1000,
+      })
+      assert.isFalse(Object.hasOwn(identity, 'nonce'))
+      assert.isFalse(Object.hasOwn(identity, 'email'))
       assert.strictEqual(
         (yield* verifier.verify(tokens[1]!, options).pipe(Effect.flip)).code,
         'identity',

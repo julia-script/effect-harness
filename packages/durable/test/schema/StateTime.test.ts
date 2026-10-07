@@ -34,17 +34,18 @@ const counter = Document.defineUnsafe({
   schema: Schema.Struct({ count: Schema.Finite }),
   initial: () => ({ count: 0 }),
 })
-const old = (id: number, count: number): Document.Snapshot => ({
-  record: {
-    id: Record.DocumentId.make(id),
-    kind: 'migrated',
-    scope: { kind: 'session' },
-    createdAt: Record.Seq.make(1),
-  },
-  version: 1,
-  value: { count },
-  deltasSinceBase: 0,
-})
+const old = (id: number, count: number): Document.Snapshot =>
+  Document.makeSnapshot({
+    record: {
+      id: Record.DocumentId.make(id),
+      kind: 'migrated',
+      scope: { kind: 'session' },
+      createdAt: Record.Seq.make(1),
+    },
+    version: 1,
+    value: { count },
+    deltasSinceBase: 0,
+  })
 
 describe('owned state, time and read boundaries', () => {
   it.effect('waits only the remaining span of an unchanged fractional cached deadline', () =>
@@ -203,8 +204,8 @@ describe('owned state, time and read boundaries', () => {
       const incompatible = { ...counter, definition: { ...counter.definition, version: 2 } }
       const results = yield* Effect.all(
         [
-          session.snapshot(counter).pipe(Effect.result),
-          session.snapshot(incompatible).pipe(Effect.result),
+          session.snapshot(counter).pipe(Effect.map(Option.getOrUndefined), Effect.result),
+          session.snapshot(incompatible).pipe(Effect.map(Option.getOrUndefined), Effect.result),
         ],
         { concurrency: 2 },
       )
@@ -216,7 +217,10 @@ describe('owned state, time and read boundaries', () => {
           ;(yield* tx.doc(counter)).count = 7
         }),
       )
-      assert.strictEqual((yield* session.snapshot(counter))?.value.count, 7)
+      assert.strictEqual(
+        (yield* session.snapshot(counter).pipe(Effect.map(Option.getOrUndefined)))?.value.count,
+        7,
+      )
       assert.strictEqual(yield* Ref.get(reads), 2)
     }),
   )
@@ -259,8 +263,12 @@ describe('owned state, time and read boundaries', () => {
       )
       const values = yield* Effect.all(
         [
-          session.snapshot(token).pipe(Effect.provideService(Label, 'first')),
-          session.snapshot(token).pipe(Effect.provideService(Label, 'second')),
+          session
+            .snapshot(token)
+            .pipe(Effect.map(Option.getOrUndefined), Effect.provideService(Label, 'first')),
+          session
+            .snapshot(token)
+            .pipe(Effect.map(Option.getOrUndefined), Effect.provideService(Label, 'second')),
         ],
         { concurrency: 2 },
       )
@@ -306,10 +314,14 @@ describe('owned state, time and read boundaries', () => {
                 }),
               )
               const local = yield* Effect.all(
-                [session.snapshot(counter), session.snapshot(counter)],
+                [
+                  session.snapshot(counter).pipe(Effect.map(Option.getOrUndefined)),
+                  session.snapshot(counter).pipe(Effect.map(Option.getOrUndefined)),
+                ],
                 { concurrency: 2 },
               ).pipe(Effect.forkIn(scope))
               const physical = yield* session.snapshot(counter).pipe(
+                Effect.map(Option.getOrUndefined),
                 Effect.updateContext((context: Context.Context<never>) =>
                   Context.omit(sql.transactionService)(context),
                 ),
@@ -373,7 +385,7 @@ describe('owned state, time and read boundaries', () => {
       )
       yield* session.transaction(
         Effect.fnUntraced(function* (tx) {
-          const task = yield* tx.task(id)
+          const task = yield* tx.task(id).pipe(Effect.map(Option.getOrUndefined))
           if (task === undefined) return yield* Effect.die('Missing task')
           const result = yield* Effect.all(
             [
@@ -390,7 +402,10 @@ describe('owned state, time and read boundaries', () => {
           assert.strictEqual(result[1]._tag, 'Failure')
         }),
       )
-      assert.strictEqual((yield* session.task(id))?.state.status, 'terminal')
+      assert.strictEqual(
+        (yield* session.task(id).pipe(Effect.map(Option.getOrUndefined)))?.state.status,
+        'terminal',
+      )
     }),
   )
 

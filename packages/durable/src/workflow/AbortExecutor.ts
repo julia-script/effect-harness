@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import type * as Layer from 'effect/Layer'
 import * as Harness from '@effect-harness/harness/Executor'
 import * as Invocation from '@effect-harness/harness/Invocation'
@@ -72,11 +73,12 @@ export const layer: Layer.Layer<
               payload.target.type === 'conversation'
                 ? { kind: 'conversation', id: payload.target.id }
                 : { kind: 'task', id: payload.target.id }
-            const reached = Ownership.reach(graph, target, payload.background)
-            if (reached === undefined)
+            const reachedOption = Ownership.reach(graph, target, payload.background)
+            if (Option.isNone(reachedOption))
               return yield* new ExecutionError({
                 reason: new InvalidState({ message: 'Abort target is absent' }),
               })
+            const reached = reachedOption.value
             const deferred: Array<(typeof Marked.Type.deferred)[number]> = []
             // Read all per-task handles under this same native SQL lease before writes.
             const requests = yield* Effect.forEach(
@@ -86,8 +88,12 @@ export const layer: Layer.Layer<
             )
             for (const [index, task] of reached.tasks.entries()) {
               const request = requests[index]
-              if (request?.value.handle !== undefined)
-                deferred.push({ taskId: task.id, ...request.value })
+              if (
+                request !== undefined &&
+                Option.isSome(request) &&
+                request.value.value.handle !== undefined
+              )
+                deferred.push({ taskId: task.id, ...request.value.value })
             }
             // Acquire every inbox draft before the first table write in a multi-conversation commit.
             for (const conversation of reached.conversations)
@@ -133,8 +139,10 @@ export const layer: Layer.Layer<
         execute: session
           .transaction(
             Effect.fnUntraced(function* (tx) {
-              const task = yield* tx.task(previous.id)
-              if (task === undefined || task.state.status === 'terminal') return []
+              const taskOption = yield* tx.task(previous.id)
+              if (Option.isNone(taskOption) || taskOption.value.state.status === 'terminal')
+                return []
+              const task = taskOption.value
               const live = yield* tx.doc(Inbox.LiveDoc, { owner: task.conversationId })
               let outcome: Record.Json =
                 task.state.status === 'completing'
@@ -234,8 +242,8 @@ export const layer: Layer.Layer<
       )
       if (binding._tag === 'Failure') continue
       const declaration = declarations.get(binding.success.workflow)
-      if (declaration !== undefined)
-        yield* engine.interrupt(declaration, binding.success.executionId)
+      if (Option.isSome(declaration))
+        yield* engine.interrupt(declaration.value, binding.success.executionId)
     }
     if (payload.target.type === 'conversation')
       yield* Conversation.awaitIdle(session, payload.target.id).pipe(Effect.mapError(domainError))

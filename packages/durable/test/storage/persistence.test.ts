@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as Scope from 'effect/Scope'
 import * as Exit from 'effect/Exit'
 import { NodeFileSystem } from '@effect/platform-node'
@@ -60,7 +61,10 @@ describe('JSONL recovery', () => {
           Effect.gen(function* () {
             const store = yield* Jsonl.make({ directory })
             const session = yield* Session.make.pipe(Effect.provideService(Store, store))
-            assert.strictEqual((yield* session.snapshot(token))?.value.count, 3)
+            assert.strictEqual(
+              (yield* session.snapshot(token).pipe(Effect.map(Option.getOrUndefined)))?.value.count,
+              3,
+            )
             assert.deepStrictEqual(
               yield* session.transaction(() => Effect.die('receipt callback ran'), {
                 key: 'once',
@@ -215,7 +219,10 @@ describe('SQLite schema and reopen', () => {
           Effect.gen(function* () {
             const store = yield* Sqlite.make
             const session = yield* Session.make.pipe(Effect.provideService(Store, store))
-            assert.strictEqual((yield* session.snapshot(token))?.value.count, 3)
+            assert.strictEqual(
+              (yield* session.snapshot(token).pipe(Effect.map(Option.getOrUndefined)))?.value.count,
+              3,
+            )
             assert.deepStrictEqual(
               yield* session.transaction(() => Effect.die('receipt callback ran'), {
                 key: 'once',

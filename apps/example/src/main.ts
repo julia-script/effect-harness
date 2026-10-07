@@ -17,6 +17,7 @@ import * as Model from '@effect-harness/harness/Model'
 import * as Registry from '@effect-harness/harness/Registry'
 import * as Tool from '@effect-harness/harness/Tool'
 import * as Context from 'effect/Context'
+import * as Array from 'effect/Array'
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
@@ -106,10 +107,20 @@ const checkUnknownToolBoundary = Effect.gen(function* () {
   const generated = yield* model.generateText(options)
   const streamed = yield* Stream.runCollect(model.streamText(options))
   const unknownCall = Response.ToolCallPart('unregistered', Schema.Struct({ text: Schema.String }))
-  const decoded = yield* Schema.decodeUnknownEffect(unknownCall)(generated.toolCalls[0])
-  const streamedCall = yield* Schema.decodeUnknownEffect(unknownCall)(
-    streamed.find(Schema.is(unknownCall)),
+  const generatedCall = yield* Array.head(generated.toolCalls).pipe(
+    Option.match({
+      onNone: () => Effect.die('Native generation omitted the unknown tool call'),
+      onSome: Effect.succeed,
+    }),
   )
+  const streamedPart = yield* Array.findFirst(streamed, Schema.is(unknownCall)).pipe(
+    Option.match({
+      onNone: () => Effect.die('Native stream omitted the unknown tool call'),
+      onSome: Effect.succeed,
+    }),
+  )
+  const decoded = yield* Schema.decodeUnknownEffect(unknownCall)(generatedCall)
+  const streamedCall = yield* Schema.decodeEffect(unknownCall)(streamedPart)
   if (decoded.params.text !== 'preserved' || streamedCall.params.text !== 'preserved')
     return yield* Effect.die('Native unknown tool name or parameters changed')
 })
@@ -235,8 +246,14 @@ const main = Effect.gen(function* () {
     if (result.status !== 'done' || result.type !== 'input')
       return yield* Effect.die('Submission did not finish')
     yield* Conversation.awaitIdle(current, root.id)
-    const answer = yield* current.entry(result.answer, root.id)
-    if (answer === undefined) return yield* Effect.die('Answer was not committed')
+    const answer = yield* current.entry(result.answer, root.id).pipe(
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.die('Answer was not committed'),
+          onSome: Effect.succeed,
+        }),
+      ),
+    )
     const messages = yield* Schema.decodeEffect(Schema.toCodecJson(Schema.Array(Prompt.Message)))(
       answer.entry.model ?? [],
     )

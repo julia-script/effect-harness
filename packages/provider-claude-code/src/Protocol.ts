@@ -1,3 +1,4 @@
+import type * as AiError from 'effect/ai/AiError'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Tool from 'effect/ai/Tool'
@@ -14,6 +15,7 @@ export const Usage = Schema.Struct({
   cache_creation_input_tokens: Schema.optionalKey(Count),
 })
 export type Usage = typeof Usage.Type
+export const isUsage: (value: unknown) => value is Usage = Schema.is(Usage)
 export const ModelUsage = Schema.Struct({
   inputTokens: Count,
   outputTokens: Count,
@@ -41,6 +43,7 @@ export const Block = Schema.Union([
   }),
 ])
 export type Block = typeof Block.Type
+export const isBlock: (value: unknown) => value is Block = Schema.is(Block)
 const Message = Schema.Struct({
   id: Schema.NonEmptyString,
   model: Schema.String,
@@ -114,9 +117,12 @@ export const Event = Schema.Union([
   }),
 ])
 export type Event = typeof Event.Type
+export const isEvent: (value: unknown) => value is Event = Schema.is(Event)
 
 /** The protocol boundary never includes raw stdout/stderr or prompts in failures. */
-export const decode = Effect.fnUntraced(function* (line: string) {
+export const decode = Effect.fnUntraced(function* (
+  line: string,
+): Effect.fn.Return<Event, AiError.AiError> {
   const value = yield* Effect.try({
     try: () => Tool.unsafeSecureJsonParse(line),
     catch: () => protocol('Invalid Claude Code JSON frame'),

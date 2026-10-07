@@ -113,6 +113,7 @@ const reserve = (session: Session.Service) =>
       return payload
     }),
   )
+// Native Workflow Memory/SQL engines own cached Activity state and suspension outside the test fiber; these bounded polls wait for actual native engine or database commitment, not a modeled delay.
 const until = <E, R>(predicate: Effect.Effect<boolean, E, R>) =>
   predicate.pipe(Effect.repeat({ until: (ready) => ready }), Effect.asVoid)
 
@@ -167,7 +168,9 @@ describe('Session and native invocation lifecycle', () => {
           assert.deepStrictEqual(yield* storage.state, recovered)
           assert.strictEqual(created, 0)
           assert.strictEqual(
-            (yield* restored.snapshot(token, { owner: conversation.id }))?.value.identity,
+            (yield* restored
+              .snapshot(token, { owner: conversation.id })
+              .pipe(Effect.map(Option.getOrUndefined)))?.value.identity,
             'pinned recovery identity',
           )
           const missing = yield* restored
@@ -221,7 +224,9 @@ describe('Session and native invocation lifecycle', () => {
               initial: () => ({ kept: true }),
             })
             yield* first.transaction((tx) => tx.doc(token, { owner: payload.conversationId }))
-            const watch = yield* first.watchDoc(token, { owner: payload.conversationId })
+            const watch = yield* first
+              .watchDoc(token, { owner: payload.conversationId })
+              .pipe(Effect.map(Option.getOrUndefined))
             if (watch === undefined) return yield* Effect.die('Expected existing document watch')
             const before = yield* storage.state
             const current = yield* Ref.make(first)
@@ -336,7 +341,9 @@ describe('Session and native invocation lifecycle', () => {
                 result: { answer: 'resumed' },
               })
               assert.strictEqual(calls, 2)
-              const task = yield* reopened.task(payload.taskId)
+              const task = yield* reopened
+                .task(payload.taskId)
+                .pipe(Effect.map(Option.getOrUndefined))
               assert.strictEqual(task?.state.status, 'terminal')
               assert.strictEqual(task?.abortRequested, false)
               assert.isUndefined(task?.memos)
@@ -622,6 +629,7 @@ describe('Session and native invocation lifecycle', () => {
                 if (boundary === 'request')
                   yield* until(
                     first.snapshot(Inbox.LiveDoc, { owner: Record.ROOT_CONVERSATION_ID }).pipe(
+                      Effect.map(Option.getOrUndefined),
                       Effect.map((live) =>
                         (JSON.stringify(live?.value.generation?.message) ?? '').includes(
                           'kept partial',
@@ -815,7 +823,10 @@ describe('Session and native invocation lifecycle', () => {
                   result: { answer: 'resumed SQL' },
                 })
                 assert.strictEqual(calls, 2)
-                assert.isFalse((yield* reopened.task(payload.taskId))?.abortRequested ?? true)
+                assert.isFalse(
+                  (yield* reopened.task(payload.taskId).pipe(Effect.map(Option.getOrUndefined)))
+                    ?.abortRequested ?? true,
+                )
                 assert.notMatch(JSON.stringify(yield* physical), /uncommitted/)
               }).pipe(Effect.provide(runtime))
             }).pipe(Effect.provide(database))
@@ -898,7 +909,11 @@ describe('Session and native invocation lifecycle', () => {
           const result = yield* Fiber.join(running)
           assert.strictEqual(result._tag, 'Failure')
           if (result._tag === 'Failure') assert.strictEqual(result.failure.reason._tag, 'Aborted')
-          assert.strictEqual((yield* session.task(payload.taskId))?.abortRequested, true)
+          assert.strictEqual(
+            (yield* session.task(payload.taskId).pipe(Effect.map(Option.getOrUndefined)))
+              ?.abortRequested,
+            true,
+          )
           assert.strictEqual(yield* session.isClosed, false)
         }).pipe(
           Effect.ensuring(Deferred.succeed(release, undefined)),

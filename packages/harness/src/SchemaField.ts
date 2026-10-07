@@ -3,7 +3,9 @@ import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
 
 /** Optional domain fields admit undefined and omit it from their encoded object. */
-export const optional = <S extends Schema.Constraint>(schema: S) =>
+export const optional = <S extends Schema.Constraint>(
+  schema: S,
+): Schema.decodeTo<Schema.optional<Schema.toType<S>>, Schema.optional<S>, never, never> =>
   Schema.optional(schema).pipe(
     Schema.decodeTo(Schema.optional(Schema.toType(schema)), {
       decode: SchemaGetter.passthrough(),

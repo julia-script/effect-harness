@@ -9,6 +9,8 @@ import * as Activity from 'effect/workflow/Activity'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
+import * as Cause from 'effect/Cause'
+import { StorageError } from '../../src/StorageError.ts'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
@@ -92,10 +94,30 @@ const until = <E, R>(predicate: Effect.Effect<boolean, E, R>) =>
   Effect.gen(function* () {
     for (let i = 0; i < 300; i++) {
       if (yield* predicate) return
+      // Native Workflow engine fibers progress on their captured live clock; this bounded poll admits an observable persisted transition.
       yield* Effect.sleep('5 millis')
     }
     return yield* Effect.die('Ownership condition did not settle')
   })
+const rejection = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  tag: string,
+  reason: string,
+  message: string,
+) =>
+  effect.pipe(
+    Effect.flip,
+    Effect.tap((error) =>
+      Effect.sync(() => {
+        assert.isTrue(error instanceof ExecutionError || error instanceof StorageError)
+        if (error instanceof ExecutionError || error instanceof StorageError) {
+          assert.strictEqual(error._tag, tag)
+          assert.strictEqual(error.reason._tag, reason)
+          assert.strictEqual(error.message, message)
+        }
+      }),
+    ),
+  )
 type Services =
   | Ownership.Current
   | Ownership.Declarations
@@ -205,10 +227,11 @@ describe('native structured ownership', () => {
               const waiting = yield* Conversation.awaitIdle(session).pipe(
                 Effect.provideService(Ownership.Declarations, {
                   ...declarations,
-                  get: (name) => (available ? declarations.get(name) : undefined),
+                  get: (name) => (available ? declarations.get(name) : Option.none()),
                 }),
                 Effect.forkScoped,
               )
+              // Native awaitIdle scans on its captured clock; this negative window proves unavailable declarations cannot start after a full scan interval.
               yield* Effect.sleep('40 millis')
               assert.deepStrictEqual(calls, [])
               assert.isUndefined(waiting.pollUnsafe())
@@ -217,13 +240,21 @@ describe('native structured ownership', () => {
               assert.isUndefined(waiting.pollUnsafe())
               yield* Deferred.succeed(release, undefined)
               yield* Fiber.join(waiting).pipe(Effect.timeout('3 seconds'))
-              assert.strictEqual((yield* session.task(ordinary.taskId))?.state.status, 'terminal')
-              assert.strictEqual((yield* session.task(below.taskId))?.state.status, 'pending')
+              assert.strictEqual(
+                (yield* session.task(ordinary.taskId).pipe(Effect.map(Option.getOrUndefined)))
+                  ?.state.status,
+                'terminal',
+              )
+              assert.strictEqual(
+                (yield* session.task(below.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+                  .status,
+                'pending',
+              )
               const blocked = yield* reserve(session, 'unregistered')
               const closing = yield* Conversation.awaitIdle(session, blocked.conversationId).pipe(
                 Effect.provideService(Ownership.Declarations, {
                   ...declarations,
-                  get: () => undefined,
+                  get: () => Option.none(),
                 }),
                 Effect.result,
                 Effect.forkScoped,
@@ -255,7 +286,10 @@ describe('native structured ownership', () => {
             Effect.result,
           )
           assert.strictEqual(result._tag, 'Failure')
-          assert.deepStrictEqual((yield* session.task(task.taskId))?.state, { status: 'pending' })
+          assert.deepStrictEqual(
+            (yield* session.task(task.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state,
+            { status: 'pending' },
+          )
         }
       }),
     ),
@@ -285,8 +319,12 @@ describe('native structured ownership', () => {
           )
           yield* session.transaction(
             Effect.fnUntraced(function* (tx) {
-              const endedTask = (yield* tx.task(ended.taskId))!
-              const outerTask = (yield* tx.task(outer.taskId))!
+              const endedTask = (yield* tx
+                .task(ended.taskId)
+                .pipe(Effect.map(Option.getOrUndefined)))!
+              const outerTask = (yield* tx
+                .task(outer.taskId)
+                .pipe(Effect.map(Option.getOrUndefined)))!
               yield* tx.write({
                 type: 'task',
                 value: {
@@ -337,19 +375,23 @@ describe('native structured ownership', () => {
           const graph = yield* session.committed
           for (const background of [false, true]) {
             assert.deepStrictEqual(
-              Ownership.reach(graph, { kind: 'task', id: ended.taskId }, background),
+              Option.getOrUndefined(
+                Ownership.reach(graph, { kind: 'task', id: ended.taskId }, background),
+              ),
               { tasks: [], conversations: [] },
             )
             assert.isFalse(
-              Ownership.reach(graph, { kind: 'task', id: parent.taskId }, background)!.tasks.some(
-                (task) => task.id === below.taskId,
-              ),
+              Option.getOrUndefined(
+                Ownership.reach(graph, { kind: 'task', id: parent.taskId }, background),
+              )!.tasks.some((task) => task.id === below.taskId),
             )
           }
-          const reached = Ownership.reach(graph, {
-            kind: 'conversation',
-            id: parent.conversationId,
-          })!
+          const reached = Option.getOrUndefined(
+            Ownership.reach(graph, {
+              kind: 'conversation',
+              id: parent.conversationId,
+            }),
+          )!
           assert.isTrue(reached.tasks.some((task) => task.id === below.taskId))
           assert.isFalse(reached.tasks.some((task) => task.id === ended.taskId))
           assert.isTrue(reached.conversations.some((conversation) => conversation.id === owned.id))
@@ -391,13 +433,19 @@ describe('native structured ownership', () => {
           const parent = yield* reserve(session, 'parent')
           const fiber = yield* invoke(parent).pipe(Effect.forkScoped)
           yield* until(
-            session
-              .task(parent.taskId)
-              .pipe(Effect.map((task) => task?.state.status === 'completing')),
+            session.task(parent.taskId).pipe(
+              Effect.map(Option.getOrUndefined),
+              Effect.map((task) => task?.state.status === 'completing'),
+            ),
           )
-          assert.deepStrictEqual((yield* session.task(parent.taskId))?.memos, { kept: 'memo' })
+          assert.deepStrictEqual(
+            (yield* session.task(parent.taskId).pipe(Effect.map(Option.getOrUndefined)))?.memos,
+            { kept: 'memo' },
+          )
           assert.strictEqual(
-            (yield* session.snapshot(Notes, { owner: parent.taskId }))?.value.note,
+            (yield* session
+              .snapshot(Notes, { owner: parent.taskId })
+              .pipe(Effect.map(Option.getOrUndefined)))?.value.note,
             'held',
           )
           assert.isUndefined(yield* Effect.sync(() => fiber.pollUnsafe()))
@@ -407,9 +455,19 @@ describe('native structured ownership', () => {
             status: 'completed',
             result: 'parent',
           })
-          assert.isUndefined((yield* session.task(parent.taskId))?.memos)
-          assert.isUndefined(yield* session.snapshot(Notes, { owner: parent.taskId }))
-          assert.strictEqual((yield* session.task(child!.taskId))?.state.status, 'terminal')
+          assert.isUndefined(
+            (yield* session.task(parent.taskId).pipe(Effect.map(Option.getOrUndefined)))?.memos,
+          )
+          assert.isUndefined(
+            yield* session
+              .snapshot(Notes, { owner: parent.taskId })
+              .pipe(Effect.map(Option.getOrUndefined)),
+          )
+          assert.strictEqual(
+            (yield* session.task(child!.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+              .status,
+            'terminal',
+          )
         }),
       )
     }),
@@ -467,7 +525,10 @@ describe('native structured ownership', () => {
                 { status: 'completed', result: 'good' },
               ],
             })
-            for (const id of ids) assert.isFalse((yield* session.task(id))?.abortRequested)
+            for (const id of ids)
+              assert.isFalse(
+                (yield* session.task(id).pipe(Effect.map(Option.getOrUndefined)))?.abortRequested,
+              )
           }),
         )
       }),
@@ -509,13 +570,23 @@ describe('native structured ownership', () => {
             const parent = yield* reserve(session, 'parent')
             const fiber = yield* invoke(parent).pipe(Effect.forkScoped)
             yield* until(
-              session
-                .task(parent.taskId)
-                .pipe(Effect.map((task) => task?.state.status === 'completing')),
+              session.task(parent.taskId).pipe(
+                Effect.map(Option.getOrUndefined),
+                Effect.map((task) => task?.state.status === 'completing'),
+              ),
             )
-            assert.isTrue((yield* session.task(sibling!.taskId))?.abortRequested)
-            assert.isFalse((yield* session.task(outside!.taskId))?.abortRequested)
-            assert.isFalse((yield* session.task(parent.taskId))?.abortRequested)
+            assert.isTrue(
+              (yield* session.task(sibling!.taskId).pipe(Effect.map(Option.getOrUndefined)))
+                ?.abortRequested,
+            )
+            assert.isFalse(
+              (yield* session.task(outside!.taskId).pipe(Effect.map(Option.getOrUndefined)))
+                ?.abortRequested,
+            )
+            assert.isFalse(
+              (yield* session.task(parent.taskId).pipe(Effect.map(Option.getOrUndefined)))
+                ?.abortRequested,
+            )
             yield* Deferred.succeed(outsideGate, undefined)
             assert.deepStrictEqual(yield* Fiber.join(fiber), {
               status: 'completed',
@@ -566,10 +637,11 @@ describe('native structured ownership', () => {
                 ?.abortRequested,
             )
             assert.isUndefined(yield* Effect.sync(() => cancellation.pollUnsafe()))
-            assert.isTrue(
-              Exit.isFailure(
-                yield* reserve(session, 'late', { owner: task.taskId }).pipe(Effect.exit),
-              ),
+            yield* rejection(
+              reserve(session, 'late', { owner: task.taskId }),
+              'StorageError',
+              'Invalid',
+              'Invalid task owner',
             )
             yield* Deferred.succeed(finishCleanup, undefined)
             yield* Fiber.join(cancellation)
@@ -610,9 +682,10 @@ describe('native structured ownership', () => {
             const parent = yield* reserve(session, 'parent')
             const fiber = yield* invoke(parent).pipe(Effect.forkScoped)
             yield* until(
-              session
-                .task(parent.taskId)
-                .pipe(Effect.map((task) => task?.state.status === 'completing')),
+              session.task(parent.taskId).pipe(
+                Effect.map(Option.getOrUndefined),
+                Effect.map((task) => task?.state.status === 'completing'),
+              ),
             )
             const reached = yield* Cancellation.mark(session, {
               kind: 'conversation',
@@ -622,7 +695,10 @@ describe('native structured ownership', () => {
               reached.tasks.map((task) => task.id),
               [child!.taskId, parent.taskId],
             )
-            assert.isFalse((yield* session.task(background.taskId))?.abortRequested)
+            assert.isFalse(
+              (yield* session.task(background.taskId).pipe(Effect.map(Option.getOrUndefined)))
+                ?.abortRequested,
+            )
             yield* Cancellation.cancel(Identity.SessionId.make('ownership'), reached)
             assert.deepStrictEqual(yield* Fiber.join(fiber), {
               status: 'completed',
@@ -680,9 +756,10 @@ describe('native structured ownership', () => {
             const parent = yield* reserve(session, 'parent')
             const fiber = yield* invoke(parent).pipe(Effect.forkScoped)
             yield* until(
-              session
-                .task(parent.taskId)
-                .pipe(Effect.map((task) => task?.state.status === 'completing')),
+              session.task(parent.taskId).pipe(
+                Effect.map(Option.getOrUndefined),
+                Effect.map((task) => task?.state.status === 'completing'),
+              ),
             )
             yield* reserve(session, 'second', { conversationId: owned! })
             const background = yield* reserve(session, 'background', {
@@ -691,10 +768,18 @@ describe('native structured ownership', () => {
             })
             yield* Deferred.succeed(firstGate, undefined)
             yield* Deferred.await(secondStarted)
-            assert.strictEqual((yield* session.task(parent.taskId))?.state.status, 'completing')
+            assert.strictEqual(
+              (yield* session.task(parent.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+                .status,
+              'completing',
+            )
             yield* Deferred.succeed(secondGate, undefined)
             assert.deepStrictEqual(yield* Fiber.join(fiber), { status: 'completed' })
-            assert.strictEqual((yield* session.task(background.taskId))?.state.status, 'pending')
+            assert.strictEqual(
+              (yield* session.task(background.taskId).pipe(Effect.map(Option.getOrUndefined)))
+                ?.state.status,
+              'pending',
+            )
           }),
         )
       }),
@@ -747,7 +832,11 @@ describe('native structured ownership', () => {
             const parent = yield* reserve(session, 'parent')
             const fiber = yield* invoke(parent).pipe(Effect.forkScoped)
             yield* Deferred.await(dispatchEntered)
-            assert.strictEqual((yield* session.task(parent.taskId))?.state.status, 'completing')
+            assert.strictEqual(
+              (yield* session.task(parent.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+                .status,
+              'completing',
+            )
             yield* Deferred.succeed(dispatchFinish, undefined)
             assert.deepStrictEqual(yield* Fiber.join(fiber), { status: 'completed' })
           }).pipe(Effect.provide(setup(behaviors).pipe(Layer.provideMerge(drain)))),
@@ -779,13 +868,19 @@ describe('native structured ownership', () => {
                         Schema.String,
                         Effect.die('producer must not run'),
                       )
-                      assert.isTrue(
-                        Exit.isFailure(
-                          yield* Ownership.memo('late', Schema.String, Effect.succeed('new')).pipe(
-                            Effect.exit,
-                          ),
-                        ),
-                      )
+                      const error = yield* Ownership.memo(
+                        'late',
+                        Schema.String,
+                        Effect.succeed('new'),
+                      ).pipe(Effect.flip)
+                      assert.instanceOf(error, ExecutionError)
+                      if (error instanceof ExecutionError) {
+                        assert.strictEqual(error.reason._tag, 'Aborted')
+                        assert.strictEqual(
+                          error.message,
+                          'Task no longer accepts invocation writes',
+                        )
+                      }
                     }).pipe(Effect.orDie),
                   ),
                 )
@@ -803,7 +898,12 @@ describe('native structured ownership', () => {
             yield* Cancellation.mark(session, { kind: 'task', id: task.taskId })
             assert.deepStrictEqual(yield* Fiber.join(fiber), { status: 'aborted' })
             assert.strictEqual(read, 'old')
-            assert.isTrue(Exit.isFailure(yield* captured!.check.pipe(Effect.exit)))
+            yield* rejection(
+              captured!.check,
+              'ExecutionError',
+              'Closed',
+              'Task invocation has ended',
+            )
           }),
         )
       }),
@@ -820,21 +920,29 @@ describe('native structured ownership', () => {
           const root = yield* reserve(session, 'root')
           const child = yield* reserve(session, 'child', { owner: root.taskId })
           const foreign = yield* reserve(session, 'foreign')
-          for (const ids of [[root.taskId], [yield* Schema.decodeEffect(Record.TaskId)(9999)]])
-            assert.isTrue(
-              Exit.isFailure(yield* Structured.join(session, root.taskId, ids).pipe(Effect.exit)),
-            )
-          assert.isTrue(
-            Exit.isFailure(
-              yield* Structured.join(session, child.taskId, [root.taskId]).pipe(Effect.exit),
-            ),
+          yield* rejection(
+            Structured.join(session, root.taskId, [root.taskId]),
+            'ExecutionError',
+            'InvalidState',
+            'A task cannot await itself or its owner',
           )
-          assert.isTrue(
-            Exit.isFailure(
-              yield* Structured.join(session, root.taskId, [foreign.taskId], 'failFast').pipe(
-                Effect.exit,
-              ),
-            ),
+          yield* rejection(
+            Structured.join(session, root.taskId, [Record.TaskId.make(9999)]),
+            'ExecutionError',
+            'InvalidState',
+            'Awaited task 9999 is absent',
+          )
+          yield* rejection(
+            Structured.join(session, child.taskId, [root.taskId]),
+            'ExecutionError',
+            'InvalidState',
+            'A task cannot await itself or its owner',
+          )
+          yield* rejection(
+            Structured.join(session, root.taskId, [foreign.taskId], 'failFast'),
+            'ExecutionError',
+            'InvalidState',
+            'Fail-fast requires directly owned tasks',
           )
           const background = yield* reserve(session, 'background', { background: true })
           const owned = yield* session.transaction((tx) =>
@@ -849,15 +957,13 @@ describe('native structured ownership', () => {
           const below = yield* reserve(session, 'below', { conversationId: owned.id })
           const state = yield* session.committed
           assert.isFalse(
-            Ownership.reach(state, { kind: 'conversation', id: root.conversationId })!.tasks.some(
-              (task) => task.id === below.taskId,
-            ),
+            Option.getOrUndefined(
+              Ownership.reach(state, { kind: 'conversation', id: root.conversationId }),
+            )!.tasks.some((task) => task.id === below.taskId),
           )
           assert.isTrue(
-            Ownership.reach(
-              state,
-              { kind: 'conversation', id: root.conversationId },
-              true,
+            Option.getOrUndefined(
+              Ownership.reach(state, { kind: 'conversation', id: root.conversationId }, true),
             )!.tasks.some((task) => task.id === below.taskId),
           )
         }),
@@ -899,7 +1005,7 @@ describe('native structured ownership', () => {
                 Effect.map((result) => Option.isSome(result) && result.value._tag === 'Suspended'),
               ),
             )
-            const child = (yield* session.task(childId!))!
+            const child = (yield* session.task(childId!).pipe(Effect.map(Option.getOrUndefined)))!
             const binding = yield* Schema.decodeUnknownEffect(Ownership.Binding)(child.input)
             const token = DurableDeferred.tokenFromExecutionId(gate, {
               workflow: Node,
@@ -935,6 +1041,7 @@ describe('native structured ownership', () => {
                 { status: 'completed' },
                 task.sessionId,
               )
+              // Keep the native cancellation monitor alive for more than two 20ms scans after terminal commitment; it must not reinterpret success as abort.
               yield* Effect.sleep('50 millis')
               return 'receipt'
             }),
@@ -985,7 +1092,9 @@ describe('native structured ownership', () => {
             const payload = yield* reserve(session, status)
             yield* session.transaction(
               Effect.fnUntraced(function* (tx) {
-                const task = (yield* tx.task(payload.taskId))!
+                const task = (yield* tx
+                  .task(payload.taskId)
+                  .pipe(Effect.map(Option.getOrUndefined)))!
                 yield* Structured.bind(tx, task, Custom, payload)
               }),
             )
@@ -996,7 +1105,11 @@ describe('native structured ownership', () => {
                 : undefined,
               status,
             )
-            assert.strictEqual((yield* session.task(payload.taskId))?.state.status, 'terminal')
+            assert.strictEqual(
+              (yield* session.task(payload.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+                .status,
+              'terminal',
+            )
           }
         }).pipe(Effect.provide(custom)),
         Session.layer.pipe(Layer.provideMerge(Memory.layer)),
@@ -1049,11 +1162,22 @@ describe('native structured ownership', () => {
             )
             .pipe(Effect.exit)
           assert.isTrue(Exit.isFailure(rejected))
+          if (Exit.isFailure(rejected)) {
+            const failure = Cause.squash(rejected.cause)
+            assert.instanceOf(failure, StorageError)
+            if (failure instanceof StorageError) {
+              assert.strictEqual(failure.reason._tag, 'Invalid')
+              assert.strictEqual(
+                failure.message,
+                'New owned work requires a live non-aborting owner',
+              )
+            }
+          }
           assert.strictEqual((yield* session.committed).tasks.length, 1)
           const missing = yield* reserve(session, 'missing', { owner: parent.taskId })
           yield* session.transaction(
             Effect.fnUntraced(function* (tx) {
-              const task = (yield* tx.task(missing.taskId))!
+              const task = (yield* tx.task(missing.taskId).pipe(Effect.map(Option.getOrUndefined)))!
               const binding = yield* Schema.decodeUnknownEffect(Ownership.Binding)(task.input)
               yield* tx.write({
                 type: 'task',
@@ -1069,15 +1193,31 @@ describe('native structured ownership', () => {
             parent.sessionId,
           ).pipe(Effect.result)
           assert.strictEqual(blocked._tag, 'Failure')
-          if (blocked._tag === 'Failure') assert.match(blocked.failure.message, /remains blocked/)
-          assert.strictEqual((yield* session.task(missing.taskId))?.state.status, 'pending')
-          assert.deepStrictEqual((yield* session.task(parent.taskId))?.state, {
-            status: 'completing',
-            outcome: held,
-          })
+          if (blocked._tag === 'Failure') {
+            assert.strictEqual(blocked.failure.reason._tag, 'InvalidState')
+            assert.strictEqual(
+              blocked.failure.message,
+              `Workflow missing/declaration is not declared; task ${missing.taskId} remains blocked`,
+            )
+          }
+          assert.strictEqual(
+            (yield* session.task(missing.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+              .status,
+            'pending',
+          )
+          assert.deepStrictEqual(
+            (yield* session.task(parent.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state,
+            {
+              status: 'completing',
+              outcome: held,
+            },
+          )
           yield* Cancellation.mark(session, { kind: 'task', id: missing.taskId })
           yield* Structured.drain(session, parent.taskId, parent.sessionId)
-          const result = [(yield* session.task(missing.taskId))?.state.outcome]
+          const result = [
+            (yield* session.task(missing.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+              .outcome,
+          ]
           assert.strictEqual(
             typeof result[0] === 'object' && result[0] !== null && !Array.isArray(result[0])
               ? Reflect.get(result[0], 'status')
@@ -1142,16 +1282,32 @@ describe('native structured ownership', () => {
           const fiber = yield* invoke(parent).pipe(Effect.forkScoped)
           yield* Deferred.await(cleanup)
           yield* until(
-            session
-              .task(sibling!.taskId)
-              .pipe(Effect.map((task) => task?.state.status === 'terminal')),
+            session.task(sibling!.taskId).pipe(
+              Effect.map(Option.getOrUndefined),
+              Effect.map((task) => task?.state.status === 'terminal'),
+            ),
           )
-          assert.strictEqual((yield* session.task(bad!.taskId))?.state.status, 'completing')
-          assert.strictEqual((yield* session.task(parent.taskId))?.state.status, 'waiting')
-          assert.isFalse((yield* session.task(bad!.taskId))?.abortRequested)
+          assert.strictEqual(
+            (yield* session.task(bad!.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+              .status,
+            'completing',
+          )
+          assert.strictEqual(
+            (yield* session.task(parent.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+              .status,
+            'waiting',
+          )
+          assert.isFalse(
+            (yield* session.task(bad!.taskId).pipe(Effect.map(Option.getOrUndefined)))
+              ?.abortRequested,
+          )
           yield* Deferred.succeed(release, undefined)
           assert.isDefined(yield* Fiber.join(fiber))
-          assert.strictEqual((yield* session.task(bad!.taskId))?.state.status, 'terminal')
+          assert.strictEqual(
+            (yield* session.task(bad!.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+              .status,
+            'terminal',
+          )
         }),
       )
     }),
@@ -1181,7 +1337,10 @@ describe('native structured ownership', () => {
           ).pipe(Effect.exit, Effect.forkScoped)
           yield* Deferred.await(entered)
           yield* Scope.close(yield* ResourceScope, Exit.void)
-          assert.isTrue(Exit.isFailure(yield* Fiber.join(fiber)))
+          const closed = yield* Fiber.join(fiber)
+          assert.isTrue(Exit.isFailure(closed))
+          // Resource closure interrupts the admitted body; fiber IDs depend on scheduling.
+          if (Exit.isFailure(closed)) assert.isTrue(Cause.hasInterruptsOnly(closed.cause))
           assert.isTrue(cleaned)
         }),
       )
@@ -1209,10 +1368,12 @@ describe('native structured ownership', () => {
               ),
             ).pipe(Effect.forkScoped)
             yield* Deferred.await(entered)
-            const reached = Ownership.reach(yield* session.committed, {
-              kind: 'task',
-              id: task.taskId,
-            })!
+            const reached = Option.getOrUndefined(
+              Ownership.reach(yield* session.committed, {
+                kind: 'task',
+                id: task.taskId,
+              }),
+            )!
             yield* Cancellation.cancel(task.sessionId, reached)
             assert.isUndefined(yield* Effect.sync(() => fiber.pollUnsafe()))
             yield* Deferred.succeed(release, undefined)
@@ -1225,14 +1386,13 @@ describe('native structured ownership', () => {
   it.effect(
     'heterogeneous builtin declarations retain their exact empty schema requirements',
     () => {
-      const support: Layer.Layer<Ownership.Declarations | Cancellation.Cancellation> =
-        Layer.mergeAll(
-          Cancellation.layer,
-          Ownership.layerDeclarations([Generation, ToolCall, Compaction]),
-        )
+      const support = Layer.mergeAll(
+        Cancellation.layer,
+        Ownership.layerDeclarations([Generation, ToolCall, Compaction]),
+      )
       return Effect.gen(function* () {
         const declarations = yield* Ownership.Declarations
-        assert.strictEqual(declarations.get(Generation._tag), Generation)
+        assert.strictEqual(Option.getOrUndefined(declarations.get(Generation._tag)), Generation)
       }).pipe(Effect.provide(support))
     },
   )
@@ -1251,7 +1411,7 @@ describe('native structured ownership', () => {
             Ownership.Declarations,
             Ownership.Declarations.of({
               ...original,
-              get: (name) => (available ? original.get(name) : undefined),
+              get: (name) => (available ? original.get(name) : Option.none()),
             }),
           )
           const session = yield* Session.Session
@@ -1288,17 +1448,37 @@ describe('native structured ownership', () => {
                 Effect.map((value) => value._tag === 'Some' && value.value._tag === 'Suspended'),
               ),
             )
-            assert.strictEqual((yield* session.task(child.taskId))?.state.status, 'pending')
-            assert.strictEqual((yield* session.task(parent.taskId))?.state.status, 'completing')
-            assert.isDefined(yield* session.snapshot(Notes, { owner: child.taskId }))
+            assert.strictEqual(
+              (yield* session.task(child.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+                .status,
+              'pending',
+            )
+            assert.strictEqual(
+              (yield* session.task(parent.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+                .status,
+              'completing',
+            )
+            assert.isDefined(
+              yield* session
+                .snapshot(Notes, { owner: child.taskId })
+                .pipe(Effect.map(Option.getOrUndefined)),
+            )
             assert.deepStrictEqual(executions, ['parent'])
             available = true
             yield* Node.resume(executionId)
             const result = yield* Node.execute(parent)
             assert.deepStrictEqual(result, { status: 'completed', result: 'parent' })
             assert.deepStrictEqual(executions, ['parent', 'child'])
-            assert.strictEqual((yield* session.task(child.taskId))?.state.status, 'terminal')
-            assert.isUndefined(yield* session.snapshot(Notes, { owner: child.taskId }))
+            assert.strictEqual(
+              (yield* session.task(child.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+                .status,
+              'terminal',
+            )
+            assert.isUndefined(
+              yield* session
+                .snapshot(Notes, { owner: child.taskId })
+                .pipe(Effect.map(Option.getOrUndefined)),
+            )
           }).pipe(Effect.provide(handler))
         }).pipe(
           Effect.provide(
@@ -1340,7 +1520,7 @@ describe('native structured ownership', () => {
         const child = yield* reserve(session, 'child', { owner: parent.taskId })
         yield* session.transaction(
           Effect.fnUntraced(function* (tx) {
-            const task = (yield* tx.task(child.taskId))!
+            const task = (yield* tx.task(child.taskId).pipe(Effect.map(Option.getOrUndefined)))!
             yield* Structured.bind(tx, task, Incomplete, child)
           }),
         )
@@ -1361,11 +1541,17 @@ describe('native structured ownership', () => {
           assert.match(result.failure.message, /ended before its domain projection settled/)
         }
         assert.strictEqual(executions, 1)
-        assert.deepStrictEqual((yield* session.task(parent.taskId))?.state, {
-          status: 'completing',
-          outcome,
-        })
-        assert.strictEqual((yield* session.task(child.taskId))?.state.status, 'pending')
+        assert.deepStrictEqual(
+          (yield* session.task(parent.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state,
+          {
+            status: 'completing',
+            outcome,
+          },
+        )
+        assert.strictEqual(
+          (yield* session.task(child.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state.status,
+          'pending',
+        )
         // A retry observes the cached native result and still rejects without
         // invoking the child again or spinning a domain execution loop.
         const replay = yield* Structured.drain(session, parent.taskId, parent.sessionId).pipe(

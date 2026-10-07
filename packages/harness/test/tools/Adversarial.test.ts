@@ -1,4 +1,7 @@
+import { makeBinaryReader } from '../../src/Env.ts'
+import * as Option from 'effect/Option'
 import { assert, describe, it } from '@effect/vitest'
+import * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Scope from 'effect/Scope'
@@ -70,12 +73,23 @@ describe('boundary race and failure regressions', () => {
             const env = yield* Env
             yield* env.exec(['/usr/bin/mkfifo', env.path.join(env.cwd, 'pipe')])
             assert.strictEqual((yield* Effect.flip(env.openBinaryReader('pipe'))).code, 'invalid')
-            const fork = yield* env
-              .openBinaryReader('absent')
-              .pipe(Effect.andThen(Effect.never), Effect.forkChild)
+            yield* env.writeFile('admitted', 'owned reader')
+            const admitted = yield* Deferred.make<BinaryReader>()
+            const fork = yield* Effect.scoped(
+              env.openBinaryReader('admitted').pipe(
+                Effect.tap((reader) => Deferred.succeed(admitted, reader)),
+                Effect.andThen(Effect.never),
+              ),
+            ).pipe(Effect.forkChild)
+            const reader = yield* Deferred.await(admitted)
             yield* Fiber.interrupt(fork)
             const exit = yield* Fiber.await(fork)
-            assert.strictEqual(exit._tag, 'Failure')
+            assert.isTrue(Exit.isFailure(exit))
+            if (Exit.isFailure(exit)) assert.isTrue(Cause.hasInterruptsOnly(exit.cause))
+            const closed = yield* Effect.flip(reader.read(0, 1))
+            assert.instanceOf(closed, FileError)
+            assert.strictEqual(closed.reason._tag, 'FileInvalid')
+            assert.strictEqual(closed.message, 'Reader is closed')
           }),
         ),
       ),
@@ -99,14 +113,16 @@ describe('boundary race and failure regressions', () => {
             ...real,
             openBinaryReader: (path, options) =>
               real.openBinaryReader(path, options).pipe(
-                Effect.map((reader) => ({
-                  ...reader,
-                  info: Effect.gen(function* () {
-                    const count = yield* Ref.updateAndGet(calls, (n) => n + 1)
-                    if (count === 2) yield* overwrite(path, 'new')
-                    return yield* reader.info
+                Effect.map((reader) =>
+                  makeBinaryReader({
+                    ...reader,
+                    info: Effect.gen(function* () {
+                      const count = yield* Ref.updateAndGet(calls, (n) => n + 1)
+                      if (count === 2) yield* overwrite(path, 'new')
+                      return yield* reader.info
+                    }),
                   }),
-                })),
+                ),
                 Effect.tap((reader) => Ref.set(saved, reader)),
               ),
           }
@@ -127,15 +143,17 @@ describe('boundary race and failure regressions', () => {
             ...shrinking,
             openBinaryReader: (path, options) =>
               real.openBinaryReader(path, options).pipe(
-                Effect.map((reader) => ({
-                  ...reader,
-                  info: Effect.gen(function* () {
-                    const count = yield* Ref.updateAndGet(calls, (n) => n + 1)
-                    if (count === 2) yield* overwrite(path, 'four')
-                    if (count === 4) yield* overwrite(path, 'x')
-                    return yield* reader.info
+                Effect.map((reader) =>
+                  makeBinaryReader({
+                    ...reader,
+                    info: Effect.gen(function* () {
+                      const count = yield* Ref.updateAndGet(calls, (n) => n + 1)
+                      if (count === 2) yield* overwrite(path, 'four')
+                      if (count === 4) yield* overwrite(path, 'x')
+                      return yield* reader.info
+                    }),
                   }),
-                })),
+                ),
               ),
           }
           assert.match(
@@ -150,21 +168,23 @@ describe('boundary race and failure regressions', () => {
             ...real,
             openBinaryReader: (path, options) =>
               real.openBinaryReader(path, options).pipe(
-                Effect.map((reader) => ({
-                  ...reader,
-                  read: (offset, length) =>
-                    reader
-                      .read(offset, length)
-                      .pipe(
-                        Effect.tap(() =>
-                          Ref.updateAndGet(calls, (n) => n + 1).pipe(
-                            Effect.flatMap((n) =>
-                              n === 1 ? real.appendFile(path, '\ntwo') : Effect.void,
+                Effect.map((reader) =>
+                  makeBinaryReader({
+                    ...reader,
+                    read: (offset, length) =>
+                      reader
+                        .read(offset, length)
+                        .pipe(
+                          Effect.tap(() =>
+                            Ref.updateAndGet(calls, (n) => n + 1).pipe(
+                              Effect.flatMap((n) =>
+                                n === 1 ? real.appendFile(path, '\ntwo') : Effect.void,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                })),
+                  }),
+                ),
               ),
           }
           assert.strictEqual(
@@ -252,7 +272,7 @@ describe('boundary race and failure regressions', () => {
       }).pipe(
         Effect.tap((result) =>
           Effect.sync(() => {
-            assert.strictEqual(result, undefined)
+            assert.isTrue(Option.isNone(result))
             assert.strictEqual(Math.max(...reads), 65536)
           }),
         ),

@@ -1,7 +1,10 @@
+import * as Option from 'effect/Option'
 import * as Effect from 'effect/Effect'
+import * as Arr from 'effect/Array'
 import * as Schema from 'effect/Schema'
 import * as Result from 'effect/Result'
 import * as Record from '../Record.ts'
+import * as Document from '../Document.ts'
 import { rejected, StorageError, Invalid, Corrupt, NotFound, Conflict } from '../StorageError.ts'
 
 export class CloneError extends Schema.TaggedError<CloneError>(
@@ -54,7 +57,7 @@ export const detachedEffect = <A>(value: A): Effect.Effect<A, StorageError> =>
 export const validate = Effect.fnUntraced(function* <S extends Schema.Constraint>(
   schema: S,
   value: unknown,
-) {
+): Effect.fn.Return<S['Type'], StorageError, S['DecodingServices']> {
   return yield* Schema.decodeUnknownEffect(schema)(value).pipe(
     Effect.mapError((cause) => rejected('Invalid durable value', Invalid, cause)),
   )
@@ -63,27 +66,29 @@ export const validate = Effect.fnUntraced(function* <S extends Schema.Constraint
 export const applyOps = Effect.fnUntraced(function* (
   value: Record.JsonObject,
   ops: ReadonlyArray<Record.Op>,
-) {
+): Effect.fn.Return<Record.JsonObject, StorageError> {
+  const validOps = yield* validate(Schema.Array(Record.Op), ops).pipe(
+    Effect.mapError((cause) => rejected('Invalid document operation', Corrupt, cause)),
+  )
   const result = yield* Effect.try({
     // effect-review-allow P1-throw-only-in-unsafe-orthrow: this synchronous
     // catching thunk maps every native clone/operation throw into StorageError.
     try: () => {
       let result = detachedUnsafe(value)
-      for (const op of ops) {
+      for (const op of validOps) {
         if (op[0] === 'replace') {
           result = detachedUnsafe(op[1])
           continue
         }
         const path = op[1]
-        if (path.length === 0) throw new TypeError('Non-replacement operation needs a path')
         let current: unknown = result
         for (const segment of path.slice(0, -1)) {
           if (current === null || typeof current !== 'object' || !Object.hasOwn(current, segment))
             throw new TypeError('Invalid operation path')
           current = Reflect.get(current, segment)
         }
-        const key = path.at(-1)
-        if (key === undefined || current === null || typeof current !== 'object')
+        const key = Arr.lastNonEmpty(path)
+        if (current === null || typeof current !== 'object')
           throw new TypeError('Invalid operation target')
         if (
           Array.isArray(current) &&
@@ -111,10 +116,10 @@ export const applyOps = Effect.fnUntraced(function* (
 export const materialize = Effect.fnUntraced(function* (
   document: Record.StoredDocument,
   at: Record.Point,
-): Effect.fn.Return<import('../Document.ts').Snapshot | undefined, StorageError> {
+): Effect.fn.Return<Option.Option<import('../Document.ts').Snapshot>, StorageError> {
   if (at !== 'current' && Record.currentOnly(document.record))
     return yield* rejected('Document does not retain historical content')
-  if (!Record.isAlive(document.record, at)) return undefined
+  if (!Record.isAlive(document.record, at)) return Option.none()
   const revisions = document.revisions.filter((revision) => at === 'current' || revision.seq <= at)
   const baseIndex = revisions.findLastIndex((revision) => revision.content.kind === 'base')
   const base = revisions[baseIndex]
@@ -126,12 +131,14 @@ export const materialize = Effect.fnUntraced(function* (
       return yield* rejected('Document crosses a stored version boundary without a base', Corrupt)
     value = yield* applyOps(value, revision.content.ops)
   }
-  return {
-    record: yield* detachedEffect(document.record),
-    version: base.content.version,
-    value,
-    deltasSinceBase: revisions.length - baseIndex - 1,
-  }
+  return Option.some(
+    Document.makeSnapshot({
+      record: yield* detachedEffect(document.record),
+      version: base.content.version,
+      value,
+      deltasSinceBase: revisions.length - baseIndex - 1,
+    }),
+  )
 })
 
 const sameScope = (a: Record.Scope, b: Record.Scope) => Record.scopeKey(a) === Record.scopeKey(b)
@@ -140,7 +147,7 @@ export const visibleEntries = Effect.fnUntraced(function* (
   conversationId: Record.ConversationId,
   min = 0,
   max = Number.MAX_SAFE_INTEGER,
-) {
+): Effect.fn.Return<ReadonlyArray<Record.Entry>, StorageError> {
   const entries: Array<Record.Entry> = []
   const seen = new Set<number>()
   let current = conversationId
@@ -148,8 +155,9 @@ export const visibleEntries = Effect.fnUntraced(function* (
   while (true) {
     if (seen.has(current)) return yield* rejected('Conversation ancestry is cyclic', Corrupt)
     seen.add(current)
-    const conversation = state.conversations.find((item) => item.id === current)
-    if (conversation === undefined) return yield* rejected('Unknown conversation', NotFound)
+    const conversationOption = Arr.findFirst(state.conversations, (item) => item.id === current)
+    if (Option.isNone(conversationOption)) return yield* rejected('Unknown conversation', NotFound)
+    const conversation = conversationOption.value
     entries.push(
       ...(yield* detachedEffect(
         state.entries
@@ -184,10 +192,12 @@ export const page = <A extends { readonly id: number }>(
   const shown = kept.slice(0, limit)
   const last = shown.at(-1)
   return detachedEffect(shown).pipe(
-    Effect.map((items) => ({
-      items,
-      ...(kept.length > limit && last !== undefined ? { next: { after: last.id } } : {}),
-    })),
+    Effect.map((items) =>
+      Record.makePage({
+        items,
+        ...(kept.length > limit && last !== undefined ? { next: { after: last.id } } : {}),
+      }),
+    ),
   )
 }
 
@@ -292,9 +302,9 @@ export const applyWrites = Effect.fnUntraced(function* (
           const source = documents.get(write.source.id)
           if (source === undefined)
             return yield* rejected('Document copy source is absent', NotFound)
-          const stored = yield* materialize(source, write.source.at)
+          const storedOption = yield* materialize(source, write.source.at)
           if (
-            stored === undefined ||
+            Option.isNone(storedOption) ||
             source.record.scope.kind !== 'conversation' ||
             write.record.scope.kind !== 'conversation' ||
             source.record.kind !== write.record.kind ||
@@ -303,6 +313,7 @@ export const applyWrites = Effect.fnUntraced(function* (
             source.record.fork !== write.record.fork
           )
             return yield* rejected('Document copy source does not match')
+          const stored = storedOption.value
           content = { kind: 'base', version: stored.version, value: stored.value }
         } else content = write.content
         if (content.kind !== 'base') return yield* rejected('Document creation requires a base')
@@ -326,14 +337,19 @@ export const applyWrites = Effect.fnUntraced(function* (
         )
           return yield* rejected('Document version transition requires a base')
         if (write.content.kind === 'delta') {
-          const snapshot = yield* materialize(previous, 'current')
-          if (snapshot === undefined) return yield* rejected('Document is absent')
+          const snapshotOption = yield* materialize(previous, 'current')
+          if (Option.isNone(snapshotOption)) return yield* rejected('Document is absent')
+          const snapshot = snapshotOption.value
           yield* applyOps(snapshot.value, write.content.ops)
         }
         if (write.publicationOps !== undefined) {
-          const snapshot = yield* materialize(previous, 'current')
-          if (snapshot === undefined || snapshot.version !== write.content.version)
+          const snapshotOption = yield* materialize(previous, 'current')
+          if (
+            Option.isNone(snapshotOption) ||
+            snapshotOption.value.version !== write.content.version
+          )
             return yield* rejected('Publication operations require the same document version')
+          const snapshot = snapshotOption.value
           const published = yield* applyOps(snapshot.value, write.publicationOps)
           const persisted =
             write.content.kind === 'base'
@@ -382,19 +398,28 @@ export const applyWrites = Effect.fnUntraced(function* (
     documents: [...documents.values()],
   }
 })
-export const findDocument = (state: Record.State, address: Record.Address, at: Record.Point) =>
-  state.documents.find(
+export const findDocument = (
+  state: Record.State,
+  address: Record.Address,
+  at: Record.Point,
+): Option.Option<Record.StoredDocument> =>
+  Arr.findFirst(
+    state.documents,
     (item) =>
       Record.addressKey(item.record) === Record.addressKey(address) &&
       Record.isAlive(item.record, at),
   )
-export const documentsInScope = (state: Record.State, scope: Record.Scope, at: Record.Point) =>
+export const documentsInScope = (
+  state: Record.State,
+  scope: Record.Scope,
+  at: Record.Point,
+): ReadonlyArray<Record.StoredDocument> =>
   state.documents.filter(
     (item) => sameScope(item.record.scope, scope) && Record.isAlive(item.record, at),
   )
 
 /** Validate arithmetic cursors without narrowing the allocator exhaustion sentinel. */
-export const cursor = (nextSeq: number) =>
+export const cursor = (nextSeq: number): Effect.Effect<Record.Seq | 0, StorageError> =>
   validate(Record.JournalCursor, nextSeq - 1).pipe(
     Effect.mapError((cause) => rejected('Invalid computed journal cursor', Corrupt, cause)),
   )

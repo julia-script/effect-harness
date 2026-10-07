@@ -179,3 +179,24 @@ export const Settings = Schema.Struct({
   steeringMode: Schema.Literals(['one-at-a-time', 'all']),
   followUpMode: Schema.Literals(['one-at-a-time', 'all']),
 })
+
+export const isModelRef: (input: unknown) => input is ModelRef = Schema.is(ModelRef)
+
+export const isSelectionEdit: (input: unknown) => input is typeof SelectionEdit.Type =
+  Schema.is(SelectionEdit)
+
+export const isSelection: (input: unknown) => input is Selection = Schema.is(Selection)
+
+export const isToolSelection: (input: unknown) => input is ToolSelection = Schema.is(ToolSelection)
+
+export const isState: (input: unknown) => input is State = Schema.is(State)
+
+export const isRetryPolicy: (input: unknown) => input is RetryPolicy = Schema.is(RetryPolicy)
+
+export const isCompactionPolicy: (input: unknown) => input is CompactionPolicy =
+  Schema.is(CompactionPolicy)
+
+export const isProgressPolicy: (input: unknown) => input is ProgressPolicy =
+  Schema.is(ProgressPolicy)
+
+export const isSettings: (input: unknown) => input is Settings = Schema.is(Settings)

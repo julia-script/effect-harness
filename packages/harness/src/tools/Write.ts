@@ -25,7 +25,9 @@ export const tool = AiTool.make('write', {
     replay: 'unsafe',
     project: (result) => Metadata.decodeResult('write', result),
   })
-export const handler = Effect.fnUntraced(function* (input: Input) {
+export const handler = Effect.fnUntraced(function* (
+  input: Input,
+): Effect.fn.Return<{ content: Prompt.TextPart[] }, ToolError, Env | Invocation | MutationLocks> {
   const env = yield* Env
   const absolute = yield* Path.resolve(input.path).pipe(
     Effect.mapError(
@@ -51,3 +53,5 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
     ),
   )
 })
+
+export const isInput: (input: unknown) => input is typeof Parameters.Type = Schema.is(Parameters)

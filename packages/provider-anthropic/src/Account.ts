@@ -1,3 +1,5 @@
+import * as HashMap from 'effect/HashMap'
+import * as Option from 'effect/Option'
 import type * as NativeLanguageModel from 'effect/ai/LanguageModel'
 import * as Config from 'effect/Config'
 import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
@@ -40,8 +42,11 @@ const canonicalTools = [
   'WebFetch',
   'WebSearch',
 ]
-const canonicalByLower = new Map(canonicalTools.map((name) => [name.toLowerCase(), name]))
-const alias = (name: string) => canonicalByLower.get(name.toLowerCase()) ?? name
+const canonicalByLower = HashMap.fromIterable(
+  canonicalTools.map((name) => [name.toLowerCase(), name]),
+)
+const alias = (name: string) =>
+  Option.getOrElse(HashMap.get(canonicalByLower, name.toLowerCase()), () => name)
 const invalid = (description: string) =>
   new AiError.AiError({
     module: 'AnthropicAccount',
@@ -99,9 +104,9 @@ const rewriteBlock = (
 const prepare = Effect.fnUntraced(function* (
   payload: typeof Generated.BetaCreateMessageParams.Encoded,
 ) {
-  const aliases = new Map<string, string>()
+  let aliases = HashMap.empty<string, string>()
   const insensitive = new Set<string>()
-  const forward = new Map<string, string>()
+  let forward = HashMap.empty<string, string>()
   const wireName = (tool: { readonly name: string; readonly type?: string | null | undefined }) =>
     tool.type === undefined || tool.type === null || tool.type === 'custom'
       ? alias(tool.name)
@@ -109,8 +114,8 @@ const prepare = Effect.fnUntraced(function* (
   const tools = payload.tools?.map((tool) => {
     if (!('name' in tool)) return tool
     const canonical = wireName(tool)
-    aliases.set(canonical.toLowerCase(), tool.name)
-    forward.set(tool.name.toLowerCase(), canonical)
+    aliases = HashMap.set(aliases, canonical.toLowerCase(), tool.name)
+    forward = HashMap.set(forward, tool.name.toLowerCase(), canonical)
     return { ...tool, name: canonical }
   })
   for (const tool of payload.tools ?? []) {
@@ -120,7 +125,8 @@ const prepare = Effect.fnUntraced(function* (
       return yield* invalid('Tool names collide after account canonicalization')
     insensitive.add(name)
   }
-  const rename = (name: string) => forward.get(name.toLowerCase()) ?? alias(name)
+  const rename = (name: string) =>
+    Option.getOrElse(HashMap.get(forward, name.toLowerCase()), () => alias(name))
   const system =
     typeof payload.system === 'string'
       ? [{ type: 'text', text: payload.system }]
@@ -149,7 +155,8 @@ const prepare = Effect.fnUntraced(function* (
   }).pipe(Effect.mapError(() => invalid('Unsupported account Messages payload or tool alias')))
   return {
     payload: transformed,
-    reverse: (name: string) => aliases.get(name.toLowerCase()) ?? name,
+    reverse: (name: string) =>
+      Option.getOrElse(HashMap.get(aliases, name.toLowerCase()), () => name),
   }
 })
 
@@ -161,7 +168,9 @@ export interface ClientOptions {
   readonly interleavedThinking?: boolean | undefined
 }
 /** Supplies the standard native client with refreshed bearer auth and Pi account wire adaptation. */
-export const layerClient = (options: ClientOptions) =>
+export const layerClient = (
+  options: ClientOptions,
+): Layer.Layer<AnthropicClient.AnthropicClient, AiError.AiError, HttpClient.HttpClient | OAuth> =>
   Layer.effect(AnthropicClient.AnthropicClient)(
     Effect.gen(function* () {
       if (options.account.length === 0)
@@ -313,7 +322,11 @@ export const layer = (
     readonly model: string
     readonly config?: Omit<typeof AnthropicLanguageModel.Config.Service, 'model'>
   },
-) =>
+): Layer.Layer<
+  NativeLanguageModel.LanguageModel | AnthropicClient.AnthropicClient,
+  AiError.AiError,
+  HttpClient.HttpClient | OAuth
+> =>
   Prompt.layer({ model: options.model, config: options.config }).pipe(
     Layer.provideMerge(layerClient(options)),
   )

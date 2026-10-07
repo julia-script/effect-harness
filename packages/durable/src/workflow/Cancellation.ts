@@ -1,3 +1,4 @@
+import type { StorageError } from '../StorageError.ts'
 import * as Identity from '../Identity.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -31,7 +32,7 @@ export class Cancellation extends Context.Service<
   }
 >()('@effect-harness/durable/Cancellation') {}
 
-export const layer = Layer.effect(
+export const layer: Layer.Layer<Cancellation> = Layer.effect(
   Cancellation,
   Effect.gen(function* () {
     const live = yield* Ref.make(HashMap.empty<string, HashSet.HashSet<Effect.Effect<void>>>())
@@ -89,15 +90,16 @@ export const mark = Effect.fnUntraced(function* (
   session: Session.Service,
   target: Ownership.Target,
   options?: { readonly background?: boolean },
-) {
+): Effect.fn.Return<Ownership.Reached, StorageError | ExecutionError> {
   return yield* session.transaction(
     Effect.fnUntraced(function* (tx) {
       const graph = yield* Ownership.readGraph(tx)
-      const reached = Ownership.reach(graph, target, options?.background)
-      if (reached === undefined)
+      const reachedOption = Ownership.reach(graph, target, options?.background)
+      if (Option.isNone(reachedOption))
         return yield* new ExecutionError({
           reason: new InvalidState({ message: 'Abort target is absent' }),
         })
+      const reached = reachedOption.value
       for (const task of reached.tasks)
         if (!task.abortRequested)
           yield* tx.write({ type: 'task', value: { ...task, abortRequested: true } })
@@ -109,7 +111,7 @@ export const mark = Effect.fnUntraced(function* (
 export const cancel = Effect.fnUntraced(function* (
   sessionId: Identity.SessionId,
   reached: Ownership.Reached,
-) {
+): Effect.fn.Return<void, never, Cancellation> {
   yield* (yield* Cancellation).cancel(sessionId, reached)
 })
 

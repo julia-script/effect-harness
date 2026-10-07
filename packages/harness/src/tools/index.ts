@@ -1,3 +1,4 @@
+import type * as AiTool from 'effect/ai/Tool'
 import type { MutationLocks } from '../MutationLocks.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -12,7 +13,9 @@ import * as Edit from './Edit.ts'
 import * as Bash from './Bash.ts'
 export { Read, Write, Edit, Bash }
 export const toolkit = Toolkit.make(Read.tool, Write.tool, Edit.tool, Bash.tool)
-export const handlers = (options: Bash.Options = {}) =>
+export const handlers = (
+  options: Bash.Options = {},
+): Layer.Layer<AiTool.HandlersFor<Toolkit.Tools<typeof toolkit>>> =>
   toolkit.toLayer({
     read: Read.handler,
     write: Write.handler,

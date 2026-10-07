@@ -1,4 +1,6 @@
 import { assert, describe, it } from '@effect/vitest'
+import * as Cause from 'effect/Cause'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Scope from 'effect/Scope'
 import * as Exit from 'effect/Exit'
@@ -50,7 +52,6 @@ describe('watch supervision coverage and scoped close', () => {
             yield* env.renameFile('missing', 'old')
             yield* env.writeFile('missing/tree/a', 'new')
             yield* Fiber.join(replaced)
-            yield* Effect.sleep(600)
             const later = yield* until(watcher, target).pipe(Effect.forkChild)
             yield* env.writeFile('missing/tree/a', 'later')
             yield* Fiber.join(later)
@@ -95,14 +96,24 @@ describe('watch supervision coverage and scoped close', () => {
             )
             .pipe(Scope.provide(watcherScope))
           const seen = yield* Ref.make<ReadonlyArray<WatchChange>>([])
+          const tracked = yield* Deferred.make<void>()
+          const visible = env.path.join(env.cwd, 'tree/visible/sub/file')
           const listening = yield* watcher.changes.pipe(
-            Stream.runForEach((change) => Ref.update(seen, (values) => [...values, change])),
+            Stream.runForEach((change) =>
+              Ref.update(seen, (values) => [...values, change]).pipe(
+                Effect.andThen(
+                  hasPath(change, visible) ? Deferred.succeed(tracked, undefined) : Effect.void,
+                ),
+              ),
+            ),
             Effect.forkChild,
           )
           yield* env.renameFile('external', 'old-external')
           yield* env.writeFile('external', 'replacement')
           yield* env.writeFile('tree/.hidden/x', 'ignored')
           yield* env.writeFile('tree/skip/x', 'ignored')
+          // Exclusion is an absence assertion about live native OS events. This
+          // bounded observation window is not a watcher-installation barrier.
           yield* Effect.sleep(150)
           assert.strictEqual(
             (yield* Ref.get(seen)).some(
@@ -118,7 +129,7 @@ describe('watch supervision coverage and scoped close', () => {
             false,
           )
           yield* env.writeFile('tree/visible/sub/file', 'tracked')
-          yield* Effect.sleep(150)
+          yield* Deferred.await(tracked).pipe(Effect.timeout(3000))
           assert.strictEqual(
             (yield* Ref.get(seen)).some((change) =>
               hasPath(change, env.path.join(env.cwd, 'tree/visible/sub/file')),
@@ -127,9 +138,11 @@ describe('watch supervision coverage and scoped close', () => {
           )
           yield* Scope.close(watcherScope, Exit.void)
           yield* Scope.close(watcherScope, Exit.void)
+          const stopped = yield* Fiber.await(listening).pipe(Effect.timeout(3000))
+          assert.isTrue(Exit.isFailure(stopped))
+          if (Exit.isFailure(stopped)) assert.isTrue(Cause.hasInterruptsOnly(stopped.cause))
           const count = (yield* Ref.get(seen)).length
           yield* env.writeFile('tree/visible/sub/file', 'late')
-          yield* Effect.sleep(100)
           assert.strictEqual((yield* Ref.get(seen)).length, count)
           yield* Fiber.interrupt(listening)
         }),

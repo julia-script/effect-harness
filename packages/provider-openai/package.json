@@ -19,7 +19,8 @@
     "build": "tsc",
     "dev": "tsc --watch --preserveWatchOutput",
     "typecheck": "tsc --noEmit",
-    "test": "cd ../.. && vitest run packages/provider-openai/test"
+    "test": "cd ../.. && vitest run packages/provider-openai/test",
+    "typetest": "cd ../.. && tstyche packages/provider-openai/typetest"
   },
   "dependencies": {
     "@effect-harness/auth": "workspace:*",

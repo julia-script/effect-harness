@@ -1,0 +1,10 @@
+{
+  "$schema": "https://tstyche.org/schemas/config.json",
+  "tsconfig": "./tsconfig.typetest.json",
+  "target": "6.0.3",
+  "testFileMatch": ["packages/*/typetest/**/*.tst.ts"],
+  "checkDeclarationFiles": true,
+  "checkSuppressedErrors": true,
+  "rejectAnyType": true,
+  "rejectNeverType": true
+}

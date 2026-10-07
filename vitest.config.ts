@@ -4,6 +4,10 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: /^@effect-harness\/([^/]+)\/(testing|tools|storage|workflow|env)$/,
+        replacement: `${new URL('./packages/', import.meta.url).pathname}$1/src/$2/index.ts`,
+      },
+      {
         find: /^@effect-harness\/([^/]+)\/(.+)$/,
         replacement: `${new URL('./packages/', import.meta.url).pathname}$1/src/$2.ts`,
       },

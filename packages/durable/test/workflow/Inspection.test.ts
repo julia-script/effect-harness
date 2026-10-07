@@ -1,3 +1,5 @@
+import * as Cause from 'effect/Cause'
+import * as Option from 'effect/Option'
 import { ResourceScope, withLayer } from '../../src/testing/Storage.ts'
 import * as Exit from 'effect/Exit'
 import * as Scope from 'effect/Scope'
@@ -46,7 +48,7 @@ const reserve = (
 const update = (session: Session.Service, id: Record.TaskId, state: Record.Task['state']) =>
   session.transaction(
     Effect.fnUntraced(function* (tx) {
-      const task = yield* tx.task(id)
+      const task = yield* tx.task(id).pipe(Effect.map(Option.getOrUndefined))
       if (task === undefined) return yield* Effect.die('Fixture task missing')
       yield* tx.write({ type: 'task', value: { ...task, state } })
     }),
@@ -246,7 +248,11 @@ describe('committed native Workflow inspection and ownership graph', () => {
         yield* Deferred.await(entered)
         yield* Fiber.interrupt(first)
         const interrupted = yield* Fiber.await(first)
-        assert.strictEqual(interrupted._tag, 'Failure')
+        assert.isTrue(Exit.isFailure(interrupted))
+        if (Exit.isFailure(interrupted)) {
+          // Native fiber IDs vary; assert the complete cause consists only of controlled interruption.
+          assert.isTrue(Cause.hasInterruptsOnly(interrupted.cause))
+        }
         const collected = yield* Inspection.changes(store).pipe(
           Stream.tap(() => Effect.flatMap(ResourceScope, (scope) => Scope.close(scope, Exit.void))),
           Stream.runCollect,

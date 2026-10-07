@@ -1,3 +1,8 @@
+import { identity } from 'effect/Function'
+import * as Types from 'effect/Types'
+import * as Predicate from 'effect/Predicate'
+import * as Option from 'effect/Option'
+import * as Arr from 'effect/Array'
 import { cursor as journalCursor } from './storage/State.ts'
 import * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
@@ -12,13 +17,17 @@ import type { Service as StoreService } from './Store.ts'
 import { findDocument, materialize } from './storage/State.ts'
 
 export type End = 'stopped' | 'cancelled' | 'session_closed' | 'retired' | 'listener_error'
-export interface Change<T extends object> {
+const ChangeTypeId = '~@effect-harness/durable/Observation/Change'
+export interface Change<out T extends object> {
+  readonly [ChangeTypeId]: { readonly _T: Types.Covariant<T> }
   readonly seq: Record.Seq
   readonly value: Readonly<T> | null
   readonly ops: ReadonlyArray<Record.Op>
   readonly reset: boolean
 }
-export interface Watch<T extends object> {
+const WatchTypeId = '~@effect-harness/durable/Observation/Watch'
+export interface Watch<out T extends object> {
+  readonly [WatchTypeId]: { readonly _T: Types.Covariant<T> }
   readonly value: Readonly<T> | null
   readonly record: Record.Document
   readonly changes: Stream.Stream<Change<T>, StorageError>
@@ -34,14 +43,15 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
   token: Document.Document<T>,
   target: Document.Target = {},
   migrationCache?: Document.MigrationCache,
-): Effect.fn.Return<Watch<T> | undefined, StorageError, Scope.Scope> {
+): Effect.fn.Return<Option.Option<Watch<T>>, StorageError, Scope.Scope> {
   const logical = yield* Document.address(token, target)
   const baseline = yield* store.committed
-  const persisted = findDocument(baseline, logical, 'current')
-  if (persisted === undefined) return undefined
+  const found = findDocument(baseline, logical, 'current')
+  if (Option.isNone(found)) return Option.none()
+  const persisted = found.value
   const snapshot = yield* materialize(persisted, 'current')
-  if (snapshot === undefined) return undefined
-  const initial = yield* Document.typed(token, snapshot, migrationCache)
+  if (Option.isNone(snapshot)) return Option.none()
+  const initial = yield* Document.typed(token, snapshot.value, migrationCache)
   const terminal = yield* Deferred.make<End>()
   const ended = yield* Ref.make(false)
   const started = yield* Ref.make(false)
@@ -106,29 +116,37 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
             )
             if (pending.length + relevant.length > 100) {
               pending.length = 0
-              const current = journal.state.documents.find(
+              const current = Arr.findFirst(
+                journal.state.documents,
                 (item) => item.record.id === persisted.record.id,
               )
-              const currentSnapshot =
-                current === undefined ? undefined : yield* materialize(current, 'current')
-              const replacement =
-                currentSnapshot === undefined
-                  ? null
-                  : (yield* Document.typed(token, currentSnapshot, migrationCache)).value
-              const seq = after === 0 ? initial.record.createdAt : after
-              pending.push({
-                seq,
-                value: replacement,
-                ops:
-                  replacement === null
-                    ? []
-                    : [['replace', yield* Document.encode(token, replacement)]],
-                reset: true,
+              const currentSnapshot = yield* Option.match(current, {
+                onNone: () => Effect.succeed(Option.none<Document.Snapshot<Record.JsonObject>>()),
+                onSome: (document) => materialize(document, 'current'),
               })
+              const replacement = yield* Option.match(currentSnapshot, {
+                onNone: () => Effect.succeed(null),
+                onSome: (snapshot) =>
+                  Document.typed(token, snapshot, migrationCache).pipe(
+                    Effect.map((typed) => typed.value),
+                  ),
+              })
+              const seq = after === 0 ? initial.record.createdAt : after
+              pending.push(
+                makeChange({
+                  seq,
+                  value: replacement,
+                  ops:
+                    replacement === null
+                      ? []
+                      : [['replace', yield* Document.encode(token, replacement)]],
+                  reset: true,
+                }),
+              )
             } else
               for (const { frame, publication } of relevant) {
                 if (publication.value === null) {
-                  pending.push({ seq: frame.seq, value: null, ops: [], reset: false })
+                  pending.push(makeChange({ seq: frame.seq, value: null, ops: [], reset: false }))
                   continue
                 }
                 const frameVersion = publication.version
@@ -136,24 +154,26 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
                   return yield* rejected('Committed document publication lacks version', Corrupt)
                 const converted = yield* Document.typed(
                   token,
-                  {
+                  Document.makeSnapshot({
                     record: publication.record,
                     version: frameVersion,
                     value: publication.value,
                     deltasSinceBase: 0,
-                  },
+                  }),
                   migrationCache,
                 )
                 const reset = frameVersion !== version
                 version = converted.version
-                pending.push({
-                  seq: frame.seq,
-                  value: converted.value,
-                  ops: reset
-                    ? [['replace', yield* Document.encode(token, converted.value)]]
-                    : publication.ops,
-                  reset,
-                })
+                pending.push(
+                  makeChange({
+                    seq: frame.seq,
+                    value: converted.value,
+                    ops: reset
+                      ? [['replace', yield* Document.encode(token, converted.value)]]
+                      : publication.ops,
+                    reset,
+                  }),
+                )
               }
             if (pending.length === 0) yield* Effect.sleep('20 millis')
           }
@@ -167,25 +187,27 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
       )
     }),
   )
-  return {
-    get value() {
-      return Ref.getUnsafe(value)
-    },
-    record: initial.record,
-    changes: stream,
-    closed: Deferred.await(terminal),
-    stop: stop('stopped'),
-    listen: (listener) =>
-      Effect.yieldNow.pipe(
-        Effect.andThen(Stream.runForEach(stream, listener)),
-        Effect.catchCause((cause) =>
-          stop(Cause.hasInterruptsOnly(cause) ? 'cancelled' : 'listener_error').pipe(
-            Effect.andThen(Effect.failCause(cause)),
+  return Option.some(
+    makeWatch({
+      get value() {
+        return Ref.getUnsafe(value)
+      },
+      record: initial.record,
+      changes: stream,
+      closed: Deferred.await(terminal),
+      stop: stop('stopped'),
+      listen: (listener) =>
+        Effect.yieldNow.pipe(
+          Effect.andThen(Stream.runForEach(stream, listener)),
+          Effect.catchCause((cause) =>
+            stop(Cause.hasInterruptsOnly(cause) ? 'cancelled' : 'listener_error').pipe(
+              Effect.andThen(Effect.failCause(cause)),
+            ),
           ),
+          Effect.ensuring(stop('cancelled')),
         ),
-        Effect.ensuring(stop('cancelled')),
-      ),
-  }
+    }),
+  )
 })
 
 export const commits = (store: StoreService): Stream.Stream<Record.Frame, StorageError> =>
@@ -217,7 +239,9 @@ export const commits = (store: StoreService): Stream.Stream<Record.Frame, Storag
   )
 
 /** An immediately hydrated, scoped view bound to one durable incarnation. */
-export interface State<T extends object> {
+const StateTypeId = '~@effect-harness/durable/Observation/State'
+export interface State<out T extends object> {
+  readonly [StateTypeId]: { readonly _T: Types.Covariant<T> }
   readonly value: Readonly<T> | null
   readonly record: Record.Document
   readonly cursor: number
@@ -228,21 +252,77 @@ export const state = Effect.fnUntraced(function* <T extends object>(
   token: Document.Document<T>,
   target: Document.Target = {},
   migrationCache?: Document.MigrationCache,
-): Effect.fn.Return<State<T> | undefined, StorageError, Scope.Scope> {
-  const subscription = yield* watch(store, token, target, migrationCache)
-  if (subscription === undefined) return undefined
+): Effect.fn.Return<Option.Option<State<T>>, StorageError, Scope.Scope> {
+  const found = yield* watch(store, token, target, migrationCache)
+  if (Option.isNone(found)) return Option.none()
+  const subscription = found.value
   const cursor = yield* Ref.make(0)
   yield* subscription
     .listen(() => Ref.update(cursor, (value) => value + 1))
     .pipe(Effect.ignore, Effect.forkScoped)
-  return {
-    get value() {
-      return subscription.value
-    },
-    record: subscription.record,
-    get cursor() {
-      return Ref.getUnsafe(cursor)
-    },
-    closed: subscription.closed,
-  }
+  return Option.some(
+    makeState({
+      get value() {
+        return subscription.value
+      },
+      record: subscription.record,
+      get cursor() {
+        return Ref.getUnsafe(cursor)
+      },
+      closed: subscription.closed,
+    }),
+  )
 })
+
+export const makeChange = <T extends object>(
+  input: Omit<Change<T>, typeof ChangeTypeId>,
+): Change<T> => {
+  const value = Object.assign({}, input, { [ChangeTypeId]: { _T: identity } })
+  Object.defineProperties(value, Object.getOwnPropertyDescriptors(input))
+  Object.defineProperty(value, ChangeTypeId, { enumerable: false })
+  return value
+}
+export const isChange = (input: unknown): input is Change<object> =>
+  Predicate.hasProperty(input, ChangeTypeId)
+
+export const makeWatch = <T extends object>(
+  input: Omit<Watch<T>, typeof WatchTypeId>,
+): Watch<T> => {
+  const value: Watch<T> = {
+    [WatchTypeId]: { _T: identity },
+    get value() {
+      return input.value
+    },
+    record: input.record,
+    changes: input.changes,
+    closed: input.closed,
+    stop: input.stop,
+    listen: input.listen,
+  }
+  Object.defineProperty(value, WatchTypeId, { enumerable: false })
+  return value
+}
+
+export const isWatch = (input: unknown): input is Watch<object> =>
+  Predicate.hasProperty(input, WatchTypeId)
+
+export const makeState = <T extends object>(
+  input: Omit<State<T>, typeof StateTypeId>,
+): State<T> => {
+  const value: State<T> = {
+    [StateTypeId]: { _T: identity },
+    get value() {
+      return input.value
+    },
+    record: input.record,
+    get cursor() {
+      return input.cursor
+    },
+    closed: input.closed,
+  }
+  Object.defineProperty(value, StateTypeId, { enumerable: false })
+  return value
+}
+
+export const isState = (input: unknown): input is State<object> =>
+  Predicate.hasProperty(input, StateTypeId)

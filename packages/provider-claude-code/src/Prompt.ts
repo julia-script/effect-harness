@@ -62,7 +62,8 @@ export interface Input {
   readonly tools: ReadonlyArray<Tool.Any>
 }
 const encodeTranscript = Schema.encodeEffect(Schema.fromJsonString(Transcript))
-export const encodeUserFrame = Schema.encodeEffect(Schema.fromJsonString(UserFrame))
+export const encodeUserFrame: (value: UserFrame) => Effect.Effect<string, Schema.SchemaError> =
+  Schema.encodeEffect(Schema.fromJsonString(UserFrame))
 const fileContent = Effect.fnUntraced(function* (
   part: NativePrompt.FilePart | NativePrompt.FilePartEncoded,
 ) {

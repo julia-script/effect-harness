@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
@@ -73,6 +74,7 @@ const input = (requestId: string) => ({
     message: Prompt.userMessage({ content: [Prompt.textPart({ text: requestId })] }),
   },
 })
+// Native Workflow execution, SQL-annotated Activities and stream callbacks progress independently of the test fiber; bounded live polls admit persisted transitions. Retry deadline tests inject a controlled Clock and wait for its sleep-registration Deferred before advancing.
 const until = <E, R>(condition: Effect.Effect<boolean, E, R>) =>
   condition.pipe(Effect.repeat({ until: (ready) => ready }), Effect.asVoid)
 const pending = <A, E>(fiber: Fiber.Fiber<A, E>) => assert.isUndefined(fiber.pollUnsafe())
@@ -293,6 +295,7 @@ describe('native race parity', () => {
                 yield* Deferred.succeed(release, undefined)
                 yield* until(
                   session.snapshot(Inbox.LiveDoc, { owner: Record.ROOT_CONVERSATION_ID }).pipe(
+                    Effect.map(Option.getOrUndefined),
                     Effect.map((live) =>
                       operation === 'generation'
                         ? live?.value.generation?.retry !== undefined
@@ -551,7 +554,7 @@ describe('native race parity', () => {
             )?.entry.head
             assert.strictEqual(
               firstHead,
-              firstCut === undefined ? undefined : view.entries[firstCut]?.id,
+              Option.isNone(firstCut) ? undefined : view.entries[firstCut.value]?.id,
             )
             if (!race.staleSecond) {
               const secondHead = state.entries.find(
@@ -559,7 +562,7 @@ describe('native race parity', () => {
               )?.entry.head
               assert.strictEqual(
                 secondHead,
-                secondCut === undefined ? undefined : view.entries[secondCut]?.id,
+                Option.isNone(secondCut) ? undefined : view.entries[secondCut.value]?.id,
               )
             }
             const context = yield* Conversation.context(session, Record.ROOT_CONVERSATION_ID)
@@ -567,9 +570,11 @@ describe('native race parity', () => {
               JSON.stringify(context.messages[0]),
               `<summary>\\n${race.winner}\\n</summary>`,
             )
-            const usage = (yield* session.snapshot(Usage.UsageDoc, {
-              owner: Record.ROOT_CONVERSATION_ID,
-            }))?.value
+            const usage = (yield* session
+              .snapshot(Usage.UsageDoc, {
+                owner: Record.ROOT_CONVERSATION_ID,
+              })
+              .pipe(Effect.map(Option.getOrUndefined)))?.value
             assert.strictEqual(
               Object.values(usage?.models ?? {}).reduce((sum, value) => sum + value.totalTokens, 0),
               6,
@@ -720,13 +725,29 @@ describe('native race parity', () => {
               const background = yield* reserve(session, 'background', true)
               yield* Deferred.succeed(release, undefined)
               yield* Deferred.await(lateEntered)
-              assert.strictEqual((yield* session.task(late.taskId))?.abortRequested, false)
+              assert.strictEqual(
+                (yield* session.task(late.taskId).pipe(Effect.map(Option.getOrUndefined)))
+                  ?.abortRequested,
+                false,
+              )
               pending(abort)
               yield* Deferred.succeed(lateRelease, undefined)
               yield* Fiber.join(abort)
-              assert.strictEqual((yield* session.task(late.taskId))?.state.status, 'terminal')
-              assert.strictEqual((yield* session.task(background.taskId))?.state.status, 'pending')
-              assert.strictEqual((yield* session.task(background.taskId))?.abortRequested, false)
+              assert.strictEqual(
+                (yield* session.task(late.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+                  .status,
+                'terminal',
+              )
+              assert.strictEqual(
+                (yield* session.task(background.taskId).pipe(Effect.map(Option.getOrUndefined)))
+                  ?.state.status,
+                'pending',
+              )
+              assert.strictEqual(
+                (yield* session.task(background.taskId).pipe(Effect.map(Option.getOrUndefined)))
+                  ?.abortRequested,
+                false,
+              )
               assert.strictEqual(
                 (yield* Node.poll(yield* Node.executionId(background)))._tag,
                 'None',

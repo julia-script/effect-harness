@@ -1,3 +1,5 @@
+import * as Array from 'effect/Array'
+import * as Option from 'effect/Option'
 import * as SchemaField from './SchemaField.ts'
 import * as Serialization from './Serialization.ts'
 import * as Cause from 'effect/Cause'
@@ -217,7 +219,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         }),
         options,
         tools: declarations,
-        ...(input.view.entries.at(-1) === undefined
+        ...(Option.isNone(Array.last(input.view.entries))
           ? {}
           : {
               tail: yield* Schema.decodeEffect(EntryId)(
@@ -282,26 +284,29 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       parts: ReadonlyArray<AiResponse.AnyPart>,
     ): Effect.fn.Return<Disposition, ModelError, Invocation> {
       const descriptor = yield* catalog.resolve(request.model)
-      const deferred = descriptor.deferred?.inspect(parts)
-      if (deferred !== undefined) return { type: 'deferred', decision: deferred }
+      const deferred = Option.fromUndefinedOr(descriptor.deferred).pipe(
+        Option.flatMap((capability) => capability.inspect(parts)),
+      )
+      if (Option.isSome(deferred)) return { type: 'deferred', decision: deferred.value }
       yield* Hook.afterResponse(Registry.handlers(agent, 'generation'), parts)
-      const finish = parts.findLast((part) => part.type === 'finish')
-      const usage =
-        finish === undefined
-          ? Usage.zero()
-          : (descriptor.usage?.(finish.usage, finish.metadata) ?? Usage.fromResponse(finish.usage))
+      const finish = Array.findLast(parts, (part) => part.type === 'finish')
+      const usage = Option.isNone(finish)
+        ? Usage.zero()
+        : (descriptor.usage?.(finish.value.usage, finish.value.metadata) ??
+          Usage.fromResponse(finish.value.usage))
       const prompt = AiPrompt.fromResponseParts(parts)
       const calls = parts.filter(
         (part): part is AiResponse.ToolCallPart<string, unknown> =>
           part.type === 'tool-call' && !part.providerExecuted,
       )
       if (
-        finish?.reason === 'stop' ||
-        finish?.reason === 'length' ||
-        finish?.reason === 'tool-calls'
+        Option.isSome(finish) &&
+        (finish.value.reason === 'stop' ||
+          finish.value.reason === 'length' ||
+          finish.value.reason === 'tool-calls')
       )
         return {
-          type: finish.reason === 'tool-calls' && calls.length > 0 ? 'tools' : 'answer',
+          type: finish.value.reason === 'tool-calls' && calls.length > 0 ? 'tools' : 'answer',
           prompt,
           usage,
           calls,
@@ -309,7 +314,10 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       const errors = parts.flatMap((part) => (part.type === 'error' ? [part.error] : []))
       const message =
         errors.map(Model.errorText).join('\n') ||
-        `Model finished with ${finish?.reason ?? 'no finish part'}`
+        `Model finished with ${Option.getOrElse(
+          Option.map(finish, (part) => part.reason),
+          () => 'no finish part',
+        )}`
       const policies = errors.map(
         (error) => descriptor.classify?.(error) ?? Model.classify(error, request.model.provider),
       )
@@ -323,14 +331,15 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       agent: Registry.Resolved,
       input: Hook.ToolInput,
     ) {
-      const registration = agent.tools.find((tool) => tool.tool.name === input.name)
-      if (registration === undefined)
+      const found = Array.findFirst(agent.tools, (tool) => tool.tool.name === input.name)
+      if (Option.isNone(found))
         return yield* new ToolError({
           reason: new ToolUnavailable({
             name: input.name,
             message: `Tool ${input.name} is not available`,
           }),
         })
+      const registration = found.value
       let args = input.args
       if (registration.metadata.repair !== undefined)
         args = yield* Effect.suspend(
@@ -393,10 +402,14 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         options.recovering === true
           ? yield* resolve(snapshot.state, options.settings ?? snapshot.settings)
           : snapshot
-      const registration = agent.tools.find((value) => value.tool.name === intent.name)
+      const found = Array.findFirst(agent.tools, (value) => value.tool.name === intent.name)
       if (
         options.recovering === true &&
-        (intent.replay !== 'safe' || registration?.metadata.replay !== 'safe')
+        (intent.replay !== 'safe' ||
+          Option.getOrElse(
+            Option.map(found, (registration) => registration.metadata.replay),
+            () => 'unsafe',
+          ) !== 'safe')
       )
         return {
           outcome: 'interrupted' as const,
@@ -407,10 +420,11 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
             details: { reason: 'interrupted', previous: options.previous?.details ?? null },
           },
         }
-      if (registration === undefined)
+      if (Option.isNone(found))
         return { outcome: 'unavailable' as const, result: Tool.unavailable(intent.name) }
       if (options.recovering === true)
         yield* invocation.progress({ clear: true, output: '', details: null, diagnostics: [] })
+      const registration = found.value
       const limits = Tool.outputLimits(registration.metadata)
       const buffer = yield* Output.makeWindow(limits)
       const preview = yield* Ref.make<ToolResult | undefined>(undefined)
@@ -653,18 +667,20 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         input.settings.compaction.keepRecentTokens,
         descriptor.estimate,
       )
-      const first = cut === undefined ? undefined : input.view.entries[cut]
-      if (cut === undefined || first === undefined) return { type: 'none' }
+      const first = cut.pipe(Option.flatMap((index) => Array.get(input.view.entries, index)))
+      if (Option.isNone(cut) || Option.isNone(first)) return { type: 'none' }
       const agent = yield* resolve(input.state, input.settings)
       const decision = yield* Hook.beforeCompact(Registry.handlers(agent, 'compaction'), {
         reason: input.reason,
         view: input.view,
-        firstKept: first.id,
+        firstKept: first.value.id,
         instructions: input.instructions,
       })
-      if (decision !== undefined && 'decline' in decision) return { type: 'none' }
-      if (decision !== undefined)
-        return { type: 'summary', firstKept: first.id, summary: decision.summary }
+      if (Option.isSome(decision)) {
+        const value = decision.value
+        if ('decline' in value) return { type: 'none' }
+        return { type: 'summary', firstKept: first.value.id, summary: value.summary }
+      }
       const options = yield* Schema.decodeUnknownEffect(Model.RequestOptions)({
         thinking: input.state.thinking ?? 'off',
         options: Object.fromEntries(
@@ -686,14 +702,14 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           request: {
             model: ref,
             prompt: Compaction.prompt(
-              Compaction.summarizedMessages(input.view, cut),
+              Compaction.summarizedMessages(input.view, cut.value),
               input.instructions,
             ),
             tools: [],
             options,
             tail,
           },
-          firstKept: first.id,
+          firstKept: first.value.id,
           tail,
           attempt: 1,
         },
@@ -718,7 +734,13 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
             usage:
               descriptor.usage?.(
                 response.usage,
-                response.content.find((part) => part.type === 'finish')?.metadata ?? {},
+                Option.getOrElse(
+                  Option.map(
+                    Array.findFirst(response.content, (part) => part.type === 'finish'),
+                    (part) => part.metadata,
+                  ),
+                  () => ({}),
+                ),
               ) ?? Usage.fromResponse(response.usage),
             message:
               response.finishReason === 'length'
@@ -726,15 +748,20 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
                 : 'Summarization did not produce a clean nonempty text response',
           }),
         })
-      const finish = response.content.find((part) => part.type === 'finish')
+      const finish = Array.findFirst(response.content, (part) => part.type === 'finish')
       return {
         summary: response.content
           .flatMap((part) => (part.type === 'text' ? [part.text] : []))
           .join('\n')
           .trim(),
         usage:
-          descriptor.usage?.(response.usage, finish?.metadata ?? {}) ??
-          Usage.fromResponse(response.usage),
+          descriptor.usage?.(
+            response.usage,
+            Option.getOrElse(
+              Option.map(finish, (part) => part.metadata),
+              () => ({}),
+            ),
+          ) ?? Usage.fromResponse(response.usage),
       }
     })
     return Executor.of({
@@ -763,3 +790,12 @@ function noToolCall(id: string): ToolCall['Service'] {
     diagnostic: () => Effect.void,
   })
 }
+
+export const isRequest: (input: unknown) => input is Request = Schema.is(Request)
+
+export const isSummaryRequest: (input: unknown) => input is SummaryRequest =
+  Schema.is(SummaryRequest)
+
+export const isSummary: (input: unknown) => input is Summary = Schema.is(Summary)
+
+export const isDisposition: (input: unknown) => input is Disposition = Schema.is(Disposition)

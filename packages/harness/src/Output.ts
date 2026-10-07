@@ -1,3 +1,4 @@
+import * as Predicate from 'effect/Predicate'
 // Output slicing adapted from pi-durable (MIT), pinned 636703a0.
 import * as SynchronizedRef from 'effect/SynchronizedRef'
 import * as Effect from 'effect/Effect'
@@ -128,7 +129,9 @@ function lineCount(bytes: Uint8Array): number {
 }
 
 /** Data owned by one invocation; sibling functions manage its incremental decoder and retention window. */
+const TypeId = '~@effect-harness/harness/Output'
 export interface Buffer {
+  readonly [TypeId]: typeof TypeId
   readonly limits: OutputLimits
   readonly decoder: TextDecoder
   started: boolean
@@ -145,8 +148,19 @@ export interface Skip {
   readonly newlines: number
   readonly endsWithNewline: boolean
 }
+export const isBuffer = (input: unknown): input is Buffer => Predicate.hasProperty(input, TypeId)
+export const makeBuffer = (input: Omit<Buffer, typeof TypeId>): Buffer => {
+  const handle: Buffer = { ...input, chunks: [...input.chunks], [TypeId]: TypeId }
+  // Buffer counters are owned mutable data even when its configuration is
+  // frozen. Keep the chunk array as fresh owned data; preserve other accessors.
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(input)))
+    if (key !== 'chunks' && (descriptor.get !== undefined || descriptor.set !== undefined))
+      Object.defineProperty(handle, key, descriptor)
+  Object.defineProperty(handle, TypeId, { enumerable: false })
+  return handle
+}
 export function make(limits: OutputLimits = defaults): Buffer {
-  return {
+  return makeBuffer({
     limits,
     decoder: new TextDecoder('utf-8', { ignoreBOM: true }),
     started: false,
@@ -157,14 +171,14 @@ export function make(limits: OutputLimits = defaults): Buffer {
     totalBytes: 0,
     totalNewlines: 0,
     endsWithNewline: true,
-  }
+  })
 }
 /** String/skip boundaries flush incomplete byte sequences. Only a BOM at the stream's very start is removed. */
 export const push = Effect.fnUntraced(function* (
   buffer: Buffer,
   chunk: string | Uint8Array,
   skipped?: Skip,
-) {
+): Effect.fn.Return<boolean, OutputError> {
   if (skipped !== undefined && buffer.limits.retain !== 'tail')
     return yield* new OutputError({
       reason: new OutputFailure({ message: 'Skipped output requires tail retention' }),
@@ -290,27 +304,36 @@ export function delta(previous: string, current: string, maxScan = 65536): Delta
 }
 
 /** Shared invocation retention state is immutable; TextDecoder is private native streaming state. */
-type WindowState = Readonly<Omit<Buffer, 'decoder' | 'chunks'>> & {
+type WindowState = Readonly<Omit<Buffer, 'decoder' | 'chunks' | typeof TypeId>> & {
   readonly chunks: ReadonlyArray<{
     readonly text: string
     readonly bytes: number
     readonly newlines: number
   }>
 }
-export const makeWindow = Effect.fnUntraced(function* (limits: OutputLimits = defaults) {
+export interface Window {
+  readonly push: (chunk: string | Uint8Array, skipped?: Skip) => Effect.Effect<boolean, OutputError>
+  readonly reset: Effect.Effect<void>
+  readonly end: Effect.Effect<void>
+  readonly snapshot: Effect.Effect<BoundedOutput>
+}
+export const makeWindow = Effect.fnUntraced(function* (
+  limits: OutputLimits = defaults,
+): Effect.fn.Return<Window> {
   const nativeDecoder = new TextDecoder('utf-8', { ignoreBOM: true })
   const initial = (): WindowState => {
-    const { decoder: _decoder, ...state } = make(limits)
+    const { decoder: _decoder, [TypeId]: _brand, ...state } = make(limits)
     return state
   }
   const state = yield* SynchronizedRef.make(initial())
-  const local = (value: WindowState): Buffer => ({
-    ...value,
-    chunks: [...value.chunks],
-    decoder: nativeDecoder,
-  })
+  const local = (value: WindowState): Buffer =>
+    makeBuffer({
+      ...value,
+      chunks: [...value.chunks],
+      decoder: nativeDecoder,
+    })
   const stored = (value: Buffer): WindowState => {
-    const { decoder: _decoder, ...next } = value
+    const { decoder: _decoder, [TypeId]: _brand, ...next } = value
     return next
   }
   return {
@@ -339,3 +362,5 @@ export const makeWindow = Effect.fnUntraced(function* (limits: OutputLimits = de
     }),
   }
 })
+
+export const isOutputLimits: (input: unknown) => input is typeof Limits.Type = Schema.is(Limits)

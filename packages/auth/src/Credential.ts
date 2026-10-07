@@ -336,6 +336,8 @@ export const ApiKey = Schema.Struct({
   provider: Schema.NonEmptyString,
   apiKey: Secret,
 })
+export type ApiKey = typeof ApiKey.Type
+export const isApiKey: (value: unknown) => value is ApiKey = Schema.is(ApiKey)
 const RegistrationFields = {
   provider: Schema.NonEmptyString,
   issuer: Schema.NonEmptyString,
@@ -350,6 +352,7 @@ export const Registration = Schema.Struct({
   ...RegistrationFields,
 })
 export type Registration = typeof Registration.Type
+export const isRegistration: (value: unknown) => value is Registration = Schema.is(Registration)
 export const OAuth = Schema.Struct({
   kind: Schema.Literal('oauth'),
   ...RegistrationFields,
@@ -361,6 +364,7 @@ export const OAuth = Schema.Struct({
   earliestRefreshAt: Schema.optional(Time.EpochMillis),
 })
 export type OAuth = typeof OAuth.Type
+export const isOAuth: (value: unknown) => value is OAuth = Schema.is(OAuth)
 /** Opaque OAuth grants carry no verified OIDC subject or identity token. The caller owns the storage key. */
 export const OpaqueOAuth = Schema.Struct({
   kind: Schema.Literal('opaqueOAuth'),
@@ -374,8 +378,10 @@ export const OpaqueOAuth = Schema.Struct({
   redirectUri: Schema.optional(Schema.String),
 })
 export type OpaqueOAuth = typeof OpaqueOAuth.Type
+export const isOpaqueOAuth: (value: unknown) => value is OpaqueOAuth = Schema.is(OpaqueOAuth)
 export const Credential = Schema.Union([ApiKey, OAuth, Registration, OpaqueOAuth])
 export type Credential = typeof Credential.Type
+export const isCredential: (value: unknown) => value is Credential = Schema.is(Credential)
 /** Registration identity is provider, issued client and verified account, never email. */
 export const accountKey = (
   credential: Pick<OAuth, 'provider' | 'issuer' | 'clientId' | 'subject'>,

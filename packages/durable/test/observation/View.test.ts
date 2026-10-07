@@ -1,5 +1,7 @@
+import * as TestClock from 'effect/testing/TestClock'
 import { ResourceScope, withLayer } from '../../src/testing/Storage.ts'
 import * as Exit from 'effect/Exit'
+import * as Cause from 'effect/Cause'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
@@ -39,12 +41,24 @@ const initialize = Effect.gen(function* () {
   return { session, views, root }
 })
 const collect = (watch: View.Watch, count: number) =>
-  Stream.runCollect(watch.changes.pipe(Stream.take(count))).pipe(Effect.timeout('2 seconds'))
+  Effect.gen(function* () {
+    const consumer = yield* Stream.runCollect(watch.changes.pipe(Stream.take(count))).pipe(
+      Effect.timeout('2 seconds'),
+      Effect.forkScoped,
+    )
+    // The fork admits the consumer before modeled journal polls and mount monitoring advance.
+    yield* TestClock.adjust('100 millis')
+    return yield* Fiber.join(consumer)
+  })
 const append = (session: Session.Service, id: Record.ConversationId, kind: string) =>
   session.transaction((tx) => tx.appendEntry(id, { kind }))
-const settle = Effect.sleep('65 millis')
+const settle = TestClock.adjust('65 millis')
+// SQL publication and rollback are native-driver callbacks; virtual time cannot drive their settlement.
+const settleSql = Effect.sleep('65 millis')
+const collectSql = (watch: View.Watch, count: number) =>
+  Stream.runCollect(watch.changes.pipe(Stream.take(count))).pipe(Effect.timeout('2 seconds'))
 describe('committed conversation mounts', () => {
-  it.live(
+  it.effect(
     'rehydrates a complete snapshot when retained early document frames hide a later journal gap',
     () =>
       Effect.scoped(
@@ -54,15 +68,18 @@ describe('committed conversation mounts', () => {
           const entered = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
           const holding = yield* views
-            .observe(root.id, {
-              initial: () =>
-                Deferred.succeed(entered, undefined).pipe(
-                  Effect.andThen(Deferred.await(release)),
-                  Effect.as(0),
-                ),
-              project: (change) => Effect.succeed(change.reset ? 1 : undefined),
-              reset: () => Effect.succeed(0),
-            })
+            .observe(
+              root.id,
+              View.makeProjection({
+                initial: () =>
+                  Deferred.succeed(entered, undefined).pipe(
+                    Effect.andThen(Deferred.await(release)),
+                    Effect.as(0),
+                  ),
+                project: (change) => Effect.succeed(change.reset ? 1 : undefined),
+                reset: () => Effect.succeed(0),
+              }),
+            )
             .pipe(Effect.forkScoped)
           yield* Deferred.await(entered)
           yield* session.transaction(
@@ -82,7 +99,7 @@ describe('committed conversation mounts', () => {
       ),
   )
 
-  it.live('hydrates shared mounts, replays exact frames and preserves unchanged branches', () =>
+  it.effect('hydrates shared mounts, replays exact frames and preserves unchanged branches', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { session, views, root } = yield* initialize
@@ -129,7 +146,7 @@ describe('committed conversation mounts', () => {
     ),
   )
 
-  it.live('cuts inherited entries and follows only fork commits', () =>
+  it.effect('cuts inherited entries and follows only fork commits', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { session, views, root } = yield* initialize
@@ -157,7 +174,7 @@ describe('committed conversation mounts', () => {
     ),
   )
 
-  it.live('raw heads never restore entries a live mount has cut; a new mount hydrates them', () =>
+  it.effect('raw heads never restore entries a live mount has cut; a new mount hydrates them', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { session, views, root } = yield* initialize
@@ -181,7 +198,7 @@ describe('committed conversation mounts', () => {
     ),
   )
 
-  it.live(
+  it.effect(
     'retirement and recreation mount new incarnations whole; unrelated documents do not publish',
     () =>
       Effect.scoped(
@@ -215,7 +232,7 @@ describe('committed conversation mounts', () => {
       ),
   )
 
-  it.live('keeps relevant backlog exact across more than101 unrelated commits', () =>
+  it.effect('keeps relevant backlog exact across more than101 unrelated commits', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { session, views, root } = yield* initialize
@@ -239,7 +256,7 @@ describe('committed conversation mounts', () => {
     ),
   )
 
-  it.live('replaces101 pending frames with one latest reset and applies subsequent deltas', () =>
+  it.effect('replaces101 pending frames with one latest reset and applies subsequent deltas', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { session, views, root } = yield* initialize
@@ -255,7 +272,7 @@ describe('committed conversation mounts', () => {
     ),
   )
 
-  it.live('excludes an in-flight callback from the100 pending limit and stops immediately', () =>
+  it.effect('excludes an in-flight callback from the100 pending limit and stops immediately', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { session, views, root } = yield* initialize
@@ -275,6 +292,7 @@ describe('committed conversation mounts', () => {
           )
           .pipe(Effect.forkScoped)
         yield* append(session, root.id, 'inflight')
+        yield* TestClock.adjust('65 millis')
         yield* Deferred.await(entered)
         for (let index = 0; index < 100; index++) yield* append(session, root.id, 'pending')
         yield* settle
@@ -289,7 +307,7 @@ describe('committed conversation mounts', () => {
     ),
   )
 
-  it.live(
+  it.effect(
     'isolates a failed listener, keeps states live, drops mounts and closes all on Session shutdown',
     () =>
       Effect.scoped(
@@ -304,6 +322,7 @@ describe('committed conversation mounts', () => {
             .listen(() => Effect.fail('listener'))
             .pipe(Effect.exit, Effect.forkScoped)
           yield* append(session, root.id, 'one')
+          yield* TestClock.adjust('65 millis')
           assert.strictEqual(yield* bad.closed, 'listener_error')
           yield* Fiber.join(listener)
           yield* settle
@@ -312,6 +331,7 @@ describe('committed conversation mounts', () => {
           const rebuilt = yield* views.watch(root.id)
           assert.notStrictEqual(rebuilt.value, state.value)
           yield* Scope.close(yield* ResourceScope, Exit.void)
+          yield* TestClock.adjust('65 millis')
           assert.strictEqual(yield* rebuilt.closed, 'session_closed')
           assert.ok(yield* views.watch(root.id).pipe(Effect.flip))
         }).pipe((effect) =>
@@ -347,13 +367,17 @@ describe('committed conversation mounts', () => {
             .pipe(Effect.forkScoped)
           yield* Deferred.await(entered)
           const acquiring = yield* views.watch(root.id).pipe(Effect.forkScoped)
+          // SQLite acquisition is blocked by the admitted physical transaction; this negative window admits the waiting reader before cancellation.
           yield* Effect.sleep('30 millis')
           const interrupting = yield* Fiber.interrupt(acquiring).pipe(Effect.forkScoped)
           yield* Effect.yieldNow
           yield* Deferred.succeed(release, undefined)
           yield* Fiber.join(transaction)
           yield* Fiber.join(interrupting)
-          assert.strictEqual((yield* Fiber.await(acquiring))._tag, 'Failure')
+          const cancelled = yield* Fiber.await(acquiring)
+          assert.isTrue(Exit.isFailure(cancelled))
+          // The interrupted SQL waiter must not fail for another reason; fiber IDs are runtime assigned.
+          if (Exit.isFailure(cancelled)) assert.isTrue(Cause.hasInterruptsOnly(cancelled.cause))
         }).pipe(
           Effect.provide(
             Layer.mergeAll(Session.layer, View.layer).pipe(
@@ -384,12 +408,12 @@ describe('committed conversation mounts', () => {
           )
           .pipe(Effect.forkScoped)
         yield* Deferred.await(entered)
-        yield* settle
+        yield* settleSql
         assert.strictEqual(state.value.entries.length, 0)
         yield* Deferred.succeed(release, undefined)
         yield* Fiber.join(write)
         assert.deepStrictEqual(
-          (yield* collect(watch, 1))[0]?.value.entries.map((entry) => entry.kind),
+          (yield* collectSql(watch, 1))[0]?.value.entries.map((entry) => entry.kind),
           ['commit'],
         )
         yield* sql
@@ -397,7 +421,7 @@ describe('committed conversation mounts', () => {
             append(session, root.id, 'rollback').pipe(Effect.andThen(Effect.fail('rollback'))),
           )
           .pipe(Effect.ignore)
-        yield* settle
+        yield* settleSql
         assert.deepStrictEqual(
           state.value.entries.map((entry) => entry.kind),
           ['commit'],

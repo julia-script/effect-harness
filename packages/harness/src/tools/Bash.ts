@@ -172,5 +172,13 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
       })
     return {}
   })
-export const handler = (options: Options = {}) => execute('bash', options)
-export const powerShellHandler = (options: PowerShellOptions = {}) => execute('powershell', options)
+export const handler = (
+  options: Options = {},
+): ((input: Input) => Effect.Effect<ToolResult, ToolError, Env | Invocation | ToolCall>) =>
+  execute('bash', options)
+export const powerShellHandler = (
+  options: PowerShellOptions = {},
+): ((input: Input) => Effect.Effect<ToolResult, ToolError, Env | Invocation | ToolCall>) =>
+  execute('powershell', options)
+
+export const isInput: (input: unknown) => input is typeof Parameters.Type = Schema.is(Parameters)

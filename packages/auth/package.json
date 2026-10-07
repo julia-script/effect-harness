@@ -19,7 +19,8 @@
     "build": "tsc",
     "dev": "tsc --watch --preserveWatchOutput",
     "typecheck": "tsc --noEmit",
-    "test": "cd ../.. && vitest run packages/auth/test"
+    "test": "cd ../.. && vitest run packages/auth/test",
+    "typetest": "cd ../.. && tstyche packages/auth/typetest"
   },
   "dependencies": {
     "effect": "catalog:",

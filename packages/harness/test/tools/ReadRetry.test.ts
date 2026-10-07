@@ -1,3 +1,4 @@
+import { makeBinaryReader } from '../../src/Env.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as DateTime from 'effect/DateTime'
@@ -29,7 +30,7 @@ const sample = Effect.fnUntraced(function* (
       yield* Ref.update(opens, (value) => value + 1)
       const reader = yield* env.openBinaryReader(path, options)
       yield* Effect.addFinalizer(() => Ref.update(releases, (value) => value + 1))
-      return {
+      return makeBinaryReader({
         ...reader,
         info: Effect.gen(function* () {
           const index = yield* Ref.getAndUpdate(samples, (value) => value + 1)
@@ -45,7 +46,7 @@ const sample = Effect.fnUntraced(function* (
           Ref.update(reads, (value) => value + 1).pipe(
             Effect.andThen(fail === 'read' ? Effect.fail(failure) : reader.read(offset, length)),
           ),
-      }
+      })
     }),
   })
   const outcome = yield* Effect.result(

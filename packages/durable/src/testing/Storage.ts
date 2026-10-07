@@ -1,3 +1,5 @@
+import { identity } from 'effect/Function'
+import * as Types from 'effect/Types'
 import * as Effect from 'effect/Effect'
 import * as Context from 'effect/Context'
 import * as Scope from 'effect/Scope'
@@ -20,7 +22,7 @@ export class ResourceScope extends Context.Service<ResourceScope, Scope.Closeabl
 export const withLayer = <A, E, R, O, E2, R2>(
   effect: Effect.Effect<A, E, R>,
   layer: Layer.Layer<O, E2, R2>,
-) =>
+): Effect.Effect<A, E | E2, Exclude<R2 | Exclude<Exclude<R, O>, ResourceScope>, Scope.Scope>> =>
   Effect.scoped(
     Effect.gen(function* () {
       const scope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
@@ -35,7 +37,9 @@ export const withLayer = <A, E, R, O, E2, R2>(
   )
 
 /** Runner independent conformance cases keep the native Effect environment visible. */
-export interface Case<R = Store | Session.Session | ResourceScope> {
+const CaseTypeId = '~@effect-harness/durable/testing/Storage/Case'
+export interface Case<out R = Store | Session.Session | ResourceScope> {
+  readonly [CaseTypeId]: { readonly _R: Types.Covariant<R> }
   readonly name: string
   readonly run: Effect.Effect<void, StorageError, R>
 }
@@ -51,4 +55,14 @@ export interface Assertions {
 export const withStorage = <A, E, R, E2, R2>(
   effect: Effect.Effect<A, E, R | Store | Session.Session | ResourceScope>,
   backend: Layer.Layer<Store, E2, R2>,
-) => withLayer(effect, sessionLayer(backend))
+): Effect.Effect<
+  A,
+  E | E2,
+  Exclude<R2 | Exclude<Exclude<R, Store | Session.Session>, ResourceScope>, Scope.Scope>
+> => withLayer(effect, sessionLayer(backend))
+
+export const makeCase = <R>(input: Omit<Case<R>, typeof CaseTypeId>): Case<R> => {
+  const value: Case<R> = { ...input, [CaseTypeId]: { _R: identity } }
+  Object.defineProperty(value, CaseTypeId, { enumerable: false })
+  return value
+}

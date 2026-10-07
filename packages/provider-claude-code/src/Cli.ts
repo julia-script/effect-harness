@@ -59,7 +59,7 @@ export const layer = (options?: {
   readonly executable?: string | undefined
   readonly maxOutputBytes?: number | undefined
   readonly policyTrust?: 'trusted-installed-cli' | undefined
-}) =>
+}): Layer.Layer<Cli, AiError.AiError, ChildProcessSpawner.ChildProcessSpawner> =>
   Layer.effect(Cli)(
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner

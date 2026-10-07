@@ -20,7 +20,8 @@
     "build": "tsc",
     "dev": "tsc --watch --preserveWatchOutput",
     "typecheck": "tsc --noEmit",
-    "test": "cd ../.. && vitest run packages/durable/test"
+    "test": "cd ../.. && vitest run packages/durable/test",
+    "typetest": "cd ../.. && tstyche packages/durable/typetest"
   },
   "dependencies": {
     "@effect-harness/harness": "workspace:*",

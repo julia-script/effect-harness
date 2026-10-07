@@ -1,7 +1,12 @@
+import { identity } from 'effect/Function'
+import * as Types from 'effect/Types'
+import * as Predicate from 'effect/Predicate'
+import * as Option from 'effect/Option'
 import { cursor as journalCursor } from './storage/State.ts'
 import * as Outcome from './workflow/Outcome.ts'
 // Committed mounts adapted from pi-durable (MIT), pinned 636703a0.
 import * as Cause from 'effect/Cause'
+import * as Arr from 'effect/Array'
 import * as Channel from 'effect/Channel'
 import * as PubSub from 'effect/PubSub'
 import * as Queue from 'effect/Queue'
@@ -50,7 +55,10 @@ export type Path = typeof Path.Type
 export const Op = Schema.Union([
   Schema.Tuple([Schema.Literal('replace'), Value]),
   Schema.Tuple([Schema.Literal('set'), Path, Schema.Unknown]),
-  Schema.Tuple([Schema.Literal('delete'), Path]),
+  Schema.Tuple([
+    Schema.Literal('delete'),
+    Schema.NonEmptyArray(Schema.Union([Schema.String, Schema.Finite])),
+  ]),
   Schema.Tuple([
     Schema.Literal('splice'),
     Path,
@@ -72,7 +80,9 @@ export const Change = Schema.Struct({
 export type Change = typeof Change.Type
 /** Structural set values are opaque decoded field values; the JSON client codec validates their wire representation without changing mounted references. */
 export const ChangeJson = Schema.toCodecJson(Change)
-export interface ProjectionWatch<A> {
+const ProjectionWatchTypeId = '~@effect-harness/durable/View/ProjectionWatch'
+export interface ProjectionWatch<out A> {
+  readonly [ProjectionWatchTypeId]: { readonly _A: Types.Covariant<A> }
   readonly value: A
   readonly changes: Stream.Stream<A, StorageError>
   readonly closed: Effect.Effect<Observation.End>
@@ -85,7 +95,9 @@ export interface ProjectionWatch<A> {
 export interface Watch extends Omit<ProjectionWatch<Change>, 'value'> {
   readonly value: Value
 }
-export interface Projection<A> {
+const ProjectionTypeId = '~@effect-harness/durable/View/Projection'
+export interface Projection<out A> {
+  readonly [ProjectionTypeId]: { readonly _A: Types.Covariant<A> }
   readonly initial: (
     view: Value,
     tasks: ReadonlyArray<Record.Task>,
@@ -156,6 +168,7 @@ const own = (object: object, key: string | number, value: unknown) =>
 
 /** Replay structural deltas while preserving all unchanged branches and safe own-property keys. */
 export function applyUnsafe(value: Value, ops: ReadonlyArray<Op>): Value {
+  if (!Schema.is(Schema.Array(Op))(ops)) throw new TypeError('Invalid view operation')
   let result: unknown = value
   const edit = (node: unknown, path: Path, update: (leaf: unknown) => unknown): unknown => {
     if (path.length === 0) return update(node)
@@ -179,8 +192,7 @@ export function applyUnsafe(value: Value, ops: ReadonlyArray<Op>): Value {
         return copy
       })
     else {
-      const key = op[1].at(-1)
-      if (key === undefined) throw new TypeError('View deletion requires a path')
+      const key = Arr.lastNonEmpty(op[1])
       result = edit(result, op[1].slice(0, -1), (parent) => {
         if (parent === null || typeof parent !== 'object')
           throw new TypeError('Invalid view deletion')
@@ -207,13 +219,20 @@ export const apply = (
   })
 
 const hydrate = Effect.fnUntraced(function* (state: Record.State, id: Record.ConversationId) {
-  const conversation = state.conversations.find((item) => item.id === id)
-  if (conversation === undefined) return yield* rejected('Conversation does not exist', NotFound)
+  const conversationOption = Arr.findFirst(state.conversations, (item) => item.id === id)
+  if (Option.isNone(conversationOption))
+    return yield* rejected('Conversation does not exist', NotFound)
+  const conversation = conversationOption.value
   const visible = (yield* visibleEntries(state, id)).toReversed()
-  const head = visible.findLast((entry) => entry.head !== undefined)
-  const range = visible.filter((entry) => head?.head === undefined || entry.id >= head.head)
-  const entries =
-    head === undefined ? range : [head, ...range.filter((entry) => entry.head === undefined)]
+  const head = Arr.findLast(visible, (entry) => entry.head !== undefined)
+  const cutoff = head.pipe(Option.flatMap((entry) => Option.fromUndefinedOr(entry.head)))
+  const range = visible.filter((entry) =>
+    Option.match(cutoff, { onNone: () => true, onSome: (id) => entry.id >= id }),
+  )
+  const entries = Option.match(head, {
+    onNone: () => range,
+    onSome: (head) => [head, ...range.filter((entry) => entry.head === undefined)],
+  })
   const docs: Documents = {}
   const documents = new Map<string, MountedDocument>()
   for (const item of mounted) {
@@ -222,10 +241,10 @@ const hydrate = Effect.fnUntraced(function* (state: Record.State, id: Record.Con
       { kind: item.kind, scope: { kind: 'conversation', conversationId: id } },
       'current',
     )
-    if (persisted === undefined) continue
-    const snapshot = yield* materialize(persisted, 'current')
-    if (snapshot === undefined) continue
-    const converted = yield* item.load(snapshot)
+    if (Option.isNone(persisted)) continue
+    const snapshot = yield* materialize(persisted.value, 'current')
+    if (Option.isNone(snapshot)) continue
+    const converted = yield* item.load(snapshot.value)
     own(docs, item.kind, converted.value)
     documents.set(item.kind, { id: converted.record.id, version: converted.version })
   }
@@ -292,7 +311,7 @@ const advance = Effect.fnUntraced(function* (
     const item = mountedByKind.get(publication.record.kind)
     if (item === undefined) continue
     const current = mount.documents.get(item.kind)
-    const path = ['docs', item.kind]
+    const path: Arr.NonEmptyReadonlyArray<string | number> = ['docs', item.kind]
     if (publication.value === null) {
       if (current?.id !== publication.record.id) continue
       mount.documents.delete(item.kind)
@@ -300,12 +319,14 @@ const advance = Effect.fnUntraced(function* (
     } else {
       if (publication.version === undefined)
         return yield* rejected('Publication has no document version', Corrupt)
-      const converted = yield* item.load({
-        record: publication.record,
-        version: publication.version,
-        value: publication.value,
-        deltasSinceBase: 0,
-      })
+      const converted = yield* item.load(
+        Document.makeSnapshot({
+          record: publication.record,
+          version: publication.version,
+          value: publication.value,
+          deltasSinceBase: 0,
+        }),
+      )
       const replace = rebase?.delete(publication.record.id) === true
       rebased ||= replace
       if (
@@ -316,7 +337,7 @@ const advance = Effect.fnUntraced(function* (
         for (const op of publication.ops) {
           if (op[0] === 'replace') docOps.push(['set', path, converted.value])
           else if (op[0] === 'set') docOps.push(['set', [...path, ...op[1]], op[2]])
-          else docOps.push(['delete', [...path, ...op[1]]])
+          else docOps.push(['delete', Arr.appendAll(path, op[1])])
         }
       } else docOps.push(['set', path, converted.value])
       mount.documents.set(item.kind, { id: publication.record.id, version: converted.version })
@@ -590,7 +611,7 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
                 )
               }),
             )
-            return {
+            return makeProjectionWatch({
               get value() {
                 return Ref.getUnsafe(value)
               },
@@ -610,7 +631,7 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
                   ),
                   Effect.ensuring(stop('cancelled')),
                 ),
-            }
+            })
           }).pipe(Scope.provide(scope)),
         )
         .pipe(
@@ -618,15 +639,18 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
         )
     })
     const watch: Service['watch'] = Effect.fnUntraced(function* (id) {
-      const subscription = yield* observe<Change>(id, {
-        initial: Effect.fnUntraced(function* (value) {
-          return { seq: yield* Ref.get(after), before: value, value, ops: [], reset: false }
+      const subscription = yield* observe<Change>(
+        id,
+        makeProjection<Change>({
+          initial: Effect.fnUntraced(function* (value) {
+            return { seq: yield* Ref.get(after), before: value, value, ops: [], reset: false }
+          }),
+          project: (change) => Effect.succeed(change.ops.length === 0 ? undefined : change),
+          reset: (value, seq) =>
+            Effect.succeed({ seq, before: value, value, ops: [['replace', value]], reset: true }),
         }),
-        project: (change) => Effect.succeed(change.ops.length === 0 ? undefined : change),
-        reset: (value, seq) =>
-          Effect.succeed({ seq, before: value, value, ops: [['replace', value]], reset: true }),
-      })
-      return {
+      )
+      return makeWatch({
         get value() {
           return subscription.value.value
         },
@@ -634,7 +658,7 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
         closed: subscription.closed,
         stop: subscription.stop,
         listen: subscription.listen,
-      }
+      })
     })
     return View.of({
       observe,
@@ -658,4 +682,50 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
     })
   },
 )
-export const layer = Layer.effect(View, make)
+export const layer: Layer.Layer<View, never, Store.Store> = Layer.effect(View, make)
+
+export const makeProjectionWatch = <A>(
+  input: Omit<ProjectionWatch<A>, typeof ProjectionWatchTypeId>,
+): ProjectionWatch<A> => {
+  const value: ProjectionWatch<A> = {
+    [ProjectionWatchTypeId]: { _A: identity },
+    get value() {
+      return input.value
+    },
+    changes: input.changes,
+    closed: input.closed,
+    stop: input.stop,
+    listen: input.listen,
+  }
+  Object.defineProperty(value, ProjectionWatchTypeId, { enumerable: false })
+  return value
+}
+
+export const isProjectionWatch = (input: unknown): input is ProjectionWatch<unknown> =>
+  Predicate.hasProperty(input, ProjectionWatchTypeId)
+
+export const makeProjection = <A>(
+  input: Omit<Projection<A>, typeof ProjectionTypeId>,
+): Projection<A> => {
+  const value = Object.assign({}, input, { [ProjectionTypeId]: { _A: identity } })
+  Object.defineProperties(value, Object.getOwnPropertyDescriptors(input))
+  Object.defineProperty(value, ProjectionTypeId, { enumerable: false })
+  return value
+}
+export const isProjection = (input: unknown): input is Projection<unknown> =>
+  Predicate.hasProperty(input, ProjectionTypeId)
+
+export const makeWatch = (input: Omit<Watch, typeof ProjectionWatchTypeId>): Watch => {
+  const value: Watch = {
+    [ProjectionWatchTypeId]: { _A: identity },
+    get value() {
+      return input.value
+    },
+    changes: input.changes,
+    closed: input.closed,
+    stop: input.stop,
+    listen: input.listen,
+  }
+  Object.defineProperty(value, ProjectionWatchTypeId, { enumerable: false })
+  return value
+}

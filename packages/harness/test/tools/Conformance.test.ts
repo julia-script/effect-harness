@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as Duration from 'effect/Duration'
 import { assert, describe, expect, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
@@ -73,19 +74,15 @@ describe('public conformance adapter and scope ownership', () => {
         }),
         adapter,
       )
-      const retained: AdapterSettings extends Effect.Services<typeof program> ? true : false = true
-      // @ts-expect-error A required adapter service cannot disappear at the public Layer boundary.
-      const erased: Effect.Services<typeof program> extends never ? true : false = true
-      void retained
-      void erased
       yield* program.pipe(Effect.provideService(AdapterSettings, { refuse: false }))
-      const exit = yield* program.pipe(
+      const failure = yield* program.pipe(
         Effect.provideService(AdapterSettings, { refuse: true }),
-        Effect.exit,
+        Effect.flip,
       )
-      assert.isTrue(Exit.isFailure(exit))
-      if (Exit.isFailure(exit))
-        assert.match(String(Cause.squash(exit.cause)), /initialization rejected/)
+      assert.instanceOf(failure, Env.FileError)
+      assert.instanceOf(failure.reason, Env.FileNotSupported)
+      assert.strictEqual(failure.message, 'adapter initialization rejected')
+      assert.strictEqual(failure.cause, undefined)
     }),
   )
   it.live(
@@ -126,7 +123,7 @@ describe('public conformance adapter and scope ownership', () => {
             }),
             adapter,
           ).pipe(Effect.exit)
-          assert.isTrue(Exit.isFailure(exit))
+          assert.deepStrictEqual(exit, Exit.fail('intentional'))
         }
         assert.notStrictEqual(directories[0], directories[1])
         assert.deepStrictEqual(cleaned, directories)
@@ -177,9 +174,10 @@ describe('public conformance adapter and scope ownership', () => {
         ).pipe(Layer.provide(NodeServices.layer))
         const first = cases[0]
         assert.ok(first)
-        const exit = yield* Conformance.withEnv(first.run, broken).pipe(Effect.exit)
-        assert.isTrue(Exit.isFailure(exit))
-        if (Exit.isFailure(exit)) assert.match(String(Cause.squash(exit.cause)), /negative control/)
+        const failure = yield* Conformance.withEnv(first.run, broken).pipe(Effect.flip)
+        assert.instanceOf(failure, Env.FileError)
+        assert.instanceOf(failure.reason, Env.FileNotSupported)
+        assert.strictEqual(failure.message, 'negative control')
         const adapted = Assertions.createExpectAssertions((actual) => ({
           toBe: (expected) => assert.strictEqual(actual, expected),
           toEqual: (expected) => assert.deepStrictEqual(actual, expected),
@@ -202,11 +200,21 @@ describe('public conformance adapter and scope ownership', () => {
           ),
           'adapter rejection',
         )
-        assert.isTrue(
-          Exit.isFailure(
-            yield* adapted.rejects(Effect.succeed('unexpected'), 'failure').pipe(Effect.exit),
-          ),
-        )
+        const rejected = yield* adapted
+          .rejects(Effect.succeed('unexpected'), 'failure')
+          .pipe(Effect.exit)
+        assert.isTrue(Exit.isFailure(rejected))
+        if (Exit.isFailure(rejected)) {
+          assert.isTrue(Cause.hasDies(rejected.cause))
+          // This is the foreign assertion library's own error: its stack depends
+          // on runner version, while type/name/message are the stable contract.
+          const defect = Cause.squash(rejected.cause)
+          assert.instanceOf(defect, Error)
+          if (defect instanceof Error) {
+            assert.strictEqual(defect.name, 'AssertionError')
+            assert.match(defect.message, /expected false to (equal|be) true/)
+          }
+        }
       }),
   )
 
@@ -247,14 +255,14 @@ describe('public conformance adapter and scope ownership', () => {
             0,
             0,
           ])
-          assert.strictEqual(Image.detectSupportedImageMimeType(png), 'image/png')
+          assert.deepStrictEqual(Image.detectSupportedImageMimeType(png), Option.some('image/png'))
           yield* env.writeFile('image.bin', png)
           const result = yield* Read.handler({ path: 'image.bin' })
           assert.isTrue(result.isError)
           assert.strictEqual(result.diagnostics?.[0]?.kind, 'unsupported_image')
           const animated = new Uint8Array(png)
           animated.set([97, 99, 84, 76], 37)
-          assert.strictEqual(Image.detectSupportedImageMimeType(animated), undefined)
+          assert.isTrue(Option.isNone(Image.detectSupportedImageMimeType(animated)))
           yield* env.writeFile('animated.png', animated)
           assert.isNotTrue((yield* Read.handler({ path: 'animated.png' })).isError)
         }),

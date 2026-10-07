@@ -1,3 +1,4 @@
+import * as Array from 'effect/Array'
 import * as Ref from 'effect/Ref'
 import * as HashMap from 'effect/HashMap'
 import * as HashSet from 'effect/HashSet'
@@ -18,6 +19,7 @@ import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import {
   FileError,
+  makeWatcher,
   fromPlatform,
   type NativeFiles,
   type WatchChange,
@@ -38,7 +40,7 @@ export const make = Effect.fnUntraced(function* (
   native: NativeFiles['Service'],
   targets: ReadonlyArray<WatchTarget>,
   options: WatchOptions = {},
-) {
+): Effect.fn.Return<import('../Env.ts').Watcher, FileError, Scope.Scope> {
   const interval = yield* Time.duration(options.pollIntervalMs ?? '2 seconds').pipe(
     Effect.mapError(
       (cause) =>
@@ -96,7 +98,13 @@ export const make = Effect.fnUntraced(function* (
   const reported = (value: string): string =>
     targets.some((target) => value === target.path || value.startsWith(target.path + path.sep))
       ? value
-      : (targets.find((target) => target.path.startsWith(value + path.sep))?.path ?? value)
+      : Option.getOrElse(
+          Option.map(
+            Array.findFirst(targets, (target) => target.path.startsWith(value + path.sep)),
+            (target) => target.path,
+          ),
+          () => value,
+        )
   const scan: Effect.Effect<Scan, FileError> = Effect.gen(function* () {
     const values = new Map<string, string>()
     const directories = new Map<string, string>()
@@ -133,7 +141,11 @@ export const make = Effect.fnUntraced(function* (
         const parent = yield* stat(ancestor).pipe(Effect.orElseSucceed(() => undefined))
         if (parent?.kind === 'directory') {
           yield* addDirectory(ancestor)
-          if (!values.has(ancestor)) values.set(ancestor, directories.get(ancestor) ?? '')
+          if (!values.has(ancestor))
+            values.set(
+              ancestor,
+              Option.getOrElse(Option.fromUndefinedOr(directories.get(ancestor)), () => ''),
+            )
         }
         const next = path.dirname(ancestor)
         if (next === ancestor) break
@@ -245,7 +257,7 @@ export const make = Effect.fnUntraced(function* (
   const syncWatchers = Effect.fnUntraced(function* (wanted: HashMap.HashMap<string, string>) {
     if ((yield* Ref.get(mode)) === 'polling') return false
     for (const [value, installed] of yield* Ref.get(watchers))
-      if (Option.getOrUndefined(HashMap.get(wanted, value)) !== installed.identity) {
+      if (!Option.contains(HashMap.get(wanted, value), installed.identity)) {
         yield* Scope.close(installed.scope, Exit.void)
         yield* Ref.update(watchers, HashMap.remove(value))
       }
@@ -349,8 +361,10 @@ export const make = Effect.fnUntraced(function* (
     ]),
   ].filter(
     (value) =>
-      Option.getOrUndefined(HashMap.get(Ref.getUnsafe(previous).values, value)) !==
-      Option.getOrUndefined(HashMap.get(established.values, value)),
+      !Option.makeEquivalence<string>((a, b) => a === b)(
+        HashMap.get(Ref.getUnsafe(previous).values, value),
+        HashMap.get(established.values, value),
+      ),
   )
   yield* Ref.set(previous, established)
   if (initial.length > 0)
@@ -362,10 +376,8 @@ export const make = Effect.fnUntraced(function* (
       else {
         const event = yield* Queue.take(events)
         if (event.error !== undefined && event.owner !== undefined) {
-          const installed = Option.getOrUndefined(
-            HashMap.get(yield* Ref.get(watchers), event.owner),
-          )
-          if (installed !== undefined) yield* Scope.close(installed.scope, Exit.void)
+          const installed = HashMap.get(yield* Ref.get(watchers), event.owner)
+          if (Option.isSome(installed)) yield* Scope.close(installed.value.scope, Exit.void)
           yield* Ref.update(watchers, HashMap.remove(event.owner))
         }
         if (event.path !== undefined) raw.push(event.path)
@@ -390,8 +402,10 @@ export const make = Effect.fnUntraced(function* (
           ...HashMap.keys(next.values),
         ]))
           if (
-            Option.getOrUndefined(HashMap.get(Ref.getUnsafe(previous).values, value)) !==
-            Option.getOrUndefined(HashMap.get(next.values, value))
+            !Option.makeEquivalence<string>((a, b) => a === b)(
+              HashMap.get(Ref.getUnsafe(previous).values, value),
+              HashMap.get(next.values, value),
+            )
           )
             changes.add(reported(value))
         yield* Ref.set(previous, next)
@@ -423,10 +437,10 @@ export const make = Effect.fnUntraced(function* (
     }),
   )
   yield* worker.pipe(Effect.forkScoped, Effect.provideService(Scope.Scope, scope))
-  return {
+  return makeWatcher({
     get mode() {
       return Ref.getUnsafe(mode)
     },
     changes: Stream.fromQueue(output),
-  }
+  })
 })

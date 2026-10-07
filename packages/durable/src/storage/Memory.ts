@@ -16,4 +16,4 @@ export const make: Effect.Effect<Store['Service'], never, Scope.Scope> = Effect.
     atomic: (effect) => effect,
   })
 })
-export const layer = Layer.effect(Store, make)
+export const layer: Layer.Layer<Store> = Layer.effect(Store, make)

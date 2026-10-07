@@ -123,3 +123,9 @@ export function fromResponse(
 }
 export const contextTokens = (value: Usage): number =>
   value.input + value.cacheRead + value.cacheWrite + value.output
+
+export const isCost: (input: unknown) => input is typeof Cost.Type = Schema.is(Cost)
+
+export const isUsage: (input: unknown) => input is Usage = Schema.is(Usage)
+
+export const isState: (input: unknown) => input is State = Schema.is(State)

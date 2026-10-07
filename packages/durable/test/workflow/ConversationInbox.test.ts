@@ -1,3 +1,4 @@
+import * as Option from 'effect/Option'
 import * as DateTime from 'effect/DateTime'
 import * as Serialization from '../../src/Serialization.ts'
 import * as Entry from '../../src/Entry.ts'
@@ -83,7 +84,9 @@ describe('conversation and inbox domain integration', () => {
         Effect.gen(function* () {
           const session = Context.get(yield* Layer.build(services), Session.Session)
           const root = yield* session.root()
-          const initial = yield* session.snapshot(Conversation.ProviderDoc, { owner: root.id })
+          const initial = yield* session
+            .snapshot(Conversation.ProviderDoc, { owner: root.id })
+            .pipe(Effect.map(Option.getOrUndefined))
           const first = yield* session.transaction(
             Effect.fnUntraced(function* (tx) {
               const agent = yield* tx.doc(Conversation.AgentDoc, { owner: root.id })
@@ -107,15 +110,20 @@ describe('conversation and inbox domain integration', () => {
             tx.forkConversation(root.id, first.id, { ownership: { kind: 'ownerless' } }),
           )
           assert.strictEqual(
-            (yield* session.snapshot(Conversation.AgentDoc, { owner: fork.id }))?.value
-              .instructions,
+            (yield* session
+              .snapshot(Conversation.AgentDoc, { owner: fork.id })
+              .pipe(Effect.map(Option.getOrUndefined)))?.value.instructions,
             'historical instructions',
           )
           assert.deepStrictEqual(
-            (yield* session.snapshot(Usage.UsageDoc, { owner: fork.id }))?.value,
+            (yield* session
+              .snapshot(Usage.UsageDoc, { owner: fork.id })
+              .pipe(Effect.map(Option.getOrUndefined)))?.value,
             Totals.empty(),
           )
-          const forkProvider = yield* session.snapshot(Conversation.ProviderDoc, { owner: fork.id })
+          const forkProvider = yield* session
+            .snapshot(Conversation.ProviderDoc, { owner: fork.id })
+            .pipe(Effect.map(Option.getOrUndefined))
           assert.isDefined(initial)
           assert.isDefined(forkProvider)
           assert.notStrictEqual(initial?.value.sessionId, forkProvider?.value.sessionId)
@@ -125,14 +133,17 @@ describe('conversation and inbox domain integration', () => {
           )
           yield* session.root(() => Effect.die('Existing root must not run creation initializer'))
           assert.deepStrictEqual(
-            (yield* session.snapshot(Conversation.ProviderDoc, { owner: root.id }))?.value,
+            (yield* session
+              .snapshot(Conversation.ProviderDoc, { owner: root.id })
+              .pipe(Effect.map(Option.getOrUndefined)))?.value,
             initial?.value,
           )
           const reset = yield* Conversation.resetDraft('handoff note')
           yield* session.transaction((tx) => tx.appendEntry(root.id, reset))
           assert.strictEqual(
-            (yield* session.snapshot(Conversation.AgentDoc, { owner: root.id }))?.value
-              .instructions,
+            (yield* session
+              .snapshot(Conversation.AgentDoc, { owner: root.id })
+              .pipe(Effect.map(Option.getOrUndefined)))?.value.instructions,
             'current instructions',
           )
           assert.strictEqual((yield* Usage.sessionTotals(session)).models['fake/model']?.input, 3)
@@ -165,7 +176,9 @@ describe('conversation and inbox domain integration', () => {
           }),
         )
         assert.deepStrictEqual(
-          (yield* session.snapshot(Conversation.AgentDoc, { owner: owned.id }))?.value.model,
+          (yield* session
+            .snapshot(Conversation.AgentDoc, { owner: owned.id })
+            .pipe(Effect.map(Option.getOrUndefined)))?.value.model,
           { provider: 'fake', modelId: 'owner' },
         )
         assert.strictEqual(owned.owner?.conversationId, root.id)
@@ -237,14 +250,26 @@ describe('conversation and inbox domain integration', () => {
           )
           assert.strictEqual(entries[0]?.head, entries[0]?.id)
           assert.deepStrictEqual(
-            (yield* session.snapshot(Inbox.InboxDoc, { owner: root.id }))?.value.items.map(
-              (item) => item.id,
-            ),
+            (yield* session
+              .snapshot(Inbox.InboxDoc, { owner: root.id })
+              .pipe(Effect.map(Option.getOrUndefined)))?.value.items.map((item) => item.id),
             [ids.secondId],
           )
-          assert.strictEqual((yield* session.submission(ids.writeId))?.status, 'done')
-          assert.strictEqual((yield* session.submission(ids.firstId))?.status, 'placed')
-          assert.strictEqual((yield* session.submission(ids.secondId))?.status, 'queued')
+          assert.strictEqual(
+            (yield* session.submission(ids.writeId).pipe(Effect.map(Option.getOrUndefined)))
+              ?.status,
+            'done',
+          )
+          assert.strictEqual(
+            (yield* session.submission(ids.firstId).pipe(Effect.map(Option.getOrUndefined)))
+              ?.status,
+            'placed',
+          )
+          assert.strictEqual(
+            (yield* session.submission(ids.secondId).pipe(Effect.map(Option.getOrUndefined)))
+              ?.status,
+            'queued',
+          )
         }),
       ),
   )
@@ -287,7 +312,10 @@ describe('conversation and inbox domain integration', () => {
               return yield* Inbox.apply(tx, prepared, 'postTools', DateTime.fromEpochSeconds(0))
             }),
           )
-          assert.strictEqual((yield* session.submission(ids.stale))?.reason, 'stale')
+          assert.strictEqual(
+            (yield* session.submission(ids.stale).pipe(Effect.map(Option.getOrUndefined)))?.reason,
+            'stale',
+          )
           const passiveId = yield* session.transaction(
             Effect.fnUntraced(function* (tx) {
               const inbox = yield* tx.doc(Inbox.InboxDoc, { owner: root.id })
@@ -303,11 +331,14 @@ describe('conversation and inbox domain integration', () => {
           assert.deepStrictEqual(yield* session.transaction((tx) => Inbox.withdraw(tx, root.id)), [
             ids.userId,
           ])
-          assert.strictEqual((yield* session.submission(ids.userId))?.reason, 'aborted')
+          assert.strictEqual(
+            (yield* session.submission(ids.userId).pipe(Effect.map(Option.getOrUndefined)))?.reason,
+            'aborted',
+          )
           assert.deepStrictEqual(
-            (yield* session.snapshot(Inbox.InboxDoc, { owner: root.id }))?.value.items.map(
-              (item) => item.id,
-            ),
+            (yield* session
+              .snapshot(Inbox.InboxDoc, { owner: root.id })
+              .pipe(Effect.map(Option.getOrUndefined)))?.value.items.map((item) => item.id),
             [passiveId],
           )
         }),
@@ -345,7 +376,9 @@ describe('conversation and inbox domain integration', () => {
               })
             }),
           )
-          const ledger = (yield* session.snapshot(Usage.UsageDoc, { owner: root.id }))?.value
+          const ledger = (yield* session
+            .snapshot(Usage.UsageDoc, { owner: root.id })
+            .pipe(Effect.map(Option.getOrUndefined)))?.value
           assert.isTrue(Object.hasOwn(ledger?.tools ?? {}, '__proto__'))
           assert.strictEqual(ledger?.tools['__proto__']?.output, 5)
           assert.deepStrictEqual((yield* Conversation.context(session, root.id)).messages, [])

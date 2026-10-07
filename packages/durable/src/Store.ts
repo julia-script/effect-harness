@@ -1,3 +1,6 @@
+import { identity } from 'effect/Function'
+import * as Types from 'effect/Types'
+import * as Predicate from 'effect/Predicate'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -24,7 +27,10 @@ export interface Transact {
     options: CommitOptions,
   ): Effect.Effect<A, StorageError | E, R>
 }
-export interface Candidate<A> {
+const CandidateTypeId = '~@effect-harness/durable/Store/Candidate'
+export interface Candidate<out A> {
+  readonly [CandidateTypeId]: { readonly _A: Types.Covariant<A> }
+
   readonly state: Record.State
   readonly writes: ReadonlyArray<Record.Write>
   readonly result: A
@@ -63,8 +69,23 @@ export const mintId = Effect.fnUntraced(function* <S extends Schema.Constraint>(
       Effect.gen(function* () {
         if (!Number.isSafeInteger(state.nextId)) return yield* rejected('ID space is exhausted')
         yield* validate(schema, state.nextId)
-        return { state: { ...state, nextId: state.nextId + 1 }, writes: [], result: state.nextId }
+        return makeCandidate({
+          state: { ...state, nextId: state.nextId + 1 },
+          writes: [],
+          result: state.nextId,
+        })
       }),
     )
     .pipe(Effect.flatMap((id) => validate(schema, id)))
 })
+
+export const makeCandidate = <A>(
+  input: Omit<Candidate<A>, typeof CandidateTypeId>,
+): Candidate<A> => {
+  const value = Object.assign({}, input, { [CandidateTypeId]: { _A: identity } })
+  Object.defineProperties(value, Object.getOwnPropertyDescriptors(input))
+  Object.defineProperty(value, CandidateTypeId, { enumerable: false })
+  return value
+}
+export const isCandidate = (input: unknown): input is Candidate<unknown> =>
+  Predicate.hasProperty(input, CandidateTypeId)

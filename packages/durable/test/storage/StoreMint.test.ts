@@ -60,11 +60,13 @@ describe('Store.mintId accessor', () => {
           )
           assert.strictEqual(allowed.calls, 6)
           yield* store.transact((state) =>
-            Effect.succeed({
-              state: { ...state, nextId: Number.MAX_SAFE_INTEGER },
-              writes: [],
-              result: null,
-            }),
+            Effect.succeed(
+              Store.makeCandidate({
+                state: { ...state, nextId: Number.MAX_SAFE_INTEGER },
+                writes: [],
+                result: null,
+              }),
+            ),
           )
           assert.strictEqual(
             yield* allocate.pipe(Effect.provideService(Policy, allowed)),

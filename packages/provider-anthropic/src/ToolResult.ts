@@ -24,14 +24,16 @@ const decodeEnvelope = Schema.decodeUnknownOption(
 const decode = (value: string) => Effect.succeed(decodeEnvelope(value))
 const encoded = (data: string | Uint8Array) =>
   typeof data === 'string' ? data.replace(/^data:[^;]+;base64,/, '') : Base64.encode(data)
-const url = (data: Prompt.FilePart['data']): string | undefined => {
-  if (data instanceof URL) return data.href
-  if (typeof data === 'string' && /^https?:\/\//i.test(data)) return data
-  return undefined
+const url = (data: Prompt.FilePart['data']): Option.Option<string> => {
+  if (data instanceof URL) return Option.some(data.href)
+  if (typeof data === 'string' && /^https?:\/\//i.test(data)) return Option.some(data)
+  return Option.none()
 }
 
 /** Converts only the canonical envelope into schema-validated native tool-result blocks. */
-export const content = Effect.fnUntraced(function* (parts: ReadonlyArray<Prompt.UserMessagePart>) {
+export const content = Effect.fnUntraced(function* (
+  parts: ReadonlyArray<Prompt.UserMessagePart>,
+): Effect.fn.Return<Array<Block>, AiError.AiError> {
   return yield* Effect.forEach(parts, (part): Effect.Effect<Block, AiError.AiError> => {
     const cache_control = part.options.anthropic?.cacheControl ?? null
     let block: unknown
@@ -43,18 +45,17 @@ export const content = Effect.fnUntraced(function* (parts: ReadonlyArray<Prompt.
         block = {
           type: 'image',
           cache_control,
-          source:
-            location === undefined
-              ? {
-                  type: 'base64',
-                  media_type: part.mediaType === 'image/*' ? 'image/jpeg' : part.mediaType,
-                  data: encoded(data),
-                }
-              : { type: 'url', url: location },
+          source: Option.isNone(location)
+            ? {
+                type: 'base64',
+                media_type: part.mediaType === 'image/*' ? 'image/jpeg' : part.mediaType,
+                data: encoded(data),
+              }
+            : { type: 'url', url: location.value },
         }
       else if (part.mediaType === 'application/pdf' || part.mediaType === 'text/plain') {
         let source: unknown
-        if (location !== undefined) source = { type: 'url', url: location }
+        if (Option.isSome(location)) source = { type: 'url', url: location.value }
         else if (part.mediaType === 'application/pdf')
           source = { type: 'base64', media_type: 'application/pdf', data: encoded(data) }
         else
@@ -90,7 +91,7 @@ export const content = Effect.fnUntraced(function* (parts: ReadonlyArray<Prompt.
 /** Expands a validated marker without changing message roles, tool IDs, error flags or outer cache options. */
 export const request = Effect.fnUntraced(function* (
   options: Parameters<AnthropicClient.Service['createMessage']>[0],
-) {
+): Effect.fn.Return<Parameters<AnthropicClient.Service['createMessage']>[0], AiError.AiError> {
   let documents = false
   const messages = yield* Effect.forEach(
     options.payload.messages,

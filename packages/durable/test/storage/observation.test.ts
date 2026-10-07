@@ -1,3 +1,5 @@
+import * as TestClock from 'effect/testing/TestClock'
+import * as Option from 'effect/Option'
 import { ResourceScope, withLayer } from '../../src/testing/Storage.ts'
 import * as Exit from 'effect/Exit'
 import * as Scope from 'effect/Scope'
@@ -45,7 +47,7 @@ describe('committed observations', () => {
     Effect.scoped(
       Effect.gen(function* () {
         const session = yield* initialize
-        const watch = yield* session.watchDoc(token)
+        const watch = yield* session.watchDoc(token).pipe(Effect.map(Option.getOrUndefined))
         assert.ok(watch)
         yield* session.root()
         yield* update(session, 0)
@@ -71,7 +73,7 @@ describe('committed observations', () => {
     Effect.scoped(
       Effect.gen(function* () {
         const session = yield* initialize
-        const watch = yield* session.watchDoc(token)
+        const watch = yield* session.watchDoc(token).pipe(Effect.map(Option.getOrUndefined))
         assert.ok(watch)
         for (let count = 1; count <= 101; count++) yield* update(session, count)
         const changes = yield* Stream.runCollect(watch.changes.pipe(Stream.take(1)))
@@ -85,7 +87,7 @@ describe('committed observations', () => {
     Effect.scoped(
       Effect.gen(function* () {
         const session = yield* initialize
-        const watch = yield* session.watchDoc(token)
+        const watch = yield* session.watchDoc(token).pipe(Effect.map(Option.getOrUndefined))
         assert.ok(watch)
         yield* session.transaction((tx) => tx.retire(token).pipe(Effect.as(null)))
         yield* update(session, 9)
@@ -98,16 +100,17 @@ describe('committed observations', () => {
       }).pipe(Effect.provide(sessionLayer(Memory.layer))),
     ),
   )
-  it.live('keeps live values current without consuming and closes on session shutdown', () =>
+  it.effect('keeps live values current without consuming and closes on session shutdown', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const session = yield* initialize
-        const watch = yield* session.state(token)
+        const watch = yield* session.state(token).pipe(Effect.map(Option.getOrUndefined))
         assert.ok(watch)
         yield* update(session, 7)
-        yield* Effect.sleep('50 millis')
+        yield* TestClock.adjust('50 millis')
         assert.strictEqual(watch.value?.count, 7)
         yield* Scope.close(yield* ResourceScope, Exit.void)
+        yield* TestClock.adjust('50 millis')
         assert.strictEqual(yield* watch.closed, 'session_closed')
       }).pipe((effect) => withLayer(effect, sessionLayer(Memory.layer))),
     ),
@@ -118,7 +121,7 @@ describe('committed observations', () => {
       Effect.scoped(
         Effect.gen(function* () {
           const session = yield* initialize
-          const watch = yield* session.watchDoc(token)
+          const watch = yield* session.watchDoc(token).pipe(Effect.map(Option.getOrUndefined))
           assert.ok(watch)
           yield* update(session, 1)
           yield* session.root()
@@ -140,7 +143,7 @@ describe('committed observations', () => {
       Effect.scoped(
         Effect.gen(function* () {
           const session = yield* initialize
-          const watch = yield* session.watchDoc(token)
+          const watch = yield* session.watchDoc(token).pipe(Effect.map(Option.getOrUndefined))
           assert.ok(watch)
           const entered = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
@@ -161,6 +164,7 @@ describe('committed observations', () => {
           for (let count = 2; count <= 102; count++) yield* update(session, count)
           assert.strictEqual(watch.value?.count, 1)
           yield* Deferred.succeed(release, undefined)
+          // Negative native SQL publication window: physical commit/rollback callbacks are not driven by TestClock.
           yield* Effect.sleep('40 millis')
           assert.deepStrictEqual(received, [1, 102])
           yield* Fiber.interrupt(listening)
@@ -174,7 +178,7 @@ describe('committed observations', () => {
         const session = yield* initialize
         const store = yield* Store
         const sql = yield* SqlClient.SqlClient
-        const watch = yield* session.watchDoc(token)
+        const watch = yield* session.watchDoc(token).pipe(Effect.map(Option.getOrUndefined))
         assert.ok(watch)
         const staged = yield* Deferred.make<void>()
         const release = yield* Deferred.make<void>()
@@ -197,6 +201,7 @@ describe('committed observations', () => {
           ),
           Effect.forkScoped,
         )
+        // Negative native SQL publication window: physical commit/rollback callbacks are not driven by TestClock.
         yield* Effect.sleep('40 millis')
         assert.strictEqual(published, false)
         assert.strictEqual(watch.value?.count, 0)
@@ -215,7 +220,7 @@ describe('committed observations', () => {
         const session = yield* initialize
         const store = yield* Store
         const sql = yield* SqlClient.SqlClient
-        const watch = yield* session.watchDoc(token)
+        const watch = yield* session.watchDoc(token).pipe(Effect.map(Option.getOrUndefined))
         assert.ok(watch)
         const result = yield* sql
           .withTransaction(
@@ -233,8 +238,12 @@ describe('committed observations', () => {
           .pipe(Effect.flip)
         assert.ok(result instanceof StorageError)
         assert.strictEqual(result.certainty, 'rejected')
-        assert.strictEqual((yield* session.snapshot(token))?.value.count, 0)
+        assert.strictEqual(
+          (yield* session.snapshot(token).pipe(Effect.map(Option.getOrUndefined)))?.value.count,
+          0,
+        )
         assert.strictEqual((yield* store.committed).receipts.length, 0)
+        // Negative native SQL publication window: physical commit/rollback callbacks are not driven by TestClock.
         yield* Effect.sleep('40 millis')
         assert.strictEqual(watch.value?.count, 0)
         const seq = (yield* store.read).nextSeq - 1

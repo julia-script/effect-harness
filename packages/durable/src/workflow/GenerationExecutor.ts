@@ -1,5 +1,8 @@
+import * as Arr from 'effect/Array'
+import type { StorageError } from '../StorageError.ts'
 import * as Time from '@effect-harness/harness/Time'
 import * as Ref from 'effect/Ref'
+import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
 import { ModelRetry, remaining, policy as retryPolicy } from './ModelRetry.ts'
 import * as Serialization from '../Serialization.ts'
@@ -118,7 +121,7 @@ export const convertPartial = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   live: Document.Draft<Inbox.LiveState>,
   conversationId: Record.ConversationId,
-) {
+): Effect.fn.Return<void, StorageError | ExecutionError> {
   const generation = live.generation
   if (generation?.message === undefined) return
   yield* tx.appendEntry(conversationId, {
@@ -202,11 +205,12 @@ export const layer: Layer.Layer<
       progress: () => Effect.void,
     })
     const active = Effect.gen(function* () {
-      const task = yield* session.task(payload.taskId).pipe(Effect.mapError(domainError))
-      if (task === undefined)
+      const taskOption = yield* session.task(payload.taskId).pipe(Effect.mapError(domainError))
+      if (Option.isNone(taskOption))
         return yield* new ExecutionError({
           reason: new InvalidState({ message: 'Generation projection is absent' }),
         })
+      const task = taskOption.value
       if (task.abortRequested || task.state.status === 'terminal')
         return yield* new ExecutionError({
           reason: new Aborted({ message: 'Generation has ended' }),
@@ -230,8 +234,9 @@ export const layer: Layer.Layer<
           .transaction(
             Effect.fnUntraced(function* (tx) {
               const graph = yield* Ownership.readGraph(tx)
-              const task = yield* tx.task(payload.taskId)
-              if (task === undefined) return yield* codecError()
+              const taskOption = yield* tx.task(payload.taskId)
+              if (Option.isNone(taskOption)) return yield* codecError()
+              const task = taskOption.value
               if (task.state.status === 'terminal' || task.state.status === 'completing')
                 return {
                   result: yield* Schema.decodeUnknownEffect(Result)(task.state.outcome).pipe(
@@ -321,27 +326,35 @@ export const layer: Layer.Layer<
                         compactionReceipt.result,
                       ).pipe(Effect.mapError(codecError)),
                     }
-                  const state =
-                    (yield* session
-                      .snapshot(Conversation.AgentDoc, { owner: payload.conversationId })
-                      .pipe(Effect.mapError(domainError)))?.value ?? {}
-                  let provider = yield* session
+                  const state: Agent.State = yield* session
+                    .snapshot(Conversation.AgentDoc, { owner: payload.conversationId })
+                    .pipe(
+                      Effect.mapError(domainError),
+                      Effect.map(
+                        Option.match({ onNone: () => ({}), onSome: (snapshot) => snapshot.value }),
+                      ),
+                    )
+                  let providerOption = yield* session
                     .snapshot(Conversation.ProviderDoc, { owner: payload.conversationId })
                     .pipe(Effect.mapError(domainError))
-                  if (provider === undefined || provider.value.sessionId === '') {
+                  if (
+                    Option.isNone(providerOption) ||
+                    providerOption.value.value.sessionId === ''
+                  ) {
                     yield* session
                       .initialize(payload.conversationId)
                       .pipe(Effect.mapError(domainError))
-                    provider = yield* session
+                    providerOption = yield* session
                       .snapshot(Conversation.ProviderDoc, { owner: payload.conversationId })
                       .pipe(Effect.mapError(domainError))
                   }
-                  if (provider === undefined || provider.value.sessionId === '')
+                  if (Option.isNone(providerOption) || providerOption.value.value.sessionId === '')
                     return yield* new ExecutionError({
                       reason: new InvalidState({
                         message: 'Provider identity requires Conversation.layerCreation',
                       }),
                     })
+                  const provider = providerOption.value
                   const view = yield* Conversation.context(session, payload.conversationId).pipe(
                     Effect.mapError(domainError),
                   )
@@ -377,15 +390,16 @@ export const layer: Layer.Layer<
                         }),
                     ),
                   )
-                  const hasCut =
+                  const hasCut = Option.isSome(
                     CompactionDomain.selectCut(
                       view,
                       config.settings.compaction.keepRecentTokens,
                       descriptor.estimate,
-                    ) !== undefined
+                    ),
+                  )
                   const threshold =
                     (yield* Ref.get(compacted)) || !hasCut
-                      ? undefined
+                      ? Option.none()
                       : CompactionDomain.threshold(
                           ContextDomain.estimate(
                             view,
@@ -395,15 +409,16 @@ export const layer: Layer.Layer<
                           descriptor.contextWindow,
                           config.settings.compaction,
                         )
-                  if (threshold === 'blocking') {
+                  if (Option.isSome(threshold) && threshold.value === 'blocking') {
                     const child = yield* session
                       .transaction(
                         Effect.fnUntraced(function* (tx) {
-                          const task = yield* tx.task(payload.taskId)
-                          if (task === undefined || task.abortRequested)
+                          const taskOption = yield* tx.task(payload.taskId)
+                          if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                             return yield* new ExecutionError({
                               reason: new Aborted({ message: 'Generation aborted' }),
                             })
+                          const task = taskOption.value
                           const child = yield* CompactionExecutor.create(
                             tx,
                             payload.sessionId,
@@ -434,15 +449,18 @@ export const layer: Layer.Layer<
                   const encodedRequest = yield* session
                     .transaction(
                       Effect.fnUntraced(function* (tx) {
-                        const task = yield* tx.task(payload.taskId)
-                        if (task === undefined || task.abortRequested)
+                        const taskOption = yield* tx.task(payload.taskId)
+                        if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                           return yield* new ExecutionError({
                             reason: new Aborted({ message: 'Generation aborted' }),
                           })
+                        const task = taskOption.value
                         const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
                         yield* convertPartial(tx, live, payload.conversationId)
                         const background =
-                          threshold === 'background' && (live.compactions?.length ?? 0) === 0
+                          Option.isSome(threshold) &&
+                          threshold.value === 'background' &&
+                          (live.compactions?.length ?? 0) === 0
                             ? yield* CompactionExecutor.create(
                                 tx,
                                 payload.sessionId,
@@ -554,10 +572,10 @@ export const layer: Layer.Layer<
                     const write = Effect.gen(function* () {
                       const response = yield* Ref.get(responseState)
                       const message = Response.partial(response)
-                      if (message === undefined) return 0
+                      if (Option.isNone(message)) return 0
                       const encoded = yield* Schema.encodeEffect(
                         Schema.toCodecJson(Prompt.AssistantMessage),
-                      )(message)
+                      )(message.value)
                       const finish = response.parts.findLast((part) => part.type === 'finish')
                       const descriptor = yield* catalog.resolve(pinned.request.model).pipe(
                         Effect.mapError(
@@ -577,7 +595,13 @@ export const layer: Layer.Layer<
                       yield* session.transaction(
                         Effect.fnUntraced(function* (tx) {
                           const task = yield* tx.task(payload.taskId)
-                          if (task?.abortRequested || task?.state.status === 'terminal') return
+                          if (
+                            Option.exists(
+                              task,
+                              (value) => value.abortRequested || value.state.status === 'terminal',
+                            )
+                          )
+                            return
                           const live = yield* tx.doc(Inbox.LiveDoc, {
                             owner: payload.conversationId,
                           })
@@ -644,10 +668,10 @@ export const layer: Layer.Layer<
                         parts,
                         disposition: {
                           type: 'failure' as const,
-                          prompt:
-                            partial === undefined
-                              ? Response.message(response)
-                              : Prompt.fromMessages([partial]),
+                          prompt: Option.match(partial, {
+                            onNone: () => Response.message(response),
+                            onSome: (message) => Prompt.fromMessages([message]),
+                          }),
                           usage:
                             finish === undefined
                               ? Totals.fromResponse({
@@ -763,21 +787,23 @@ export const layer: Layer.Layer<
                         }),
                     ),
                   )
-                  shouldCompact =
+                  shouldCompact = Option.isSome(
                     CompactionDomain.selectCut(
                       view,
                       config.settings.compaction.keepRecentTokens,
                       descriptor.estimate,
-                    ) !== undefined
+                    ),
+                  )
                 }
                 return yield* session
                   .transaction(
                     Effect.fnUntraced(function* (tx) {
-                      const task = yield* tx.task(payload.taskId)
-                      if (task === undefined || task.abortRequested)
+                      const taskOption = yield* tx.task(payload.taskId)
+                      if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                         return yield* new ExecutionError({
                           reason: new Aborted({ message: 'Generation aborted' }),
                         })
+                      const task = taskOption.value
                       const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
                       const compaction = shouldCompact
                         ? yield* CompactionExecutor.create(
@@ -854,7 +880,7 @@ export const layer: Layer.Layer<
             const answer = disposition
             const continuation = yield* Activity.make({
               name: 'on-yield',
-              success: Schema.UndefinedOr(Prompt.UserMessage),
+              success: Schema.OptionFromUndefinedOr(Prompt.UserMessage),
               error: ExecutionErrorCodec,
               execute: Cancellation.activity(
                 payload,
@@ -873,11 +899,12 @@ export const layer: Layer.Layer<
                 .transaction(
                   Effect.fnUntraced(function* (tx) {
                     const graph = yield* Ownership.readGraph(tx)
-                    const task = yield* tx.task(payload.taskId)
-                    if (task === undefined || task.abortRequested)
+                    const taskOption = yield* tx.task(payload.taskId)
+                    if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                       return yield* new ExecutionError({
                         reason: new Aborted({ message: 'Generation aborted' }),
                       })
+                    const task = taskOption.value
                     const boundary = yield* Inbox.prepare(
                       tx,
                       payload.conversationId,
@@ -895,13 +922,13 @@ export const layer: Layer.Layer<
                     let next: typeof Generation.payloadSchema.Type | undefined
                     let notify = [...selected.settled]
                     if (
-                      continuation !== undefined &&
+                      Option.isSome(continuation) &&
                       selected.users.length === 0 &&
                       !selected.reset
                     ) {
                       const message = yield* Schema.encodeEffect(
                         Schema.toCodecJson(Prompt.UserMessage),
-                      )(continuation).pipe(Effect.mapError(codecError))
+                      )(continuation.value).pipe(Effect.mapError(codecError))
                       yield* tx.appendEntry(payload.conversationId, {
                         kind: 'harness.user',
                         model: [message],
@@ -946,11 +973,12 @@ export const layer: Layer.Layer<
             execute: session
               .transaction(
                 Effect.fnUntraced(function* (tx) {
-                  const task = yield* tx.task(payload.taskId)
-                  if (task === undefined || task.abortRequested)
+                  const taskOption = yield* tx.task(payload.taskId)
+                  if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                     return yield* new ExecutionError({
                       reason: new Aborted({ message: 'Generation aborted' }),
                     })
+                  const task = taskOption.value
                   const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
                   const assistant = yield* appendAssistant(tx, payload, pinned.request, tools)
                   const offered = new Set(pinned.request.tools.map((tool) => tool.name))
@@ -1023,11 +1051,12 @@ export const layer: Layer.Layer<
                 execute: session
                   .transaction(
                     Effect.fnUntraced(function* (tx) {
-                      const owner = yield* tx.task(payload.taskId)
-                      if (owner === undefined || owner.abortRequested)
+                      const ownerOption = yield* tx.task(payload.taskId)
+                      if (Option.isNone(ownerOption) || ownerOption.value.abortRequested)
                         return yield* new ExecutionError({
                           reason: new Aborted({ message: 'Generation aborted' }),
                         })
+                      const owner = ownerOption.value
                       const taskId = yield* tx.mint(Record.TaskId)
                       const child = {
                         sessionId: payload.sessionId,
@@ -1081,7 +1110,10 @@ export const layer: Layer.Layer<
               yield* ToolCall.execute(child)
               const task = yield* session.task(child.taskId).pipe(Effect.mapError(domainError))
               return (yield* Schema.decodeEffect(Schema.toCodecJson(ToolExecutor.Outcome))(
-                task?.state.outcome ?? null,
+                task.pipe(
+                  Option.map((value) => value.state.outcome ?? null),
+                  Option.getOrElse(() => null),
+                ),
               ).pipe(Effect.mapError(codecError))).execution
             }),
             { concurrency: round.sequential ? 1 : config.toolConcurrency },
@@ -1098,10 +1130,20 @@ export const layer: Layer.Layer<
                   .pipe(Effect.mapError(domainError))
                 const results: Hook.SettledTool[] = []
                 for (const [index, call] of round.calls.entries()) {
-                  const entryId = live?.value.tools?.find((slot) => slot.callId === call.id)?.entry
+                  const entryId = live.pipe(
+                    Option.flatMap((snapshot) =>
+                      Arr.findFirst(snapshot.value.tools ?? [], (slot) => slot.callId === call.id),
+                    ),
+                    Option.flatMap((slot) => Option.fromUndefinedOr(slot.entry)),
+                  )
                   const execution = executions[index]
-                  if (entryId === undefined || execution === undefined) return yield* codecError()
-                  results.push({ id: call.id, name: call.name, entryId, ...execution })
+                  if (Option.isNone(entryId) || execution === undefined) return yield* codecError()
+                  results.push({
+                    id: call.id,
+                    name: call.name,
+                    entryId: entryId.value,
+                    ...execution,
+                  })
                 }
                 yield* Hook.afterTools(Registry.handlers(agent, 'generation'), results)
               }),
@@ -1119,11 +1161,12 @@ export const layer: Layer.Layer<
               .transaction(
                 Effect.fnUntraced(function* (tx) {
                   const graph = yield* Ownership.readGraph(tx)
-                  const task = yield* tx.task(payload.taskId)
-                  if (task === undefined || task.abortRequested)
+                  const taskOption = yield* tx.task(payload.taskId)
+                  if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                     return yield* new ExecutionError({
                       reason: new Aborted({ message: 'Generation aborted' }),
                     })
+                  const task = taskOption.value
                   const boundary = yield* Inbox.prepare(tx, payload.conversationId, config.settings)
                   const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
                   if (controls.addTools.length > 0) {

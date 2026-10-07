@@ -7,7 +7,7 @@ import * as Schema from 'effect/Schema'
 import * as Record from '@effect-harness/durable/Record'
 import * as Session from '@effect-harness/durable/Session'
 import type { StorageError } from '@effect-harness/durable/StorageError'
-import { Store } from '@effect-harness/durable/Store'
+import { makeCandidate, Store } from '@effect-harness/durable/Store'
 import * as Memory from '@effect-harness/durable/storage/Memory'
 import { sessionLayer } from '@effect-harness/durable/testing/Storage'
 
@@ -60,11 +60,13 @@ describe('Session.mint', () => {
       )
       assert.deepStrictEqual(ids, [2, 3, 4])
       yield* store.transact((state) =>
-        Effect.succeed({
-          state: { ...state, nextId: Number.MAX_SAFE_INTEGER },
-          writes: [],
-          result: null,
-        }),
+        Effect.succeed(
+          makeCandidate({
+            state: { ...state, nextId: Number.MAX_SAFE_INTEGER },
+            writes: [],
+            result: null,
+          }),
+        ),
       )
       const last = yield* session.transaction((tx) => tx.mint(Record.TaskId))
       assert.strictEqual(last, Number.MAX_SAFE_INTEGER)

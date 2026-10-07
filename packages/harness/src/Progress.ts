@@ -1,3 +1,6 @@
+import * as Predicate from 'effect/Predicate'
+import type * as Types from 'effect/Types'
+import { identity } from 'effect/Function'
 import * as Cause from 'effect/Cause'
 import * as DateTime from 'effect/DateTime'
 import * as Duration from 'effect/Duration'
@@ -12,11 +15,32 @@ import type * as Scope from 'effect/Scope'
 import * as Time from './Time.ts'
 
 export const bytesPerSecond = 100 * 1024
-export interface Progress<E> {
+const TypeId = '~@effect-harness/harness/Progress'
+export interface Progress<in out E> {
+  readonly [TypeId]: { readonly _E: Types.Invariant<E> }
   readonly mark: Effect.Effect<void>
   readonly markAndWait: Effect.Effect<void, E>
   /** Stop future writes and join any admitted write. The final domain commit must settle returned waiters. */
   readonly stop: Effect.Effect<ReadonlyArray<Deferred.Deferred<void, E>>>
+}
+export const isProgress = (input: unknown): input is Progress<unknown> =>
+  Predicate.hasProperty(input, TypeId)
+export const makeProgress = <E>(input: Omit<Progress<E>, typeof TypeId>): Progress<E> => {
+  const handle: Progress<E> = {
+    [TypeId]: { _E: identity },
+    get mark() {
+      return input.mark
+    },
+    get markAndWait() {
+      return input.markAndWait
+    },
+    get stop() {
+      return input.stop
+    },
+  }
+  Object.defineProperties(handle, Object.getOwnPropertyDescriptors(input))
+  Object.defineProperty(handle, TypeId, { enumerable: false })
+  return handle
 }
 interface State<E> {
   readonly dirty: boolean
@@ -113,7 +137,7 @@ export const make = Effect.fnUntraced(function* <E, R>(
       )
     }),
   )
-  return { mark, markAndWait, stop }
+  return makeProgress({ mark, markAndWait, stop })
 })
 export const settle = <E>(
   waiters: ReadonlyArray<Deferred.Deferred<void, E>>,

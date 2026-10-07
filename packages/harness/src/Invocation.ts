@@ -75,3 +75,9 @@ export const layerSilent: Layer.Layer<Invocation> = Layer.succeed(
   Invocation,
   Invocation.of({ cwd: '.', report: () => Effect.void, progress: () => Effect.void }),
 )
+
+export const isDiagnostic: (input: unknown) => input is Diagnostic = Schema.is(Diagnostic)
+
+export const isControl: (input: unknown) => input is Control = Schema.is(Control)
+
+export const isToolResult: (input: unknown) => input is typeof Result.Type = Schema.is(Result)
