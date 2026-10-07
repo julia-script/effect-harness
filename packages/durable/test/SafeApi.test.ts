@@ -70,7 +70,7 @@ describe('durable safe APIs', () => {
         fork: 'asOf',
       })
       assert.strictEqual(Result.isFailure(family), true)
-      const entry = Record.defineEntry('')
+      const entry = Record.defineEntry('', Record.Entry)
       assert.strictEqual(Result.isFailure(entry), true)
     }),
   )

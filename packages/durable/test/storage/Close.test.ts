@@ -1,3 +1,4 @@
+import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -232,7 +233,11 @@ describe('scoped Session and Store cleanup', () => {
           calls++
         })
         const capabilities = yield* Cancellation.Cancellation
-        const identity = { sessionId: 'registration-fixture', conversationId: root.id, taskId }
+        const identity = {
+          sessionId: Identity.SessionId.make('registration-fixture'),
+          conversationId: root.id,
+          taskId,
+        }
         const register = capabilities.register(identity, cancel)
         yield* register.pipe(Scope.provide(first))
         yield* register.pipe(Scope.provide(second))
@@ -319,7 +324,7 @@ describe('scoped Session and Store cleanup', () => {
           })
           const invocation = yield* Cancellation.activity(
             {
-              sessionId: 'startup-regression',
+              sessionId: Identity.SessionId.make('startup-regression'),
               conversationId: Record.ROOT_CONVERSATION_ID,
               taskId: Record.TaskId.make(2),
             },
@@ -380,7 +385,7 @@ describe('scoped Session and Store cleanup', () => {
           ).pipe(Effect.andThen(Deferred.succeed(entered, undefined)), Effect.andThen(Effect.never))
           const invocation = yield* Cancellation.activity(
             {
-              sessionId: 'scope-regression',
+              sessionId: Identity.SessionId.make('scope-regression'),
               conversationId: Record.ROOT_CONVERSATION_ID,
               taskId: Record.TaskId.make(2),
             },

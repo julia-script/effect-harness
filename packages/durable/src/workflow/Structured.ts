@@ -1,3 +1,5 @@
+import * as Outcome from './Outcome.ts'
+import * as Identity from '../Identity.ts'
 import * as Cause from 'effect/Cause'
 import * as Fiber from 'effect/Fiber'
 import * as Exit from 'effect/Exit'
@@ -50,16 +52,7 @@ export const bind = Effect.fnUntraced(function* <
 })
 
 /** Outcome classification is shared by holds and fail-fast joins. */
-export const failed = (outcome: Record.Json | undefined): boolean => {
-  if (outcome === null || typeof outcome !== 'object' || Array.isArray(outcome)) return false
-  const receipt = Reflect.get(outcome, 'receipt')
-  const status =
-    Reflect.get(outcome, 'status') ??
-    (receipt !== null && typeof receipt === 'object' ? Reflect.get(receipt, 'status') : undefined)
-  return (
-    status === 'failed' || status === 'faulted' || status === 'orphaned' || status === 'aborted'
-  )
-}
+export const failed = Outcome.failed
 
 const heldFailure = (task: Record.Task | undefined) =>
   task !== undefined &&
@@ -75,7 +68,7 @@ export class DrainConversations extends Context.Service<
       owner: Record.Task,
       conversation: Record.Conversation,
       submissions: ReadonlyArray<Record.Submission>,
-      sessionId: string,
+      sessionId: Identity.SessionId,
     ) => Effect.Effect<void, ExecutionError | import('../StorageError.ts').StorageError>
   }
 >()('@effect-harness/durable/Structured/DrainConversations') {}
@@ -121,7 +114,7 @@ export const hold = Effect.fnUntraced(function* (
 const execute = Effect.fnUntraced(function* (
   session: Session.Service,
   task: Record.Task,
-  sessionId?: string,
+  sessionId?: Identity.SessionId,
 ): Effect.fn.Return<
   void,
   ExecutionError | StorageError,
@@ -145,7 +138,10 @@ const execute = Effect.fnUntraced(function* (
     yield* complete(
       session,
       task.id,
-      { status: 'orphaned', reason: `Workflow ${binding.workflow} is not declared` },
+      Outcome.Orphaned.make({
+        status: 'orphaned',
+        reason: `Workflow ${binding.workflow} is not declared`,
+      }),
       sessionId,
     )
     return
@@ -278,7 +274,7 @@ export const join = Effect.fnUntraced(function* (
 export const drain = Effect.fnUntraced(function* (
   session: Session.Service,
   taskId: Record.TaskId,
-  sessionId?: string,
+  sessionId?: Identity.SessionId,
 ): Effect.fn.Return<
   Record.Json,
   ExecutionError | StorageError,
@@ -383,7 +379,7 @@ export const complete = Effect.fnUntraced(function* (
   session: Session.Service,
   taskId: Record.TaskId,
   outcome: Record.Json,
-  sessionId?: string,
+  sessionId?: Identity.SessionId,
 ): Effect.fn.Return<
   Record.Json,
   ExecutionError | StorageError,
@@ -465,15 +461,21 @@ export const evaluate = <E, R>(
       if (!task?.abortRequested) return yield* Effect.failCause(exit.cause)
     }
     let outcome: Record.Json
-    if (Exit.isSuccess(exit)) outcome = { status: 'completed', result: exit.value }
+    if (Exit.isSuccess(exit))
+      outcome = yield* Schema.decodeEffect(Outcome.Completed)({
+        status: 'completed',
+        result: exit.value,
+      }).pipe(Effect.mapError((cause) => invalid('Invalid structured outcome', cause)))
     else {
       const error = Cause.squash(exit.cause)
-      let status = Cause.hasDies(exit.cause) ? 'faulted' : 'failed'
+      let status: (typeof Outcome.Failed.Type)['status'] = Cause.hasDies(exit.cause)
+        ? 'faulted'
+        : 'failed'
       if (error instanceof ExecutionError && error.reason._tag === 'Aborted') status = 'aborted'
-      outcome = {
+      outcome = Outcome.Failed.make({
         status,
         error: { message: error instanceof Error ? error.message : String(error) },
-      }
+      })
     }
     return yield* complete(session, identity.taskId, outcome, identity.sessionId)
   })

@@ -1,6 +1,5 @@
 import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
-import * as Executor from '@effect-harness/harness/Executor'
 import * as Tool from '@effect-harness/harness/Tool'
 import * as Conversation from './Conversation.ts'
 import * as Record from './Record.ts'
@@ -12,15 +11,7 @@ export const AssistantData = Schema.Struct({
   harness: Conversation.Metadata,
 })
 export const SystemData = Schema.Struct({
-  harness: Schema.Struct({
-    system: Schema.Struct({
-      sections: Schema.optionalKey(
-        Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Null])),
-      ),
-      toolsRemoved: Schema.optionalKey(Schema.Array(Schema.String)),
-      toolsAdded: Schema.optionalKey(Executor.Request.fields.tools),
-    }),
-  }),
+  harness: Schema.Struct({ system: Conversation.SystemPatch }),
 })
 /** Durable execution metadata includes both executed and immediately unavailable calls. */
 export const ToolResultData = Schema.Struct({

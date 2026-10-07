@@ -1,3 +1,4 @@
+import * as Identity from './Identity.ts'
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -34,7 +35,7 @@ export const layerConversationDrain = Layer.effect(
         if (Structured.failed(owner.state.outcome))
           yield* Abort.execute({
             sessionId,
-            requestId: `owned-drain:${owner.id}:${conversation.id}`,
+            requestId: Identity.RequestId.make(`owned-drain:${owner.id}:${conversation.id}`),
             target: { type: 'conversation', id: conversation.id },
             background: false,
           }).pipe(Effect.provideService(WorkflowEngine.WorkflowEngine, engine))

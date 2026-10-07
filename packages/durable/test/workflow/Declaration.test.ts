@@ -1,3 +1,4 @@
+import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Effect from 'effect/Effect'
@@ -20,9 +21,9 @@ const receipt = Schema.decodeSync(Result)({
   entry: 3,
 })
 const payload = {
-  sessionId: 'test',
+  sessionId: Identity.SessionId.make('test'),
   conversationId: Record.ROOT_CONVERSATION_ID,
-  requestId: 'request-1',
+  requestId: Identity.RequestId.make('request-1'),
   submission: { type: 'write' as const, entry: { kind: 'example', data: { text: 'first' } } },
 }
 
@@ -95,8 +96,16 @@ describe('native Workflow declarations', () => {
 
   it.effect('distinguishes separator-like identity strings without normalization', () =>
     Effect.gen(function* () {
-      const first = yield* Submission.executionId({ ...payload, sessionId: 'a/1', requestId: 'b' })
-      const second = yield* Submission.executionId({ ...payload, sessionId: 'a', requestId: '1/b' })
+      const first = yield* Submission.executionId({
+        ...payload,
+        sessionId: Identity.SessionId.make('a/1'),
+        requestId: Identity.RequestId.make('b'),
+      })
+      const second = yield* Submission.executionId({
+        ...payload,
+        sessionId: Identity.SessionId.make('a'),
+        requestId: Identity.RequestId.make('1/b'),
+      })
       assert.notStrictEqual(first, second)
     }),
   )

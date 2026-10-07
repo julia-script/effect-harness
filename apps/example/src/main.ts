@@ -5,6 +5,7 @@ import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
 import * as DurableExecutor from '@effect-harness/durable/Executor'
 import * as Conversation from '@effect-harness/durable/Conversation'
 import * as Record from '@effect-harness/durable/Record'
+import * as Identity from '@effect-harness/durable/Identity'
 import * as Session from '@effect-harness/durable/Session'
 import * as Directory from '@effect-harness/durable/SessionDirectory'
 import * as SqlStore from '@effect-harness/durable/storage/Sqlite'
@@ -117,6 +118,8 @@ const main = Effect.gen(function* () {
   yield* checkUnknownToolBoundary
   // Set EXAMPLE_DB to an absolute path to keep the same database across invocations.
   const filename = yield* Database.filename
+  const sessionId = yield* Schema.decodeEffect(Identity.SessionId)('example')
+  const requestId = yield* Schema.decodeEffect(Identity.RequestId)('uppercase-v1')
   const modelCalls = yield* Ref.make(0)
   const toolCalls = yield* Ref.make(0)
   const native = yield* NativeModel.make({
@@ -199,7 +202,7 @@ const main = Effect.gen(function* () {
     Layer.provide(BunCrypto.layer),
   )
   const session = Session.layer.pipe(Layer.provideMerge(SqlStore.layer), Layer.provide(creation))
-  const directory = Directory.layerSingle('example').pipe(Layer.provideMerge(session))
+  const directory = Directory.layerSingle(sessionId).pipe(Layer.provideMerge(session))
   const runtime = Layer.mergeAll(DurableExecutor.layer, greetingExecutor).pipe(
     Layer.provideMerge(engine),
     Layer.provideMerge(directory),
@@ -219,9 +222,9 @@ const main = Effect.gen(function* () {
     const greeting = yield* Greeting.execute({ name: 'Effect' })
     if (greeting !== 'Hello, Effect') return yield* Effect.die('Unexpected native greeting')
     const payload = {
-      sessionId: 'example',
+      sessionId,
       conversationId: Record.ROOT_CONVERSATION_ID,
-      requestId: 'uppercase-v1',
+      requestId,
       submission: {
         type: 'input' as const,
         message: Prompt.userMessage({ content: [Prompt.textPart({ text: 'uppercase hello' })] }),

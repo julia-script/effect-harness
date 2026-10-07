@@ -18,6 +18,9 @@ import * as Cli from '../src/Cli.ts'
 import * as IntentServer from '../src/IntentServer.ts'
 import * as Provider from '../src/LanguageModel.ts'
 import * as Protocol from '../src/Protocol.ts'
+import * as AdapterPrompt from '../src/Prompt.ts'
+import * as Turn from '../src/Turn.ts'
+import * as Option from 'effect/Option'
 
 const init = (tools: ReadonlyArray<string> = []) => ({
   type: 'system',
@@ -612,3 +615,210 @@ describe('CLI configured provider capability', () => {
       ),
   )
 })
+
+describe('CLI adapter schema envelopes', () => {
+  it('wire optional fields reject explicit undefined while nullable fields retain null', () => {
+    const decode = Schema.decodeUnknownOption(Protocol.Event)
+    assert.isTrue(
+      Option.isSome(
+        decode({
+          type: 'assistant',
+          message: { id: 'message', model: 'model', content: [], usage: {}, stop_reason: null },
+          parent_tool_use_id: null,
+        }),
+      ),
+    )
+    for (const key of ['tools', 'model', 'session_id'])
+      assert.isTrue(
+        Option.isNone(decode({ type: 'system', subtype: 'init', [key]: undefined })),
+        key,
+      )
+    const decodeUsage = Schema.decodeUnknownOption(Protocol.Usage)
+    assert.isTrue(Option.isNone(decodeUsage({ input_tokens: undefined })))
+  })
+  it.effect(
+    'transcript wrappers preserve already encoded native options and opaque tool payloads with ordered attachment bytes',
+    () =>
+      Effect.gen(function* () {
+        const opaque = [
+          {
+            type: 'tool_reference',
+            tool_name: 'read',
+            nested: { type: 'file', data: [1, null, 'opaque'] },
+          },
+        ]
+        const extension = { vendor: { nested: [null, { untouched: 'value' }] } }
+        const prompt = Prompt.fromMessages([
+          Prompt.userMessage({
+            options: extension,
+            content: [Prompt.textPart({ text: 'First', options: extension })],
+          }),
+          Prompt.assistantMessage({
+            options: extension,
+            content: [
+              Prompt.toolCallPart({
+                id: 'call',
+                name: 'write.document',
+                params: opaque,
+                providerExecuted: false,
+                options: extension,
+              }),
+            ],
+          }),
+          Prompt.toolMessage({
+            options: extension,
+            content: [
+              Prompt.toolResultPart({
+                id: 'call',
+                name: 'write.document',
+                result: opaque,
+                isFailure: false,
+                providerExecuted: false,
+                options: extension,
+              }),
+            ],
+          }),
+          Prompt.userMessage({
+            content: [
+              Prompt.filePart({
+                mediaType: 'image/png',
+                data: new Uint8Array([1, 2, 3]),
+                fileName: 'one.png',
+                options: extension,
+              }),
+              Prompt.filePart({
+                mediaType: 'application/pdf',
+                data: new Uint8Array([4, 5]),
+                fileName: 'two.pdf',
+                options: extension,
+              }),
+              Prompt.textPart({ text: 'Continue' }),
+            ],
+          }),
+        ])
+        const f = fixture(textFrames, { model: 'model', historyMode: 'transcript' })
+        yield* NativeLanguageModel.generateText({ prompt }).pipe(Effect.provide(f.layer))
+        const content = f.requests[0]?.content
+        const first = content?.[0]
+        if (content === undefined || first?.type !== 'text')
+          return yield* Effect.die('Expected transcript')
+        const transcript = yield* Schema.decodeEffect(
+          Schema.fromJsonString(AdapterPrompt.Transcript),
+        )(first.text.slice(first.text.indexOf('\n') + 1))
+        assert.deepEqual(
+          transcript.messages.map((message) => message.role),
+          ['user', 'assistant', 'tool', 'user'],
+        )
+        assert.deepEqual(transcript.messages[0]?.options, extension)
+        const call = transcript.messages[1]?.content[0]
+        const result = transcript.messages[2]?.content[0]
+        assert.strictEqual(call?.type, 'tool-call')
+        assert.strictEqual(result?.type, 'tool-result')
+        if (call?.type !== 'tool-call' || result?.type !== 'tool-result')
+          return yield* Effect.die('Expected opaque records')
+        assert.deepEqual(call.params, opaque)
+        assert.deepEqual(result.result, opaque)
+        assert.deepEqual(call.options, extension)
+        assert.deepEqual(result.options, extension)
+        assert.deepEqual(transcript.messages[3]?.content.slice(0, 2), [
+          {
+            type: 'file',
+            mediaType: 'image/png',
+            fileName: 'one.png',
+            attachment: 'attachment_0',
+            options: extension,
+          },
+          {
+            type: 'file',
+            mediaType: 'application/pdf',
+            fileName: 'two.pdf',
+            attachment: 'attachment_1',
+            options: extension,
+          },
+        ])
+        assert.deepEqual(content.slice(1), [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AQID' } },
+          {
+            type: 'document',
+            source: { type: 'base64', media_type: 'application/pdf', data: 'BAU=' },
+          },
+        ])
+        const serialized = yield* AdapterPrompt.encodeUserFrame({
+          type: 'user',
+          session_id: '',
+          parent_tool_use_id: null,
+          message: { role: 'user', content },
+        })
+        const decoded = yield* Schema.decodeEffect(Schema.fromJsonString(AdapterPrompt.UserFrame))(
+          serialized,
+        )
+        assert.deepEqual(decoded.message.content, content)
+      }),
+  )
+  it.effect('malformed constructed user frame fails at schema encoding', () =>
+    Effect.gen(function* () {
+      const error = yield* Schema.encodeUnknownEffect(
+        Schema.fromJsonString(AdapterPrompt.UserFrame),
+      )({
+        type: 'user',
+        session_id: '',
+        parent_tool_use_id: null,
+        message: {
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: null } },
+          ],
+        },
+      }).pipe(Effect.flip)
+      assert.isTrue(Schema.isSchemaError(error))
+    }),
+  )
+})
+
+it.effect(
+  'schema equivalence reconciles independently parsed tool JSON without key-order coercion and rejects changed nested values',
+  () =>
+    Effect.gen(function* () {
+      const events = (value: number) => [
+        init(['wire-tool']),
+        start,
+        frame({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'call', name: 'wire-tool', input: {} },
+        }),
+        frame({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"a":[null,{"x":1}],"b":"value"}' },
+        }),
+        frame({ type: 'content_block_stop', index: 0 }),
+        {
+          type: 'assistant',
+          message: {
+            id: 'msg-1',
+            model: 'actual-model',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'call',
+                name: 'wire-tool',
+                input: { b: 'value', a: [null, { x: value }] },
+              },
+            ],
+            usage: {},
+            stop_reason: 'tool_use',
+          },
+        },
+        frame({ type: 'message_stop' }),
+      ]
+      const translate = (value: number) =>
+        Turn.translate(decode(events(value)), new Map([['wire-tool', 'write.document']]))
+      const parts = yield* translate(1).pipe(Stream.runCollect)
+      const call = parts.find((part) => part.type === 'tool-call')
+      assert.deepEqual(call?.params, { a: [null, { x: 1 }], b: 'value' })
+      assert.strictEqual(parts.filter((part) => part.type === 'tool-call').length, 1)
+      const error = yield* translate(2).pipe(Stream.runDrain, Effect.flip)
+      assert.strictEqual(error.reason._tag, 'InvalidOutputError')
+    }),
+)

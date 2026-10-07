@@ -15,24 +15,6 @@ import type * as Response from 'effect/ai/Response'
 import type * as Redacted from 'effect/Redacted'
 import * as Provider from './LanguageModel.ts'
 
-/** Caller-declared USD rates per million tokens; no prices or model limits are guessed. */
-export interface Prices {
-  readonly input: number
-  readonly output: number
-  readonly cacheRead: number
-  readonly cacheWrite: number
-}
-export interface Entry {
-  readonly modelId: string
-  readonly contextWindow: number
-  readonly maxOutputTokens: number
-  readonly reasoningEfforts?:
-    | ReadonlyArray<'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>
-    | undefined
-  readonly cache?: 'prompt-cache-options' | undefined
-  readonly config?: Omit<typeof OpenAiLanguageModel.Config.Service, 'model'> | undefined
-  readonly prices?: Prices | undefined
-}
 const fail = (message: string, cause?: unknown) =>
   new ModelError({
     reason: new ModelUnsupported({ message, ...(cause === undefined ? {} : { cause }) }),
@@ -61,6 +43,40 @@ const Options = Schema.Struct({
   useItemReferences: Schema.optional(Schema.Boolean),
   fileIdPrefixes: Schema.optional(Schema.Array(Schema.String)),
 })
+const Price = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
+/** Caller-declared USD rates per million tokens; no prices or model limits are guessed. */
+export const Prices = Schema.Struct({
+  input: Price,
+  output: Price,
+  cacheRead: Price,
+  cacheWrite: Price,
+})
+export type Prices = typeof Prices.Type
+const Limit = Schema.Int.check(
+  Schema.isGreaterThan(0),
+  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+)
+export const Entry = Schema.Struct({
+  modelId: Schema.NonEmptyString,
+  contextWindow: Limit,
+  maxOutputTokens: Limit,
+  reasoningEfforts: Schema.optional(
+    Schema.Array(Schema.Literals(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])),
+  ),
+  cache: Schema.optional(Schema.Literal('prompt-cache-options')),
+  config: Schema.optional(Options),
+  prices: Schema.optional(Prices),
+}).check(
+  Schema.makeFilter((entry) => entry.maxOutputTokens <= entry.contextWindow),
+  Schema.makeFilter(
+    (entry) =>
+      entry.config?.max_output_tokens == null ||
+      (Number.isSafeInteger(entry.config.max_output_tokens) &&
+        entry.config.max_output_tokens > 0 &&
+        entry.config.max_output_tokens <= entry.maxOutputTokens),
+  ),
+)
+export type Entry = typeof Entry.Type
 const decode = (value: unknown) =>
   Schema.decodeUnknownEffect(Options, { onExcessProperty: 'error' })(value).pipe(
     Effect.mapError((cause) => fail('Unsupported or invalid OpenAI request options', cause)),
@@ -69,26 +85,11 @@ const session = Schema.String.check(Schema.isUUID(7))
 const positive = (value: number) => Number.isSafeInteger(value) && value > 0
 const validate = (entry: Entry) =>
   Effect.gen(function* () {
-    if (
-      entry.modelId.length === 0 ||
-      !positive(entry.contextWindow) ||
-      !positive(entry.maxOutputTokens) ||
-      entry.maxOutputTokens > entry.contextWindow
+    const defaults = yield* decode(entry.config ?? {})
+    yield* Schema.decodeEffect(Entry)({ ...entry, config: defaults }).pipe(
+      Effect.mapError((cause) => fail('Invalid OpenAI catalogue entry or defaults', cause)),
     )
-      return yield* fail('Supply valid model ID, context window and output limit')
-    if (
-      entry.prices !== undefined &&
-      Object.values(entry.prices).some((value) => !Number.isFinite(value) || value < 0)
-    )
-      return yield* fail('Prices must be finite nonnegative USD per million tokens')
-    const config = yield* decode(entry.config ?? {})
-    if (
-      config.max_output_tokens !== undefined &&
-      config.max_output_tokens !== null &&
-      (!positive(config.max_output_tokens) || config.max_output_tokens > entry.maxOutputTokens)
-    )
-      return yield* fail('Default output limit exceeds the declared model output cap')
-    return config
+    return defaults
   })
 const priced = (value: Response.Usage, prices?: Prices): Usage.Usage => {
   const result = Usage.fromResponse(value)

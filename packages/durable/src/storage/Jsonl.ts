@@ -8,13 +8,16 @@ import * as Record from '../Record.ts'
 import { rejected, uncertain, Io, Corrupt, Invalid, type StorageError } from '../StorageError.ts'
 import { Store } from '../Store.ts'
 import * as Backend from './Backend.ts'
-import { detachedEffect, validateState, validate } from './State.ts'
+import { detachedEffect, validateState } from './State.ts'
 
 export interface Options {
   readonly directory: string
   readonly fsync?: boolean
 }
-const SnapshotSchema = Schema.Struct({ state: Record.State, frames: Schema.Array(Record.Frame) })
+export const SnapshotSchema = Schema.Struct({
+  state: Record.State,
+  frames: Schema.Array(Record.Frame),
+})
 
 export const make = Effect.fnUntraced(function* (options: Options) {
   const fs = yield* FileSystem.FileSystem
@@ -43,12 +46,11 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     let previous = 0
     for (let end = 0; end < complete; end++) {
       if (bytes[end] !== 10) continue
-      const value = yield* Effect.try({
-        try: () =>
-          JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(start, end))),
+      const text = yield* Effect.try({
+        try: () => new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(start, end)),
         catch: (cause) => rejected('Malformed complete JSONL frame', Corrupt, cause),
       })
-      const parsed = yield* validate(SnapshotSchema, value).pipe(
+      const parsed = yield* Schema.decodeEffect(Schema.fromJsonString(SnapshotSchema))(text).pipe(
         Effect.mapError((cause) => rejected('Invalid complete JSONL frame', Corrupt, cause)),
       )
       const seq = parsed.state.nextSeq - 1
@@ -69,10 +71,10 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     )
   })
   const save = Effect.fnUntraced(function* (next: Backend.Snapshot) {
-    const encoded = yield* Effect.try({
-      try: () => `${JSON.stringify(next)}\n`,
-      catch: (cause) => rejected('Cannot encode JSONL frame', Invalid, cause),
-    })
+    const text = yield* Schema.encodeEffect(Schema.fromJsonString(SnapshotSchema))(next).pipe(
+      Effect.mapError((cause) => rejected('Cannot encode JSONL frame', Invalid, cause)),
+    )
+    const encoded = `${text}\n`
     yield* fs
       .writeFileString(file, encoded, { flag: 'a' })
       .pipe(Effect.mapError((cause) => uncertain('JSONL append settlement is uncertain', cause)))

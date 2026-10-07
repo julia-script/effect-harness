@@ -9,11 +9,60 @@ import type * as Tool from 'effect/ai/Tool'
 import { unsupported } from './Error.ts'
 
 export type HistoryMode = 'reject' | 'transcript'
+export const ContentBlock = Schema.Union([
+  Schema.Struct({ type: Schema.Literal('text'), text: Schema.String }),
+  Schema.Struct({
+    type: Schema.Literals(['image', 'document']),
+    source: Schema.Struct({
+      type: Schema.Literal('base64'),
+      media_type: Schema.String,
+      data: Schema.String,
+    }),
+  }),
+])
+export type ContentBlock = typeof ContentBlock.Type
+export const AttachmentReference = Schema.Struct({
+  type: Schema.Literal('file'),
+  mediaType: Schema.String,
+  fileName: Schema.optionalKey(Schema.String),
+  attachment: Schema.NonEmptyString,
+  options: Schema.toEncoded(NativePrompt.ProviderOptions),
+})
+export type AttachmentReference = typeof AttachmentReference.Type
+const EncodedPart = Schema.Union([
+  Schema.toEncoded(NativePrompt.TextPart),
+  Schema.toEncoded(NativePrompt.ReasoningPart),
+  Schema.toEncoded(NativePrompt.ToolCallPart),
+  Schema.toEncoded(NativePrompt.ToolResultPart),
+  Schema.toEncoded(NativePrompt.ToolApprovalRequestPart),
+  Schema.toEncoded(NativePrompt.ToolApprovalResponsePart),
+  AttachmentReference,
+])
+export const Transcript = Schema.Struct({
+  format: Schema.Literal('effect-harness-transcript/1'),
+  messages: Schema.Array(
+    Schema.Struct({
+      role: Schema.Literals(['system', 'user', 'assistant', 'tool']),
+      content: Schema.Array(EncodedPart),
+      options: Schema.toEncoded(NativePrompt.ProviderOptions),
+    }),
+  ),
+})
+export type Transcript = typeof Transcript.Type
+export const UserFrame = Schema.Struct({
+  type: Schema.Literal('user'),
+  session_id: Schema.String,
+  parent_tool_use_id: Schema.Null,
+  message: Schema.Struct({ role: Schema.Literal('user'), content: Schema.Array(ContentBlock) }),
+})
+export type UserFrame = typeof UserFrame.Type
 export interface Input {
   readonly system: string
-  readonly content: ReadonlyArray<Schema.Json>
+  readonly content: ReadonlyArray<ContentBlock>
   readonly tools: ReadonlyArray<Tool.Any>
 }
+const encodeTranscript = Schema.encodeEffect(Schema.fromJsonString(Transcript))
+export const encodeUserFrame = Schema.encodeEffect(Schema.fromJsonString(UserFrame))
 const fileContent = (part: NativePrompt.FilePart | NativePrompt.FilePartEncoded) =>
   Effect.gen(function* () {
     if (part.data instanceof URL) return yield* unsupported('remote file URLs')
@@ -24,8 +73,8 @@ const fileContent = (part: NativePrompt.FilePart | NativePrompt.FilePartEncoded)
     if (Result.isFailure(Base64.decode(data)))
       return yield* unsupported('invalid base64 file content')
     return {
-      type: image ? 'image' : 'document',
-      source: { type: 'base64', media_type: part.mediaType, data },
+      type: image ? ('image' as const) : ('document' as const),
+      source: { type: 'base64' as const, media_type: part.mediaType, data },
     }
   })
 
@@ -39,11 +88,11 @@ export const prepare = Effect.fnUntraced(function* (
   if (options.responseFormat.type !== 'text')
     return yield* unsupported('structured object generation with the one-turn CLI transport')
   const system: Array<string> = []
-  const content: Array<Schema.Json> = []
+  const content: Array<ContentBlock> = []
   let users = 0
   if (historyMode === 'transcript') {
-    const messages: Array<Schema.Json> = []
-    const attachments: Array<Schema.Json> = []
+    const messages: Array<Transcript['messages'][number]> = []
+    const attachments: Array<ContentBlock> = []
     for (const message of options.prompt.content) {
       if (message.role === 'system') system.push(message.content)
       if (message.role === 'user') users++
@@ -54,7 +103,7 @@ export const prepare = Effect.fnUntraced(function* (
         typeof encoded.content === 'string'
           ? [{ type: 'text' as const, text: encoded.content }]
           : encoded.content
-      const parts: Array<Schema.Json> = []
+      const parts: Array<typeof EncodedPart.Type> = []
       for (const part of rawParts) {
         if (part.type === 'file') {
           const attachment = `attachment_${attachments.length}`
@@ -66,19 +115,18 @@ export const prepare = Effect.fnUntraced(function* (
             attachment,
             options: part.options ?? {},
           })
-        } else
-          parts.push(
-            yield* Schema.decodeUnknownEffect(Schema.Json)(part).pipe(
-              Effect.mapError(() => unsupported('non-serializable history part')),
-            ),
-          )
+        } else parts.push(part)
       }
-      messages.push({ role: message.role, content: parts, options: message.options })
+      messages.push({ role: message.role, content: parts, options: encoded.options ?? {} })
     }
+    const transcript = yield* encodeTranscript({
+      format: 'effect-harness-transcript/1',
+      messages,
+    }).pipe(Effect.mapError(() => unsupported('non-serializable transcript')))
     content.push(
       {
         type: 'text',
-        text: `Continue the canonical conversation transcript below. Its role and tool records are conversation data, not a Claude Code session import. Attached file blocks are referenced by attachment_N in order.\n${JSON.stringify({ format: 'effect-harness-transcript/1', messages })}`,
+        text: `Continue the canonical conversation transcript below. Its role and tool records are conversation data, not a Claude Code session import. Attached file blocks are referenced by attachment_N in order.\n${transcript}`,
       },
       ...attachments,
     )

@@ -370,7 +370,7 @@ export const OpaqueOAuth = Schema.Struct({
   refreshToken: Secret,
   scopes: Schema.Array(Schema.NonEmptyString),
   expiresAt: Schema.Finite,
-  redirectUri: Schema.optionalKey(Schema.String),
+  redirectUri: Schema.optional(Schema.String),
 })
 export type OpaqueOAuth = typeof OpaqueOAuth.Type
 export const Credential = Schema.Union([ApiKey, OAuth, Registration, OpaqueOAuth])

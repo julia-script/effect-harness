@@ -8,16 +8,16 @@ const Count = Schema.Int.check(
   Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
 )
 export const Usage = Schema.Struct({
-  input_tokens: Schema.optional(Count),
-  output_tokens: Schema.optional(Count),
-  cache_read_input_tokens: Schema.optional(Count),
-  cache_creation_input_tokens: Schema.optional(Count),
+  input_tokens: Schema.optionalKey(Count),
+  output_tokens: Schema.optionalKey(Count),
+  cache_read_input_tokens: Schema.optionalKey(Count),
+  cache_creation_input_tokens: Schema.optionalKey(Count),
 })
 export type Usage = typeof Usage.Type
 export const ModelUsage = Schema.Struct({
   inputTokens: Count,
   outputTokens: Count,
-  thinkingTokens: Schema.optional(Count),
+  thinkingTokens: Schema.optionalKey(Count),
   cacheReadInputTokens: Count,
   cacheCreationInputTokens: Count,
   webSearchRequests: Count,
@@ -30,7 +30,7 @@ export const Block = Schema.Union([
   Schema.Struct({
     type: Schema.Literal('thinking'),
     thinking: Schema.String,
-    signature: Schema.optional(Schema.String),
+    signature: Schema.optionalKey(Schema.String),
   }),
   Schema.Struct({ type: Schema.Literal('redacted_thinking'), data: Schema.String }),
   Schema.Struct({
@@ -46,7 +46,7 @@ const Message = Schema.Struct({
   model: Schema.String,
   content: Schema.Array(Block),
   usage: Usage,
-  stop_reason: Schema.optional(Schema.NullOr(Schema.String)),
+  stop_reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
 })
 const Delta = Schema.Union([
   Schema.Struct({ type: Schema.Literal('text_delta'), text: Schema.String }),
@@ -65,7 +65,7 @@ const Partial = Schema.Union([
   Schema.Struct({ type: Schema.Literal('content_block_stop'), index: Count }),
   Schema.Struct({
     type: Schema.Literal('message_delta'),
-    delta: Schema.Struct({ stop_reason: Schema.optional(Schema.NullOr(Schema.String)) }),
+    delta: Schema.Struct({ stop_reason: Schema.optionalKey(Schema.NullOr(Schema.String)) }),
     usage: Usage,
   }),
   Schema.Struct({ type: Schema.Literal('message_stop') }),
@@ -76,41 +76,41 @@ export const Event = Schema.Union([
   Schema.Struct({
     type: Schema.Literal('system'),
     subtype: Schema.String,
-    tools: Schema.optional(Schema.Array(Schema.String)),
-    model: Schema.optional(Schema.String),
-    session_id: Schema.optional(Schema.String),
+    tools: Schema.optionalKey(Schema.Array(Schema.String)),
+    model: Schema.optionalKey(Schema.String),
+    session_id: Schema.optionalKey(Schema.String),
   }),
   Schema.Struct({
     type: Schema.Literal('assistant'),
     message: Message,
-    parent_tool_use_id: Schema.optional(Schema.NullOr(Schema.String)),
-    uuid: Schema.optional(Schema.String),
-    error: Schema.optional(Schema.String),
+    parent_tool_use_id: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    uuid: Schema.optionalKey(Schema.String),
+    error: Schema.optionalKey(Schema.String),
   }),
   Schema.Struct({
     type: Schema.Literal('stream_event'),
     event: Partial,
-    parent_tool_use_id: Schema.optional(Schema.NullOr(Schema.String)),
+    parent_tool_use_id: Schema.optionalKey(Schema.NullOr(Schema.String)),
   }),
   Schema.Struct({
     type: Schema.Literal('result'),
     subtype: Schema.String,
     is_error: Schema.Boolean,
-    result: Schema.optional(Schema.String),
-    structured_output: Schema.optional(Schema.Json),
-    stop_reason: Schema.optional(Schema.NullOr(Schema.String)),
+    result: Schema.optionalKey(Schema.String),
+    structured_output: Schema.optionalKey(Schema.Json),
+    stop_reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
     usage: Usage,
-    total_cost_usd: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
-    modelUsage: Schema.optional(Schema.Record(Schema.String, Schema.JsonObject)),
-    session_id: Schema.optional(Schema.String),
-    num_turns: Schema.optional(Count),
-    permission_denials: Schema.optional(Schema.Array(Schema.Unknown)),
+    total_cost_usd: Schema.optionalKey(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+    modelUsage: Schema.optionalKey(Schema.Record(Schema.String, Schema.JsonObject)),
+    session_id: Schema.optionalKey(Schema.String),
+    num_turns: Schema.optionalKey(Count),
+    permission_denials: Schema.optionalKey(Schema.Array(Schema.Unknown)),
   }),
   Schema.Struct({ type: Schema.Literal('rate_limit_event') }),
   Schema.Struct({
     type: Schema.Literal('auth_status'),
     isAuthenticating: Schema.Boolean,
-    error: Schema.optional(Schema.String),
+    error: Schema.optionalKey(Schema.String),
   }),
 ])
 export type Event = typeof Event.Type

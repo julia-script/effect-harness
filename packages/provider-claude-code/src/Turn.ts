@@ -1,6 +1,5 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as Predicate from 'effect/Predicate'
 import * as Stream from 'effect/Stream'
 import type * as AiError from 'effect/ai/AiError'
 import type * as Response from 'effect/ai/Response'
@@ -17,30 +16,7 @@ interface Block {
   json: string
   closed: boolean
 }
-const sameJson = (left: unknown, right: unknown): boolean => {
-  if (left === right) return true
-  if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object')
-    return false
-  if (Array.isArray(left))
-    return (
-      Array.isArray(right) &&
-      left.length === right.length &&
-      left.every((value, index) => {
-        const other = right[index]
-        return other !== undefined && sameJson(value, other)
-      })
-    )
-  if (!Predicate.isReadonlyObject(left) || !Predicate.isReadonlyObject(right)) return false
-  const keys = Object.keys(left)
-  return (
-    keys.length === Object.keys(right).length &&
-    keys.every((key) => {
-      const a = left[key]
-      const b = right[key]
-      return a !== undefined && b !== undefined && sameJson(a, b)
-    })
-  )
-}
+const sameJson = Schema.toEquivalence(Schema.JsonObject)
 const usage = (value: Protocol.Usage): typeof Response.Usage.Encoded => ({
   inputTokens: {
     ...(value.input_tokens === undefined ? {} : { uncached: value.input_tokens }),
@@ -89,7 +65,10 @@ export const translate = (
 ): Stream.Stream<Part, AiError.AiError> =>
   Stream.suspend(() => {
     const blocks = new Map<number, Block>()
-    const completedTools = new Map<string, Response.ToolCallPartEncoded>()
+    const completedTools = new Map<
+      string,
+      Response.ToolCallPartEncoded & { readonly params: Schema.JsonObject }
+    >()
     let initialized = false
     let partial = false
     let messageId: string | undefined

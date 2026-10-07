@@ -518,3 +518,65 @@ describe('direct Pi-compatible Anthropic account transport', () => {
       ),
   )
 })
+
+it.effect(
+  'generated nested tool references rename while opaque tool input protocol-shaped values remain untouched',
+  () => {
+    const f = fixture()
+    const opaque = {
+      type: 'tool_use',
+      name: 'read',
+      input: { type: 'tool_reference', tool_name: 'read' },
+      content: [{ type: 'tool_reference', tool_name: 'read' }],
+    }
+    return Effect.gen(function* () {
+      const client = yield* AnthropicClient.AnthropicClient
+      yield* client.createMessage({
+        payload: {
+          model: 'declared-model',
+          max_tokens: 2000,
+          tools: [{ name: 'read', input_schema: { type: 'object' } }],
+          messages: [
+            {
+              role: 'assistant',
+              content: [{ type: 'tool_use', id: 'call', name: 'read', input: opaque }],
+            },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'call',
+                  content: [
+                    { type: 'tool_reference', tool_name: 'read' },
+                    { type: 'text', text: 'read' },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      })
+      const sent = body(f.requests[0]!)
+      assert.deepEqual(sent.messages, [
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'call', name: 'Read', input: opaque }],
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call',
+              content: [
+                { type: 'tool_reference', tool_name: 'Read' },
+                { type: 'text', text: 'read' },
+              ],
+            },
+          ],
+        },
+      ])
+    }).pipe(Effect.provide(f.layer))
+  },
+)

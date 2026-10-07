@@ -1,3 +1,4 @@
+import * as SchemaField from './SchemaField.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -14,9 +15,9 @@ import * as Serialization from './Serialization.ts'
 export const RequestOptions = Schema.Struct({
   thinking: Schema.String,
   options: Schema.Record(Schema.String, Schema.Json),
-  sessionId: Schema.optionalKey(Schema.String),
-  maxTokens: Schema.optionalKey(Schema.Finite),
-  cache: Schema.optionalKey(Schema.Literals(['none', 'short', 'long'])),
+  sessionId: SchemaField.optional(Schema.String),
+  maxTokens: SchemaField.optional(Schema.Finite),
+  cache: SchemaField.optional(Schema.Literals(['none', 'short', 'long'])),
 })
 export type RequestOptions = typeof RequestOptions.Type
 /** A native LanguageModel with provider capability translation. Layer construction captures required provider/client services. */
@@ -84,7 +85,7 @@ export const noOptions = (
 
 export const DeferredDecision = Schema.Struct({
   handle: Schema.Json,
-  pollAfterMs: Schema.optionalKey(Schema.Finite),
+  pollAfterMs: SchemaField.optional(Schema.Finite),
 })
 export type DeferredDecision = typeof DeferredDecision.Type
 export interface DeferredCapability {

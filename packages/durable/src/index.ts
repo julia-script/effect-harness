@@ -1,3 +1,4 @@
+export * as Identity from './Identity.ts'
 export * as Conversation from './Conversation.ts'
 export * as Executor from './Executor.ts'
 export * as Document from './Document.ts'

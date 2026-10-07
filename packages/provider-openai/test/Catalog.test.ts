@@ -369,3 +369,72 @@ describe('OpenAI configured provider capability', () => {
     },
   )
 })
+
+describe('catalogue schema admission', () => {
+  it.effect(
+    'rejects malformed declared prices and limits with original SchemaError cause before client work',
+    () => {
+      const f = fixture()
+      return Effect.gen(function* () {
+        const constructions = vi.mocked(OpenAiLanguageModel.make).mock.calls.length
+        const invalid: ReadonlyArray<Catalog.Entry> = [
+          { ...entry, modelId: '' },
+          { ...entry, contextWindow: Number.MAX_SAFE_INTEGER + 1 },
+          { ...entry, maxOutputTokens: 0 },
+          { ...entry, maxOutputTokens: entry.contextWindow + 1 },
+          { ...entry, prices: { input: 1 } } as Catalog.Entry,
+          {
+            ...entry,
+            prices: { input: 1, output: 1, cacheRead: 0, cacheWrite: Number.POSITIVE_INFINITY },
+          },
+        ]
+        for (const value of invalid) {
+          const error = yield* Catalog.descriptor(value).pipe(Effect.flip)
+          assert.strictEqual(error.reason._tag, 'ModelUnsupported')
+          assert.isTrue(Schema.isSchemaError(error.cause))
+        }
+        assert.strictEqual(vi.mocked(OpenAiLanguageModel.make).mock.calls.length, constructions)
+        assert.strictEqual(f.requests.length, 0)
+      }).pipe(Effect.provide(f.layer))
+    },
+  )
+})
+
+it.effect(
+  'catalogue schemas preserve undefined defaults, configuration convenience fields and native null rejection',
+  () => {
+    const f = fixture()
+    return Effect.gen(function* () {
+      const model = yield* Catalog.descriptor({
+        ...entry,
+        config: {
+          max_output_tokens: undefined,
+          text: { verbosity: undefined },
+          strictJsonSchema: undefined,
+        },
+      })
+      const context = yield* model.configure({ thinking: 'off', options: {} })
+      const config = Context.get(context, OpenAiLanguageModel.Config)
+      assert.strictEqual(config.max_output_tokens, entry.maxOutputTokens)
+      assert.deepEqual(config.text, { verbosity: undefined })
+      assert.isFalse(Schema.is(Catalog.Entry)({ ...entry, config: { max_output_tokens: null } }))
+      assert.strictEqual(f.requests.length, 0)
+    }).pipe(Effect.provide(f.layer))
+  },
+)
+
+it.effect(
+  'incomplete price declarations fail schema admission before native model construction',
+  () => {
+    const f = fixture()
+    return Effect.gen(function* () {
+      const constructions = vi.mocked(OpenAiLanguageModel.make).mock.calls.length
+      const malformed = { ...entry, prices: { input: 1 } } as Catalog.Entry
+      const error = yield* Catalog.descriptor(malformed).pipe(Effect.flip)
+      assert.strictEqual(error.reason._tag, 'ModelUnsupported')
+      assert.isTrue(Schema.isSchemaError(error.cause))
+      assert.strictEqual(vi.mocked(OpenAiLanguageModel.make).mock.calls.length, constructions)
+      assert.strictEqual(f.requests.length, 0)
+    }).pipe(Effect.provide(f.layer))
+  },
+)

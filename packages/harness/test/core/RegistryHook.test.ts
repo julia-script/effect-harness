@@ -1,3 +1,4 @@
+import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -16,6 +17,7 @@ import * as Registry from '../../src/Registry.ts'
 import * as Tool from '../../src/Tool.ts'
 import type * as Extension from '../../src/Extension.ts'
 
+const entryId = Schema.decodeSync(Identity.EntryId)
 const TestTool = AiTool.make('test', {
   parameters: Schema.Struct({ n: Schema.Finite }),
   success: Schema.Finite,
@@ -302,7 +304,7 @@ describe('atomic registry and selected code', () => {
           ],
           {
             reason: 'manual',
-            firstKept: 1,
+            firstKept: entryId(1),
             view: { head: undefined, entries: [], contributions: [], messages: [] },
           },
         )

@@ -1,4 +1,5 @@
 // Read selection/truncation adapted from pi-durable (MIT), pinned 636703a0; see ../LICENSE.pi.txt.
+import * as SchemaField from '../SchemaField.ts'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as AiTool from 'effect/ai/Tool'
@@ -14,8 +15,8 @@ import * as Path from './Path.ts'
 import * as Truncate from './Truncate.ts'
 export const Parameters = Schema.Struct({
   path: Schema.String,
-  offset: Schema.optionalKey(Schema.Finite),
-  limit: Schema.optionalKey(Schema.Finite),
+  offset: SchemaField.optional(Schema.Finite),
+  limit: SchemaField.optional(Schema.Finite),
 })
 export type Input = typeof Parameters.Type
 export const tool = AiTool.make('read', {
@@ -29,7 +30,7 @@ export const tool = AiTool.make('read', {
   .addDependency(Invocation)
   .annotate(Metadata.Metadata, {
     replay: 'unsafe',
-    project: (result) => Schema.decodeUnknownSync(Result)(result),
+    project: (result) => Metadata.decodeResult('read', result),
   })
 const sliceIndex = (value: number): number => (Number.isNaN(value) ? 0 : Math.trunc(value))
 const readHead = Effect.fnUntraced(function* (

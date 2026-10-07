@@ -1,6 +1,9 @@
 // Cut selection/serialization adapted from pi-durable (MIT), pinned 636703a0.
 import * as AiPrompt from 'effect/ai/Prompt'
 import * as Result from 'effect/Result'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
+import * as ToolResult from './ToolResult.ts'
 import type * as Agent from './Agent.ts'
 import * as Context from './Context.ts'
 import * as Serialization from './Serialization.ts'
@@ -112,18 +115,26 @@ function serializeArgs(params: unknown): string {
       .join(', ')
   })
 }
+const envelope = Schema.decodeUnknownOption(Schema.toCodecJson(ToolResult.Envelope))
+const Content = Schema.Struct({ content: Schema.Array(Schema.Unknown) })
+const content = Schema.decodeUnknownOption(Content)
+const textBlock = Schema.decodeUnknownOption(
+  Schema.Struct({ type: Schema.Literal('text'), text: Schema.String }),
+)
 function toolText(result: unknown): string {
   return Serialization.textOrMarker(() => {
     if (typeof result === 'string') return result
-    if (result === null || typeof result !== 'object') return Serialization.display(result)
-    const content: unknown = Reflect.get(result, 'content')
-    if (!Array.isArray(content)) return Serialization.display(result)
-    return content
-      .flatMap((part: unknown) => {
-        if (typeof part !== 'object' || part === null || Reflect.get(part, 'type') !== 'text')
-          return []
-        const text: unknown = Reflect.get(part, 'text')
-        return typeof text === 'string' ? [text] : []
+    const known = envelope(result)
+    if (Option.isSome(known))
+      return known.value.content
+        .flatMap((part) => (part.type === 'text' ? [part.text] : []))
+        .join('\n')
+    const generic = content(result)
+    if (Option.isNone(generic)) return Serialization.display(result)
+    return generic.value.content
+      .flatMap((part) => {
+        const text = textBlock(part)
+        return Option.isSome(text) ? [text.value.text] : []
       })
       .join('\n')
   })

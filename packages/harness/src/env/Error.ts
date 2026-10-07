@@ -1,3 +1,4 @@
+import * as SchemaField from '../SchemaField.ts'
 import * as Schema from 'effect/Schema'
 
 export const FileErrorCode = Schema.Literals([
@@ -15,8 +16,8 @@ export class FileAborted extends Schema.TaggedError<FileAborted>(
   '@effect-harness/harness/FileAborted',
 )('FileAborted', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  path: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  path: SchemaField.optional(Schema.String),
 }) {
   get code(): 'aborted' {
     return 'aborted'
@@ -26,8 +27,8 @@ export class FileNotFound extends Schema.TaggedError<FileNotFound>(
   '@effect-harness/harness/FileNotFound',
 )('FileNotFound', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  path: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  path: SchemaField.optional(Schema.String),
 }) {
   get code(): 'not_found' {
     return 'not_found'
@@ -37,8 +38,8 @@ export class FilePermissionDenied extends Schema.TaggedError<FilePermissionDenie
   '@effect-harness/harness/FilePermissionDenied',
 )('FilePermissionDenied', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  path: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  path: SchemaField.optional(Schema.String),
 }) {
   get code(): 'permission_denied' {
     return 'permission_denied'
@@ -48,8 +49,8 @@ export class FileNotDirectory extends Schema.TaggedError<FileNotDirectory>(
   '@effect-harness/harness/FileNotDirectory',
 )('FileNotDirectory', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  path: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  path: SchemaField.optional(Schema.String),
 }) {
   get code(): 'not_directory' {
     return 'not_directory'
@@ -59,8 +60,8 @@ export class FileIsDirectory extends Schema.TaggedError<FileIsDirectory>(
   '@effect-harness/harness/FileIsDirectory',
 )('FileIsDirectory', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  path: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  path: SchemaField.optional(Schema.String),
 }) {
   get code(): 'is_directory' {
     return 'is_directory'
@@ -70,8 +71,8 @@ export class FileInvalid extends Schema.TaggedError<FileInvalid>(
   '@effect-harness/harness/FileInvalid',
 )('FileInvalid', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  path: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  path: SchemaField.optional(Schema.String),
 }) {
   get code(): 'invalid' {
     return 'invalid'
@@ -81,8 +82,8 @@ export class FileNotSupported extends Schema.TaggedError<FileNotSupported>(
   '@effect-harness/harness/FileNotSupported',
 )('FileNotSupported', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  path: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  path: SchemaField.optional(Schema.String),
 }) {
   get code(): 'not_supported' {
     return 'not_supported'
@@ -92,8 +93,8 @@ export class FileUnknown extends Schema.TaggedError<FileUnknown>(
   '@effect-harness/harness/FileUnknown',
 )('FileUnknown', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  path: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  path: SchemaField.optional(Schema.String),
 }) {
   get code(): 'unknown' {
     return 'unknown'
@@ -163,8 +164,8 @@ export class ExecutionAborted extends Schema.TaggedError<ExecutionAborted>(
   '@effect-harness/harness/ExecutionAborted',
 )('ExecutionAborted', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  spillPath: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  spillPath: SchemaField.optional(Schema.String),
 }) {
   get code(): 'aborted' {
     return 'aborted'
@@ -174,8 +175,8 @@ export class ExecutionTimeout extends Schema.TaggedError<ExecutionTimeout>(
   '@effect-harness/harness/ExecutionTimeout',
 )('ExecutionTimeout', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  spillPath: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  spillPath: SchemaField.optional(Schema.String),
 }) {
   get code(): 'timeout' {
     return 'timeout'
@@ -185,8 +186,8 @@ export class ExecutionShellUnavailable extends Schema.TaggedError<ExecutionShell
   '@effect-harness/harness/ExecutionShellUnavailable',
 )('ExecutionShellUnavailable', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  spillPath: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  spillPath: SchemaField.optional(Schema.String),
 }) {
   get code(): 'shell_unavailable' {
     return 'shell_unavailable'
@@ -196,8 +197,8 @@ export class ExecutionSpawnError extends Schema.TaggedError<ExecutionSpawnError>
   '@effect-harness/harness/ExecutionSpawnError',
 )('ExecutionSpawnError', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  spillPath: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  spillPath: SchemaField.optional(Schema.String),
 }) {
   get code(): 'spawn_error' {
     return 'spawn_error'
@@ -207,8 +208,8 @@ export class ExecutionCallbackError extends Schema.TaggedError<ExecutionCallback
   '@effect-harness/harness/ExecutionCallbackError',
 )('ExecutionCallbackError', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  spillPath: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  spillPath: SchemaField.optional(Schema.String),
 }) {
   get code(): 'callback_error' {
     return 'callback_error'
@@ -218,8 +219,8 @@ export class ExecutionUnknown extends Schema.TaggedError<ExecutionUnknown>(
   '@effect-harness/harness/ExecutionUnknown',
 )('ExecutionUnknown', {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-  spillPath: Schema.optionalKey(Schema.String),
+  cause: SchemaField.optional(Schema.Defect()),
+  spillPath: SchemaField.optional(Schema.String),
 }) {
   get code(): 'unknown' {
     return 'unknown'

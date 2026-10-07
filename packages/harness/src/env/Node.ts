@@ -1,3 +1,4 @@
+import * as NativeError from './NativeError.ts'
 import * as Serialization from '../Serialization.ts'
 /** Node adapter for native capabilities missing from Effect FileSystem. Portable Env never imports this module. */
 import * as Fs from 'node:fs'
@@ -35,7 +36,7 @@ import * as LineScan from './LineScan.ts'
 
 export function fileError(error: unknown, path: string): FileError {
   if (error instanceof FileError) return error
-  const code = Serialization.stringProperty(error, 'code') ?? ''
+  const code = NativeError.code(error) ?? ''
   let mapped: FileError['code'] = 'unknown'
   switch (code) {
     case 'ABORT_ERR':
@@ -456,7 +457,8 @@ const watchMode = (
       while (true) {
         const stat = yield* Effect.tryPromise({
           try: () => Fsp.statfs(candidate),
-          catch: () => undefined,
+          catch: (cause) => fileError(cause, candidate),
+          // statfs is a best-effort capability probe: any unavailable probe climbs to an ancestor.
         }).pipe(Effect.orElseSucceed(() => undefined))
         if (stat !== undefined) {
           if (unreliableFileSystems.has(stat.type)) return 'polling'

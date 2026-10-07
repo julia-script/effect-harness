@@ -6,6 +6,7 @@ import type * as Context from './Context.ts'
 import * as Services from 'effect/Context'
 import { HookError, HookFailure } from './Error.ts'
 import { Invocation, type ToolResult } from './Invocation.ts'
+import type { ConversationId, EntryId } from './Identity.ts'
 
 export interface ToolInput {
   readonly id: string
@@ -16,20 +17,20 @@ export type ToolDecision = { readonly block: string } | { readonly args: unknown
 export interface CompactInput {
   readonly reason: 'manual' | 'threshold' | 'overflow'
   readonly view: Context.View
-  readonly firstKept: number
+  readonly firstKept: EntryId
   readonly instructions?: string | undefined
 }
 export type CompactDecision = { readonly decline: true } | { readonly summary: string }
 export interface SettledTool {
   readonly id: string
   readonly name: string
-  readonly entryId: number
+  readonly entryId: EntryId
   readonly outcome: 'completed' | 'failed' | 'interrupted' | 'unavailable'
   readonly result: ToolResult
 }
 export interface Handlers<R = Invocation> {
   readonly conversationCreated?:
-    | ((conversationId: number) => Effect.Effect<void, HookError, R>)
+    | ((conversationId: ConversationId) => Effect.Effect<void, HookError, R>)
     | undefined
   readonly beforeRequest?:
     | ((prompt: AiPrompt.Prompt) => Effect.Effect<AiPrompt.Prompt | undefined, HookError, R>)
@@ -147,7 +148,7 @@ export const afterTools = Effect.fnUntraced(function* (
 })
 export const conversationCreated = Effect.fnUntraced(function* (
   handlers: ReadonlyArray<Handlers>,
-  conversationId: number,
+  conversationId: ConversationId,
 ) {
   for (const handler of handlers)
     if (handler.conversationCreated !== undefined)

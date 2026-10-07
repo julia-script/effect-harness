@@ -1,3 +1,4 @@
+import * as Identity from '../Identity.ts'
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Record from '../Record.ts'
@@ -12,10 +13,10 @@ export const Result = Schema.Struct({
 /** Native workflow for a conversation generation, including retries and tool rounds. */
 export const Generation = Workflow.make('@effect-harness/durable/Generation/v1', {
   payload: {
-    sessionId: Schema.String,
+    sessionId: Identity.SessionId,
     conversationId: Record.ConversationId,
     taskId: Record.TaskId,
-    runId: Schema.String,
+    runId: Identity.RunId,
     inputs: Schema.Array(Record.SubmissionId),
   },
   success: Result,

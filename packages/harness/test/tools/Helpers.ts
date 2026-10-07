@@ -58,7 +58,9 @@ export const recording = Effect.gen(function* () {
   return { output, diagnostics, api }
 })
 export const message = (result: {
-  readonly content?: ReadonlyArray<{ readonly type: string; readonly text?: string | undefined }>
+  readonly content?:
+    | ReadonlyArray<{ readonly type: string; readonly text?: string | undefined }>
+    | undefined
 }): string =>
   result.content?.flatMap((part) => (part.type === 'text' ? [part.text ?? ''] : [])).join('') ?? ''
 export const toolFailure = (error: ToolError): string => error.message

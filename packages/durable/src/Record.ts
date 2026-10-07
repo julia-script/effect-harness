@@ -1,19 +1,24 @@
 import * as Schema from 'effect/Schema'
 import * as Result from 'effect/Result'
+import * as Struct from 'effect/Struct'
+import * as Identity from './Identity.ts'
+import * as SharedIdentity from '@effect-harness/harness/Identity'
+export const ConversationId = SharedIdentity.ConversationId
+export const EntryId = SharedIdentity.EntryId
+export type ConversationId = typeof ConversationId.Type
+export type EntryId = typeof EntryId.Type
 
 const safe = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }))
-export const ConversationId = safe.pipe(Schema.brand('ConversationId'))
-export type ConversationId = typeof ConversationId.Type
-export const EntryId = safe.pipe(Schema.brand('EntryId'))
-export type EntryId = typeof EntryId.Type
-export const TaskId = safe.pipe(Schema.brand('TaskId'))
+export const TaskId = safe.pipe(Schema.brand('@effect-harness/durable/Record/TaskId'))
 export type TaskId<A = Schema.Json> = typeof TaskId.Type & { readonly __result?: A }
-export const SubmissionId = safe.pipe(Schema.brand('SubmissionId'))
+export const SubmissionId = safe.pipe(Schema.brand('@effect-harness/durable/Record/SubmissionId'))
 export type SubmissionId = typeof SubmissionId.Type
-export const DocumentId = safe.pipe(Schema.brand('DocumentId'))
+export const DocumentId = safe.pipe(Schema.brand('@effect-harness/durable/Record/DocumentId'))
 export type DocumentId = typeof DocumentId.Type
-export const Seq = safe.pipe(Schema.brand('Seq'))
+export const Seq = safe.pipe(Schema.brand('@effect-harness/durable/Record/Seq'))
 export type Seq = typeof Seq.Type
+export const JournalCursor = Schema.Union([Seq, Schema.Literal(0)])
+export type JournalCursor = typeof JournalCursor.Type
 export const ROOT_CONVERSATION_ID = Schema.decodeSync(ConversationId)(1)
 export type Json = Schema.Json
 export type JsonObject = Schema.JsonObject
@@ -68,7 +73,7 @@ export type Task = typeof Task.Type
 const submissionIdentity = {
   id: SubmissionId,
   conversationId: ConversationId,
-  requestId: Schema.optionalKey(Schema.String),
+  requestId: Schema.optionalKey(Identity.RequestId),
 }
 const noSettlement = {
   answer: Schema.optionalKey(Schema.Never),
@@ -169,7 +174,8 @@ export const Document = Schema.Struct({
   fork: Schema.optionalKey(Schema.Literals(['asOf', 'current', 'initial'])),
 })
 export type Document = typeof Document.Type
-export type DocumentCreate = Omit<Document, 'createdAt' | 'retiredAt'>
+export const DocumentCreate = Document.mapFields(Struct.omit(['createdAt', 'retiredAt']))
+export type DocumentCreate = typeof DocumentCreate.Type
 export type Address = Pick<Document, 'kind' | 'scope' | 'key'>
 export type Point = Seq | 'current'
 /** Serializable operations keep exact structural no-ops and root replacements observable. */
@@ -198,26 +204,12 @@ export const Write = Schema.Union([
   Schema.Struct({ type: Schema.Literal('submission'), value: Submission }),
   Schema.Struct({
     type: Schema.Literal('document.create'),
-    record: Schema.Struct({
-      id: DocumentId,
-      kind: Schema.String,
-      scope: Scope,
-      key: Schema.optionalKey(Schema.String),
-      history: Schema.optionalKey(Schema.Literals(['latest', 'rewindable'])),
-      fork: Schema.optionalKey(Schema.Literals(['asOf', 'current', 'initial'])),
-    }),
+    record: DocumentCreate,
     content: Content,
   }),
   Schema.Struct({
     type: Schema.Literal('document.copy'),
-    record: Schema.Struct({
-      id: DocumentId,
-      kind: Schema.String,
-      scope: Scope,
-      key: Schema.optionalKey(Schema.String),
-      history: Schema.optionalKey(Schema.Literals(['latest', 'rewindable'])),
-      fork: Schema.optionalKey(Schema.Literals(['asOf', 'current', 'initial'])),
-    }),
+    record: DocumentCreate,
     source: Schema.Struct({ id: DocumentId, at: Schema.Union([Seq, Schema.Literal('current')]) }),
   }),
   Schema.Struct({
@@ -308,19 +300,37 @@ export type TypedEntry<D extends Json> = Omit<Entry, 'data'> &
   ([D] extends [never] ? { readonly data?: never } : { readonly data: D })
 export type TypedEntryDraft<D extends Json> = Omit<EntryDraft, 'kind' | 'data'> &
   ([D] extends [never] ? { readonly data?: never } : { readonly data: D })
-export interface EntryToken<D extends Json = never> {
-  readonly kind: string
-  readonly is: (entry: Entry | undefined) => entry is TypedEntry<D>
+export interface EntryToken<K extends string = string> {
+  readonly kind: K
+  readonly is: (entry: Entry | undefined) => entry is Entry & { readonly kind: K }
 }
 export class EntryDefinitionError extends Schema.TaggedError<EntryDefinitionError>(
   '@effect-harness/durable/Record/EntryDefinitionError',
 )('EntryDefinitionError', { message: Schema.String }) {}
-export const defineEntry = <D extends Json = never>(
-  kind: string,
-): Result.Result<EntryToken<D>, EntryDefinitionError> =>
+export interface DecodedEntryToken<
+  K extends string,
+  S extends Schema.Constraint,
+> extends EntryToken<K> {
+  readonly schema: S
+  readonly decode: (
+    input: unknown,
+  ) => import('effect/Effect').Effect<S['Type'], Schema.SchemaError, S['DecodingServices']>
+}
+export const defineEntry = <const K extends string, S extends Schema.Constraint>(
+  kind: K,
+  schema: S,
+): Result.Result<DecodedEntryToken<K, S>, EntryDefinitionError> =>
   kind.length === 0
     ? Result.fail(new EntryDefinitionError({ message: 'Entry kind must be nonempty' }))
-    : Result.succeed({ kind, is: (entry): entry is TypedEntry<D> => entry?.kind === kind })
-export const defineEntryUnsafe = <D extends Json = never>(kind: string): EntryToken<D> =>
-  Result.getOrThrow(defineEntry<D>(kind))
+    : Result.succeed({
+        kind,
+        is: (entry: Entry | undefined): entry is Entry & { readonly kind: K } =>
+          entry?.kind === kind,
+        schema,
+        decode: Schema.decodeUnknownEffect(schema),
+      })
+export const defineEntryUnsafe = <const K extends string, S extends Schema.Constraint>(
+  kind: K,
+  schema: S,
+): DecodedEntryToken<K, S> => Result.getOrThrow(defineEntry(kind, schema))
 export const SubmissionStatus = Schema.Literals(['queued', 'placed', 'done', 'unanswered'])

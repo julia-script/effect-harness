@@ -1,5 +1,5 @@
 // Positional prompt planning adapted from pi-durable (MIT), pinned 636703a0.
-import * as Json from './Json.ts'
+import * as Schema from 'effect/Schema'
 import * as AiPrompt from 'effect/ai/Prompt'
 import * as Context from './Context.ts'
 
@@ -41,8 +41,7 @@ export function planSections(
   for (const [key, value] of desired) if (!shown.has(key)) pairs.push([key, value])
   return pairs.length === 0 ? [] : [Object.fromEntries(pairs)]
 }
-const equalDeclaration = (left: Context.ToolDeclaration, right: Context.ToolDeclaration): boolean =>
-  Json.equal(left, right)
+const equalDeclaration = Schema.toEquivalence(Context.ToolDeclaration)
 export function planTools(
   offered: ReadonlyArray<Context.ToolDeclaration>,
   desired: ReadonlyArray<Context.ToolDeclaration>,

@@ -195,7 +195,7 @@ describe('native response reduction and tool controls', () => {
         const registrations = yield* Tool.bind(Toolkit.make(remote))
         const registration = registrations[0]
         if (registration === undefined) return yield* Effect.die('Missing provider tool')
-        assert.deepStrictEqual(Tool.declaration(registration).provider, {
+        assert.deepStrictEqual((yield* Tool.declaration(registration)).provider, {
           id: 'test.search',
           name: 'search',
           args: { query: 'x' },

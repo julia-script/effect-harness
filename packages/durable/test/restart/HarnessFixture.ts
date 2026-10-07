@@ -1,3 +1,4 @@
+import * as Identity from '../../src/Identity.ts'
 /** Executable test boundary: each worker owns a fresh SQL-backed native engine and real harness Layers. */
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
@@ -48,7 +49,7 @@ import { ExecutionErrorCodec } from '../../src/workflow/ExecutionError.ts'
 
 const Child = Workflow.make('restart/owned-child/v1', {
   payload: {
-    sessionId: Schema.String,
+    sessionId: Identity.SessionId,
     conversationId: Record.ConversationId,
     taskId: Record.TaskId,
   },
@@ -72,9 +73,9 @@ const answer = (text: string): ReadonlyArray<Response.StreamPartEncoded> => [
   finish('stop'),
 ]
 const input = (key: string, whenBusy?: 'steer' | 'followUp') => ({
-  sessionId: 'restart',
+  sessionId: Identity.SessionId.make('restart'),
   conversationId: Record.ROOT_CONVERSATION_ID,
-  requestId: key,
+  requestId: Identity.RequestId.make(key),
   submission: {
     type: 'input' as const,
     message: Prompt.userMessage({ content: [Prompt.textPart({ text: key })] }),
@@ -212,7 +213,7 @@ const main = Effect.gen(function* () {
       {
         work: {
           replay: (first ? storedSafe : currentSafe) ? 'safe' : 'unsafe',
-          project: (result) => Schema.decodeUnknownSync(Invocation.Result)(result),
+          project: (result) => Tool.decodeResult('fixture', result),
           output: { maxBytes: 32, maxLines: 2, retain: 'tail' },
           repair: (args) => audit('repair').pipe(Effect.as(args)),
         },
@@ -234,7 +235,7 @@ const main = Effect.gen(function* () {
                 yield* Structured.child(
                   Child,
                   (taskId) => ({
-                    sessionId: 'restart',
+                    sessionId: Identity.SessionId.make('restart'),
                     conversationId: Record.ROOT_CONVERSATION_ID,
                     taskId,
                   }),
@@ -336,7 +337,9 @@ const main = Effect.gen(function* () {
         ),
       ),
     )
-    const directory = Directory.layerSingle('restart').pipe(Layer.provideMerge(sessionLayer))
+    const directory = Directory.layerSingle(Identity.SessionId.make('restart')).pipe(
+      Layer.provideMerge(sessionLayer),
+    )
     // Finish host admission before the engine can replay an unfinished SQL
     // Activity. A host transaction holding the domain semaphore while waiting
     // for that Activity's connection would block the Activity's domain commit.
@@ -429,7 +432,7 @@ const main = Effect.gen(function* () {
                   ? yield* session.transaction((tx) =>
                       CompactionExecutor.create(
                         tx,
-                        'restart',
+                        Identity.SessionId.make('restart'),
                         Record.ROOT_CONVERSATION_ID,
                         'manual',
                         undefined,
@@ -445,8 +448,8 @@ const main = Effect.gen(function* () {
           : Submission.execute(input('primary'))
       if (!first && scenario.startsWith('abort'))
         yield* Abort.execute({
-          sessionId: 'restart',
-          requestId: 'abort-reconcile',
+          sessionId: Identity.SessionId.make('restart'),
+          requestId: Identity.RequestId.make('abort-reconcile'),
           target: { type: 'conversation', id: Record.ROOT_CONVERSATION_ID },
           background: false,
         })
@@ -460,7 +463,12 @@ const main = Effect.gen(function* () {
             ),
           )
           const payload = yield* session.transaction((tx) =>
-            CompactionExecutor.create(tx, 'restart', Record.ROOT_CONVERSATION_ID, 'manual'),
+            CompactionExecutor.create(
+              tx,
+              Identity.SessionId.make('restart'),
+              Record.ROOT_CONVERSATION_ID,
+              'manual',
+            ),
           )
           yield* Compaction.execute(payload)
         }
@@ -537,7 +545,7 @@ const main = Effect.gen(function* () {
         if (submission.requestId === undefined)
           return yield* Effect.die('Fixture submissions require persistent request identities')
         const executionId = yield* Submission.executionId({
-          sessionId: 'restart',
+          sessionId: Identity.SessionId.make('restart'),
           conversationId: submission.conversationId,
           requestId: submission.requestId,
           submission:

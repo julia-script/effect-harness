@@ -1,3 +1,5 @@
+import * as Serialization from '../Serialization.ts'
+import { ToolCheckpoint } from './Outcome.ts'
 import * as Layer from 'effect/Layer'
 import * as Harness from '@effect-harness/harness/Executor'
 import * as Invocation from '@effect-harness/harness/Invocation'
@@ -27,7 +29,7 @@ export const IntentDoc = Document.defineUnsafe({
   kind: 'harness.tool-intent',
   version: 1,
   scope: 'task',
-  schema: Schema.Struct({ intent: Tool.Intent, started: Schema.Boolean }),
+  schema: Document.jsonObjectCodec(Schema.Struct({ intent: Tool.Intent, started: Schema.Boolean })),
   initial: (seed) => ({ intent: Schema.decodeUnknownSync(Tool.Intent)(seed), started: false }),
 })
 export const Outcome = Schema.Struct({ execution: Tool.Execution, receipt: Result })
@@ -193,8 +195,21 @@ export const layer: Layer.Layer<
           if (intent._tag === 'Failure')
             return { type: 'rejected' as const, message: intent.failure.message }
           yield* session
-            .transaction((tx) => tx.doc(IntentDoc, { owner: payload.taskId, seed: intent.success }))
-            .pipe(Effect.mapError(storageError))
+            .transaction(
+              Effect.fnUntraced(function* (tx) {
+                return yield* tx.doc(IntentDoc, {
+                  owner: payload.taskId,
+                  seed: yield* Schema.encodeEffect(Serialization.json(Tool.Intent))(
+                    intent.success,
+                  ).pipe(Effect.mapError(codecError)),
+                })
+              }),
+            )
+            .pipe(
+              Effect.mapError((cause) =>
+                cause instanceof ExecutionError ? cause : storageError(cause),
+              ),
+            )
           return { type: 'intent' as const, intent: intent.success }
         }),
       ).pipe(
@@ -220,7 +235,11 @@ export const layer: Layer.Layer<
               entryId: entry.id,
               ...(execution.result.control === undefined
                 ? {}
-                : { control: execution.result.control }),
+                : {
+                    control: yield* Schema.encodeEffect(Serialization.object(Invocation.Control))(
+                      execution.result.control,
+                    ).pipe(Effect.mapError(codecError)),
+                  }),
             }
             const outcome = yield* Schema.encodeEffect(Schema.toCodecJson(Outcome))({
               execution,
@@ -290,7 +309,10 @@ export const layer: Layer.Layer<
                   type: 'task',
                   value: {
                     ...task,
-                    state: { status: 'running', checkpoint: { arguments: doc.intent.args } },
+                    state: {
+                      status: 'running',
+                      checkpoint: ToolCheckpoint.make({ arguments: doc.intent.args }),
+                    },
                   },
                 })
                 return before
@@ -346,6 +368,11 @@ export const layer: Layer.Layer<
                 }),
               StorageError: (error) => Effect.fail(storageError(error)),
             }),
+            Effect.mapError((cause) =>
+              cause instanceof ExecutionError
+                ? cause
+                : invalid('Tool terminal projection failed', cause),
+            ),
           )
           if (committed === undefined) yield* commit(execution)
         }

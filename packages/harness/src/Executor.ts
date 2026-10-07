@@ -1,3 +1,4 @@
+import * as SchemaField from './SchemaField.ts'
 import * as Serialization from './Serialization.ts'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
@@ -36,26 +37,15 @@ import * as Tool from './Tool.ts'
 import * as Usage from './Usage.ts'
 import * as Progress from './Progress.ts'
 import * as Exit from 'effect/Exit'
+import * as Json from './Json.ts'
+import { EntryId } from './Identity.ts'
 
 export const Request = Schema.Struct({
   model: Agent.ModelRef,
   prompt: AiPrompt.Prompt,
   options: Model.RequestOptions,
-  tools: Schema.Array(
-    Schema.Struct({
-      name: Schema.String,
-      description: Schema.optionalKey(Schema.String),
-      parameters: Schema.Record(Schema.String, Schema.Json),
-      provider: Schema.optionalKey(
-        Schema.Struct({
-          id: Schema.String.check(Schema.isPattern(/^[^.]+\..+$/)),
-          name: Schema.String,
-          args: Schema.Json,
-        }),
-      ),
-    }),
-  ),
-  tail: Schema.optionalKey(Schema.Int),
+  tools: Schema.Array(ConversationContext.ToolDeclaration),
+  tail: SchemaField.optional(EntryId),
 })
 export type Request = typeof Request.Type
 export interface Preparation {
@@ -65,8 +55,8 @@ export interface Preparation {
 }
 export const SummaryRequest = Schema.Struct({
   request: Request,
-  firstKept: Schema.Int,
-  tail: Schema.Int,
+  firstKept: EntryId,
+  tail: EntryId,
   attempt: Schema.Int,
 })
 export type SummaryRequest = typeof SummaryRequest.Type
@@ -74,7 +64,7 @@ export const Summary = Schema.Struct({ summary: Schema.String, usage: Usage.Usag
 export type Summary = typeof Summary.Type
 export type CompactionPreparation =
   | { readonly type: 'none' }
-  | { readonly type: 'summary'; readonly firstKept: number; readonly summary: string }
+  | { readonly type: 'summary'; readonly firstKept: EntryId; readonly summary: string }
   | { readonly type: 'request'; readonly request: SummaryRequest }
 export type Part = AiResponse.StreamPart<Record<string, AiTool.Any>, 'encoded'>
 export interface PrepareInput {
@@ -156,7 +146,7 @@ export class Executor extends Context.Service<
       intent: Tool.Intent,
       agent: Registry.Resolved,
       options?: ToolOptions,
-    ) => Effect.Effect<Tool.Execution, never, Invocation>
+    ) => Effect.Effect<Tool.Execution, ToolError, Invocation>
     readonly prepareCompaction: (
       input: CompactInput,
     ) => Effect.Effect<CompactionPreparation, ModelError | Schema.SchemaError, Invocation>
@@ -213,7 +203,8 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       const agent = yield* resolve(input.state, input.settings)
       const patches = ConversationContext.systemPatches(input.view)
       const sections = yield* Registry.render(agent, input.view, Prompt.replaySections(patches))
-      const plan = Prompt.plan(input.view, sections, agent.tools.map(Tool.declaration))
+      const declarations = yield* Effect.forEach(agent.tools, Tool.declaration)
+      const plan = Prompt.plan(input.view, sections, declarations)
       const options = yield* Schema.decodeUnknownEffect(Model.RequestOptions)({
         thinking: input.state.thinking ?? 'off',
         options: input.settings.stream,
@@ -225,12 +216,14 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           managedSystemMessages: ConversationContext.managedMessages(input.view),
         }),
         options,
-        tools: yield* Schema.decodeUnknownEffect(Request.fields.tools)(
-          agent.tools.map(Tool.declaration),
-        ),
+        tools: declarations,
         ...(input.view.entries.at(-1) === undefined
           ? {}
-          : { tail: Math.max(...input.view.entries.map((entry) => entry.id)) }),
+          : {
+              tail: yield* Schema.decodeEffect(EntryId)(
+                Math.max(...input.view.entries.map((entry) => entry.id)),
+              ),
+            }),
       }
       return { request, agent, plan }
     })
@@ -423,14 +416,20 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       const preview = yield* Ref.make<ToolResult | undefined>(undefined)
       const details = yield* Ref.make<Schema.Json | undefined>(undefined)
       const diagnostics = yield* Ref.make<ReadonlyArray<Diagnostic>>([])
-      let written = { output: '', details: '', diagnostics: 0 }
-      const write = Effect.gen(function* () {
+      let written: {
+        output: string
+        details: Schema.Json | undefined
+        hasDetails: boolean
+        diagnostics: number
+      } = { output: '', details: undefined, hasDetails: false, diagnostics: 0 }
+      const write: Effect.Effect<number, ToolError> = Effect.gen(function* () {
         const retained = Output.snapshot(buffer)
         const currentDetails = yield* Ref.get(details)
         const currentDiagnostics = yield* Ref.get(diagnostics)
         const encodedDetails = JSON.stringify(currentDetails ?? null)
         const change = Output.delta(written.output, retained.text)
-        const detailsChanged = encodedDetails !== written.details
+        const detailsChanged =
+          !written.hasDetails || !Json.equal(currentDetails ?? null, written.details ?? null)
         const added = currentDiagnostics.slice(written.diagnostics)
         if (retained.text === written.output && !detailsChanged && added.length === 0) return 0
         const outputChanged = retained.text !== written.output
@@ -448,7 +447,8 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         })
         written = {
           output: retained.text,
-          details: encodedDetails,
+          details: currentDetails,
+          hasDetails: true,
           diagnostics: currentDiagnostics.length,
         }
         return bytes
@@ -590,11 +590,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           const projected =
             outcome._tag === 'Failure'
               ? yield* Tool.settleFailure(outcome.cause, partial)
-              : (registration.metadata.project ?? Tool.defaultProject)(
-                  outcome.value.result,
-                  outcome.value.encoded,
-                  outcome.value.isFailure,
-                )
+              : yield* Tool.project(registration, outcome.value)
           const finalDetails = projected.details === undefined ? recordedDetails : projected.details
           const result: ToolResult = {
             ...projected,
@@ -673,7 +669,9 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         ),
         ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
       })
-      const tail = Math.max(...input.view.entries.map((entry) => entry.id))
+      const tail = yield* Schema.decodeEffect(EntryId)(
+        Math.max(...input.view.entries.map((entry) => entry.id)),
+      )
       return {
         type: 'request',
         request: {

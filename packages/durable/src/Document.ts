@@ -1,3 +1,4 @@
+import * as Serialization from './Serialization.ts'
 import * as Schema from 'effect/Schema'
 import * as Record from './Record.ts'
 import * as Effect from 'effect/Effect'
@@ -11,7 +12,7 @@ import {
   type CloneError,
 } from './storage/State.ts'
 
-export interface Definition<T extends Record.JsonObject> {
+export interface Definition<T extends object> {
   readonly kind: string
   readonly version: number
   readonly scope: Record.Scope['kind']
@@ -26,14 +27,14 @@ export interface Definition<T extends Record.JsonObject> {
     info: { readonly deltasSinceBase: number },
   ) => boolean
 }
-export interface Document<T extends Record.JsonObject> {
+export interface Document<T extends object> {
   readonly definition: Definition<T>
   readonly family: boolean
 }
 export class DocumentDefinitionError extends Schema.TaggedError<DocumentDefinitionError>(
   '@effect-harness/durable/Document/DocumentDefinitionError',
 )('DocumentDefinitionError', { message: Schema.String }) {}
-const checkDefinition = <T extends Record.JsonObject>(
+const checkDefinition = <T extends object>(
   definition: Definition<T>,
 ): Result.Result<void, DocumentDefinitionError> => {
   if (
@@ -65,31 +66,31 @@ const checkDefinition = <T extends Record.JsonObject>(
     )
   return Result.succeed(undefined)
 }
-export const define = <T extends Record.JsonObject>(
+export const define = <T extends object>(
   definition: Definition<T>,
 ): Result.Result<Document<T>, DocumentDefinitionError> =>
   Result.map(checkDefinition(definition), () => ({ definition, family: false }))
-export const family = <T extends Record.JsonObject>(
+export const family = <T extends object>(
   definition: Definition<T>,
 ): Result.Result<Document<T>, DocumentDefinitionError> =>
   Result.map(checkDefinition(definition), () => ({ definition, family: true }))
-export const defineUnsafe = <T extends Record.JsonObject>(definition: Definition<T>): Document<T> =>
+export const defineUnsafe = <T extends object>(definition: Definition<T>): Document<T> =>
   Result.getOrThrow(define(definition))
-export const familyUnsafe = <T extends Record.JsonObject>(definition: Definition<T>): Document<T> =>
+export const familyUnsafe = <T extends object>(definition: Definition<T>): Document<T> =>
   Result.getOrThrow(family(definition))
 export interface Target {
   readonly owner?: Record.ConversationId | Record.TaskId
   readonly key?: string
   readonly seed?: Record.Json
 }
-export interface Snapshot<T extends Record.JsonObject = Record.JsonObject> {
+export interface Snapshot<T extends object = Record.JsonObject> {
   readonly record: Record.Document
   readonly version: number
   readonly value: Readonly<T>
   readonly deltasSinceBase: number
 }
 
-export const address = Effect.fnUntraced(function* <T extends Record.JsonObject>(
+export const address = Effect.fnUntraced(function* <T extends object>(
   token: Document<T>,
   target: Target = {},
 ): Effect.fn.Return<Record.Address, StorageError> {
@@ -134,7 +135,7 @@ export type Draft<T> = T extends string | number | boolean | null | undefined
       ? { -readonly [K in keyof T]: Draft<T[K]> }
       : T
 
-export const typed = Effect.fnUntraced(function* <T extends Record.JsonObject>(
+export const typed = Effect.fnUntraced(function* <T extends object>(
   token: Document<T>,
   snapshot: Snapshot,
   cache?: MigrationCache,
@@ -158,13 +159,15 @@ export const typed = Effect.fnUntraced(function* <T extends Record.JsonObject>(
     if (previous !== undefined) value = yield* detachedEffect(previous)
     else {
       const input = yield* detachedEffect(snapshot.value)
-      value = yield* Effect.try({
+      const migrated = yield* Effect.try({
         try: () => definition.migrate?.(input, snapshot.version) ?? snapshot.value,
         catch: (cause) => rejected('Document migration failed', Invalid, cause),
       })
-      value = yield* detachedEffect(value)
-      value = yield* validate(definition.schema, value)
-      yield* validate(Schema.JsonObject, value)
+      const domain = yield* validate(
+        Schema.toType(definition.schema),
+        yield* detachedEffect(migrated),
+      )
+      value = yield* encode(token, domain)
       if (cache !== undefined) {
         const values = cache.values.get(token) ?? new Map<string, Record.JsonObject>()
         values.set(key, yield* detachedEffect(value))
@@ -173,18 +176,25 @@ export const typed = Effect.fnUntraced(function* <T extends Record.JsonObject>(
     }
   }
   const decoded = yield* validate(definition.schema, value)
-  yield* validate(Schema.JsonObject, decoded)
+  yield* encode(token, decoded)
   return { ...snapshot, version: definition.version, value: yield* detachedEffect(decoded) }
 })
 
+/** Canonical domain schemas may decode undefined-friendly fields; their storage form remains an object. */
+export const jsonObjectCodec = Serialization.object
+
+/** Encode the decoded domain model into the separately validated JSON storage representation. */
+export const encode = <T extends object>(token: Document<T>, value: T) =>
+  Schema.encodeEffect(token.definition.schema)(value).pipe(
+    Effect.mapError((cause) => rejected('Document cannot be encoded', Invalid, cause)),
+    Effect.flatMap((encoded) => validate(Schema.JsonObject, encoded)),
+  )
+
 /** Detaches validated JSON values into mutable data while preserving primitive brands. */
-export const copy = <T extends Record.Json>(value: T): Result.Result<Draft<T>, CloneError> =>
+export const copy = <T>(value: T): Result.Result<Draft<T>, CloneError> =>
   Result.map(detached(value), (value) => value as Draft<T>)
 /** Synchronous copy for validated static data or documented synchronous callbacks. */
-export const copyUnsafe = <T extends Record.Json>(value: T): Draft<T> =>
-  detachedUnsafe(value) as Draft<T>
+export const copyUnsafe = <T>(value: T): Draft<T> => detachedUnsafe(value) as Draft<T>
 /** Copies active drafts into the typed storage channel inside Effect transactions. */
-export const copyEffect = <T extends Record.Json>(
-  value: T,
-): Effect.Effect<Draft<T>, StorageError> =>
+export const copyEffect = <T>(value: T): Effect.Effect<Draft<T>, StorageError> =>
   detachedEffect(value).pipe(Effect.map((value) => value as Draft<T>))

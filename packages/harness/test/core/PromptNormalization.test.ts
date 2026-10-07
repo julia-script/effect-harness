@@ -1,8 +1,11 @@
+import * as Schema from 'effect/Schema'
+import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as NativePrompt from 'effect/ai/Prompt'
 import * as Context from '../../src/Context.ts'
 import * as Prompt from '../../src/Prompt.ts'
 
+const entryId = Schema.decodeSync(Identity.EntryId)
 const system = (content: string) => NativePrompt.systemMessage({ content })
 const user = NativePrompt.userMessage({ content: [NativePrompt.textPart({ text: 'question' })] })
 
@@ -43,25 +46,25 @@ describe('native prompt projection', () => {
 
   it('replays updates, removals and delete/reinsert section order without old encoded patch text', () => {
     const view = Context.derive([
-      { id: 1, messages: [system('base')] },
+      { id: entryId(1), messages: [system('base')] },
       {
-        id: 2,
+        id: entryId(2),
         system: { sections: { first: 'old first', removed: 'obsolete', last: 'last' } },
         messages: [system('encoded first patch')],
       },
-      { id: 3, messages: [user] },
+      { id: entryId(3), messages: [user] },
       {
-        id: 4,
+        id: entryId(4),
         system: { sections: { first: 'updated first', removed: null } },
         messages: [system('encoded update patch')],
       },
       {
-        id: 5,
+        id: entryId(5),
         system: { sections: { first: null } },
         messages: [system('encoded remove patch')],
       },
       {
-        id: 6,
+        id: entryId(6),
         system: { sections: { first: 'reinserted first' } },
         messages: [system('encoded reinsert patch')],
       },
@@ -87,10 +90,17 @@ describe('native prompt projection', () => {
   it('uses the edited managed contributions instead of stale entry messages', () => {
     const replacement = system('replacement encoded patch')
     const view = Context.derive([
-      { id: 1, messages: [system('plain')] },
-      { id: 2, messages: [system('old patch')], system: { sections: { current: 'current' } } },
-      { id: 3, edits: [{ target: 2, action: 'replace', messages: [replacement] }] },
-      { id: 4, messages: [user] },
+      { id: entryId(1), messages: [system('plain')] },
+      {
+        id: entryId(2),
+        messages: [system('old patch')],
+        system: { sections: { current: 'current' } },
+      },
+      {
+        id: entryId(3),
+        edits: [{ target: entryId(2), action: 'replace', messages: [replacement] }],
+      },
+      { id: entryId(4), messages: [user] },
     ])
     const result = Prompt.toPrompt(view.messages, new Map([['current', 'current']]), {
       managedSystemMessages: view.entries.flatMap((entry, index) =>
@@ -103,25 +113,25 @@ describe('native prompt projection', () => {
   it('preserves a reordered desired section baseline after a head marker', () => {
     const view = Context.derive([
       {
-        id: 1,
+        id: entryId(1),
         system: { sections: { first: 'old', second: 'old second' } },
         messages: [system('old encoded')],
       },
       {
-        id: 2,
-        head: 1,
+        id: entryId(2),
+        head: entryId(1),
         messages: [
           NativePrompt.userMessage({ content: [NativePrompt.textPart({ text: 'summary' })] }),
         ],
       },
-      { id: 3, messages: [user] },
+      { id: entryId(3), messages: [user] },
     ])
     const desired = new Map([
       ['second', 'new second'],
       ['first', 'new first'],
     ])
     const planned = Prompt.plan(view, desired, [])
-    assert.deepEqual(planned.edits, [{ target: 1, action: 'omit' }])
+    assert.deepEqual(planned.edits, [{ target: entryId(1), action: 'omit' }])
     assert.deepEqual(Prompt.replaySections(planned.patches), desired)
     const result = Prompt.toPrompt(view.messages, desired, {
       managedSystemMessages: view.contributions[1],

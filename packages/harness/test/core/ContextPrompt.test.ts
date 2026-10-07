@@ -1,3 +1,5 @@
+import * as Schema from 'effect/Schema'
+import * as Identity from '../../src/Identity.ts'
 import * as Layer from 'effect/Layer'
 import * as NativeContext from 'effect/Context'
 import * as NativeModel from 'effect/ai/LanguageModel'
@@ -15,6 +17,7 @@ import * as Compaction from '../../src/Compaction.ts'
 import * as Agent from '../../src/Agent.ts'
 import * as Usage from '../../src/Usage.ts'
 import * as ToolContent from '../../src/ToolResult.ts'
+const entryId = Schema.decodeSync(Identity.EntryId)
 const user = (text: string) => AiPrompt.userMessage({ content: [AiPrompt.textPart({ text })] })
 const assistant = (text: string) =>
   AiPrompt.assistantMessage({ content: [AiPrompt.textPart({ text })] })
@@ -60,18 +63,21 @@ describe('canonical context, prompt protocol and cuts', () => {
         ])
         yield* Effect.gen(function* () {
           const executor = yield* Executor.Executor
-          const original = { id: 1, system: { sections: { s: 'old omitted instruction' } } }
+          const original = {
+            id: entryId(1),
+            system: { sections: { s: 'old omitted instruction' } },
+          }
           for (const edits of [
-            [{ target: 1, action: 'omit' as const }],
+            [{ target: entryId(1), action: 'omit' as const }],
             [
               {
-                target: 1,
+                target: entryId(1),
                 action: 'replace' as const,
                 messages: [AiPrompt.systemMessage({ content: 'plain replacement' })],
               },
             ],
           ]) {
-            const view = Context.derive([original, { id: 2, edits }])
+            const view = Context.derive([original, { id: entryId(2), edits }])
             const prepared = yield* executor.prepare({
               state: { model },
               settings: Agent.settings(),
@@ -86,7 +92,10 @@ describe('canonical context, prompt protocol and cuts', () => {
             )
             assert.deepStrictEqual(Context.systemPatches(view), [])
           }
-          const deleted = Context.derive([original, { id: 2, system: { sections: { s: null } } }])
+          const deleted = Context.derive([
+            original,
+            { id: entryId(2), system: { sections: { s: null } } },
+          ])
           const prepared = yield* executor.prepare({
             state: { model },
             settings: Agent.settings(),
@@ -112,7 +121,7 @@ describe('canonical context, prompt protocol and cuts', () => {
       toolsAdded,
       toolsRemoved: ['old'],
     }
-    const entry = { id: 1, system: patch }
+    const entry = { id: entryId(1), system: patch }
     const expected =
       Math.ceil('abc\n\ndef'.length / 3.5) +
       Math.ceil(JSON.stringify(toolsAdded).length / 3.5) +
@@ -125,7 +134,10 @@ describe('canonical context, prompt protocol and cuts', () => {
     )
     assert.strictEqual(
       Context.estimate(
-        Context.derive([entry, { id: 2, edits: [{ target: 1, action: 'omit' as const }] }]),
+        Context.derive([
+          entry,
+          { id: entryId(2), edits: [{ target: entryId(1), action: 'omit' as const }] },
+        ]),
       ),
       0,
     )
@@ -134,20 +146,22 @@ describe('canonical context, prompt protocol and cuts', () => {
         Context.derive([
           entry,
           {
-            id: 2,
-            edits: [{ target: 1, action: 'replace' as const, messages: [user('replacement')] }],
+            id: entryId(2),
+            edits: [
+              { target: entryId(1), action: 'replace' as const, messages: [user('replacement')] },
+            ],
           },
         ]),
       ),
       Math.ceil('replacement'.length / 3.5),
     )
     const measured = {
-      id: 2,
+      id: entryId(2),
       messages: [assistant('answer')],
       usage: { ...Usage.zero(), input: 100, output: 20 },
     }
     assert.strictEqual(
-      Context.estimate(Context.derive([entry, measured, { id: 3, system: patch }])),
+      Context.estimate(Context.derive([entry, measured, { id: entryId(3), system: patch }])),
       120 + expected,
     )
   })
@@ -183,11 +197,11 @@ describe('canonical context, prompt protocol and cuts', () => {
 
   it('newest head first, older head edits count, stopped assistant omitted from model only', () => {
     const view = Context.derive([
-      { id: 1, messages: [user('old')] },
-      { id: 2, head: 1, edits: [{ target: 1, action: 'omit' }] },
-      { id: 3, messages: [assistant('broken')], status: 'error' },
-      { id: 4, head: 1, messages: [user('summary')] },
-      { id: 5, messages: [user('new')] },
+      { id: entryId(1), messages: [user('old')] },
+      { id: entryId(2), head: entryId(1), edits: [{ target: entryId(1), action: 'omit' }] },
+      { id: entryId(3), messages: [assistant('broken')], status: 'error' },
+      { id: entryId(4), head: entryId(1), messages: [user('summary')] },
+      { id: entryId(5), messages: [user('new')] },
     ])
     assert.deepStrictEqual(
       view.entries.map((entry) => entry.id),
@@ -197,7 +211,7 @@ describe('canonical context, prompt protocol and cuts', () => {
       view.contributions.map((messages) => messages.length),
       [1, 0, 0, 1],
     )
-    assert.strictEqual(Context.derive(view.entries, 3).head, undefined)
+    assert.strictEqual(Context.derive(view.entries, entryId(3)).head, undefined)
   })
   it('orders results before intervening users, chooses first duplicate, drops orphans and synthesizes missing', () => {
     const owner = AiPrompt.assistantMessage({ content: [call('a'), call('b'), call('c')] })
@@ -280,17 +294,17 @@ describe('canonical context, prompt protocol and cuts', () => {
   })
   it('head forces a baseline once even when values match and omits retained prior systems', () => {
     const entries: Context.Entry[] = [
-      { id: 1, system: { sections: { a: 'x' } } },
-      { id: 2, messages: [user('u')] },
-      { id: 3, head: 1 },
+      { id: entryId(1), system: { sections: { a: 'x' } } },
+      { id: entryId(2), messages: [user('u')] },
+      { id: entryId(3), head: entryId(1) },
     ]
     const view = Context.derive(entries)
     assert.deepStrictEqual(Prompt.plan(view, new Map([['a', 'x']]), []).edits, [
-      { target: 1, action: 'omit' },
+      { target: entryId(1), action: 'omit' },
     ])
     assert.strictEqual(
       Prompt.plan(
-        Context.derive([...entries, { id: 4, system: { sections: { a: 'x' } } }]),
+        Context.derive([...entries, { id: entryId(4), system: { sections: { a: 'x' } } }]),
         new Map([['a', 'x']]),
         [],
       ).patches.length,
@@ -317,27 +331,34 @@ describe('canonical context, prompt protocol and cuts', () => {
   })
   it('measured context uses appended entry order and estimates only following messages', () => {
     const view = Context.derive([
-      { id: 1, messages: [user('a')] },
-      { id: 2, messages: [assistant('b')], usage: { ...Usage.zero(), input: 100, output: 20 } },
-      { id: 3, messages: [user('abcdefgh')] },
+      { id: entryId(1), messages: [user('a')] },
+      {
+        id: entryId(2),
+        messages: [assistant('b')],
+        usage: { ...Usage.zero(), input: 100, output: 20 },
+      },
+      { id: entryId(3), messages: [user('abcdefgh')] },
     ])
     assert.strictEqual(Context.estimate(view), 123)
     assert.strictEqual(Context.estimate(view, [user('1234')]), 125)
   })
   it('cuts cannot strand a late tool result after an intervening user', () => {
     const view = Context.derive([
-      { id: 1, messages: [user('first')] },
-      { id: 2, messages: [AiPrompt.assistantMessage({ content: [call('a')] })] },
-      { id: 3, messages: [user('intervenes')] },
-      { id: 4, messages: [result('a', 'done')] },
-      { id: 5, messages: [assistant('last')] },
+      { id: entryId(1), messages: [user('first')] },
+      { id: entryId(2), messages: [AiPrompt.assistantMessage({ content: [call('a')] })] },
+      { id: entryId(3), messages: [user('intervenes')] },
+      { id: entryId(4), messages: [result('a', 'done')] },
+      { id: entryId(5), messages: [assistant('last')] },
     ])
     assert.notStrictEqual(
       Compaction.selectCut(view, 3, () => 1),
       2,
     )
     assert.strictEqual(
-      Compaction.selectCut(Context.derive([{ id: 1, head: 1, messages: [user('summary')] }]), 0),
+      Compaction.selectCut(
+        Context.derive([{ id: entryId(1), head: entryId(1), messages: [user('summary')] }]),
+        0,
+      ),
       undefined,
     )
   })

@@ -1,5 +1,6 @@
+import { cursor as journalCursor } from './storage/State.ts'
+import * as Outcome from './workflow/Outcome.ts'
 import * as Effect from 'effect/Effect'
-import * as Json from '@effect-harness/harness/Json'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
@@ -8,19 +9,23 @@ import * as Record from './Record.ts'
 import type * as Session from './Session.ts'
 import type * as Store from './Store.ts'
 
-export type TaskState =
-  | { readonly kind: 'ready' | 'running' }
-  | { readonly kind: 'waiting'; readonly on: ReadonlyArray<Record.TaskId> }
-  | { readonly kind: 'completing'; readonly outcome: Record.Json }
-  | { readonly kind: 'blocked'; readonly reason: 'missing_workflow' | 'invalid_binding' }
-export interface TaskInspection {
-  readonly record: Record.Task
-  readonly state: TaskState
-}
-export interface Value {
-  readonly tasks: ReadonlyArray<TaskInspection>
-  readonly submissions: ReadonlyArray<Record.Submission>
-}
+export const TaskState = Schema.Union([
+  Schema.Struct({ kind: Schema.Literals(['ready', 'running']) }),
+  Schema.Struct({ kind: Schema.Literal('waiting'), on: Schema.Array(Record.TaskId) }),
+  Schema.Struct({ kind: Schema.Literal('completing'), outcome: Schema.Json }),
+  Schema.Struct({
+    kind: Schema.Literal('blocked'),
+    reason: Schema.Literals(['missing_workflow', 'invalid_binding']),
+  }),
+])
+export type TaskState = typeof TaskState.Type
+export const TaskInspection = Schema.Struct({ record: Record.Task, state: TaskState })
+export type TaskInspection = typeof TaskInspection.Type
+export const Value = Schema.Struct({
+  tasks: Schema.Array(TaskInspection),
+  submissions: Schema.Array(Record.Submission),
+})
+export type Value = typeof Value.Type
 
 /** Inspect committed facts and declaration metadata without invoking handlers, codecs, migrations, or the engine. */
 export const get = Effect.fnUntraced(function* (session: Session.Service) {
@@ -53,38 +58,30 @@ export const get = Effect.fnUntraced(function* (session: Session.Service) {
   } satisfies Value
 })
 
-export interface GraphNode {
-  readonly id: Record.TaskId
-  readonly kind: string
-  readonly conversationId: Record.ConversationId
-  readonly owner?: Record.TaskId
-  readonly background: boolean
-  readonly abortRequested: boolean
-  readonly state: {
-    readonly status: Exclude<Record.Task['state']['status'], 'terminal'>
-    readonly on?: ReadonlyArray<Record.TaskId>
-    readonly policy?: 'failFast' | 'allSettled'
-    readonly outcome?: string
-  }
-  readonly conversations: ReadonlyArray<Record.ConversationId>
-}
-export interface Graph {
-  readonly tasks: Readonly<Record<string, GraphNode>>
-}
-const outcomeStatus = (outcome: Record.Json | undefined): string | undefined => {
-  if (outcome === null || typeof outcome !== 'object' || Array.isArray(outcome)) return undefined
-  const receipt = Reflect.get(outcome, 'receipt')
-  const status =
-    Reflect.get(outcome, 'status') ??
-    (receipt !== null && typeof receipt === 'object' ? Reflect.get(receipt, 'status') : undefined)
-  return typeof status === 'string' ? status : undefined
-}
+export const GraphNode = Schema.Struct({
+  id: Record.TaskId,
+  kind: Schema.String,
+  conversationId: Record.ConversationId,
+  owner: Schema.optionalKey(Record.TaskId),
+  background: Schema.Boolean,
+  abortRequested: Schema.Boolean,
+  state: Schema.Struct({
+    status: Schema.Literals(['pending', 'running', 'waiting', 'completing']),
+    on: Schema.optionalKey(Schema.Array(Record.TaskId)),
+    policy: Schema.optionalKey(Schema.Literals(['failFast', 'allSettled'])),
+    outcome: Schema.optionalKey(Schema.String),
+  }),
+  conversations: Schema.Array(Record.ConversationId),
+})
+export type GraphNode = typeof GraphNode.Type
+export const Graph = Schema.Struct({ tasks: Schema.Record(Schema.String, GraphNode) })
+export type Graph = typeof Graph.Type
 /** Live-only ownership graph deliberately excludes arbitrary checkpoint/result payloads. */
 export function graph(state: Ownership.Graph): Graph {
   const tasks: Record<string, GraphNode> = {}
   for (const task of state.tasks.toSorted((a, b) => a.id - b.id)) {
     if (task.state.status === 'terminal') continue
-    const status = outcomeStatus(task.state.outcome)
+    const status = Outcome.classifyTask(task)?.status
     tasks[String(task.id)] = {
       id: task.id,
       kind: task.kind,
@@ -108,17 +105,24 @@ export function graph(state: Ownership.Graph): Graph {
   return { tasks }
 }
 
-export interface GraphChange {
-  readonly seq: Record.Seq | 0
-  readonly before: Graph
-  readonly value: Graph
-  readonly ops: ReadonlyArray<GraphOp>
-  readonly reset: boolean
-}
-export type GraphOp =
-  | readonly ['replace', Graph]
-  | readonly ['set', readonly ['tasks', string], GraphNode]
-  | readonly ['delete', readonly ['tasks', string]]
+export const GraphOp = Schema.Union([
+  Schema.Tuple([Schema.Literal('replace'), Graph]),
+  Schema.Tuple([
+    Schema.Literal('set'),
+    Schema.Tuple([Schema.Literal('tasks'), Schema.String]),
+    GraphNode,
+  ]),
+  Schema.Tuple([Schema.Literal('delete'), Schema.Tuple([Schema.Literal('tasks'), Schema.String])]),
+])
+export type GraphOp = typeof GraphOp.Type
+export const GraphChange = Schema.Struct({
+  seq: Record.JournalCursor,
+  before: Graph,
+  value: Graph,
+  ops: Schema.Array(GraphOp),
+  reset: Schema.Boolean,
+})
+export type GraphChange = typeof GraphChange.Type
 const changed = (
   before: Graph,
   candidate: Graph,
@@ -131,7 +135,10 @@ const changed = (
       ops.push(['delete', ['tasks', id]])
     }
   for (const [id, node] of Object.entries(candidate.tasks))
-    if (!Json.equal(before.tasks[id], node)) {
+    if (
+      before.tasks[id] === undefined ||
+      !Schema.toEquivalence(GraphNode)(before.tasks[id], node)
+    ) {
       tasks[id] = node
       ops.push(['set', ['tasks', id], node])
     }
@@ -150,7 +157,7 @@ export const changes = (
       )
       let value = graph(initial)
       const baseline: GraphChange = {
-        seq: (initial.nextSeq - 1) as Record.Seq | 0,
+        seq: yield* journalCursor(initial.nextSeq),
         before: value,
         value,
         ops: [['replace', value]],
@@ -177,7 +184,7 @@ export const changes = (
               const before = cursor.delivered
               value = graph(journal.state)
               pending.splice(0, pending.length, {
-                seq: (journal.state.nextSeq - 1) as Record.Seq,
+                seq: yield* journalCursor(journal.state.nextSeq),
                 before,
                 value,
                 ops: [['replace', value]],
@@ -205,7 +212,7 @@ export const changes = (
                 if (delta.ops.length > 0)
                   pending.push({ seq: frame.seq, before, value, ops: delta.ops, reset: false })
               }
-            after = (journal.state.nextSeq - 1) as Record.Seq | 0
+            after = yield* journalCursor(journal.state.nextSeq)
             if (pending.length > 100)
               pending.splice(0, pending.length, {
                 seq: after,

@@ -7,7 +7,6 @@ import * as Generated from '@effect/ai-anthropic/Generated'
 import type { AuthError } from '@effect-harness/auth/Credential'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
-import * as Predicate from 'effect/Predicate'
 import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
@@ -80,16 +79,21 @@ const mergeBetas = (value?: string) =>
   ].join(',')
 
 /** Rewrites protocol content nodes only. User text, images and arbitrary JSON tool inputs are untouched. */
-const rewriteBlock = (block: unknown, rename: (name: string) => string): unknown => {
-  if (!Predicate.isReadonlyObject(block)) return block
-  if (block.type === 'tool_use' && typeof block.name === 'string')
-    return { ...block, name: rename(block.name) }
-  if (block.type === 'tool_reference') {
-    if (typeof block.tool_name === 'string') return { ...block, tool_name: rename(block.tool_name) }
-    if (typeof block.name === 'string') return { ...block, name: rename(block.name) }
-  }
-  if (block.type === 'tool_result' && Array.isArray(block.content))
-    return { ...block, content: block.content.map((part) => rewriteBlock(part, rename)) }
+type ToolResultBlock = Extract<Generated.BetaInputContentBlock, { readonly type: 'tool_result' }>
+type NestedBlock = Exclude<ToolResultBlock['content'], string | undefined>[number]
+const rewriteNestedBlock = (block: NestedBlock, rename: (name: string) => string): NestedBlock =>
+  block.type === 'tool_reference' ? { ...block, tool_name: rename(block.tool_name) } : block
+const rewriteBlock = (
+  block: Generated.BetaInputContentBlock,
+  rename: (name: string) => string,
+): Generated.BetaInputContentBlock => {
+  if (block.type === 'tool_use') return { ...block, name: rename(block.name) }
+  if (
+    block.type === 'tool_result' &&
+    block.content !== undefined &&
+    typeof block.content !== 'string'
+  )
+    return { ...block, content: block.content.map((part) => rewriteNestedBlock(part, rename)) }
   return block
 }
 const prepare = Effect.fnUntraced(function* (

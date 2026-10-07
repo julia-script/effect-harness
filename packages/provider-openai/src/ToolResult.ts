@@ -15,11 +15,10 @@ const invalid = (description: string) =>
     method: 'translate',
     reason: new AiError.InvalidRequestError({ description }),
   })
-const decode = (value: string) =>
-  Effect.try({
-    try: (): unknown => JSON.parse(value),
-    catch: () => undefined,
-  }).pipe(Effect.flatMap(Canonical.decode), Effect.option)
+const decodeEnvelope = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.toCodecJson(Canonical.Envelope)),
+)
+const decode = (value: string) => Effect.succeed(decodeEnvelope(value))
 const base64 = (data: string | Uint8Array) =>
   typeof data === 'string' ? data.replace(/^data:[^;]+;base64,/, '') : Base64.encode(data)
 

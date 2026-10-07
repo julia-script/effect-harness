@@ -1,3 +1,4 @@
+import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as Harness from '@effect-harness/harness/Executor'
@@ -59,20 +60,22 @@ const services = Session.layer.pipe(
     Conversation.layerCreation.pipe(Layer.provide(config), Layer.provide(BunCrypto.layer)),
   ),
 )
-const directory = Directory.layerSingle('native').pipe(Layer.provideMerge(services))
+const directory = Directory.layerSingle(Identity.SessionId.make('native')).pipe(
+  Layer.provideMerge(services),
+)
 const input = (requestId: string) => ({
-  sessionId: 'native',
+  sessionId: Identity.SessionId.make('native'),
   conversationId: Record.ROOT_CONVERSATION_ID,
-  requestId,
+  requestId: Identity.RequestId.make(requestId),
   submission: {
     type: 'input' as const,
     message: Prompt.userMessage({ content: [Prompt.textPart({ text: requestId })] }),
   },
 })
 const write = (requestId: string, text = 'original') => ({
-  sessionId: 'native',
+  sessionId: Identity.SessionId.make('native'),
   conversationId: Record.ROOT_CONVERSATION_ID,
-  requestId,
+  requestId: Identity.RequestId.make(requestId),
   submission: { type: 'write' as const, entry: { kind: 'passive', data: { text } } },
 })
 
@@ -253,8 +256,8 @@ describe('native submission executor', () => {
                     yield* Effect.sleep('5 millis')
                 }).pipe(Effect.timeout('3 seconds'))
                 const reached = yield* Abort.execute({
-                  sessionId: 'native',
-                  requestId: 'deferred-abort',
+                  sessionId: Identity.SessionId.make('native'),
+                  requestId: Identity.RequestId.make('deferred-abort'),
                   target: { type: 'conversation', id: Record.ROOT_CONVERSATION_ID },
                   background: false,
                 }).pipe(Effect.timeout('3 seconds'))
@@ -519,7 +522,12 @@ describe('native submission executor', () => {
                   )
                   yield* tx.appendEntry(root.id, { kind: 'harness.user', model: [first] })
                   yield* tx.appendEntry(root.id, { kind: 'harness.user', model: [last] })
-                  return yield* CompactionExecutor.create(tx, 'native', root.id, 'manual')
+                  return yield* CompactionExecutor.create(
+                    tx,
+                    Identity.SessionId.make('native'),
+                    root.id,
+                    'manual',
+                  )
                 }),
               )
               const result = yield* Effect.result(Compaction.execute(payload))
@@ -773,7 +781,7 @@ describe('native submission executor', () => {
                   intent.started = true
                 }
                 return {
-                  sessionId: 'native',
+                  sessionId: Identity.SessionId.make('native'),
                   conversationId: root.id,
                   taskId,
                   generationTaskId,
@@ -853,7 +861,12 @@ describe('native submission executor', () => {
       const previous = yield* Submission.execute(write('previous'))
       const session = yield* Session.Session
       yield* session.transaction((tx) =>
-        SubmissionExecutor.createGeneration(tx, 'native', previous.conversationId, []),
+        SubmissionExecutor.createGeneration(
+          tx,
+          Identity.SessionId.make('native'),
+          previous.conversationId,
+          [],
+        ),
       )
       const rejected = yield* Submission.execute({
         ...input('reject'),
@@ -970,7 +983,7 @@ describe('ownership domain capabilities', () => {
           )
           const count = yield* Ref.make(0)
           const scope = Ownership.layerCurrent({
-            sessionId: 'native',
+            sessionId: Identity.SessionId.make('native'),
             conversationId: root.id,
             taskId,
           }).pipe(Layer.provide(Layer.succeed(Session.Session, session)))

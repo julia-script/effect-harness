@@ -13,11 +13,11 @@ import {
 export const TokenResponse = Schema.Struct({
   access_token: Secret,
   refresh_token: Secret,
-  id_token: Schema.optional(Secret),
+  id_token: Schema.optionalKey(Secret),
   token_type: Schema.String,
   expires_in: Schema.Finite,
-  scope: Schema.optional(Schema.String),
-  earliest_refresh_at: Schema.optional(Schema.Finite),
+  scope: Schema.optionalKey(Schema.String),
+  earliest_refresh_at: Schema.optionalKey(Schema.Finite),
 })
 export type TokenResponse = typeof TokenResponse.Type
 /** Sensitive protocol fields stay wrapped until the final HTTP body serialization. */

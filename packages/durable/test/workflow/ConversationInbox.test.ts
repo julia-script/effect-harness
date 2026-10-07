@@ -1,3 +1,5 @@
+import * as Serialization from '../../src/Serialization.ts'
+import * as Entry from '../../src/Entry.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as Agent from '@effect-harness/harness/Agent'
@@ -336,7 +338,9 @@ describe('conversation and inbox domain integration', () => {
               return yield* tx.appendEntry(root.id, {
                 kind: 'harness.assistant',
                 model: [encoded],
-                data: { harness: { status: 'aborted', usage: Totals.zero() } },
+                data: yield* Schema.encodeEffect(Serialization.json(Entry.AssistantData))({
+                  harness: { status: 'aborted', usage: Totals.zero() },
+                }),
               })
             }),
           )

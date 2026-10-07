@@ -1,17 +1,16 @@
+import * as Identity from '../Identity.ts'
+import * as Struct from 'effect/Struct'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Record from '../Record.ts'
 import { ExecutionErrorCodec } from './ExecutionError.ts'
 
-export const EntryDraft = Schema.Struct({
-  kind: Schema.String,
+export const EntryDraft = Record.Entry.mapFields((fields) => ({
+  ...Struct.omit(fields, ['id', 'conversationId', 'head', 'model']),
   model: Schema.optionalKey(Schema.Array(Schema.toEncoded(Schema.toCodecJson(Prompt.Message)))),
-  data: Schema.optionalKey(Schema.Json),
   head: Schema.optionalKey(Schema.Union([Record.EntryId, Schema.Literal('self')])),
-  edits: Schema.optionalKey(Schema.Array(Record.ContextEdit)),
-  byTaskId: Schema.optionalKey(Record.TaskId),
-})
+}))
 
 export const Input = Schema.Union([
   Schema.Struct({
@@ -31,9 +30,9 @@ export const Result = Record.SettledSubmission
  */
 export const Submission = Workflow.make('@effect-harness/durable/Submission/v1', {
   payload: {
-    sessionId: Schema.String,
+    sessionId: Identity.SessionId,
     conversationId: Record.ConversationId,
-    requestId: Schema.String,
+    requestId: Identity.RequestId,
     submission: Input,
   },
   success: Result,

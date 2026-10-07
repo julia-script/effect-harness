@@ -7,28 +7,30 @@ import * as HttpClient from 'effect/http/HttpClient'
 import { createLocalJWKSet, jwtVerify } from 'jose'
 import { AuthIdentityError, AuthNetworkError, AuthError } from './Credential.ts'
 import { Jwt } from './Jwt.ts'
-const KeySet = Schema.Struct({
+export const KeySet = Schema.Struct({
   keys: Schema.Array(
     Schema.Struct({
       kty: Schema.String,
-      kid: Schema.optional(Schema.String),
-      alg: Schema.optional(Schema.String),
-      use: Schema.optional(Schema.String),
-      n: Schema.optional(Schema.String),
-      e: Schema.optional(Schema.String),
-      crv: Schema.optional(Schema.String),
-      x: Schema.optional(Schema.String),
-      y: Schema.optional(Schema.String),
+      kid: Schema.optionalKey(Schema.String),
+      alg: Schema.optionalKey(Schema.String),
+      use: Schema.optionalKey(Schema.String),
+      n: Schema.optionalKey(Schema.String),
+      e: Schema.optionalKey(Schema.String),
+      crv: Schema.optionalKey(Schema.String),
+      x: Schema.optionalKey(Schema.String),
+      y: Schema.optionalKey(Schema.String),
     }),
   ),
 })
-const Claims = Schema.Struct({
+export type KeySet = typeof KeySet.Type
+export const Claims = Schema.Struct({
   sub: Schema.NonEmptyString,
   iss: Schema.NonEmptyString,
   exp: Schema.Finite,
-  nonce: Schema.optional(Schema.String),
-  email: Schema.optional(Schema.String),
+  nonce: Schema.optionalKey(Schema.String),
+  email: Schema.optionalKey(Schema.String),
 })
+export type Claims = typeof Claims.Type
 export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClient> = Effect.gen(
   function* () {
     const client = yield* HttpClient.HttpClient

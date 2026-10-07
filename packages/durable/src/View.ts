@@ -1,3 +1,5 @@
+import { cursor as journalCursor } from './storage/State.ts'
+import * as Outcome from './workflow/Outcome.ts'
 // Committed mounts adapted from pi-durable (MIT), pinned 636703a0.
 import * as Cause from 'effect/Cause'
 import * as Channel from 'effect/Channel'
@@ -5,8 +7,8 @@ import * as PubSub from 'effect/PubSub'
 import * as Queue from 'effect/Queue'
 import * as RcMap from 'effect/RcMap'
 import * as Ref from 'effect/Ref'
-import type * as Agent from '@effect-harness/harness/Agent'
-import type * as Totals from '@effect-harness/harness/Usage'
+import * as Agent from '@effect-harness/harness/Agent'
+import * as Totals from '@effect-harness/harness/Usage'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -28,34 +30,47 @@ import * as Usage from './Usage.ts'
 import { findDocument, materialize, visibleEntries } from './storage/State.ts'
 
 /** Schema-derived singleton document values retain their mounted reference identity. */
-export interface Documents {
-  readonly 'harness.agent'?: Agent.State
-  readonly 'harness.live'?: Inbox.LiveState
-  readonly 'harness.inbox'?: typeof Inbox.State.Type
-  readonly 'harness.provider'?: typeof Conversation.ProviderState.Type
-  readonly 'harness.usage'?: Totals.State
-}
-/** Structural committed transcript and singleton built-in documents of one conversation. */
-export interface Value {
-  readonly conversation: Record.Conversation
-  readonly entries: ReadonlyArray<Record.Entry>
-  readonly docs: Documents
-}
-export type Path = ReadonlyArray<string | number>
-export type Op =
-  | readonly ['replace', Value]
-  | readonly ['set', Path, unknown]
-  | readonly ['delete', Path]
-  | readonly ['splice', Path, number, number, ReadonlyArray<Record.Entry>]
-export interface Change {
-  readonly seq: Record.Seq | 0
-  readonly before: Value
-  readonly value: Value
-  readonly ops: ReadonlyArray<Op>
-  readonly publication?: Record.Frame
-  readonly reset: boolean
-  readonly rebased?: boolean
-}
+export const Documents = Schema.Struct({
+  'harness.agent': Schema.optionalKey(Agent.State),
+  'harness.live': Schema.optionalKey(Inbox.LiveState),
+  'harness.inbox': Schema.optionalKey(Inbox.State),
+  'harness.provider': Schema.optionalKey(Conversation.ProviderState),
+  'harness.usage': Schema.optionalKey(Totals.State),
+})
+export type Documents = typeof Documents.Type
+export const Value = Schema.Struct({
+  conversation: Record.Conversation,
+  entries: Schema.Array(Record.Entry),
+  docs: Documents,
+})
+export type Value = typeof Value.Type
+export const Path = Schema.Array(Schema.Union([Schema.String, Schema.Finite]))
+export type Path = typeof Path.Type
+export const Op = Schema.Union([
+  Schema.Tuple([Schema.Literal('replace'), Value]),
+  Schema.Tuple([Schema.Literal('set'), Path, Schema.Unknown]),
+  Schema.Tuple([Schema.Literal('delete'), Path]),
+  Schema.Tuple([
+    Schema.Literal('splice'),
+    Path,
+    Schema.Int,
+    Schema.Int,
+    Schema.Array(Record.Entry),
+  ]),
+])
+export type Op = typeof Op.Type
+export const Change = Schema.Struct({
+  seq: Record.JournalCursor,
+  before: Value,
+  value: Value,
+  ops: Schema.Array(Op),
+  publication: Schema.optionalKey(Record.Frame),
+  reset: Schema.Boolean,
+  rebased: Schema.optionalKey(Schema.Boolean),
+})
+export type Change = typeof Change.Type
+/** Structural set values are opaque decoded field values; the JSON client codec validates their wire representation without changing mounted references. */
+export const ChangeJson = Schema.toCodecJson(Change)
 export interface ProjectionWatch<A> {
   readonly value: A
   readonly changes: Stream.Stream<A, StorageError>
@@ -219,7 +234,7 @@ const hydrate = Effect.fnUntraced(function* (state: Record.State, id: Record.Con
     tasks: new Map(
       state.tasks.filter((task) => task.conversationId === id).map((task) => [task.id, task]),
     ),
-    seq: (state.nextSeq - 1) as Record.Seq | 0,
+    seq: yield* journalCursor(state.nextSeq),
   } satisfies MountedState
 })
 const endingTask = (task: Record.Task) => {
@@ -230,9 +245,7 @@ const endingTask = (task: Record.Task) => {
   if (generation && task.state.status === 'completing') return true
   if (task.state.status !== 'terminal') return false
   if (generation) return true
-  const outcome = task.state.outcome
-  if (outcome === null || typeof outcome !== 'object' || Array.isArray(outcome)) return false
-  const status = Reflect.get(outcome, 'status')
+  const status = Outcome.classifyTask(task)?.directStatus
   return status === 'failed' || status === 'faulted' || status === 'orphaned'
 }
 const structuralTouch = (frame: Record.Frame, id: Record.ConversationId) =>
@@ -444,7 +457,7 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
             // New subscribers receive the final authoritative sequence and task baseline.
             current = {
               ...current,
-              seq: (journal.state.nextSeq - 1) as Record.Seq | 0,
+              seq: yield* journalCursor(journal.state.nextSeq),
               tasks: new Map(
                 journal.state.tasks
                   .filter((task) => task.conversationId === id)
@@ -455,7 +468,7 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
           }),
         )
       }
-      after = (journal.state.nextSeq - 1) as Record.Seq | 0
+      after = yield* journalCursor(journal.state.nextSeq)
     })
     yield* Effect.addFinalizer(() => close('cancelled'))
     yield* Effect.forkScoped(

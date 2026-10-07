@@ -14,29 +14,31 @@ export const Parameters = Schema.Struct({
   edits: Schema.Array(Schema.Struct({ oldText: Schema.String, newText: Schema.String })),
 })
 export type Input = typeof Parameters.Type
-const isEdit = (value: unknown): value is { readonly oldText: string; readonly newText: string } =>
-  typeof value === 'object' &&
-  value !== null &&
-  !Array.isArray(value) &&
-  'oldText' in value &&
-  typeof value.oldText === 'string' &&
-  'newText' in value &&
-  typeof value.newText === 'string'
+const isEdit = Schema.is(Parameters.fields.edits.value)
+const RepairObject = Schema.Record(Schema.String, Schema.Unknown)
+const isRepairObject = Schema.is(RepairObject)
+const isString = Schema.is(Schema.String)
+const isArray = Schema.is(Schema.Array(Schema.Unknown))
+const LegacyEdit = Schema.Struct({
+  oldText: Parameters.fields.edits.value.fields.oldText,
+  newText: Parameters.fields.edits.value.fields.newText,
+})
+const isLegacyEdit = Schema.is(LegacyEdit)
 export const repair = (input: unknown): Effect.Effect<unknown> =>
   Effect.gen(function* () {
-    if (typeof input !== 'object' || input === null || Array.isArray(input)) return input
+    if (!isRepairObject(input)) return input
     const args: Record<string, unknown> = { ...input }
-    if (typeof args['edits'] === 'string') {
+    if (isString(args['edits'])) {
       const parsed = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(
         args['edits'],
       ).pipe(Effect.option)
-      if (parsed._tag === 'Some' && (Array.isArray(parsed.value) || isEdit(parsed.value)))
-        args['edits'] = Array.isArray(parsed.value) ? parsed.value : [parsed.value]
+      if (parsed._tag === 'Some' && (isArray(parsed.value) || isEdit(parsed.value)))
+        args['edits'] = isArray(parsed.value) ? parsed.value : [parsed.value]
     } else if (isEdit(args['edits'])) args['edits'] = [args['edits']]
     const oldText = args['oldText']
     const newText = args['newText']
-    if (typeof oldText === 'string' && typeof newText === 'string') {
-      const edits = Array.isArray(args['edits']) ? [...args['edits']] : []
+    if (isLegacyEdit({ oldText, newText })) {
+      const edits = isArray(args['edits']) ? [...args['edits']] : []
       edits.push({ oldText, newText })
       delete args['oldText']
       delete args['newText']
@@ -56,7 +58,7 @@ export const tool = AiTool.make('edit', {
   .annotate(Metadata.Metadata, {
     replay: 'unsafe',
     repair,
-    project: (result) => Schema.decodeUnknownSync(Result)(result),
+    project: (result) => Metadata.decodeResult('edit', result),
   })
 export const handler = Effect.fnUntraced(function* (input: Input) {
   const env = yield* Env

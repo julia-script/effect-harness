@@ -9,16 +9,20 @@ import * as Schema from 'effect/Schema'
 import type * as Response from 'effect/ai/Response'
 import * as Provider from './LanguageModel.ts'
 import * as RequestOptions from './RequestOptions.ts'
-import type * as Cli from './Cli.ts'
 
-export interface Entry {
-  readonly modelId: string
-  readonly contextWindow: number
-  readonly maxOutputTokens: number
-  readonly efforts?: ReadonlyArray<NonNullable<Cli.Request['effort']>> | undefined
-  /** Explicit caller declaration; current Sonnet/Opus 5.5 and Fable cannot turn thinking off. */
-  readonly supportsThinkingOff?: boolean | undefined
-}
+const Effort = Schema.Literals(['low', 'medium', 'high', 'xhigh', 'max'])
+const Limit = Schema.Int.check(
+  Schema.isGreaterThan(0),
+  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+)
+export const Entry = Schema.Struct({
+  modelId: Schema.NonEmptyString,
+  contextWindow: Limit,
+  maxOutputTokens: Limit,
+  efforts: Schema.optional(Schema.Array(Effort)),
+  supportsThinkingOff: Schema.optional(Schema.Boolean),
+}).check(Schema.makeFilter((entry) => entry.maxOutputTokens <= entry.contextWindow))
+export type Entry = typeof Entry.Type
 export interface Options {
   readonly models: ReadonlyArray<Entry>
   readonly provider?: string | undefined
@@ -29,7 +33,6 @@ const fail = (message: string, cause?: unknown) =>
   new ModelError({
     reason: new ModelUnsupported({ message, ...(cause === undefined ? {} : { cause }) }),
   })
-const Effort = Schema.Literals(['low', 'medium', 'high', 'xhigh', 'max'])
 const NativeOptions = Schema.Struct({ effort: Schema.optionalKey(Effort) })
 const positive = (value: number) => Number.isSafeInteger(value) && value > 0
 const metadata = Schema.Struct({
@@ -65,13 +68,9 @@ const usage = (value: Response.Usage, provider: Response.ProviderMetadata): Usag
 /** Native CLI catalogue. Transport and policy/history opt-ins remain explicit caller-owned Layers. */
 export const descriptor = (entry: Entry, options?: Omit<Options, 'models'>) =>
   Effect.gen(function* () {
-    if (
-      entry.modelId.length === 0 ||
-      !positive(entry.contextWindow) ||
-      !positive(entry.maxOutputTokens) ||
-      entry.maxOutputTokens > entry.contextWindow
+    yield* Schema.decodeEffect(Entry)(entry).pipe(
+      Effect.mapError((cause) => fail('Invalid CLI catalogue entry or declared limits', cause)),
     )
-      return yield* fail('Supply verified CLI model ID, effective context window and output limit')
     const model = yield* Provider.make({
       model: entry.modelId,
       cwd: options?.cwd,

@@ -1,6 +1,10 @@
+import * as Outcome from './workflow/Outcome.ts'
+import * as Ownership from './Ownership.ts'
+import { ToolCall } from './workflow/ToolCall.ts'
+import * as Option from 'effect/Option'
 // Semantic commit ordering adapted from pi-durable (MIT), pinned 636703a0.
 import * as Agent from '@effect-harness/harness/Agent'
-import type * as Invocation from '@effect-harness/harness/Invocation'
+import * as Invocation from '@effect-harness/harness/Invocation'
 import * as Totals from '@effect-harness/harness/Usage'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -13,107 +17,125 @@ import * as Record from './Record.ts'
 import { rejected, type StorageError, Corrupt } from './StorageError.ts'
 import * as View from './View.ts'
 
-export type QueuedItem = { readonly id: Record.SubmissionId; readonly mode: Inbox.Item['mode'] }
-export type MessageChange =
-  | {
-      readonly type: 'text_start' | 'thinking_start' | 'toolcall_start'
-      readonly contentIndex: number
-      readonly block: Prompt.AssistantMessagePart
-    }
-  | {
-      readonly type: 'text_delta' | 'thinking_delta'
-      readonly contentIndex: number
-      readonly delta: string
-    }
-  | {
-      readonly type: 'toolcall_delta'
-      readonly contentIndex: number
-      readonly path: View.Path
-      readonly delta: string
-    }
-  | {
-      readonly type: 'block'
-      readonly contentIndex: number
-      readonly block: Prompt.AssistantMessagePart
-    }
-  | { readonly type: 'message'; readonly message: Prompt.AssistantMessage }
-export interface Snapshot {
-  readonly type: 'snapshot'
-  readonly entries: ReadonlyArray<Record.Entry>
-  readonly run?: { readonly inputs: ReadonlyArray<Record.SubmissionId> }
-  readonly generation?: Omit<NonNullable<Inbox.LiveState['generation']>, 'message'> & {
-    readonly message?: Prompt.AssistantMessage
-    readonly usage?: Totals.Usage
-  }
-  readonly tools: ReadonlyArray<typeof Inbox.ToolSlot.Type>
-  readonly compactions: NonNullable<Inbox.LiveState['compactions']>
-  readonly inbox: ReadonlyArray<QueuedItem>
-  readonly agent: Agent.State
-  readonly usage: Totals.State
+export const QueuedItem = Schema.Struct({
+  id: Record.SubmissionId,
+  mode: Schema.Literals(['steer', 'followUp', 'write']),
+})
+export type QueuedItem = typeof QueuedItem.Type
+export const MessageChange = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literals(['text_start', 'thinking_start', 'toolcall_start', 'block']),
+    contentIndex: Schema.Int,
+    block: Prompt.AssistantMessagePart,
+  }),
+  Schema.Struct({
+    type: Schema.Literals(['text_delta', 'thinking_delta']),
+    contentIndex: Schema.Int,
+    delta: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal('toolcall_delta'),
+    contentIndex: Schema.Int,
+    path: View.Path,
+    delta: Schema.String,
+  }),
+  Schema.Struct({ type: Schema.Literal('message'), message: Prompt.AssistantMessage }),
+])
+export type MessageChange = typeof MessageChange.Type
+export const Snapshot = Schema.Struct({
+  type: Schema.Literal('snapshot'),
+  entries: Schema.Array(Record.Entry),
+  run: Schema.optionalKey(Schema.Struct({ inputs: Schema.Array(Record.SubmissionId) })),
+  generation: Schema.optionalKey(
+    Schema.Struct({
+      attempt: Inbox.LiveState.fields.generation.schema.fields.attempt,
+      model: Inbox.LiveState.fields.generation.schema.fields.model,
+      retry: Inbox.LiveState.fields.generation.schema.fields.retry,
+      deferred: Inbox.LiveState.fields.generation.schema.fields.deferred,
+      message: Schema.optionalKey(Prompt.AssistantMessage),
+      usage: Schema.optionalKey(Totals.Usage),
+    }),
+  ),
+  tools: Schema.Array(Inbox.ToolSlot),
+  compactions: Inbox.LiveState.fields.compactions.schema,
+  inbox: Schema.Array(QueuedItem),
+  agent: Agent.State,
+  usage: Totals.State,
+})
+export type Snapshot = typeof Snapshot.Type
+const toolIdentity = { toolCallId: Schema.String, toolName: Schema.String }
+const compactionIdentity = {
+  taskId: Record.TaskId,
+  reason: Schema.Literals(['manual', 'threshold', 'overflow', 'background']),
 }
-export type AgentEvent =
-  | Snapshot
-  | { readonly type: 'run_start' | 'run_end'; readonly inputs: ReadonlyArray<Record.SubmissionId> }
-  | { readonly type: 'turn_start' | 'turn_end' }
-  | { readonly type: 'message_start'; readonly message: Prompt.Message }
-  | {
-      readonly type: 'message_update'
-      readonly usage: Totals.Usage
-      readonly changes: ReadonlyArray<MessageChange>
-    }
-  | { readonly type: 'message_end' | 'entry_appended'; readonly entry: Record.Entry }
-  | {
-      readonly type: 'tool_execution_start'
-      readonly toolCallId: string
-      readonly toolName: string
-      readonly args: Record.Json
-    }
-  | {
-      readonly type: 'tool_execution_update'
-      readonly toolCallId: string
-      readonly toolName: string
-      readonly output?:
-        | { readonly trimStart?: number; readonly append?: string }
-        | { readonly set: string }
-      readonly details?: Schema.Json
-      readonly diagnostics?: ReadonlyArray<Invocation.Diagnostic>
-    }
-  | {
-      readonly type: 'tool_execution_end'
-      readonly toolCallId: string
-      readonly toolName: string
-      readonly entry?: Record.Entry
-    }
-  | { readonly type: 'inbox_update'; readonly items: ReadonlyArray<QueuedItem> }
-  | { readonly type: 'submission'; readonly record: Record.Submission }
-  | {
-      readonly type: 'auto_retry_start'
-      readonly attempt: number
-      readonly at: number
-      readonly errorMessage: string
-    }
-  | { readonly type: 'auto_retry_end'; readonly attempt: number }
-  | { readonly type: 'deferred_poll'; readonly pollAt: number }
-  | { readonly type: 'agent_changed'; readonly agent: Agent.State }
-  | { readonly type: 'usage_changed'; readonly usage: Totals.State }
-  | {
-      readonly type: 'task_failed'
-      readonly taskId: Record.TaskId
-      readonly kind: string
-      readonly message: string
-    }
-  | {
-      readonly type: 'compaction_start'
-      readonly taskId: Record.TaskId
-      readonly reason: NonNullable<Inbox.LiveState['compactions']>[number]['reason']
-      readonly blocking: boolean
-    }
-  | {
-      readonly type: 'compaction_end'
-      readonly taskId: Record.TaskId
-      readonly reason: NonNullable<Inbox.LiveState['compactions']>[number]['reason']
-    }
-export type Batch = ReadonlyArray<AgentEvent>
+export const AgentEvent = Schema.Union([
+  Snapshot,
+  Schema.Struct({
+    type: Schema.Literals(['run_start', 'run_end']),
+    inputs: Schema.Array(Record.SubmissionId),
+  }),
+  Schema.Struct({ type: Schema.Literals(['turn_start', 'turn_end']) }),
+  Schema.Struct({ type: Schema.Literal('message_start'), message: Prompt.Message }),
+  Schema.Struct({
+    type: Schema.Literal('message_update'),
+    usage: Totals.Usage,
+    changes: Schema.Array(MessageChange),
+  }),
+  Schema.Struct({ type: Schema.Literals(['message_end', 'entry_appended']), entry: Record.Entry }),
+  Schema.Struct({
+    type: Schema.Literal('tool_execution_start'),
+    ...toolIdentity,
+    args: Schema.Json,
+  }),
+  Schema.Struct({
+    type: Schema.Literal('tool_execution_update'),
+    ...toolIdentity,
+    output: Schema.optionalKey(
+      Schema.Union([
+        Schema.Struct({
+          trimStart: Schema.optionalKey(Schema.Finite),
+          append: Schema.optionalKey(Schema.String),
+        }),
+        Schema.Struct({ set: Schema.String }),
+      ]),
+    ),
+    details: Schema.optionalKey(Schema.Json),
+    diagnostics: Schema.optionalKey(Schema.Array(Invocation.Diagnostic)),
+  }),
+  Schema.Struct({
+    type: Schema.Literal('tool_execution_end'),
+    ...toolIdentity,
+    entry: Schema.optionalKey(Record.Entry),
+  }),
+  Schema.Struct({ type: Schema.Literal('inbox_update'), items: Schema.Array(QueuedItem) }),
+  Schema.Struct({ type: Schema.Literal('submission'), record: Record.Submission }),
+  Schema.Struct({
+    type: Schema.Literal('auto_retry_start'),
+    attempt: Schema.Int,
+    at: Schema.Finite,
+    errorMessage: Schema.String,
+  }),
+  Schema.Struct({ type: Schema.Literal('auto_retry_end'), attempt: Schema.Int }),
+  Schema.Struct({ type: Schema.Literal('deferred_poll'), pollAt: Schema.Finite }),
+  Schema.Struct({ type: Schema.Literal('agent_changed'), agent: Agent.State }),
+  Schema.Struct({ type: Schema.Literal('usage_changed'), usage: Totals.State }),
+  Schema.Struct({
+    type: Schema.Literal('task_failed'),
+    taskId: Record.TaskId,
+    kind: Schema.String,
+    message: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal('compaction_start'),
+    ...compactionIdentity,
+    blocking: Schema.Boolean,
+  }),
+  Schema.Struct({ type: Schema.Literal('compaction_end'), ...compactionIdentity }),
+])
+export type AgentEvent = typeof AgentEvent.Type
+export const Batch = Schema.Array(AgentEvent)
+export type Batch = typeof Batch.Type
+export const BatchJson = Schema.toCodecJson(Batch)
 export interface Watch extends View.ProjectionWatch<Batch> {
   readonly snapshot: Snapshot
 }
@@ -170,11 +192,8 @@ export const snapshot = Effect.fnUntraced(function* (
     usage: usage ?? Totals.empty(),
   }
 })
-const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
-const isObject = (value: Record.Json | undefined): value is Record.JsonObject =>
-  value !== null && typeof value === 'object' && !Array.isArray(value)
-const object = (value: Record.Json | undefined): Record.JsonObject | undefined =>
-  isObject(value) ? value : undefined
+const samePart = Schema.toEquivalence(Prompt.AssistantMessagePart)
+const sameParts = Schema.toEquivalence(Schema.Array(Prompt.AssistantMessagePart))
 const generationKind = (kind: string) =>
   kind === '@effect-harness/durable/Generation/v1' ||
   kind === 'harness.generation' ||
@@ -208,7 +227,8 @@ export function messageChanges(
       if (message.content.length < before.content.length) return [{ type: 'message', message }]
       for (let index = 0; index < message.content.length; index++) {
         const block = message.content[index]
-        if (block === undefined || same(block, before.content[index])) continue
+        const previous = before.content[index]
+        if (block === undefined || (previous !== undefined && samePart(block, previous))) continue
         if (!touched.has(index)) touched.set(index, new Map())
         whole.add(index)
         if (index >= before.content.length) starts.add(index)
@@ -289,7 +309,7 @@ export function messageChanges(
       )
     } else changes.push(...deltas)
   }
-  return changes.length === 0 && !same(before.content, message.content)
+  return changes.length === 0 && !sameParts(before.content, message.content)
     ? [{ type: 'message', message }]
     : changes
 }
@@ -373,7 +393,15 @@ export const translate = Effect.fnUntraced(function* (
   for (const slot of slots) {
     if (slot.status !== 'running' || previousSlots.get(slot.callId)?.status === 'running') continue
     const task = slot.taskId === undefined ? undefined : tasks.get(slot.taskId)
-    const args = object(task?.input)?.arguments ?? object(task?.state.checkpoint)?.arguments ?? {}
+    const binding = Schema.decodeUnknownOption(Ownership.Binding)(task?.input)
+    const payload =
+      Option.isSome(binding) && binding.value.workflow === ToolCall._tag
+        ? Schema.decodeUnknownOption(ToolCall.payloadSchema)(binding.value.payload)
+        : Option.none()
+    const checkpoint = Schema.decodeUnknownOption(Outcome.ToolCheckpoint)(task?.state.checkpoint)
+    let args: Record.Json = {}
+    if (Option.isSome(payload))
+      args = Option.isSome(checkpoint) ? checkpoint.value.arguments : payload.value.arguments
     events.push({
       type: 'tool_execution_start',
       toolCallId: slot.callId,
@@ -491,16 +519,14 @@ export const translate = Effect.fnUntraced(function* (
     }
     if (task.state.status !== 'terminal') continue
     if (generationKind(task.kind) && !held.delete(task.id)) turnEnded = true
-    const outcome = object(task.state.outcome)
-    const status = outcome?.status
+    const outcome = Outcome.classifyTask(task)
+    const status = outcome?.directStatus
     if (status === 'faulted' || status === 'orphaned') {
-      const error = object(outcome?.error)
-      const detail = outcome?.detail ?? error?.message ?? outcome?.reason
       events.push({
         type: 'task_failed',
         taskId: task.id,
         kind: task.kind,
-        message: typeof detail === 'string' ? detail : 'Task failed',
+        message: outcome?.message ?? 'Task failed',
       })
     }
   }

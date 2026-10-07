@@ -1,3 +1,6 @@
+import { vi } from 'vitest'
+vi.mock('effect/ai/LanguageModel', { spy: true })
+import * as NativeLanguageModel from 'effect/ai/LanguageModel'
 import { assert, describe, it } from '@effect/vitest'
 import * as Model from '@effect-harness/harness/Model'
 import * as Usage from '@effect-harness/harness/Usage'
@@ -291,3 +294,28 @@ import * as Schema from 'effect/Schema'
 const SchemaJson = {
   parse: (text: string) => Schema.decodeUnknownSync(Schema.JsonObject)(JSON.parse(text)),
 }
+
+describe('catalogue schema admission', () => {
+  it.effect(
+    'rejects malformed declared prices and limits with original SchemaError cause before client work',
+    () => {
+      const f = fixture()
+      return Effect.gen(function* () {
+        const constructions = vi.mocked(NativeLanguageModel.make).mock.calls.length
+        const invalid: ReadonlyArray<Catalog.Entry> = [
+          { ...entry, modelId: '' },
+          { ...entry, contextWindow: Number.MAX_SAFE_INTEGER + 1 },
+          { ...entry, maxOutputTokens: 0 },
+          { ...entry, maxOutputTokens: entry.contextWindow + 1 },
+        ]
+        for (const value of invalid) {
+          const error = yield* Catalog.descriptor(value).pipe(Effect.flip)
+          assert.strictEqual(error.reason._tag, 'ModelUnsupported')
+          assert.isTrue(Schema.isSchemaError(error.cause))
+        }
+        assert.strictEqual(vi.mocked(NativeLanguageModel.make).mock.calls.length, constructions)
+        assert.strictEqual(f.commands.length, 0)
+      }).pipe(Effect.provide(f.layer))
+    },
+  )
+})

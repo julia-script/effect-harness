@@ -1,3 +1,4 @@
+import * as SchemaField from '../SchemaField.ts'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as AiTool from 'effect/ai/Tool'
@@ -8,7 +9,7 @@ import * as Metadata from '../Tool.ts'
 import * as Truncate from './Truncate.ts'
 export const Parameters = Schema.Struct({
   command: Schema.String,
-  timeout: Schema.optionalKey(
+  timeout: SchemaField.optional(
     Schema.Finite.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(2147483.647)),
   ),
 })
@@ -28,7 +29,7 @@ export interface Options {
 export interface PowerShellOptions extends Options {
   readonly programs?: ReadonlyArray<string> | undefined
 }
-const project = (result: unknown): ToolResult => Schema.decodeUnknownSync(Result)(result)
+const project = (result: unknown) => Metadata.decodeResult('bash', result)
 export const tool = AiTool.make('bash', {
   description:
     'Execute a shell command. Combined stdout/stderr streams with a 2000-line/50KB tail; larger complete output spills to a diagnostic temp file.',
@@ -50,7 +51,11 @@ export const powershell = AiTool.make('powershell', {
   .addDependency(Env)
   .addDependency(Invocation)
   .addDependency(ToolCall)
-  .annotate(Metadata.Metadata, { replay: 'unsafe', output: { retain: 'tail' }, project })
+  .annotate(Metadata.Metadata, {
+    replay: 'unsafe',
+    output: { retain: 'tail' },
+    project: (result) => Metadata.decodeResult('powershell', result),
+  })
 const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
   Effect.fnUntraced(function* (
     input: Input,

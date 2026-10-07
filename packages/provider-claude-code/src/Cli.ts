@@ -9,11 +9,12 @@ import * as ChildProcess from 'effect/process/ChildProcess'
 import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import { authentication, processError, protocol, unsupported } from './Error.ts'
 import * as Protocol from './Protocol.ts'
+import * as Prompt from './Prompt.ts'
 
 export interface Request {
   readonly model: string
   readonly system: string
-  readonly content: ReadonlyArray<Schema.Json>
+  readonly content: ReadonlyArray<Prompt.ContentBlock>
   readonly sessionId?: string | undefined
   readonly thinkingEnabled?: boolean | undefined
   readonly maxTokens?: number | undefined
@@ -36,8 +37,8 @@ export class Cli extends Context.Service<
 >()('@effect-harness/provider-claude-code/Cli') {}
 const Status = Schema.Struct({
   loggedIn: Schema.Boolean,
-  authMethod: Schema.optional(Schema.String),
-  apiProvider: Schema.optional(Schema.String),
+  authMethod: Schema.optionalKey(Schema.String),
+  apiProvider: Schema.optionalKey(Schema.String),
 })
 const clearedProviderEnvironment: Record<string, string | undefined> = {
   ANTHROPIC_API_KEY: undefined,
@@ -194,13 +195,13 @@ export const layer = (options?: {
                 )
               if (request.sessionId !== undefined) args.push('--session-id', request.sessionId)
               if (request.effort !== undefined) args.push('--effort', request.effort)
-              const input =
-                JSON.stringify({
-                  type: 'user',
-                  session_id: request.sessionId ?? '',
-                  parent_tool_use_id: null,
-                  message: { role: 'user', content: request.content },
-                }) + '\n'
+              const frame = yield* Prompt.encodeUserFrame({
+                type: 'user',
+                session_id: request.sessionId ?? '',
+                parent_tool_use_id: null,
+                message: { role: 'user', content: request.content },
+              }).pipe(Effect.mapError(() => unsupported('non-serializable user frame')))
+              const input = frame + '\n'
               if (new TextEncoder().encode(input).length > 10 * 1024 * 1024)
                 return yield* unsupported('input exceeding the documented 10MB CLI limit')
               let cacheTtl: string | undefined

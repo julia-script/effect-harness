@@ -1,3 +1,4 @@
+import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as Harness from '@effect-harness/harness/Executor'
@@ -63,9 +64,9 @@ const failure = () =>
     reason: new AiError.InvalidRequestError({ description: 'classified failure' }),
   })
 const input = (requestId: string) => ({
-  sessionId: 'race',
+  sessionId: Identity.SessionId.make('race'),
   conversationId: Record.ROOT_CONVERSATION_ID,
-  requestId,
+  requestId: Identity.RequestId.make(requestId),
   submission: {
     type: 'input' as const,
     whenBusy: 'followUp' as const,
@@ -77,7 +78,7 @@ const until = <E, R>(condition: Effect.Effect<boolean, E, R>) =>
 const pending = <A, E>(fiber: Fiber.Fiber<A, E>) => assert.isUndefined(fiber.pollUnsafe())
 const Node = Workflow.make('race/custom/v1', {
   payload: {
-    sessionId: Schema.String,
+    sessionId: Identity.SessionId,
     conversationId: Record.ConversationId,
     taskId: Record.TaskId,
     name: Schema.String,
@@ -141,7 +142,9 @@ const runtime = (
   )
   return Layer.mergeAll(Executor.layerExecutors, node.pipe(Layer.provide(Cancellation.layer))).pipe(
     Layer.provideMerge(engine),
-    Layer.provideMerge(Directory.layerSingle('race').pipe(Layer.provideMerge(session))),
+    Layer.provideMerge(
+      Directory.layerSingle(Identity.SessionId.make('race')).pipe(Layer.provideMerge(session)),
+    ),
     Layer.provideMerge(config),
     Layer.provide(catalogue),
     Layer.provide(Harness.layer.pipe(Layer.provide(Layer.mergeAll(registry, catalogue)))),
@@ -195,7 +198,12 @@ const reserve = (session: Session.Service, name: string, background = false) =>
         state: { status: 'pending' as const },
       }
       const taskId = yield* tx.createTask(task)
-      const payload = { sessionId: 'race', conversationId: task.conversationId, taskId, name }
+      const payload = {
+        sessionId: Identity.SessionId.make('race'),
+        conversationId: task.conversationId,
+        taskId,
+        name,
+      }
       yield* Structured.bind(tx, { ...task, id: taskId }, Node, payload)
       return payload
     }),
@@ -269,7 +277,7 @@ describe('native race parity', () => {
                       yield* session.transaction((tx) =>
                         CompactionExecutor.create(
                           tx,
-                          'race',
+                          Identity.SessionId.make('race'),
                           Record.ROOT_CONVERSATION_ID,
                           'manual',
                         ),
@@ -471,7 +479,12 @@ describe('native race parity', () => {
             assert.isDefined(firstCut)
             assert.isDefined(secondCut)
             const firstPayload = yield* session.transaction((tx) =>
-              CompactionExecutor.create(tx, 'race', Record.ROOT_CONVERSATION_ID, 'manual'),
+              CompactionExecutor.create(
+                tx,
+                Identity.SessionId.make('race'),
+                Record.ROOT_CONVERSATION_ID,
+                'manual',
+              ),
             )
             const first = yield* Compaction.execute(firstPayload).pipe(Effect.forkScoped)
             yield* Deferred.await(firstEntered)
@@ -480,7 +493,12 @@ describe('native race parity', () => {
               retry: { enabled: false },
             })
             const secondPayload = yield* session.transaction((tx) =>
-              CompactionExecutor.create(tx, 'race', Record.ROOT_CONVERSATION_ID, 'manual'),
+              CompactionExecutor.create(
+                tx,
+                Identity.SessionId.make('race'),
+                Record.ROOT_CONVERSATION_ID,
+                'manual',
+              ),
             )
             const second = yield* Compaction.execute(secondPayload).pipe(Effect.forkScoped)
             yield* Deferred.await(secondEntered)
@@ -620,7 +638,7 @@ describe('native race parity', () => {
             const tools = yield* Tool.bind(toolkit, {
               work: {
                 replay: 'safe',
-                project: (value) => Schema.decodeUnknownSync(Invocation.Result)(value),
+                project: (value) => Tool.decodeResult('fixture', value),
               },
             }).pipe(Effect.provide(toolkit.toLayer({ work: () => stop })))
             const behavior: Behavior = (name) =>
@@ -661,8 +679,8 @@ describe('native race parity', () => {
               )
               const before = yield* session.committed
               const abort = yield* Abort.execute({
-                sessionId: 'race',
-                requestId: 'abort',
+                sessionId: Identity.SessionId.make('race'),
+                requestId: Identity.RequestId.make('abort'),
                 target: { type: 'conversation', id: Record.ROOT_CONVERSATION_ID },
                 background: false,
               }).pipe(Effect.forkScoped)

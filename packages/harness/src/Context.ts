@@ -6,33 +6,23 @@ import * as ToolResult from './ToolResult.ts'
 import * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
 import * as Serialization from './Serialization.ts'
+import { EntryId } from './Identity.ts'
+import { SystemPatch } from './SystemPatch.ts'
+export { ToolDeclaration, SystemPatch } from './SystemPatch.ts'
 
 export const Edit = Schema.Union([
-  Schema.Struct({ target: Schema.Int, action: Schema.Literal('omit') }),
+  Schema.Struct({ target: EntryId, action: Schema.Literal('omit') }),
   Schema.Struct({
-    target: Schema.Int,
+    target: EntryId,
     action: Schema.Literal('replace'),
     messages: Schema.Array(Prompt.Message),
   }),
 ])
 export type Edit = typeof Edit.Type
-export interface ToolDeclaration {
-  readonly name: string
-  readonly description?: string | undefined
-  readonly parameters: Readonly<Record<string, unknown>>
-  readonly provider?:
-    | { readonly id: string; readonly name: string; readonly args: unknown }
-    | undefined
-}
-export interface SystemPatch {
-  readonly sections?: Readonly<Record<string, string | null>> | undefined
-  readonly toolsRemoved?: ReadonlyArray<string> | undefined
-  readonly toolsAdded?: ReadonlyArray<ToolDeclaration> | undefined
-}
 /** Transcript inputs are immutable committed values supplied by the durable package. */
 export interface Entry {
-  readonly id: number
-  readonly head?: number | undefined
+  readonly id: EntryId
+  readonly head?: EntryId | undefined
   readonly kind?: string | undefined
   readonly messages?: ReadonlyArray<Prompt.Message> | undefined
   readonly edits?: ReadonlyArray<Edit> | undefined
@@ -50,11 +40,11 @@ export interface View {
 }
 export const empty = (): View => ({ head: undefined, entries: [], contributions: [], messages: [] })
 /** Newest head marker precedes non-head range; every range entry's edits count, including removed old markers. */
-export function derive(visible: ReadonlyArray<Entry>, at?: number): View {
+export function derive(visible: ReadonlyArray<Entry>, at?: EntryId): View {
   const upto = visible.filter((entry) => at === undefined || entry.id <= at)
   const head = upto.findLast((entry) => entry.head !== undefined)
   const range = upto.filter((entry) => head?.head === undefined || entry.id >= head.head)
-  const edits = new Map<number, Edit>()
+  const edits = new Map<EntryId, Edit>()
   for (const entry of range) for (const edit of entry.edits ?? []) edits.set(edit.target, edit)
   const entries =
     head === undefined ? range : [head, ...range.filter((entry) => entry.head === undefined)]
@@ -220,7 +210,7 @@ export function delta(
   current: View,
 ): {
   readonly headChanged: boolean
-  readonly removed: ReadonlyArray<number>
+  readonly removed: ReadonlyArray<EntryId>
   readonly added: ReadonlyArray<Entry>
 } {
   const ids = new Set(current.entries.map((entry) => entry.id))

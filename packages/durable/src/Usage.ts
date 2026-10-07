@@ -11,7 +11,7 @@ export const UsageDoc = Document.defineUnsafe({
   scope: 'conversation',
   history: 'latest',
   fork: 'initial',
-  schema: Totals.State,
+  schema: Document.jsonObjectCodec(Totals.State),
   initial: Totals.empty,
   checkpointWhen: () => true,
 })

@@ -1,3 +1,4 @@
+import * as Identity from '../Identity.ts'
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Record from '../Record.ts'
@@ -11,7 +12,7 @@ export const Result = Schema.Struct({
 /** Native workflow for an immutable compaction request and its eventual summary placement. */
 export const Compaction = Workflow.make('@effect-harness/durable/Compaction/v1', {
   payload: {
-    sessionId: Schema.String,
+    sessionId: Identity.SessionId,
     conversationId: Record.ConversationId,
     taskId: Record.TaskId,
     reason: Schema.Literals(['manual', 'threshold', 'overflow', 'background']),

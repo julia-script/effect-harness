@@ -1,9 +1,11 @@
+import * as Outcome from '../workflow/Outcome.ts'
 import * as Effect from 'effect/Effect'
 import * as FiberHandle from 'effect/FiberHandle'
 import * as Deferred from 'effect/Deferred'
 import * as Ref from 'effect/Ref'
 import * as Scope from 'effect/Scope'
 import * as Schema from 'effect/Schema'
+import { StrictReceiptJson } from './StrictReceiptJson.ts'
 import * as Semaphore from 'effect/Semaphore'
 import * as Record from '../Record.ts'
 import { rejected, StorageError, Invalid, Closed, Poisoned, Conflict } from '../StorageError.ts'
@@ -60,11 +62,7 @@ export const retainFrames = (frames: ReadonlyArray<Record.Frame>): ReadonlyArray
         write.type === 'task' &&
         (write.value.state.status === 'terminal' || write.value.state.status === 'completing')
       ) {
-        const outcome = write.value.state.outcome
-        const status =
-          outcome !== null && typeof outcome === 'object' && !Array.isArray(outcome)
-            ? Reflect.get(outcome, 'status')
-            : null
+        const status = Outcome.classifyTask(write.value)?.rawDirectStatus ?? null
         buckets.add(
           JSON.stringify([
             write.value.conversationId,
@@ -93,46 +91,10 @@ export const retainFrames = (frames: ReadonlyArray<Record.Frame>): ReadonlyArray
   }
   return retained.reverse()
 }
-const receiptResult = Effect.fnUntraced(function* (input: unknown) {
-  yield* Effect.try({
-    try: () => {
-      const visited = new Set<object>()
-      const visit = (value: unknown): void => {
-        if (value === null || typeof value === 'string' || typeof value === 'boolean') return
-        if (typeof value === 'number' && Number.isFinite(value)) return
-        if (typeof value !== 'object' || value === null)
-          throw new TypeError('Receipt results must be JSON or void')
-        if (visited.has(value)) throw new TypeError('Receipt results cannot be cyclic')
-        if (
-          !Array.isArray(value) &&
-          Object.getPrototypeOf(value) !== Object.prototype &&
-          Object.getPrototypeOf(value) !== null
-        )
-          throw new TypeError('Receipt results cannot contain service or class instances')
-        visited.add(value)
-        for (const key of Reflect.ownKeys(value)) {
-          if (Array.isArray(value) && key === 'length') continue
-          const descriptor = Object.getOwnPropertyDescriptor(value, key)
-          if (
-            typeof key !== 'string' ||
-            descriptor?.enumerable !== true ||
-            !('value' in descriptor)
-          )
-            throw new TypeError('Receipt results require enumerable JSON data properties')
-          visit(descriptor.value)
-        }
-        if (Array.isArray(value))
-          for (let index = 0; index < value.length; index++)
-            if (!Object.hasOwn(value, index))
-              throw new TypeError('Receipt arrays cannot have holes')
-        visited.delete(value)
-      }
-      visit(input)
-    },
-    catch: (cause) => rejected('Receipt result is not serializable JSON', Invalid, cause),
-  })
-  return yield* validate(Schema.Json, input)
-})
+const receiptResult = (input: unknown) =>
+  Schema.decodeUnknownEffect(StrictReceiptJson)(input).pipe(
+    Effect.mapError((cause) => rejected('Receipt result is not serializable JSON', Invalid, cause)),
+  )
 export const make = Effect.fnUntraced(function* (
   backend: Backend,
   release: Effect.Effect<void, StorageError> = Effect.void,

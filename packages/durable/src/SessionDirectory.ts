@@ -1,3 +1,4 @@
+import * as Identity from './Identity.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -8,14 +9,14 @@ import { rejected, type StorageError, NotFound } from './StorageError.ts'
 export class SessionDirectory extends Context.Service<
   SessionDirectory,
   {
-    readonly resolve: (sessionId: string) => Effect.Effect<SessionService, StorageError>
+    readonly resolve: (sessionId: Identity.SessionId) => Effect.Effect<SessionService, StorageError>
   }
 >()('@effect-harness/durable/SessionDirectory') {}
 
 /** Explicit application binding of already scoped Session references; no default registrations. */
 export class Registrations extends Context.Service<
   Registrations,
-  ReadonlyMap<string, SessionService>
+  ReadonlyMap<Identity.SessionId, SessionService>
 >()('@effect-harness/durable/SessionDirectory/Registrations') {}
 
 /** Snapshot the explicitly supplied registration map when this Layer is built. */
@@ -35,7 +36,9 @@ export const layer: Layer.Layer<SessionDirectory, never, Registrations> = Layer.
 )
 
 /** Associates the application's ordinary Session Layer with one durable session identity. */
-export const layerSingle = (sessionId: string): Layer.Layer<SessionDirectory, never, Session> =>
+export const layerSingle = (
+  sessionId: Identity.SessionId,
+): Layer.Layer<SessionDirectory, never, Session> =>
   Layer.effect(
     SessionDirectory,
     Effect.gen(function* () {

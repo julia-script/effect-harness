@@ -1,3 +1,4 @@
+import { validate } from '../storage/State.ts'
 import * as Effect from 'effect/Effect'
 import * as Record from '../Record.ts'
 import { Session } from '../Session.ts'
@@ -160,7 +161,7 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
     ),
   )
   for (let count = 1; count <= 128; count++) yield* delta(session, historicalDocumentId, count)
-  const ancientAt = ((yield* store.read).nextSeq - 1) as Record.Seq
+  const ancientAt = yield* validate(Record.Seq, (yield* store.read).nextSeq - 1)
   yield* session.transaction((tx) =>
     tx
       .write({
@@ -171,7 +172,7 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
       .pipe(Effect.as(null)),
   )
   for (let count = 129; count <= 256; count++) yield* delta(session, historicalDocumentId, count)
-  const recentAt = ((yield* store.read).nextSeq - 1) as Record.Seq
+  const recentAt = yield* validate(Record.Seq, (yield* store.read).nextSeq - 1)
   if (firstEntryId === undefined || exactDocumentId === undefined)
     return yield* rejected('Incomplete benchmark scale')
   let parent = Record.ROOT_CONVERSATION_ID

@@ -1,6 +1,6 @@
+import * as SharedPatch from '@effect-harness/harness/SystemPatch'
 import * as Agent from '@effect-harness/harness/Agent'
 import * as ConversationContext from '@effect-harness/harness/Context'
-import * as ModelExecutor from '@effect-harness/harness/Executor'
 import * as Registry from '@effect-harness/harness/Registry'
 import * as Invocation from '@effect-harness/harness/Invocation'
 import * as Totals from '@effect-harness/harness/Usage'
@@ -27,7 +27,7 @@ export const AgentDoc = Document.defineUnsafe({
   scope: 'conversation',
   history: 'rewindable',
   fork: 'asOf',
-  schema: Agent.State,
+  schema: Document.jsonObjectCodec(Agent.State),
   initial: (): Agent.State => ({}),
   checkpointWhen: () => true,
 })
@@ -76,9 +76,7 @@ export const layerConfiguration = (
   Layer.effect(
     Configuration,
     Effect.gen(function* () {
-      let settings = yield* Schema.decodeUnknownEffect(Agent.Settings)(
-        Agent.settings(options.settings),
-      )
+      let settings = yield* Schema.decodeEffect(Agent.Settings)(Agent.settings(options.settings))
       return Configuration.of({
         get settings() {
           // effect-review-allow P1-throw-only-in-unsafe-orthrow: this synchronous
@@ -86,7 +84,7 @@ export const layerConfiguration = (
           return Document.copyUnsafe(settings)
         },
         updateSettings: (input) =>
-          Schema.decodeUnknownEffect(Agent.Settings)(Agent.settings(input)).pipe(
+          Schema.decodeEffect(Agent.Settings)(Agent.settings(input)).pipe(
             Effect.tap((next) =>
               Effect.sync(() => {
                 settings = next
@@ -155,13 +153,8 @@ export const layerCreation = Layer.effect(Session.CreationHook)(
   }),
 )
 
-const SystemPatch = Schema.Struct({
-  sections: Schema.optionalKey(
-    Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Null])),
-  ),
-  toolsRemoved: Schema.optionalKey(Schema.Array(Schema.String)),
-  toolsAdded: Schema.optionalKey(ModelExecutor.Request.fields.tools),
-})
+export const SystemPatch = SharedPatch.SystemPatch
+export type SystemPatch = typeof SystemPatch.Type
 export const Metadata = Schema.Struct({
   status: Schema.optionalKey(
     Schema.Literals(['stop', 'length', 'tool-calls', 'aborted', 'error', 'deferred']),

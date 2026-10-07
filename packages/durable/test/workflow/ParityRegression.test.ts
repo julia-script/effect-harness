@@ -1,3 +1,5 @@
+import * as Structured from '../../src/workflow/Structured.ts'
+import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as NodeServices from '@effect/platform-node/NodeServices'
@@ -68,9 +70,9 @@ const error = () =>
     reason: new AiError.InvalidRequestError({ description: 'provider-specific-transient' }),
   })
 const input = (requestId: string) => ({
-  sessionId: 'parity',
+  sessionId: Identity.SessionId.make('parity'),
   conversationId: Record.ROOT_CONVERSATION_ID,
-  requestId,
+  requestId: Identity.RequestId.make(requestId),
   submission: {
     type: 'input' as const,
     message: Prompt.userMessage({ content: [Prompt.textPart({ text: 'request' })] }),
@@ -94,7 +96,9 @@ const runtime = (
   const session = Session.layer.pipe(Layer.provideMerge(Memory.layer), Layer.provide(creation))
   return Executor.layer.pipe(
     Layer.provideMerge(WorkflowEngine.layerMemory),
-    Layer.provideMerge(Directory.layerSingle('parity').pipe(Layer.provideMerge(session))),
+    Layer.provideMerge(
+      Directory.layerSingle(Identity.SessionId.make('parity')).pipe(Layer.provideMerge(session)),
+    ),
     Layer.provideMerge(config),
     Layer.provideMerge(catalog),
     Layer.provide(Harness.layer.pipe(Layer.provide(Layer.mergeAll(registry, catalog)))),
@@ -187,7 +191,10 @@ describe('independent parity regressions', () => {
             Layer.mergeAll(
               Directory.layer.pipe(
                 Layer.provide(
-                  Layer.succeed(Directory.Registrations, new Map([['parity', intercepted]])),
+                  Layer.succeed(
+                    Directory.Registrations,
+                    new Map([[Identity.SessionId.make('parity'), intercepted]]),
+                  ),
                 ),
               ),
               config,
@@ -424,7 +431,12 @@ describe('independent parity regressions', () => {
               }),
             )
             const payload = yield* session.transaction((tx) =>
-              CompactionExecutor.create(tx, 'parity', Record.ROOT_CONVERSATION_ID, 'manual'),
+              CompactionExecutor.create(
+                tx,
+                Identity.SessionId.make('parity'),
+                Record.ROOT_CONVERSATION_ID,
+                'manual',
+              ),
             )
             const result = yield* Compaction.execute(payload)
             assert.ok(
@@ -460,8 +472,8 @@ describe('independent parity regressions', () => {
             ),
           )
           const bound = yield* Tool.bind(tools, {
-            slow: { project: (value) => Schema.decodeUnknownSync(Invocation.Result)(value) },
-            fast: { project: (value) => Schema.decodeUnknownSync(Invocation.Result)(value) },
+            slow: { project: (value) => Tool.decodeResult('fixture', value) },
+            fast: { project: (value) => Tool.decodeResult('fixture', value) },
           }).pipe(
             Effect.provide(
               tools.toLayer({
@@ -657,7 +669,7 @@ describe('independent parity regressions', () => {
                 })
                 const taskId = yield* tx.mint(Record.TaskId)
                 const payload = {
-                  sessionId: 'parity',
+                  sessionId: Identity.SessionId.make('parity'),
                   conversationId: Record.ROOT_CONVERSATION_ID,
                   taskId,
                   generationTaskId: taskId,
@@ -726,3 +738,84 @@ describe('independent parity regressions', () => {
       ),
   )
 })
+
+it.live('preserves terminal projection failure instead of settling an interrupted tool', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const native = yield* NativeModel.make({
+        generateText: () => Effect.succeed([]),
+        streamText: () => Stream.empty,
+      })
+      const toolkit = Toolkit.make(
+        AiTool.make('invalid-projection', {
+          parameters: Schema.Struct({}),
+          success: Schema.String,
+          failure: ToolError,
+        }),
+      )
+      const tools = yield* Tool.bind(toolkit, {
+        'invalid-projection': {
+          replay: 'safe',
+          project: () => Tool.decodeResult('invalid-projection', { isError: 'invalid' }),
+        },
+      }).pipe(
+        Effect.provide(
+          toolkit.toLayer({ 'invalid-projection': () => Effect.succeed('valid native success') }),
+        ),
+      )
+      yield* Effect.gen(function* () {
+        const session = yield* Session.Session
+        const root = yield* session.root()
+        const payload = yield* session.transaction(
+          Effect.fnUntraced(function* (tx) {
+            const assistant = yield* tx.appendEntry(root.id, { kind: 'test.assistant' })
+            const taskId = yield* tx.createTask({
+              conversationId: root.id,
+              kind: 'harness.tool',
+              version: 1,
+              input: null,
+              background: false,
+              abortRequested: false,
+              state: { status: 'pending' },
+            })
+            const payload = {
+              sessionId: Identity.SessionId.make('parity'),
+              conversationId: root.id,
+              taskId,
+              generationTaskId: taskId,
+              assistantId: assistant.id,
+              callId: 'invalid-call',
+              name: 'invalid-projection',
+              arguments: {},
+            }
+            yield* Structured.bind(
+              tx,
+              {
+                id: taskId,
+                conversationId: root.id,
+                kind: 'harness.tool',
+                version: 1,
+                input: null,
+                background: false,
+                abortRequested: false,
+                state: { status: 'pending' },
+              },
+              ToolCall,
+              payload,
+            )
+            return payload
+          }),
+        )
+        const failure = yield* ToolCall.execute(payload).pipe(Effect.flip)
+        assert.strictEqual(failure.reason._tag, 'InvalidState')
+        assert.strictEqual(failure.message, 'Tool terminal projection failed')
+        assert.strictEqual((yield* session.task(payload.taskId))?.state.status, 'running')
+        assert.isUndefined((yield* session.task(payload.taskId))?.state.outcome)
+      }).pipe(
+        Effect.provide(
+          runtime(descriptor(native), Registry.layer([{ name: 'invalid-projection', tools }])),
+        ),
+      )
+    }),
+  ),
+)

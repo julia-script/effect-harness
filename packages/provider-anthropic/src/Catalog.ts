@@ -16,26 +16,6 @@ import type * as Response from 'effect/ai/Response'
 import type * as Redacted from 'effect/Redacted'
 import * as Prompt from './Prompt.ts'
 
-export interface Prices {
-  readonly input: number
-  readonly output: number
-  readonly cacheRead: number
-  readonly cacheWrite: number
-  readonly cacheWrite1h?: number | undefined
-}
-export interface Entry {
-  readonly modelId: string
-  readonly contextWindow: number
-  readonly maxOutputTokens: number
-  readonly thinking?:
-    | { readonly mode: 'adaptive' }
-    | { readonly mode: 'budget'; readonly budgets: Readonly<Record<string, number>> }
-    | undefined
-  readonly efforts?: ReadonlyArray<'low' | 'medium' | 'high'> | undefined
-  readonly cache?: boolean | undefined
-  readonly config?: Omit<typeof AnthropicLanguageModel.Config.Service, 'model'> | undefined
-  readonly prices?: Prices | undefined
-}
 const fail = (message: string, cause?: unknown) =>
   new ModelError({
     reason: new ModelUnsupported({ message, ...(cause === undefined ? {} : { cause }) }),
@@ -63,6 +43,59 @@ const Options = Schema.Struct({
   strictJsonSchema: Schema.optionalKey(Schema.Boolean),
   midConversationSystemMessages: Schema.optionalKey(Schema.Boolean),
 })
+const Price = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
+export const Prices = Schema.Struct({
+  input: Price,
+  output: Price,
+  cacheRead: Price,
+  cacheWrite: Price,
+  cacheWrite1h: Schema.optional(Price),
+})
+export type Prices = typeof Prices.Type
+const Limit = Schema.Int.check(
+  Schema.isGreaterThan(0),
+  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+)
+const EntryOptions = Schema.Struct({
+  ...Options.fields,
+  disableParallelToolCalls: Schema.optional(Schema.Boolean),
+  structuredOutputs: Schema.optional(Schema.Boolean),
+  strictJsonSchema: Schema.optional(Schema.Boolean),
+  midConversationSystemMessages: Schema.optional(Schema.Boolean),
+})
+export const Entry = Schema.Struct({
+  modelId: Schema.NonEmptyString,
+  contextWindow: Limit,
+  maxOutputTokens: Limit,
+  thinking: Schema.optional(
+    Schema.Union([
+      Schema.Struct({ mode: Schema.Literal('adaptive') }),
+      Schema.Struct({
+        mode: Schema.Literal('budget'),
+        budgets: Schema.Record(Schema.String, Limit.check(Schema.isGreaterThanOrEqualTo(1024))),
+      }),
+    ]),
+  ),
+  efforts: Schema.optional(Schema.Array(Schema.Literals(['low', 'medium', 'high']))),
+  cache: Schema.optional(Schema.Boolean),
+  config: Schema.optional(EntryOptions),
+  prices: Schema.optional(Prices),
+}).check(
+  Schema.makeFilter((entry) => entry.maxOutputTokens <= entry.contextWindow),
+  Schema.makeFilter(
+    (entry) =>
+      entry.config?.max_tokens === undefined ||
+      (Number.isSafeInteger(entry.config.max_tokens) &&
+        entry.config.max_tokens > 0 &&
+        entry.config.max_tokens <= entry.maxOutputTokens),
+  ),
+  Schema.makeFilter(
+    (entry) =>
+      entry.thinking?.mode !== 'budget' ||
+      Object.values(entry.thinking.budgets).every((budget) => budget < entry.maxOutputTokens),
+  ),
+)
+export type Entry = typeof Entry.Type
 const decode = (value: unknown) =>
   Schema.decodeUnknownEffect(Options, { onExcessProperty: 'error' })(
     Predicate.isReadonlyObject(value)
@@ -141,31 +174,12 @@ const usage = (
 /** Captures the standard native client; public user metadata correlates UUID7 requests without private affinity headers. */
 export const descriptor = (entry: Entry, provider = 'anthropic') =>
   Effect.gen(function* () {
-    if (
-      entry.modelId.length === 0 ||
-      !positive(entry.contextWindow) ||
-      !positive(entry.maxOutputTokens) ||
-      entry.maxOutputTokens > entry.contextWindow
-    )
-      return yield* fail('Supply valid model ID, context window and output limit')
-    if (
-      entry.prices !== undefined &&
-      Object.values(entry.prices).some((value) => !Number.isFinite(value) || value < 0)
-    )
-      return yield* fail('Prices must be finite nonnegative USD per million tokens')
-    if (
-      entry.thinking?.mode === 'budget' &&
-      Object.values(entry.thinking.budgets).some(
-        (value) => !positive(value) || value < 1024 || value >= entry.maxOutputTokens,
-      )
-    )
-      return yield* fail('Thinking budgets must be integers >=1024 below the declared output cap')
     const defaults = yield* decode(entry.config ?? {})
-    if (
-      defaults.max_tokens !== undefined &&
-      (!positive(defaults.max_tokens) || defaults.max_tokens > entry.maxOutputTokens)
+    yield* Schema.decodeEffect(Entry)({ ...entry, config: defaults }).pipe(
+      Effect.mapError((cause) =>
+        fail('Invalid Anthropic catalogue entry, defaults or thinking budget', cause),
+      ),
     )
-      return yield* fail('Default output limit exceeds the declared model output cap')
     const model = yield* Prompt.make({
       model: entry.modelId,
       config: { ...defaults, max_tokens: defaults.max_tokens ?? entry.maxOutputTokens },

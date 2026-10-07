@@ -1,3 +1,4 @@
+import * as Identity from '../Identity.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import type * as Layer from 'effect/Layer'
 import * as Clock from 'effect/Clock'
@@ -57,10 +58,10 @@ export const storageError = (error: StorageError) =>
 /** A task record is an inspectable projection of a normal native Workflow execution. */
 export const createGeneration = Effect.fnUntraced(function* (
   tx: Session.Transaction,
-  sessionId: string,
+  sessionId: Identity.SessionId,
   conversationId: Record.ConversationId,
   inputs: ReadonlyArray<Record.SubmissionId>,
-  runId?: string,
+  runId?: Identity.RunId,
 ) {
   const taskId = yield* tx.mint(Record.TaskId)
   const payload = {
@@ -68,7 +69,7 @@ export const createGeneration = Effect.fnUntraced(function* (
     conversationId,
     taskId,
     inputs: [...inputs],
-    runId: runId ?? JSON.stringify([sessionId, conversationId, inputs[0]]),
+    runId: runId ?? Identity.RunId.make(JSON.stringify([sessionId, conversationId, inputs[0]])),
   }
   const executionId = yield* Generation.executionId(payload)
   const binding: Ownership.Binding = { workflow: Generation._tag, executionId, payload }

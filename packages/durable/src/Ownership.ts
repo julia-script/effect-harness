@@ -1,3 +1,4 @@
+import * as Id from './Identity.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -103,7 +104,7 @@ export const execute = Effect.fnUntraced(function* (
 })
 
 export interface Identity {
-  readonly sessionId: string
+  readonly sessionId: Id.SessionId
   readonly conversationId: Record.ConversationId
   readonly taskId: Record.TaskId
 }

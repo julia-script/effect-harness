@@ -21,7 +21,7 @@ export const tool = AiTool.make('write', {
   .addDependency(Invocation)
   .annotate(Metadata.Metadata, {
     replay: 'unsafe',
-    project: (result) => Schema.decodeUnknownSync(Result)(result),
+    project: (result) => Metadata.decodeResult('write', result),
   })
 export const handler = Effect.fnUntraced(function* (input: Input) {
   const env = yield* Env

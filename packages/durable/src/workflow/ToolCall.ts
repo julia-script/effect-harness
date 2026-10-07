@@ -1,3 +1,4 @@
+import * as Identity from '../Identity.ts'
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Record from '../Record.ts'
@@ -12,7 +13,7 @@ export const Result = Schema.Struct({
 /** Native child workflow whose durable intent governs safe and unsafe tool recovery. */
 export const ToolCall = Workflow.make('@effect-harness/durable/ToolCall/v1', {
   payload: {
-    sessionId: Schema.String,
+    sessionId: Identity.SessionId,
     conversationId: Record.ConversationId,
     taskId: Record.TaskId,
     generationTaskId: Record.TaskId,

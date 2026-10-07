@@ -1,11 +1,12 @@
+import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
 import type * as Response from 'effect/ai/Response'
 
 export const Cost = Schema.Struct({
   /** False means the numeric amounts are a partial subtotal, not a complete price. */
-  known: Schema.optionalKey(Schema.Boolean),
+  known: SchemaField.optional(Schema.Boolean),
   /** A transport can report the total without reporting its price components. */
-  totalKnown: Schema.optionalKey(Schema.Boolean),
+  totalKnown: SchemaField.optional(Schema.Boolean),
   input: Schema.Finite,
   output: Schema.Finite,
   cacheRead: Schema.Finite,
@@ -18,8 +19,8 @@ export const Usage = Schema.Struct({
   cacheRead: Schema.Finite,
   cacheWrite: Schema.Finite,
   totalTokens: Schema.Finite,
-  cacheWrite1h: Schema.optionalKey(Schema.Finite),
-  reasoning: Schema.optionalKey(Schema.Finite),
+  cacheWrite1h: SchemaField.optional(Schema.Finite),
+  reasoning: SchemaField.optional(Schema.Finite),
   cost: Cost,
 })
 export type Usage = typeof Usage.Type

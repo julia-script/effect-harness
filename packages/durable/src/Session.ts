@@ -1,3 +1,4 @@
+import * as Identity from './Identity.ts'
 import * as Context from 'effect/Context'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
@@ -93,7 +94,7 @@ export interface Transaction {
   ) => Effect.Effect<Record.Page<Record.Submission>, StorageError>
   readonly submissionByRequest: (
     conversationId: Record.ConversationId,
-    requestId: string,
+    requestId: Identity.RequestId,
   ) => Effect.Effect<Record.Submission | undefined, StorageError>
   readonly latestHeadMarker: (
     conversationId: Record.ConversationId,
@@ -128,11 +129,11 @@ export interface Transaction {
       | { readonly status: 'unanswered'; readonly reason: string; readonly detail?: Record.Json },
   ) => Effect.Effect<void, StorageError>
   readonly write: (value: Record.Write) => Effect.Effect<void, StorageError>
-  readonly doc: <T extends Record.JsonObject>(
+  readonly doc: <T extends object>(
     token: Document.Document<T>,
     target?: Document.Target,
   ) => Effect.Effect<Document.Draft<T>, StorageError>
-  readonly retire: <T extends Record.JsonObject>(
+  readonly retire: <T extends object>(
     token: Document.Document<T>,
     target?: Document.Target,
   ) => Effect.Effect<void, StorageError>
@@ -156,21 +157,21 @@ export interface Service {
   /** Apply the host's recovery initializer to an existing conversation atomically. */
   readonly initialize: (conversationId: Record.ConversationId) => Effect.Effect<void, StorageError>
   readonly transaction: TransactionFunction
-  readonly snapshot: <T extends Record.JsonObject>(
+  readonly snapshot: <T extends object>(
     token: Document.Document<T>,
     target?: Document.Target,
   ) => Effect.Effect<Document.Snapshot<T> | undefined, StorageError>
-  readonly snapshotAsOf: <T extends Record.JsonObject>(
+  readonly snapshotAsOf: <T extends object>(
     token: Document.Document<T>,
     conversationId: Record.ConversationId,
     at: Record.EntryId,
     target?: Omit<Document.Target, 'owner'>,
   ) => Effect.Effect<Document.Snapshot<T> | undefined, StorageError>
-  readonly state: <T extends Record.JsonObject>(
+  readonly state: <T extends object>(
     token: Document.Document<T>,
     target?: Document.Target,
   ) => Effect.Effect<Observation.State<T> | undefined, StorageError, import('effect/Scope').Scope>
-  readonly watchDoc: <T extends Record.JsonObject>(
+  readonly watchDoc: <T extends object>(
     token: Document.Document<T>,
     target?: Document.Target,
   ) => Effect.Effect<Observation.Watch<T> | undefined, StorageError, import('effect/Scope').Scope>
@@ -322,6 +323,13 @@ const draftValue = (input: unknown): Record.Json =>
       },
     },
   )
+const draftObject = (value: unknown): Record.JsonObject =>
+  Result.match(Schema.decodeUnknownResult(Schema.JsonObject)(value), {
+    onSuccess: (value) => cloneDraft(value),
+    onFailure: (cause) => {
+      throw new DraftMutationError({ message: 'Document draft must remain JSON', cause })
+    },
+  })
 const cloneDraft = <A>(value: A): A =>
   Result.match(detached(value), {
     onSuccess: (value) => value,
@@ -341,16 +349,12 @@ interface Acquired {
   readonly id: Record.DocumentId
   readonly stored?: Document.Snapshot
   readonly staged?: Record.DocumentCreate
-  readonly value: Record.JsonObject
+  readonly value: object
   readonly ops: Array<Record.Op>
   retire: boolean
 }
 
-const draft = <T extends Record.JsonObject>(
-  value: T,
-  active: () => boolean,
-  ops: Array<Record.Op>,
-): T => {
+const draft = <T extends object>(value: T, active: () => boolean, ops: Array<Record.Op>): T => {
   const proxies = new WeakMap<object, object>()
   const wrap = (object: object, path: ReadonlyArray<string | number>): object => {
     const previous = proxies.get(object)
@@ -379,7 +383,7 @@ const draft = <T extends Record.JsonObject>(
           )
             throw new DraftMutationError({ message: 'Invalid array length' })
           Reflect.set(target, key, item)
-          ops.push(['replace', cloneDraft(value)])
+          ops.push(['replace', draftObject(value)])
           return true
         }
         if (typeof key === 'symbol')
@@ -426,7 +430,7 @@ const draft = <T extends Record.JsonObject>(
           )
             throw new DraftMutationError({ message: 'Invalid array length' })
           Reflect.set(target, key, valid)
-          ops.push(['replace', cloneDraft(value)])
+          ops.push(['replace', draftObject(value)])
           return true
         }
         Object.defineProperty(target, key, {
@@ -609,7 +613,7 @@ export const make = Effect.fnUntraced(function* () {
             return false
           }
           const retiredAddresses = new Set<string>()
-          const acquisitions = new Map<string, Effect.Effect<Record.JsonObject, StorageError>>()
+          const acquisitions = new Map<string, Effect.Effect<object, StorageError>>()
           const open = Effect.suspend(() =>
             active ? Effect.void : Effect.fail(rejected('Transaction is revoked', Revoked)),
           )
@@ -667,7 +671,7 @@ export const make = Effect.fnUntraced(function* () {
               return yield* rejected('Conversation owner must be a live task')
             return { owner: { taskId: task.id, conversationId: task.conversationId } }
           })
-          const doc = <T extends Record.JsonObject>(
+          const doc = <T extends object>(
             token: Document.Document<T>,
             target: Document.Target = {},
           ): Effect.Effect<Document.Draft<T>, StorageError> =>
@@ -741,8 +745,8 @@ export const make = Effect.fnUntraced(function* () {
                       try: () => token.definition.initial(target.seed),
                       catch: (cause) => rejected('Document initializer failed', Invalid, cause),
                     })
-                    value = yield* validate(token.definition.schema, value)
-                    yield* validate(Schema.JsonObject, value)
+                    value = yield* validate(Schema.toType(token.definition.schema), value)
+                    yield* Document.encode(token, value)
                     id = yield* mint(Record.DocumentId)
                   } else {
                     value = (yield* typed(token, stored, migrationCache)).value
@@ -758,8 +762,8 @@ export const make = Effect.fnUntraced(function* () {
                     value: mutable,
                     ops,
                     retire: false,
-                    prepare: validate(token.definition.schema, mutable).pipe(
-                      Effect.flatMap((valid) => validate(Schema.JsonObject, valid)),
+                    prepare: validate(Schema.toType(token.definition.schema), mutable).pipe(
+                      Effect.flatMap((valid) => Document.encode(token, valid)),
                     ),
                     checkpoint: Effect.try({
                       try: () =>

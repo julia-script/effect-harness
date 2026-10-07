@@ -1,3 +1,4 @@
+import * as SchemaField from './SchemaField.ts'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -15,7 +16,7 @@ import {
   ToolExecution,
 } from './Error.ts'
 import { Invocation, ToolCall, Result, type ToolResult } from './Invocation.ts'
-import type * as ContextView from './Context.ts'
+import * as SystemPatch from './SystemPatch.ts'
 import * as Output from './Output.ts'
 import * as Hook from './Hook.ts'
 import * as Serialization from './Serialization.ts'
@@ -27,7 +28,11 @@ export interface Metadata {
   readonly outputWindow?: boolean | undefined
   readonly repair?: ((args: unknown) => Effect.Effect<unknown, ToolError, Invocation>) | undefined
   readonly project?:
-    | ((result: unknown, encoded: unknown, isFailure: boolean) => ToolResult)
+    | ((
+        result: unknown,
+        encoded: unknown,
+        isFailure: boolean,
+      ) => Effect.Effect<ToolResult, ToolError>)
     | undefined
 }
 export const Metadata = Context.Reference<Metadata>('@effect-harness/harness/Tool/Metadata', {
@@ -158,12 +163,13 @@ export const bind = <Tools extends Record<string, AiTool.Any>, RequestServices =
         )
       const execute = Effect.fnUntraced(function* (args: unknown, id: string) {
         const invocation = yield* Invocation
-        const projected = info.project ?? defaultProject
         const api = yield* ToolCall
         const preliminary = (result: unknown): Effect.Effect<void> =>
           provide(Schema.encodeEffect(success)(result)).pipe(
             Effect.mapError((cause) => error(tool, ToolInvalidResult, cause)),
-            Effect.map((encoded) => projected(result, encoded, false)),
+            Effect.flatMap((encoded) =>
+              project({ tool, metadata: info }, { result, encoded, isFailure: false }),
+            ),
             Effect.flatMap((value) =>
               api.preliminary === undefined
                 ? invocation.progress({
@@ -203,6 +209,32 @@ export const bind = <Tools extends Record<string, AiTool.Any>, RequestServices =
     }
     return registrations
   })
+/** Validate owned tool projections without throwing inside Effect. */
+export const decodeResult = (name: string, value: unknown): Effect.Effect<ToolResult, ToolError> =>
+  Schema.decodeUnknownEffect(Result)(value).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ToolError({
+          reason: new ToolInvalidResult({ name, message: cause.message, cause }),
+        }),
+    ),
+  )
+/** Run the selected effectful projector; native encoded fallback keeps its existing display policy. */
+export const project = (
+  registration: Pick<Registration, 'tool' | 'metadata'>,
+  native: NativeResult,
+): Effect.Effect<ToolResult, ToolError> =>
+  Effect.suspend(() =>
+    registration.metadata.project === undefined
+      ? Effect.succeed(defaultProject(native.result, native.encoded, native.isFailure))
+      : registration.metadata.project(native.result, native.encoded, native.isFailure),
+  ).pipe(
+    Effect.mapError((cause) =>
+      cause.reason._tag === 'ToolInvalidResult'
+        ? cause
+        : error(registration.tool, ToolInvalidResult, cause),
+    ),
+  )
 export function defaultProject(_result: unknown, encoded: unknown, isFailure: boolean): ToolResult {
   return {
     content: [
@@ -213,8 +245,10 @@ export function defaultProject(_result: unknown, encoded: unknown, isFailure: bo
     isError: isFailure,
   }
 }
-export function declaration(registration: Registration): ContextView.ToolDeclaration {
-  return {
+export function declaration(
+  registration: Registration,
+): Effect.Effect<SystemPatch.ToolDeclaration, Schema.SchemaError> {
+  return Schema.decodeUnknownEffect(SystemPatch.ToolDeclaration)({
     name: registration.tool.name,
     ...(registration.tool.description === undefined
       ? {}
@@ -229,13 +263,13 @@ export function declaration(registration: Registration): ContextView.ToolDeclara
           },
         }
       : {}),
-  }
+  })
 }
 export const Intent = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   args: Schema.Json,
-  encodedArgs: Schema.optionalKey(Schema.Json),
+  encodedArgs: SchemaField.optional(Schema.Json),
   replay: Schema.Literals(['safe', 'unsafe']),
 })
 export type Intent = typeof Intent.Type
@@ -336,10 +370,10 @@ export function executionMode(
 /** Controls are reduced in original call order, not finish order; noncompleted/unavailable slots defeat unanimity. */
 export function controls(executions: ReadonlyArray<Execution>): {
   readonly terminate: boolean
-  readonly reset?: { readonly note?: string }
+  readonly reset?: { readonly note?: string | undefined } | undefined
   readonly addTools: ReadonlyArray<string>
 } {
-  let reset: { readonly note?: string } | undefined
+  let reset: { readonly note?: string | undefined } | undefined
   const names = new Set<string>()
   for (const execution of executions) {
     if (execution.outcome !== 'completed') continue

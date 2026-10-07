@@ -1,3 +1,4 @@
+import { cursor as journalCursor } from './storage/State.ts'
 import * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -10,13 +11,13 @@ import type { Service as StoreService } from './Store.ts'
 import { findDocument, materialize } from './storage/State.ts'
 
 export type End = 'stopped' | 'cancelled' | 'session_closed' | 'retired' | 'listener_error'
-export interface Change<T extends Record.JsonObject> {
+export interface Change<T extends object> {
   readonly seq: Record.Seq
   readonly value: Readonly<T> | null
   readonly ops: ReadonlyArray<Record.Op>
   readonly reset: boolean
 }
-export interface Watch<T extends Record.JsonObject> {
+export interface Watch<T extends object> {
   readonly value: Readonly<T> | null
   readonly record: Record.Document
   readonly changes: Stream.Stream<Change<T>, StorageError>
@@ -27,7 +28,7 @@ export interface Watch<T extends Record.JsonObject> {
     listener: (change: Change<T>) => Effect.Effect<void, E, R>,
   ) => Effect.Effect<void, StorageError | E, R>
 }
-export const watch = Effect.fnUntraced(function* <T extends Record.JsonObject>(
+export const watch = Effect.fnUntraced(function* <T extends object>(
   store: StoreService,
   token: Document.Document<T>,
   target: Document.Target = {},
@@ -53,11 +54,11 @@ export const watch = Effect.fnUntraced(function* <T extends Record.JsonObject>(
   yield* Effect.addFinalizer(() => stop('cancelled'))
   yield* Effect.forkScoped(
     Effect.gen(function* () {
-      let after = (baseline.nextSeq - 1) as Record.Seq | 0
+      let after = yield* journalCursor(baseline.nextSeq)
       while (!ended) {
         const journal = yield* store.journal(after)
         if (journal.state.nextSeq - 1 > after) {
-          after = (journal.state.nextSeq - 1) as Record.Seq
+          after = yield* journalCursor(journal.state.nextSeq)
         }
         yield* Effect.sleep('20 millis')
       }
@@ -78,7 +79,7 @@ export const watch = Effect.fnUntraced(function* <T extends Record.JsonObject>(
       if (ended) return yield* rejected('Watch is stopped')
       started = true
       return Stream.unfold<Cursor, Change<T>, StorageError, never>(
-        { after: (baseline.nextSeq - 1) as Record.Seq | 0, pending: [], retire: false },
+        { after: yield* journalCursor(baseline.nextSeq), pending: [], retire: false },
         Effect.fnUntraced(function* (cursor) {
           if (ended) return undefined
           if (cursor.retire) {
@@ -97,7 +98,7 @@ export const watch = Effect.fnUntraced(function* <T extends Record.JsonObject>(
               ),
             )
             if (journal === undefined) return undefined
-            after = (journal.state.nextSeq - 1) as Record.Seq | 0
+            after = yield* journalCursor(journal.state.nextSeq)
             const relevant = journal.frames.flatMap((frame) =>
               frame.documents
                 .filter((publication) => publication.record.id === persisted.record.id)
@@ -118,7 +119,10 @@ export const watch = Effect.fnUntraced(function* <T extends Record.JsonObject>(
               pending.push({
                 seq,
                 value: replacement,
-                ops: replacement === null ? [] : [['replace', replacement]],
+                ops:
+                  replacement === null
+                    ? []
+                    : [['replace', yield* Document.encode(token, replacement)]],
                 reset: true,
               })
             } else
@@ -145,7 +149,9 @@ export const watch = Effect.fnUntraced(function* <T extends Record.JsonObject>(
                 pending.push({
                   seq: frame.seq,
                   value: converted.value,
-                  ops: reset ? [['replace', converted.value]] : publication.ops,
+                  ops: reset
+                    ? [['replace', yield* Document.encode(token, converted.value)]]
+                    : publication.ops,
                   reset,
                 })
               }
@@ -192,14 +198,14 @@ export const commits = (store: StoreService): Stream.Stream<Record.Frame, Storag
         StorageError,
         never
       >(
-        { after: (state.nextSeq - 1) as Record.Seq | 0, pending: [] },
+        { after: yield* journalCursor(state.nextSeq), pending: [] },
         Effect.fnUntraced(function* (cursor) {
           const pending = [...cursor.pending]
           let after = cursor.after
           while (pending.length === 0) {
             const journal = yield* store.journal(after)
             pending.push(...journal.frames)
-            after = (journal.state.nextSeq - 1) as Record.Seq | 0
+            after = yield* journalCursor(journal.state.nextSeq)
             if (pending.length === 0) yield* Effect.sleep('20 millis')
           }
           const frame = pending.shift()
@@ -211,13 +217,13 @@ export const commits = (store: StoreService): Stream.Stream<Record.Frame, Storag
   )
 
 /** An immediately hydrated, scoped view bound to one durable incarnation. */
-export interface State<T extends Record.JsonObject> {
+export interface State<T extends object> {
   readonly value: Readonly<T> | null
   readonly record: Record.Document
   readonly cursor: number
   readonly closed: Effect.Effect<End>
 }
-export const state = Effect.fnUntraced(function* <T extends Record.JsonObject>(
+export const state = Effect.fnUntraced(function* <T extends object>(
   store: StoreService,
   token: Document.Document<T>,
   target: Document.Target = {},

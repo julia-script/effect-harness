@@ -1,3 +1,4 @@
+import * as Identity from '../Identity.ts'
 import * as Effect from 'effect/Effect'
 import * as Scope from 'effect/Scope'
 import * as Exit from 'effect/Exit'
@@ -117,7 +118,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
             conversationId: root,
             type: 'input',
             status: 'queued',
-            requestId: 'r',
+            requestId: Identity.RequestId.make('r'),
           },
         },
       ])
@@ -316,13 +317,13 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
             conversationId: root,
             type: 'input',
             status: 'queued',
-            requestId: '\ud800',
+            requestId: Identity.RequestId.make('\ud800'),
           })
           const write = yield* tx.createSubmission({
             conversationId: root,
             type: 'write',
             status: 'queued',
-            requestId: '\ud801',
+            requestId: Identity.RequestId.make('\ud801'),
           })
           yield* tx.placeSubmission(input.id, eid(100))
           yield* tx.placeSubmission(write.id, eid(101))
@@ -335,13 +336,17 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
       assert.strictEqual((yield* store.read).submissions.find((s) => s.id === ids[1])?.entry, 101)
       assert.strictEqual(
         yield* session.transaction((tx) =>
-          tx.submissionByRequest(root, '\ud800').pipe(Effect.map((s) => s?.answer ?? 0)),
+          tx
+            .submissionByRequest(root, Identity.RequestId.make('\ud800'))
+            .pipe(Effect.map((s) => s?.answer ?? 0)),
         ),
         102,
       )
       assert.strictEqual(
         yield* session.transaction((tx) =>
-          tx.submissionByRequest(root, '\ud801').pipe(Effect.map((s) => s?.answer ?? 0)),
+          tx
+            .submissionByRequest(root, Identity.RequestId.make('\ud801'))
+            .pipe(Effect.map((s) => s?.answer ?? 0)),
         ),
         0,
       )
@@ -362,7 +367,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
             conversationId: root,
             type: 'input',
             status: 'queued',
-            requestId: 'same',
+            requestId: Identity.RequestId.make('same'),
           },
         },
         {
@@ -372,12 +377,18 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
             conversationId: cid(2),
             type: 'write',
             status: 'queued',
-            requestId: 'same',
+            requestId: Identity.RequestId.make('same'),
           },
         },
       ])
-      assert.strictEqual((yield* session.submissionByRequest(root, 'same'))?.id, 3)
-      assert.strictEqual((yield* session.submissionByRequest(cid(2), 'same'))?.id, 4)
+      assert.strictEqual(
+        (yield* session.submissionByRequest(root, Identity.RequestId.make('same')))?.id,
+        3,
+      )
+      assert.strictEqual(
+        (yield* session.submissionByRequest(cid(2), Identity.RequestId.make('same')))?.id,
+        4,
+      )
       const before = yield* store.read
       for (const invalid of [
         { type: 'write', status: 'placed', entry: eid(9) },
@@ -402,12 +413,18 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
             type: 'input',
             status: 'placed',
             entry: eid(9),
-            requestId: 'other',
+            requestId: Identity.RequestId.make('other'),
           },
         },
       ])
-      assert.strictEqual(yield* session.submissionByRequest(root, 'same'), undefined)
-      assert.strictEqual((yield* session.submissionByRequest(root, 'other'))?.entry, 9)
+      assert.strictEqual(
+        yield* session.submissionByRequest(root, Identity.RequestId.make('same')),
+        undefined,
+      )
+      assert.strictEqual(
+        (yield* session.submissionByRequest(root, Identity.RequestId.make('other')))?.entry,
+        9,
+      )
       const page = yield* session.scanSubmissions({}, 1)
       assert.strictEqual(page.items[0]?.id, 3)
       assert.strictEqual((yield* session.scanSubmissions({}, 1, page.next)).items[0]?.id, 4)

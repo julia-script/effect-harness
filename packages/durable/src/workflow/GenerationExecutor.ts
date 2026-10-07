@@ -1,3 +1,5 @@
+import * as Serialization from '../Serialization.ts'
+import * as Entry from '../Entry.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import type * as Layer from 'effect/Layer'
 import * as Agent from '@effect-harness/harness/Agent'
@@ -118,12 +120,12 @@ export const convertPartial = Effect.fnUntraced(function* (
   yield* tx.appendEntry(conversationId, {
     kind: 'harness.assistant',
     model: [generation.message],
-    data: {
+    data: yield* Schema.encodeEffect(Serialization.json(Entry.AssistantData))({
       harness: {
         status: 'aborted',
         ...(generation.usage === undefined ? {} : { usage: generation.usage }),
       },
-    },
+    }).pipe(Effect.mapError(codecError)),
   })
   if (generation.model !== undefined && generation.usage !== undefined)
     yield* Usage.record(
@@ -164,13 +166,10 @@ const appendAssistant = Effect.fnUntraced(function* (
     kind: 'harness.assistant',
     byTaskId: payload.taskId,
     model: messages,
-    data: {
+    data: yield* Schema.encodeEffect(Serialization.json(Entry.AssistantData))({
       timestamp: yield* Clock.currentTimeMillis,
-      harness: {
-        status,
-        usage: disposition.usage,
-      },
-    },
+      harness: { status, usage: disposition.usage },
+    }).pipe(Effect.mapError(codecError)),
   })
 })
 
@@ -189,7 +188,7 @@ export const layer: Layer.Layer<
   Effect.fnUntraced(function* (payload, executionId) {
     const session = yield* (yield* SessionDirectory)
       .resolve(payload.sessionId)
-      .pipe(Effect.mapError(SubmissionExecutor.storageError))
+      .pipe(Effect.mapError(domainError))
     const executor = yield* Harness.Executor
     const catalog = yield* Model.Catalog
     const config = yield* Conversation.Configuration
@@ -199,9 +198,7 @@ export const layer: Layer.Layer<
       progress: () => Effect.void,
     })
     const active = Effect.gen(function* () {
-      const task = yield* session
-        .task(payload.taskId)
-        .pipe(Effect.mapError(SubmissionExecutor.storageError))
+      const task = yield* session.task(payload.taskId).pipe(Effect.mapError(domainError))
       if (task === undefined)
         return yield* new ExecutionError({
           reason: new InvalidState({ message: 'Generation projection is absent' }),
@@ -320,17 +317,17 @@ export const layer: Layer.Layer<
                 const state =
                   (yield* session
                     .snapshot(Conversation.AgentDoc, { owner: payload.conversationId })
-                    .pipe(Effect.mapError(SubmissionExecutor.storageError)))?.value ?? {}
+                    .pipe(Effect.mapError(domainError)))?.value ?? {}
                 let provider = yield* session
                   .snapshot(Conversation.ProviderDoc, { owner: payload.conversationId })
-                  .pipe(Effect.mapError(SubmissionExecutor.storageError))
+                  .pipe(Effect.mapError(domainError))
                 if (provider === undefined || provider.value.sessionId === '') {
                   yield* session
                     .initialize(payload.conversationId)
-                    .pipe(Effect.mapError(SubmissionExecutor.storageError))
+                    .pipe(Effect.mapError(domainError))
                   provider = yield* session
                     .snapshot(Conversation.ProviderDoc, { owner: payload.conversationId })
-                    .pipe(Effect.mapError(SubmissionExecutor.storageError))
+                    .pipe(Effect.mapError(domainError))
                 }
                 if (provider === undefined || provider.value.sessionId === '')
                   return yield* new ExecutionError({
@@ -362,9 +359,9 @@ export const layer: Layer.Layer<
                         }),
                     ),
                   )
-                const settings = yield* Schema.decodeUnknownEffect(Agent.Settings)(
-                  config.settings,
-                ).pipe(Effect.mapError(codecError))
+                const settings = yield* Schema.decodeEffect(Agent.Settings)(config.settings).pipe(
+                  Effect.mapError(codecError),
+                )
                 const descriptor = yield* catalog.resolve(prepared.request.model).pipe(
                   Effect.mapError(
                     (error) =>
@@ -537,7 +534,7 @@ export const layer: Layer.Layer<
                         }
                       }),
                     )
-                    .pipe(Effect.mapError(SubmissionExecutor.storageError))
+                    .pipe(Effect.mapError(domainError))
                   let response = Response.empty()
                   const write = Effect.gen(function* () {
                     const message = Response.partial(response)
@@ -701,7 +698,7 @@ export const layer: Layer.Layer<
                     }
                   }),
                 )
-                .pipe(Effect.mapError(SubmissionExecutor.storageError))
+                .pipe(Effect.mapError(domainError))
               return { at, handle }
             }),
           }).annotate(ClusterSchema.WithTransaction, true)
@@ -1037,9 +1034,7 @@ export const layer: Layer.Layer<
                   .pipe(Effect.mapError(domainError)),
               }).annotate(ClusterSchema.WithTransaction, true)
               yield* ToolCall.execute(child)
-              const task = yield* session
-                .task(child.taskId)
-                .pipe(Effect.mapError(SubmissionExecutor.storageError))
+              const task = yield* session.task(child.taskId).pipe(Effect.mapError(domainError))
               return (yield* Schema.decodeEffect(Schema.toCodecJson(ToolExecutor.Outcome))(
                 task?.state.outcome ?? null,
               ).pipe(Effect.mapError(codecError))).execution

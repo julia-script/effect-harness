@@ -1,3 +1,4 @@
+import * as Identity from '../Identity.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Deferred from 'effect/Deferred'
@@ -21,13 +22,16 @@ export class Cancellation extends Context.Service<
       identity: Ownership.Identity,
       cancel: Effect.Effect<void>,
     ) => Effect.Effect<void, never, Scope.Scope>
-    readonly cancel: (sessionId: string, reached: Ownership.Reached) => Effect.Effect<void>
+    readonly cancel: (
+      sessionId: Identity.SessionId,
+      reached: Ownership.Reached,
+    ) => Effect.Effect<void>
   }
 >()('@effect-harness/durable/Cancellation') {}
 
 export const layer = Layer.sync(Cancellation, () => {
   const live = new Map<string, Set<Effect.Effect<void>>>()
-  const key = (sessionId: string, id: number) => JSON.stringify([sessionId, id])
+  const key = (sessionId: Identity.SessionId, id: number) => JSON.stringify([sessionId, id])
   return Cancellation.of({
     register: (identity, cancel) =>
       Effect.acquireRelease(
@@ -80,7 +84,10 @@ export const mark = Effect.fnUntraced(function* (
   )
 })
 
-export const cancel = Effect.fnUntraced(function* (sessionId: string, reached: Ownership.Reached) {
+export const cancel = Effect.fnUntraced(function* (
+  sessionId: Identity.SessionId,
+  reached: Ownership.Reached,
+) {
   yield* (yield* Cancellation).cancel(sessionId, reached)
 })
 

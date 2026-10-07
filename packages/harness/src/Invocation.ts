@@ -1,3 +1,4 @@
+import * as SchemaField from './SchemaField.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -9,24 +10,24 @@ import type * as Output from './Output.ts'
 
 export const Diagnostic = Schema.Struct({
   kind: Schema.String,
-  severity: Schema.optionalKey(Schema.Literals(['info', 'warning', 'error'])),
-  message: Schema.optionalKey(Schema.String),
-  detail: Schema.optionalKey(Schema.Json),
+  severity: SchemaField.optional(Schema.Literals(['info', 'warning', 'error'])),
+  message: SchemaField.optional(Schema.String),
+  detail: SchemaField.optional(Schema.Json),
 })
 export type Diagnostic = typeof Diagnostic.Type
 export const Control = Schema.Struct({
-  terminate: Schema.optionalKey(Schema.Boolean),
-  reset: Schema.optionalKey(Schema.Struct({ note: Schema.optionalKey(Schema.String) })),
-  addTools: Schema.optionalKey(Schema.Array(Schema.String)),
+  terminate: SchemaField.optional(Schema.Boolean),
+  reset: SchemaField.optional(Schema.Struct({ note: SchemaField.optional(Schema.String) })),
+  addTools: SchemaField.optional(Schema.Array(Schema.String)),
 })
 export type Control = typeof Control.Type
 export const Result = Schema.Struct({
-  content: Schema.optionalKey(Schema.Array(Prompt.UserMessagePart)),
-  details: Schema.optionalKey(Schema.Json),
-  diagnostics: Schema.optionalKey(Schema.Array(Diagnostic)),
-  control: Schema.optionalKey(Control),
-  usage: Schema.optionalKey(Usage.Usage),
-  isError: Schema.optionalKey(Schema.Boolean),
+  content: SchemaField.optional(Schema.Array(Prompt.UserMessagePart)),
+  details: SchemaField.optional(Schema.Json),
+  diagnostics: SchemaField.optional(Schema.Array(Diagnostic)),
+  control: SchemaField.optional(Control),
+  usage: SchemaField.optional(Usage.Usage),
+  isError: SchemaField.optional(Schema.Boolean),
 })
 export type ToolResult = typeof Result.Type
 export interface Progress {

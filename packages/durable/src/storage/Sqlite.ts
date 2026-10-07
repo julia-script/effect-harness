@@ -1,14 +1,53 @@
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/sql/SqlError'
 import * as SqlClient from 'effect/sql/SqlClient'
 import * as Record from '../Record.ts'
-import { rejected, StorageError, uncertain, Corrupt, Io } from '../StorageError.ts'
+import { rejected, StorageError, uncertain, Corrupt, Io, Invalid } from '../StorageError.ts'
 import { Store } from '../Store.ts'
 import * as Backend from './Backend.ts'
-import { validate, validateState } from './State.ts'
+import { validateState } from './State.ts'
 
+export const MetadataRow = Schema.Struct({ name: Schema.String })
+export const VersionRow = Schema.Struct({
+  version: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+})
+export const StateRow = Schema.Struct({
+  state: Schema.String,
+  next_seq: Schema.String.check(Schema.isPattern(/^[1-9][0-9]*$/)),
+  format: Schema.Literal(1),
+})
+export const JournalRow = Schema.Struct({ seq: Record.Seq, frame: Schema.String })
+export const ReceiptRow = Schema.Struct({
+  key: Schema.String,
+  fingerprint: Schema.String,
+  result: Schema.String,
+  seq: Record.Seq,
+  is_void: Schema.Literals([0, 1]),
+})
+const rows = <S extends Schema.Constraint>(schema: S, input: unknown) =>
+  Schema.decodeUnknownEffect(Schema.Array(schema))(input).pipe(
+    Effect.mapError((cause) => rejected('Invalid SQL driver rows', Corrupt, cause)),
+  )
+const decode = <S extends Schema.Constraint>(schema: S, input: unknown) =>
+  Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(input).pipe(
+    Effect.mapError((cause) => rejected('Invalid persisted JSON', Corrupt, cause)),
+  )
+const encode = <S extends Schema.Constraint>(schema: S, input: S['Type']) =>
+  Schema.encodeEffect(Schema.fromJsonString(schema))(input).pipe(
+    Effect.mapError((cause) => rejected('Cannot encode durable SQL data', Invalid, cause)),
+  )
+const encodeReceipt = Effect.fnUntraced(function* (receipt: Record.Receipt) {
+  return {
+    key: yield* encode(Schema.String, receipt.key),
+    fingerprint: yield* encode(Schema.String, receipt.fingerprint),
+    result: yield* encode(Schema.Json, receipt.result),
+    seq: receipt.seq,
+    is_void: receipt.resultIsVoid === true ? 1 : 0,
+  }
+})
 export const CURRENT_SCHEMA_VERSION = 2
 export interface Migration {
   readonly version: number
@@ -39,17 +78,19 @@ export const migrate = Effect.fnUntraced(function* (
   return yield* sql
     .withTransaction(
       Effect.gen(function* () {
-        const existing = yield* sql<{
-          name: string
-        }>`SELECT name FROM sqlite_master WHERE type='table' AND name='durable_schema'`
+        const existing = yield* rows(
+          MetadataRow,
+          yield* sql`SELECT name FROM sqlite_master WHERE type='table' AND name='durable_schema'`,
+        )
         yield* sql.unsafe(
           'CREATE TABLE IF NOT EXISTS durable_schema(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version>=0)) STRICT',
         )
         if (existing.length === 0) yield* sql.unsafe('INSERT INTO durable_schema VALUES(1,0)')
-        const rows = yield* sql<{
-          version: number
-        }>`SELECT version FROM durable_schema WHERE singleton=1`
-        const version = rows[0]?.version
+        const metadata = yield* rows(
+          VersionRow,
+          yield* sql`SELECT version FROM durable_schema WHERE singleton=1`,
+        )
+        const version = metadata[0]?.version
         if (version === undefined) return yield* rejected('Schema metadata is missing', Corrupt)
         if (version > (migrations.at(-1)?.version ?? 0))
           return yield* rejected('Schema is newer than supported', Corrupt)
@@ -58,7 +99,7 @@ export const migrate = Effect.fnUntraced(function* (
           for (const statement of migration.statements) yield* sql.unsafe(statement)
           yield* sql`UPDATE durable_schema SET version=${migration.version} WHERE singleton=1`
           if (migration.version === 1 && migrations === MIGRATIONS)
-            yield* sql`INSERT INTO durable_state VALUES(1,1,1,${JSON.stringify(Record.emptyState())})`
+            yield* sql`INSERT INTO durable_state VALUES(1,1,1,${yield* encode(Record.State, Record.emptyState())})`
         }
       }),
     )
@@ -72,53 +113,42 @@ export const make = Effect.fnUntraced(function* () {
   const sql = yield* SqlClient.SqlClient
   yield* migrate()
   const load = Effect.gen(function* () {
-    const rows = yield* sql<{
-      state: string
-      next_seq: string
-      format: number
-    }>`SELECT state,CAST(next_seq AS TEXT) AS next_seq,format FROM durable_state WHERE singleton=1`
-    const row = rows[0]
+    const metadata = yield* rows(
+      StateRow,
+      yield* sql`SELECT state,CAST(next_seq AS TEXT) AS next_seq,format FROM durable_state WHERE singleton=1`,
+    )
+    const row = metadata[0]
     if (row === undefined) return yield* rejected('Durable metadata is missing', Corrupt)
-    const parsed = yield* Effect.try({
-      try: () => JSON.parse(row.state),
-      catch: (cause) => rejected('Invalid persisted state JSON', Corrupt, cause),
-    })
-    const state = yield* validateState(parsed)
+    const state = yield* validateState(yield* decode(Record.State, row.state))
     if (row.format !== 1 || Number(row.next_seq) !== state.nextSeq)
       return yield* rejected('Durable metadata is corrupt', Corrupt)
-    const journals = yield* sql<{
-      seq: number
-      frame: string
-    }>`SELECT seq,frame FROM durable_journal ORDER BY seq`
+    const journals = yield* rows(
+      JournalRow,
+      yield* sql`SELECT seq,frame FROM durable_journal ORDER BY seq`,
+    )
     const frames: Array<Record.Frame> = []
     for (const journal of journals) {
-      const value = yield* Effect.try({
-        try: () => JSON.parse(journal.frame),
-        catch: (cause) => rejected('Invalid journal JSON', Corrupt, cause),
-      })
-      const frame = yield* validate(Record.Frame, value)
+      const frame = yield* decode(Record.Frame, journal.frame)
       if (frame.seq !== journal.seq || frame.seq >= state.nextSeq)
         return yield* rejected('Journal sequence is corrupt', Corrupt)
       frames.push(frame)
     }
-    const receipts = yield* sql<{
-      key: string
-      fingerprint: string
-      result: string
-      seq: number
-      is_void: number
-    }>`SELECT key,fingerprint,result,seq,is_void FROM durable_receipt`
+    const receipts = yield* rows(
+      ReceiptRow,
+      yield* sql`SELECT key,fingerprint,result,seq,is_void FROM durable_receipt`,
+    )
+    const expected = yield* Effect.forEach(state.receipts, encodeReceipt)
     if (
       receipts.length !== state.receipts.length ||
       receipts.some(
         (row) =>
-          !state.receipts.some(
+          !expected.some(
             (receipt) =>
-              row.key === JSON.stringify(receipt.key) &&
-              row.fingerprint === JSON.stringify(receipt.fingerprint) &&
-              row.result === JSON.stringify(receipt.result) &&
+              row.key === receipt.key &&
+              row.fingerprint === receipt.fingerprint &&
+              row.result === receipt.result &&
               row.seq === receipt.seq &&
-              row.is_void === (receipt.resultIsVoid === true ? 1 : 0),
+              row.is_void === receipt.is_void,
           ),
       )
     )
@@ -144,19 +174,25 @@ export const make = Effect.fnUntraced(function* () {
   )
   const save = Effect.fnUntraced(
     function* (snapshot: Backend.Snapshot) {
-      yield* sql`UPDATE durable_state SET next_seq=${snapshot.state.nextSeq},state=${JSON.stringify(snapshot.state)} WHERE singleton=1`
+      // Validate and encode the complete write set before the first driver mutation.
+      const state = yield* encode(Record.State, snapshot.state)
       const frame = snapshot.frames.at(-1)
-      if (frame !== undefined)
-        yield* sql`INSERT INTO durable_journal(seq,frame) VALUES(${frame.seq},${JSON.stringify(frame)})`
+      const encodedFrame = frame === undefined ? undefined : yield* encode(Record.Frame, frame)
+      const receipts = yield* Effect.forEach(snapshot.state.receipts, encodeReceipt)
+      yield* sql`UPDATE durable_state SET next_seq=${snapshot.state.nextSeq},state=${state} WHERE singleton=1`
+      if (frame !== undefined && encodedFrame !== undefined)
+        yield* sql`INSERT INTO durable_journal(seq,frame) VALUES(${frame.seq},${encodedFrame})`
       yield* sql.unsafe(
         `DELETE FROM durable_journal WHERE seq NOT IN (${snapshot.frames.map(() => '?').join(',')})`,
         snapshot.frames.map((frame) => frame.seq),
       )
-      for (const receipt of snapshot.state.receipts)
-        yield* sql`INSERT OR IGNORE INTO durable_receipt(key,fingerprint,result,seq,is_void) VALUES(${JSON.stringify(receipt.key)},${JSON.stringify(receipt.fingerprint)},${JSON.stringify(receipt.result)},${receipt.seq},${receipt.resultIsVoid === true ? 1 : 0})`
+      for (const receipt of receipts)
+        yield* sql`INSERT OR IGNORE INTO durable_receipt(key,fingerprint,result,seq,is_void) VALUES(${receipt.key},${receipt.fingerprint},${receipt.result},${receipt.seq},${receipt.is_void})`
     },
     Effect.mapError((cause) =>
-      rejected('Domain SQL write was rejected before transaction settlement', Io, cause),
+      cause instanceof StorageError
+        ? cause
+        : rejected('Domain SQL write was rejected before transaction settlement', Io, cause),
     ),
   )
   yield* load

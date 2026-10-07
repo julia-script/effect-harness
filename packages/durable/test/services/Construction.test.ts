@@ -1,3 +1,4 @@
+import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -78,28 +79,31 @@ describe('contextual durable service construction', () => {
           const store = yield* Memory.make()
           const first = yield* Session.make().pipe(Effect.provideService(Store.Store, store))
           const second = yield* Session.make().pipe(Effect.provideService(Store.Store, store))
-          const registrations = new Map([['first', first]])
+          const registrations = new Map([[Identity.SessionId.make('first'), first]])
           const context = yield* Layer.build(Directory.layer).pipe(
             Effect.provideService(Directory.Registrations, registrations),
           )
           const directory = Context.get(context, Directory.SessionDirectory)
-          registrations.set('first', second)
-          registrations.set('late', second)
-          assert.strictEqual(yield* directory.resolve('first'), first)
+          registrations.set(Identity.SessionId.make('first'), second)
+          registrations.set(Identity.SessionId.make('late'), second)
+          assert.strictEqual(yield* directory.resolve(Identity.SessionId.make('first')), first)
           assert.strictEqual(
-            (yield* directory.resolve('late').pipe(Effect.flip)).reason._tag,
+            (yield* directory.resolve(Identity.SessionId.make('late')).pipe(Effect.flip)).reason
+              ._tag,
             'NotFound',
           )
           const root = yield* first.root()
           assert.strictEqual(
-            (yield* (yield* directory.resolve('first')).conversation(root.id))?.id,
+            (yield* (yield* directory.resolve(Identity.SessionId.make('first'))).conversation(
+              root.id,
+            ))?.id,
             root.id,
           )
           const single = yield* Directory.SessionDirectory.pipe(
-            Effect.provide(Directory.layerSingle('single')),
+            Effect.provide(Directory.layerSingle(Identity.SessionId.make('single'))),
             Effect.provideService(Session.Session, second),
           )
-          assert.strictEqual(yield* single.resolve('single'), second)
+          assert.strictEqual(yield* single.resolve(Identity.SessionId.make('single')), second)
         }),
       ),
   )
@@ -122,7 +126,11 @@ describe('contextual durable service construction', () => {
             state: { status: 'running' },
           }),
         )
-        const identity = { sessionId: 'invocation', conversationId: root.id, taskId }
+        const identity = {
+          sessionId: Identity.SessionId.make('invocation'),
+          conversationId: root.id,
+          taskId,
+        }
         const current = yield* Cancellation.activity(identity, invocation, Ownership.Current).pipe(
           Effect.provide(Cancellation.layer),
           Effect.provideService(Session.Session, ambient),

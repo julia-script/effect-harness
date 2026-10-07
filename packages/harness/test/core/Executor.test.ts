@@ -1,3 +1,8 @@
+import * as Deferred from 'effect/Deferred'
+import * as Fiber from 'effect/Fiber'
+import * as Scope from 'effect/Scope'
+import { TestClock } from 'effect/testing'
+import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -28,6 +33,7 @@ import * as Model from '../../src/Model.ts'
 import * as Registry from '../../src/Registry.ts'
 import * as Tool from '../../src/Tool.ts'
 
+const entryId = Schema.decodeSync(Identity.EntryId)
 const ref = { provider: 'test', modelId: 'model' }
 const quiet = { cwd: '.', report: () => Effect.void, progress: () => Effect.void }
 const nativeUsage = {
@@ -48,7 +54,7 @@ const echoTool = AiTool.make('echo', {
   .addDependency(Invocation)
   .addDependency(ToolCall)
 const Tools = Toolkit.make(echoTool)
-const project = (value: unknown) => Schema.decodeUnknownSync(Result)(value)
+const project = (value: unknown) => Tool.decodeResult('echo', value)
 const binding = (
   handler: Toolkit.HandlersFrom<Toolkit.Tools<typeof Tools>>['echo'],
   metadata: Tool.Metadata = {},
@@ -102,6 +108,138 @@ const settings = Agent.settings({ progress: { outputIntervalMs: 0 } })
 const user = (text: string) => Prompt.userMessage({ content: [Prompt.textPart({ text })] })
 
 describe('native AI executor intent/request boundaries', () => {
+  it.effect(
+    'terminal invalid projection settles a paced progress waiter with the exact typed failure',
+    () =>
+      Effect.gen(function* () {
+        const owner = yield* Scope.Scope
+        const pending = yield* Deferred.make<Fiber.Fiber<void, ToolError>>()
+        const returned = yield* Deferred.make<void>()
+        const progress = yield* Ref.make<ReadonlyArray<unknown>>([])
+        const tools = yield* binding(
+          (_args) =>
+            Effect.gen(function* () {
+              const call = yield* ToolCall
+              yield* call.details({ phase: 'first' })
+              const waiter = yield* call.details({ phase: 'pending' }).pipe(Effect.forkIn(owner))
+              yield* Deferred.succeed(pending, waiter)
+              yield* Deferred.await(returned)
+              return {}
+            }),
+          { project: () => Tool.decodeResult('echo', { content: [{ type: 'text', text: 42 }] }) },
+        )
+        const executor = yield* runtime([{ name: 'tools', tools }])
+        const agent = yield* executor.resolve(
+          state,
+          Agent.settings({ progress: { outputIntervalMs: 10000 } }),
+        )
+        const running = yield* executor
+          .tool({ id: 'projection', name: 'echo', args: { n: 1 }, replay: 'unsafe' }, agent)
+          .pipe(
+            Effect.provideService(
+              Invocation,
+              Invocation.of({
+                ...quiet,
+                progress: (value) => Ref.update(progress, (old) => [...old, value]),
+              }),
+            ),
+            Effect.forkChild,
+          )
+        const waiter = yield* Deferred.await(pending)
+        yield* TestClock.adjust(0)
+        assert.strictEqual(waiter.pollUnsafe(), undefined)
+        assert.strictEqual((yield* Ref.get(progress)).length, 1)
+        yield* Deferred.succeed(returned, undefined)
+        const failure = yield* Effect.flip(Fiber.join(running))
+        assert.strictEqual(failure.reason._tag, 'ToolInvalidResult')
+        assert.ok(failure.cause instanceof Schema.SchemaError)
+        const receipt = yield* Effect.flip(Fiber.join(waiter))
+        assert.strictEqual(receipt, failure)
+        assert.strictEqual((yield* Ref.get(progress)).length, 1)
+      }).pipe(Effect.provide(Layer.succeed(Invocation, Invocation.of(quiet)))),
+  )
+  it.effect(
+    'schema-equivalent reordered progress details acknowledge without a second emission',
+    () =>
+      Effect.gen(function* () {
+        const queued = yield* Deferred.make<void>()
+        const progress = yield* Ref.make<ReadonlyArray<unknown>>([])
+        const tools = yield* binding(() =>
+          Effect.gen(function* () {
+            const call = yield* ToolCall
+            yield* call.details({ a: 1, b: 2 })
+            const second = yield* call.details({ b: 2, a: 1 }).pipe(Effect.forkChild)
+            yield* Deferred.succeed(queued, undefined)
+            yield* Fiber.join(second)
+            return {}
+          }),
+        )
+        const executor = yield* runtime([{ name: 'tools', tools }])
+        const running = yield* executor
+          .tool(
+            { id: 'equivalent', name: 'echo', args: { n: 1 }, replay: 'safe' },
+            yield* executor.resolve(state, settings),
+          )
+          .pipe(
+            Effect.provideService(
+              Invocation,
+              Invocation.of({
+                ...quiet,
+                progress: (value) => Ref.update(progress, (old) => [...old, value]),
+              }),
+            ),
+            Effect.forkChild,
+          )
+        yield* Deferred.await(queued)
+        assert.strictEqual((yield* Ref.get(progress)).length, 1)
+        yield* TestClock.adjust(100)
+        assert.strictEqual((yield* Fiber.join(running)).outcome, 'completed')
+        assert.strictEqual((yield* Ref.get(progress)).length, 1)
+      }).pipe(Effect.provideService(Invocation, Invocation.of(quiet))),
+  )
+  it.effect(
+    'preliminary projection decoder failure is reported as invalid_result and publishes no preview',
+    () =>
+      Effect.gen(function* () {
+        const reports = yield* Ref.make<ReadonlyArray<unknown>>([])
+        const tools = yield* binding(
+          (_args, context) => context.preliminary({}).pipe(Effect.as({})),
+          {
+            project: () => Tool.decodeResult('echo', { isError: 'invalid' }),
+          },
+        )
+        const registration = tools[0]
+        assert.ok(registration)
+        if (registration === undefined) return yield* Effect.die('Missing bound tool')
+        yield* registration.execute({ n: 1 }, 'preview').pipe(
+          Effect.provideService(
+            ToolCall,
+            ToolCall.of({
+              id: 'preview',
+              output: () => Effect.void,
+              details: () => Effect.void,
+              diagnostic: () => Effect.void,
+              preliminary: () => Effect.die('invalid preview must not publish'),
+            }),
+          ),
+          Effect.provideService(
+            Invocation,
+            Invocation.of({
+              ...quiet,
+              progress: () => Effect.die('invalid preview must not publish'),
+              report: (cause) => Ref.update(reports, (old) => [...old, cause]),
+            }),
+          ),
+        )
+        const failure = (yield* Ref.get(reports))[0]
+        assert.ok(failure instanceof ToolError)
+        if (failure instanceof ToolError) {
+          assert.strictEqual(failure.reason._tag, 'ToolInvalidResult')
+          assert.ok(failure.cause instanceof Schema.SchemaError)
+        }
+        assert.strictEqual((yield* Ref.get(reports)).length, 1)
+      }),
+  )
   it.effect('intent codecs receive the selected call id and silent ToolCall capabilities', () =>
     Effect.gen(function* () {
       const seen = yield* Ref.make<ReadonlyArray<string>>([])
@@ -153,7 +291,7 @@ describe('native AI executor intent/request boundaries', () => {
             sections: [{ key: 'rules', render: () => Effect.succeed('obey') }],
           },
         ])
-        const view = ConversationContext.derive([{ id: 5, messages: [user('hello')] }])
+        const view = ConversationContext.derive([{ id: entryId(5), messages: [user('hello')] }])
         const prepared = yield* executor.prepare({ state, settings, view, sessionId: 'affinity' })
         assert.strictEqual(prepared.request.tail, 5)
         assert.strictEqual(prepared.request.options.sessionId, 'affinity')
@@ -468,8 +606,8 @@ describe('native AI executor intent/request boundaries', () => {
           state,
           settings: Agent.settings({ compaction: { keepRecentTokens: 1, reserveTokens: 20 } }),
           view: ConversationContext.derive([
-            { id: 1, messages: [user('old long text')] },
-            { id: 2, messages: [user('new')] },
+            { id: entryId(1), messages: [user('old long text')] },
+            { id: entryId(2), messages: [user('new')] },
           ]),
           reason: 'manual',
           sessionId: 'identity',
@@ -524,12 +662,12 @@ describe('native AI executor intent/request boundaries', () => {
           state,
           settings: Agent.settings({ compaction: { keepRecentTokens: 1 } }),
           view: ConversationContext.derive([
-            { id: 1, messages: [user('old')] },
-            { id: 2, messages: [user('new')] },
+            { id: entryId(1), messages: [user('old')] },
+            { id: entryId(2), messages: [user('new')] },
           ]),
           reason: 'manual',
         })
-        assert.deepStrictEqual(selected, { type: 'summary', summary: '', firstKept: 2 })
+        assert.deepStrictEqual(selected, { type: 'summary', summary: '', firstKept: entryId(2) })
       }).pipe(Effect.provideService(Invocation, quiet)),
   )
   it.effect('unsupported options and missing catalog model produce typed capability errors', () =>

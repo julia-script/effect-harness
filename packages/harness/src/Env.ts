@@ -1,4 +1,4 @@
-import * as Serialization from './Serialization.ts'
+import * as NativeError from './env/NativeError.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -202,7 +202,7 @@ export class Env extends Context.Service<
 export const fromPlatform = (error: PlatformError.PlatformError, path?: string): FileError => {
   let code: FileError['code'] = 'unknown'
   const cause = error.reason.cause
-  const nativeCode = Serialization.stringProperty(cause, 'code') ?? ''
+  const nativeCode = NativeError.code(cause) ?? ''
   if (nativeCode === 'ABORT_ERR') code = 'aborted'
   else if (error.reason._tag === 'NotFound' || nativeCode === 'ENOENT') code = 'not_found'
   else if (

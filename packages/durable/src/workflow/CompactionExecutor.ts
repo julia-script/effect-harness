@@ -1,3 +1,4 @@
+import * as Identity from '../Identity.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import type * as Layer from 'effect/Layer'
 import * as Agent from '@effect-harness/harness/Agent'
@@ -73,7 +74,7 @@ const invalid = (cause?: unknown) =>
 /** Creates the domain projection and returns an ordinary Compaction Workflow payload. */
 export const create = Effect.fnUntraced(function* (
   tx: Session.Transaction,
-  sessionId: string,
+  sessionId: Identity.SessionId,
   conversationId: Record.ConversationId,
   reason: (typeof Compaction.payloadSchema.Type)['reason'],
   owner?: Record.TaskId,
@@ -207,7 +208,7 @@ export const layer: Layer.Layer<
                   submission = {
                     sessionId: payload.sessionId,
                     conversationId: payload.conversationId,
-                    requestId: `compaction:${payload.taskId}`,
+                    requestId: Identity.RequestId.make(`compaction:${payload.taskId}`),
                     submission: { type: 'write', entry },
                   }
                   const admitted = yield* SubmissionExecutor.admitInTransaction(

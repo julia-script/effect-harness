@@ -1,7 +1,9 @@
 import * as AiPrompt from 'effect/ai/Prompt'
 import * as AiResponse from 'effect/ai/Response'
 import type { Part } from './Executor.ts'
-import * as Json from './Json.ts'
+import * as Schema from 'effect/Schema'
+const samePart = Schema.toEquivalence(AiPrompt.AssistantMessagePart)
+const sameOptions = Schema.toEquivalence(AiPrompt.ProviderOptions)
 
 export interface State {
   readonly parts: ReadonlyArray<AiResponse.AnyPart>
@@ -183,7 +185,7 @@ export function delta(
   if (
     before === undefined ||
     before.content.length > after.content.length ||
-    !Json.equal(before.options, after.options)
+    !sameOptions(before.options, after.options)
   )
     return [{ type: 'set', path: [], value: after }]
   const changes: Change[] = []
@@ -193,7 +195,7 @@ export function delta(
       changes.push({ type: 'set', path: ['content', index], value: part })
       continue
     }
-    if (Json.equal(previous, part)) continue
+    if (samePart(previous, part)) continue
     if (
       previous.type === part.type &&
       (part.type === 'text' || part.type === 'reasoning') &&
@@ -205,7 +207,7 @@ export function delta(
         path: ['content', index, 'text'],
         value: part.text.slice(previous.text.length),
       })
-      if (!Json.equal(previous.options, part.options))
+      if (!sameOptions(previous.options, part.options))
         changes.push({ type: 'set', path: ['content', index, 'options'], value: part.options })
     } else if (
       part.type === 'tool-call' &&
@@ -223,7 +225,7 @@ export function delta(
         path: ['content', index, 'params'],
         value: append ? String(part.params).slice(String(previous.params).length) : part.params,
       })
-      if (!Json.equal(previous.options, part.options))
+      if (!sameOptions(previous.options, part.options))
         changes.push({ type: 'set', path: ['content', index, 'options'], value: part.options })
     } else return [{ type: 'set', path: [], value: after }]
   }

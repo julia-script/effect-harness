@@ -229,7 +229,7 @@ export const applyWrites = Effect.fnUntraced(function* (
     }),
   )
   const contentCommands = new Set<number>()
-  const retired = new Set<number>()
+  const retired = new Set<Record.DocumentId>()
   for (const write of writes) {
     if (write.type === 'document.retire') {
       if (retired.has(write.id)) return yield* rejected('Document is retired more than once')
@@ -355,7 +355,7 @@ export const applyWrites = Effect.fnUntraced(function* (
     }
   }
   for (const id of retired) {
-    const previous = documents.get(id as Record.DocumentId)
+    const previous = documents.get(id)
     if (previous === undefined || previous.record.retiredAt !== undefined)
       return yield* rejected('Document is absent or retired', NotFound)
     documents.set(previous.record.id, {
@@ -393,6 +393,11 @@ export const documentsInScope = (state: Record.State, scope: Record.Scope, at: R
     (item) => sameScope(item.record.scope, scope) && Record.isAlive(item.record, at),
   )
 
+/** Validate arithmetic cursors without narrowing the allocator exhaustion sentinel. */
+export const cursor = (nextSeq: number) =>
+  validate(Record.JournalCursor, nextSeq - 1).pipe(
+    Effect.mapError((cause) => rejected('Invalid computed journal cursor', Corrupt, cause)),
+  )
 /** Validates the authoritative snapshot at a persistence boundary, including retained history. */
 export const validateState = Effect.fnUntraced(function* (
   input: unknown,
@@ -463,7 +468,12 @@ export const validateState = Effect.fnUntraced(function* (
       addresses.add(key)
       yield* materialize(document, 'current')
     } else if (!Record.currentOnly(record) && record.retiredAt > record.createdAt)
-      yield* materialize(document, (record.retiredAt - 1) as Record.Seq)
+      yield* materialize(
+        document,
+        yield* validate(Record.Seq, record.retiredAt - 1).pipe(
+          Effect.mapError((cause) => rejected('Invalid retirement boundary', Corrupt, cause)),
+        ),
+      )
   }
   const keys = new Set<string>()
   for (const receipt of state.receipts) {

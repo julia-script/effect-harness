@@ -77,7 +77,7 @@ export const LiveDoc = Document.defineUnsafe({
   scope: 'conversation',
   history: 'latest',
   fork: 'initial',
-  schema: LiveState,
+  schema: Document.jsonObjectCodec(LiveState),
   initial: (): LiveState => ({}),
   checkpointWhen: (value) =>
     value.generation === undefined &&

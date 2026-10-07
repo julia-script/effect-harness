@@ -1,3 +1,4 @@
+import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -56,7 +57,7 @@ import { ExecutionError, ExecutionErrorCodec, Storage } from '../../src/workflow
 
 const User = Workflow.make('test/session-lifecycle/v1', {
   payload: {
-    sessionId: Schema.String,
+    sessionId: Identity.SessionId,
     conversationId: Record.ConversationId,
     taskId: Record.TaskId,
   },
@@ -104,7 +105,7 @@ const reserve = (session: Session.Service) =>
       }
       const taskId = yield* tx.createTask(projection)
       const payload = {
-        sessionId: 'lifecycle',
+        sessionId: Identity.SessionId.make('lifecycle'),
         conversationId: Record.ROOT_CONVERSATION_ID,
         taskId,
       }
@@ -479,7 +480,7 @@ describe('Session and native invocation lifecycle', () => {
                 {
                   work: {
                     replay: 'safe',
-                    project: (value) => Schema.decodeUnknownSync(Invocation.Result)(value),
+                    project: (value) => Tool.decodeResult('fixture', value),
                   },
                 },
                 [Ownership.Current],
@@ -598,16 +599,16 @@ describe('Session and native invocation lifecycle', () => {
                   ? yield* first.transaction((tx) =>
                       CompactionExecutor.create(
                         tx,
-                        'lifecycle',
+                        Identity.SessionId.make('lifecycle'),
                         Record.ROOT_CONVERSATION_ID,
                         'manual',
                       ),
                     )
                   : undefined
                 const input = {
-                  sessionId: 'lifecycle',
+                  sessionId: Identity.SessionId.make('lifecycle'),
                   conversationId: Record.ROOT_CONVERSATION_ID,
-                  requestId: boundary,
+                  requestId: Identity.RequestId.make(boundary),
                   submission: {
                     type: 'input' as const,
                     message: Prompt.userMessage({

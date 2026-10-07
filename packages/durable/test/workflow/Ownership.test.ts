@@ -1,3 +1,4 @@
+import * as Identity from '../../src/Identity.ts'
 import { ResourceScope, withLayer } from '../../src/testing/Storage.ts'
 import * as Scope from 'effect/Scope'
 import { assert, describe, it } from '@effect/vitest'
@@ -41,7 +42,7 @@ const Notes = Document.defineUnsafe({
 
 const Node = Workflow.make('test/ordinary-owned-work', {
   payload: {
-    sessionId: Schema.String,
+    sessionId: Identity.SessionId,
     conversationId: Record.ConversationId,
     taskId: Record.TaskId,
     name: Schema.String,
@@ -54,7 +55,11 @@ type Payload = typeof Node.payloadSchema.Type
 const identity = (
   taskId: Record.TaskId,
   conversationId = Record.ROOT_CONVERSATION_ID,
-): Ownership.Identity => ({ sessionId: 'ownership', conversationId, taskId })
+): Ownership.Identity => ({
+  sessionId: Identity.SessionId.make('ownership'),
+  conversationId,
+  taskId,
+})
 const reserve = Effect.fnUntraced(function* (
   session: Session.Service,
   name: string,
@@ -322,7 +327,12 @@ describe('native structured ownership', () => {
           const owned = yield* session.transaction((tx) =>
             tx.createConversation({ ownership: { kind: 'task', taskId: ended.taskId } }),
           )
-          yield* Structured.complete(session, ended.taskId, { status: 'completed' }, 'ownership')
+          yield* Structured.complete(
+            session,
+            ended.taskId,
+            { status: 'completed' },
+            Identity.SessionId.make('ownership'),
+          )
           const below = yield* reserve(session, 'below', { conversationId: owned.id })
           const graph = yield* session.committed
           for (const background of [false, true]) {
@@ -546,9 +556,10 @@ describe('native structured ownership', () => {
             const fiber = yield* invoke(task).pipe(Effect.forkScoped)
             yield* Deferred.await(entered)
             const reached = yield* Cancellation.mark(session, { kind: 'task', id: task.taskId })
-            const cancellation = yield* Cancellation.cancel('ownership', reached).pipe(
-              Effect.forkScoped,
-            )
+            const cancellation = yield* Cancellation.cancel(
+              Identity.SessionId.make('ownership'),
+              reached,
+            ).pipe(Effect.forkScoped)
             yield* Deferred.await(cleanup)
             assert.isTrue(
               (yield* session.committed).tasks.find((value) => value.id === task.taskId)
@@ -612,7 +623,7 @@ describe('native structured ownership', () => {
               [child!.taskId, parent.taskId],
             )
             assert.isFalse((yield* session.task(background.taskId))?.abortRequested)
-            yield* Cancellation.cancel('ownership', reached)
+            yield* Cancellation.cancel(Identity.SessionId.make('ownership'), reached)
             assert.deepStrictEqual(yield* Fiber.join(fiber), {
               status: 'completed',
               result: 'held',
@@ -833,7 +844,7 @@ describe('native structured ownership', () => {
             session,
             background.taskId,
             { status: 'completed' },
-            'ownership',
+            Identity.SessionId.make('ownership'),
           )
           const below = yield* reserve(session, 'below', { conversationId: owned.id })
           const state = yield* session.committed
