@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "@effect-harness/auth/*": ["./packages/auth/src/*.ts"],
+      "@effect-harness/harness/*": ["./packages/harness/src/*.ts"],
+      "@effect-harness/durable/*": ["./packages/durable/src/*.ts"],
+      "@effect-harness/provider-openai/*": ["./packages/provider-openai/src/*.ts"],
+      "@effect-harness/provider-anthropic/*": ["./packages/provider-anthropic/src/*.ts"],
+      "@effect-harness/provider-claude-code/*": ["./packages/provider-claude-code/src/*.ts"]
+    }
+  },
+  "include": ["packages/*/test/**/*.ts", "apps/*/test/**/*.ts", "vitest.config.ts"]
+}

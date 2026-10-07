@@ -7,28 +7,46 @@
       "apps/*"
     ],
     "catalog": {
-      "effect": "4.0.0-rc.118"
+      "effect": "4.0.1"
     }
   },
   "type": "module",
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "typecheck": "turbo run typecheck",
+    "typecheck": "turbo run typecheck && tsc --project tsconfig.test.json",
+    "typetest": "turbo run typetest",
     "lint": "oxlint --disable-nested-config .",
     "format": "oxfmt --write .",
-    "check": "oxfmt --check . && oxlint --disable-nested-config . && bun run typecheck",
+    "check": "oxfmt --check . && oxlint --disable-nested-config . && bun run typecheck && bun run typetest",
     "check:write": "oxfmt --write . && oxlint --disable-nested-config --fix .",
-    "prepare": "effect-tsgo patch --oxlint"
+    "prepare": "effect-tsgo patch --oxlint",
+    "test": "turbo run test --concurrency=1"
   },
   "devDependencies": {
+    "@effect/platform-bun": "4.0.1",
+    "@effect/platform-node": "4.0.1",
+    "@effect/sql-sqlite-bun": "4.0.1",
+    "@effect/sql-sqlite-node": "4.0.1",
     "@effect/tsgo": "0.48.1",
+    "@effect/vitest": "4.0.1",
     "@types/bun": "1.4.2",
+    "@types/diff": "^8.0.0",
+    "effect": "catalog:",
     "oxfmt": "0.72.0",
     "oxlint": "1.86.0",
     "oxlint-tsgolint": "7.0.2003",
+    "tstyche": "7.2.5",
     "turbo": "2.11.7",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
   },
-  "packageManager": "bun@1.4.2"
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.1",
+    "effect": "4.0.1"
+  },
+  "packageManager": "bun@1.4.2",
+  "patchedDependencies": {
+    "effect@4.0.1": "patches/effect@4.0.1.patch"
+  }
 }

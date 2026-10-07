@@ -1,0 +1,66 @@
+{
+  "name": "@effect-harness/harness",
+  "version": "0.0.0",
+  "files": [
+    "dist",
+    "NOTICE"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "default": "./dist/tools/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./env": {
+      "types": "./dist/env/index.d.ts",
+      "default": "./dist/env/index.js"
+    },
+    "./Error": null,
+    "./env/Exec": null,
+    "./env/Watch": null,
+    "./tools/Mutation": null,
+    "./tools/Path": null,
+    "./env/internal/*": null,
+    "./tools/internal/*": null,
+    "./internal/*": null,
+    "./internal": null,
+    "./env/internal": null,
+    "./tools/internal": null,
+    "./env/Error": null
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch --preserveWatchOutput",
+    "typecheck": "tsc --noEmit",
+    "test": "cd ../.. && vitest run packages/harness/test",
+    "typetest": "cd ../.. && tstyche packages/harness/typetest"
+  },
+  "dependencies": {
+    "diff": "^8.0.2"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "4.0.1",
+    "effect": "catalog:"
+  },
+  "peerDependencies": {
+    "@effect/platform-node": "4.0.1",
+    "effect": "^4.0.1"
+  },
+  "peerDependenciesMeta": {
+    "@effect/platform-node": {
+      "optional": true
+    }
+  }
+}

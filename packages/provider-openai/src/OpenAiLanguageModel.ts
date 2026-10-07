@@ -1,0 +1,120 @@
+/**
+ * Captured native OpenAI models and API-key transport composition.
+ *
+ * @since 0.0.0
+ */
+import * as Config from 'effect/Config'
+import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
+import * as OpenAiLanguageModel from '@effect/ai-openai/OpenAiLanguageModel'
+import * as Context from 'effect/Context'
+import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
+import * as Redacted from 'effect/Redacted'
+import * as LanguageModel from 'effect/ai/LanguageModel'
+import * as HttpClient from 'effect/http/HttpClient'
+import * as ToolResult from './ToolResult.ts'
+
+/**
+ * Constructs the native model with canonical tool-media translation at its captured client boundary.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
+export const make = Effect.fnUntraced(function* (
+  options: Parameters<typeof OpenAiLanguageModel.make>[0],
+): Effect.fn.Return<typeof LanguageModel.LanguageModel.Service, never, OpenAiClient.OpenAiClient> {
+  const native = yield* OpenAiClient.OpenAiClient
+  return yield* OpenAiLanguageModel.make(options).pipe(
+    Effect.provideService(OpenAiClient.OpenAiClient, ToolResult.client(native, options.config)),
+  )
+})
+
+/**
+ * Provides the exact selected client with a single native model construction.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
+export const layer = (
+  options: Parameters<typeof OpenAiLanguageModel.make>[0],
+): Layer.Layer<
+  LanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
+  never,
+  OpenAiClient.OpenAiClient
+> =>
+  Layer.effectContext(
+    Effect.gen(function* () {
+      const client = yield* OpenAiClient.OpenAiClient
+      const model = yield* make(options)
+      return Context.make(LanguageModel.LanguageModel, model).pipe(
+        Context.add(OpenAiClient.OpenAiClient, client),
+      )
+    }),
+  )
+
+/**
+ * Provides OpenAiLanguageModel services with the declared native dependencies.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
+export const layerApiKey = (options: {
+  readonly apiKey: Redacted.Redacted<string>
+  readonly model: string
+  readonly config?: Omit<typeof OpenAiLanguageModel.Config.Service, 'model'> | undefined
+  readonly apiUrl?: string | undefined
+}): Layer.Layer<
+  LanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
+  never,
+  HttpClient.HttpClient
+> =>
+  Layer.effect(
+    LanguageModel.LanguageModel,
+    make({ model: options.model, config: options.config }),
+  ).pipe(Layer.provideMerge(OpenAiClient.layer({ apiKey: options.apiKey, apiUrl: options.apiUrl })))
+
+/**
+ * Resolves all layerApiKey options through the caller's ConfigProvider.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
+export const layerApiKeyConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layerApiKey>[0]>>,
+): Layer.Layer<
+  LanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
+  Config.ConfigError,
+  HttpClient.HttpClient
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layerApiKey(yield* Config.unwrap(config))
+    }),
+  )
+
+/**
+ * Resolves the model options while retaining the caller's exact native client.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
+export const layerConfig = (
+  config: Config.Wrap<Parameters<typeof layer>[0]>,
+): Layer.Layer<
+  LanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
+  Config.ConfigError,
+  OpenAiClient.OpenAiClient
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layer(yield* Config.unwrap(config))
+    }),
+  )
+/**
+ * Forwards the supported public declarations from their owning concept.
+ *
+ * @category exports
+ * @since 0.0.0
+ */
+export { Config } from '@effect/ai-openai/OpenAiLanguageModel'
+export type { Model } from '@effect/ai-openai/OpenAiLanguageModel'

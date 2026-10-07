@@ -1,0 +1,327 @@
+/**
+ * Atomic inbox admission and generation creation.
+ *
+ * @since 0.0.0
+ */
+import * as Arr from 'effect/Array'
+import * as Option from 'effect/Option'
+import * as Identity from '../Identity.ts'
+import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
+import type * as Layer from 'effect/Layer'
+import * as DateTime from 'effect/DateTime'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import * as Activity from 'effect/workflow/Activity'
+import * as DurableDeferred from 'effect/workflow/DurableDeferred'
+import * as Conversation from '../Conversation.ts'
+import * as Document from '../Document.ts'
+import * as Inbox from '../Inbox.ts'
+import type * as Ownership from '../Ownership.ts'
+import * as Record from '../Record.ts'
+import type * as Session from '../Session.ts'
+import { SessionDirectory } from '../SessionDirectory.ts'
+import type { StorageError } from '../StorageError.ts'
+import {
+  ExecutionError,
+  ExecutionErrorCodec,
+  Closed,
+  Storage,
+  InvalidState,
+  RequestConflict,
+  ConversationBusy,
+  InvalidArguments,
+} from './ExecutionError.ts'
+import { Generation } from './Generation.ts'
+import { Submission, Result } from './Submission.ts'
+import * as Prompt from 'effect/ai/Prompt'
+
+/**
+ * Submission settlement notification schema.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const Settled = DurableDeferred.make('submission/settled/v1', {
+  success: Result,
+  error: ExecutionErrorCodec,
+})
+/**
+ * Links schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
+export const Links = Document.familyUnsafe({
+  kind: 'harness.submission-links',
+  version: 1,
+  scope: 'session',
+  schema: Schema.Struct({ executions: Schema.Array(Schema.String) }),
+  initial: (): { executions: Array<string> } => ({ executions: [] }),
+})
+const Admission = Schema.Struct({
+  id: Record.SubmissionId,
+  notify: Schema.Array(Record.SubmissionId),
+  generation: Schema.optionalKey(Generation.payloadSchema),
+  receipt: Schema.optionalKey(Result),
+})
+/**
+ * Wraps a storage failure in a workflow execution failure.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const storageError = (error: StorageError): ExecutionError =>
+  new ExecutionError({
+    reason: new (error.reason._tag === 'Closed' ? Closed : Storage)({
+      message: error.message,
+      detail: { reason: error.code, certainty: error.certainty },
+      cause: error,
+    }),
+  })
+
+/**
+ * A task record is an inspectable projection of a normal native Workflow execution.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
+export const makeGeneration = Effect.fnUntraced(function* (
+  tx: Session.Transaction,
+  sessionId: Identity.SessionId,
+  conversationId: Record.ConversationId,
+  inputs: ReadonlyArray<Record.SubmissionId>,
+  runId?: Identity.RunId,
+): Effect.fn.Return<typeof Generation.payloadSchema.Type, StorageError> {
+  const taskId = yield* tx.mint(Record.TaskId)
+  const payload = {
+    sessionId,
+    conversationId,
+    taskId,
+    inputs: [...inputs],
+    runId: runId ?? Identity.RunId.make(JSON.stringify([sessionId, conversationId, inputs[0]])),
+  }
+  const executionId = yield* Generation.executionId(payload)
+  const binding: Ownership.Binding = { workflow: Generation._tag, executionId, payload }
+  yield* tx.write({
+    _tag: 'task',
+    type: 'task',
+    value: {
+      id: taskId,
+      conversationId,
+      kind: 'harness.generation',
+      version: 1,
+      input: binding,
+      background: false,
+      abortRequested: false,
+      state: { status: 'pending' },
+    },
+  })
+  const live = yield* tx.doc(Inbox.LiveDoc, { owner: conversationId })
+  live.run = { taskId, inputs: [...inputs] }
+  live.generation = { attempt: 1 }
+  delete live.tools
+  return payload
+})
+
+/**
+ * Repeating a deferred completion is safe.
+ *
+ * **Details**
+ *
+ * Called after the cached admission/settlement Activity physically commits.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const notify = Effect.fnUntraced(function* (
+  session: Session.Service,
+  ids: ReadonlyArray<Record.SubmissionId>,
+): Effect.fn.Return<void, ExecutionError, WorkflowEngine.WorkflowEngine> {
+  const receipts = yield* Effect.forEach(
+    ids,
+    (id) => session.submission(id).pipe(Effect.mapError(storageError)),
+    { concurrency: 16 },
+  )
+  const settled = Arr.flatMap(receipts, (receipt) =>
+    Option.isSome(receipt) &&
+    (receipt.value.status === 'done' || receipt.value.status === 'unanswered')
+      ? [receipt.value]
+      : [],
+  )
+  const linksByReceipt = yield* Effect.forEach(
+    settled,
+    (receipt) =>
+      session.snapshot(Links, { key: String(receipt.id) }).pipe(Effect.mapError(storageError)),
+    { concurrency: 16 },
+  )
+  // Sampling batches are independent; deferred completions retain original input order.
+  for (const [index, receipt] of settled.entries()) {
+    if (receipt === undefined || (receipt.status !== 'done' && receipt.status !== 'unanswered'))
+      continue
+    const links = linksByReceipt[index]
+    const value = yield* Schema.decodeEffect(Result)(receipt).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ExecutionError({
+            reason: new InvalidState({ message: 'Invalid settled submission receipt', cause }),
+          }),
+      ),
+    )
+    for (const executionId of links === undefined
+      ? []
+      : links.pipe(
+          Option.map((snapshot) => snapshot.value.executions),
+          Option.getOrElse(() => []),
+        ))
+      yield* DurableDeferred.succeed(Settled, {
+        token: DurableDeferred.tokenFromExecutionId(Settled, { workflow: Submission, executionId }),
+        value,
+      })
+  }
+})
+
+/**
+ * Shared admission commit for native submission and compaction Activities.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const admitInTransaction = Effect.fnUntraced(function* (
+  tx: Session.Transaction,
+  config: Conversation.Configuration['Service'],
+  payload: typeof Submission.payloadSchema.Type,
+  executionId: string,
+): Effect.fn.Return<typeof Admission.Type, StorageError | ExecutionError> {
+  const existingOption = yield* tx.submissionByRequest(payload.conversationId, payload.requestId)
+  // Domain request identity takes precedence over the busy rule and ignores changed same-kind content.
+  if (Option.isSome(existingOption)) {
+    const existing = existingOption.value
+    if (existing.type !== payload.submission.type)
+      return yield* new ExecutionError({
+        reason: new RequestConflict({
+          message: 'Request identity already belongs to a different submission kind',
+        }),
+      })
+    const links = yield* tx.doc(Links, { key: String(existing.id) })
+    if (!Arr.contains(links.executions, executionId)) links.executions.push(executionId)
+    if (existing.status === 'done' || existing.status === 'unanswered')
+      return { id: existing.id, notify: [], receipt: existing }
+    return { id: existing.id, notify: [] }
+  }
+  if (Option.isNone(yield* tx.conversation(payload.conversationId)))
+    return yield* new ExecutionError({
+      reason: new InvalidState({ message: 'Conversation is absent' }),
+    })
+  const boundary = yield* Inbox.prepare(tx, payload.conversationId, config.settings)
+  const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
+  if (
+    payload.submission.type === 'input' &&
+    payload.submission.whenBusy === 'reject' &&
+    live.run !== undefined
+  )
+    return yield* new ExecutionError({
+      reason: new ConversationBusy({ message: 'Conversation already has an active run' }),
+    })
+  const submission = yield* tx.createSubmission({
+    conversationId: payload.conversationId,
+    type: payload.submission.type,
+    status: 'queued',
+    requestId: payload.requestId,
+  })
+  const links = yield* tx.doc(Links, { key: String(submission.id) })
+  links.executions.push(executionId)
+  if (payload.submission.type === 'write')
+    boundary.inbox.items.push({
+      _tag: 'write',
+      id: submission.id,
+      mode: 'write',
+      entry: yield* Document.copyEffect(payload.submission.entry),
+    })
+  else {
+    const message = yield* Schema.encodeEffect(Schema.toCodecJson(Prompt.UserMessage))(
+      payload.submission.message,
+    ).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ExecutionError({
+            reason: new InvalidArguments({ message: 'Input cannot be persisted', cause }),
+          }),
+      ),
+    )
+    boundary.inbox.items.push({
+      _tag: 'input',
+      id: submission.id,
+      mode: payload.submission.whenBusy === 'steer' ? 'steer' : 'followUp',
+      message: yield* Document.copyEffect(message),
+    })
+  }
+  if (live.run !== undefined) return { id: submission.id, notify: [] }
+  const selected = yield* Inbox.apply(tx, boundary, 'final', yield* DateTime.now)
+  const generation = Arr.isReadonlyArrayEmpty(selected.users)
+    ? undefined
+    : yield* makeGeneration(tx, payload.sessionId, payload.conversationId, selected.users)
+  return {
+    id: submission.id,
+    notify: selected.settled,
+    ...(generation === undefined ? {} : { generation }),
+  }
+})
+
+const admit = (
+  session: Session.Service,
+  config: Conversation.Configuration['Service'],
+  payload: typeof Submission.payloadSchema.Type,
+  executionId: string,
+) =>
+  Effect.suspend(() =>
+    session
+      .transaction((tx) => admitInTransaction(tx, config, payload, executionId), {
+        key: `workflow/submission/admit/${executionId}`,
+        fingerprint: JSON.stringify([
+          payload.sessionId,
+          payload.conversationId,
+          payload.requestId,
+          payload.submission.type,
+        ]),
+      })
+      .pipe(
+        Effect.mapError((error) => (error._tag === 'StorageError' ? storageError(error) : error)),
+      ),
+  )
+
+/**
+ * Registers the standard Submission workflow; applications provide their ordinary WorkflowEngine Layer.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
+export const layer: Layer.Layer<
+  never,
+  never,
+  Conversation.Configuration | SessionDirectory | WorkflowEngine.WorkflowEngine
+> = Submission.toLayer(
+  Effect.fnUntraced(function* (payload, executionId) {
+    const session = yield* (yield* SessionDirectory)
+      .resolve(payload.sessionId)
+      .pipe(Effect.mapError(storageError))
+    const config = yield* Conversation.Configuration
+    if (payload.conversationId === Record.ROOT_CONVERSATION_ID)
+      yield* Activity.make({
+        name: 'ensure-root',
+        success: Record.Conversation,
+        error: ExecutionErrorCodec,
+        execute: session.root().pipe(Effect.mapError(storageError)),
+      })
+    const admitted = yield* Activity.make({
+      name: 'admission',
+      success: Admission,
+      error: ExecutionErrorCodec,
+      execute: admit(session, config, payload, executionId),
+    })
+    if (admitted.generation !== undefined)
+      yield* Generation.execute(admitted.generation, { discard: true })
+    yield* notify(session, admitted.notify)
+    if (admitted.receipt !== undefined) return admitted.receipt
+    return yield* DurableDeferred.await(Settled)
+  }),
+)

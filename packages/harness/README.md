@@ -1,0 +1,15 @@
+# @effect-harness/harness
+
+The generic model/tool boundary for Effect v4 applications. It can prepare and execute requests without durable storage; `@effect-harness/durable` adds committed state and Workflow executor Layers. Imports use public subpaths, for example `@effect-harness/harness/Model`, `/Registry`, `/Executor`, `/Tool`, `/Env` and `/tools`.
+
+`Model.Catalog` resolves a pinned provider/model reference to a Descriptor containing a native Effect AI LanguageModel, declared context/output limits and request configuration. Provider catalogue Layers adapt native configuration, prompt normalization, usage and retry classification. Supply explicit model capabilities and prices rather than assuming a catalogue knows current provider availability.
+
+`Registry.layer` registers named extensions containing tools, sections and hooks. Sections prepare prompts; operation hooks surround generation, tool execution and compaction. Bind normal Effect AI Toolkits with `Tool.bind`, providing the Toolkit handler Layer. `Invocation.ToolCall` supplies scoped output/details/diagnostic reporting, and `Invocation.Invocation` supplies the resolved invocation context. Binding captures handler dependencies; dynamic invocation services are supplied for each call. [The runnable example](../../apps/example/src/main.ts) checks this composition using public declarations.
+
+`Executor.layer` consumes `Registry.Registry` and `Model.Catalog`. It prepares prompts, streams requests and executes bound tools with typed errors and scoped resources. Tool results project into native Prompt content plus harness details and optional controls. Mark a tool `replay: 'safe'` only when repeating its body is acceptable; unsafe is the default. A durable receipt cannot make arbitrary external side effects exactly once.
+
+Portable coding tools and platform capabilities are described in [tools.md](../../docs/tools.md). [Provider setup](../../docs/providers.md) describes API keys and explicit account consent. The workspace pins Effect `4.0.1`; see the root README for build commands and development status.
+
+`Hook.bind` captures host services and lets you explicitly declare additional request services, such as durable `Ownership.Current` during native task invocation. `afterTools` receives call-ordered `Hook.SettledTool` values with committed entry IDs, including unavailable calls. `ToolResult.encode` projects content and rendered diagnostics into the native Prompt JSON envelope; details/control/usage remain separate. Direct provider adapters translate supported mixed media at the captured native client boundary.
+
+Package-root imports expose concept namespaces; `/testing` exposes `Assertions`, `EnvConformance` and `Runner` for Effect-native adapter tests. Built-in tool and native platform subpaths remain available independently. The generic Executor requires the checkout's [Effect AI patch](../../README.md) to preserve undeclared calls for unavailable settlement; unpatched external Effect does not supply that contract.
