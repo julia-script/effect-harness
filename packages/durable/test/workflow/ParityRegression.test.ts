@@ -185,7 +185,11 @@ describe('independent parity regressions', () => {
           })
           const common = yield* Layer.build(
             Layer.mergeAll(
-              Directory.layer(new Map([['parity', intercepted]])),
+              Directory.layer.pipe(
+                Layer.provide(
+                  Layer.succeed(Directory.Registrations, new Map([['parity', intercepted]])),
+                ),
+              ),
               config,
               catalog,
               Harness.layer.pipe(Layer.provide(Layer.mergeAll(registry, catalog))),

@@ -201,14 +201,15 @@ describe('Anthropic native catalogue', () => {
         apiKey: Config.succeed(Redacted.make('config-key')),
         apiUrl: Config.succeed('https://config.example'),
         apiVersion: Config.succeed('configured-version'),
-        model: entry.modelId,
-        config: { max_tokens: 1000 },
-        transformClient: (client) =>
+        model: Config.succeed(entry.modelId),
+        config: Config.succeed({ max_tokens: 1000 }),
+        transformClient: Config.succeed((client: HttpClient.HttpClient) =>
           client.pipe(
             HttpClient.mapRequest((request) =>
               request.pipe(HttpClientRequest.setHeader('x-transform', 'config')),
             ),
           ),
+        ),
       }).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, f.client)))
       return Effect.gen(function* () {
         yield* NativeLanguageModel.generateText({ prompt: 'Hi' }).pipe(

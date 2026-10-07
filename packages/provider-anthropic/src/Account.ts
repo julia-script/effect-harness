@@ -1,3 +1,5 @@
+import type * as NativeLanguageModel from 'effect/ai/LanguageModel'
+import * as Config from 'effect/Config'
 import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
 import * as Prompt from './Prompt.ts'
@@ -310,4 +312,32 @@ export const layer = (
 ) =>
   Prompt.layer({ model: options.model, config: options.config }).pipe(
     Layer.provideMerge(layerClient(options)),
+  )
+
+/** Resolves all layerClient options through the caller's ConfigProvider. */
+export const layerClientConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layerClient>[0]>>,
+): Layer.Layer<
+  AnthropicClient.AnthropicClient,
+  AiError.AiError | Config.ConfigError,
+  HttpClient.HttpClient | OAuth
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layerClient(yield* Config.unwrap(config))
+    }),
+  )
+
+/** Resolves all layer options through the caller's ConfigProvider. */
+export const layerConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
+): Layer.Layer<
+  NativeLanguageModel.LanguageModel | AnthropicClient.AnthropicClient,
+  AiError.AiError | Config.ConfigError,
+  HttpClient.HttpClient | OAuth
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layer(yield* Config.unwrap(config))
+    }),
   )

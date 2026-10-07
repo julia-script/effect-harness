@@ -1,3 +1,7 @@
+import { vi } from 'vitest'
+vi.mock('effect/HashMap', { spy: true })
+import * as HashMap from 'effect/HashMap'
+import * as Inspectable from 'effect/Inspectable'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as NodeHttpServer from '@effect/platform-node/NodeHttpServer'
 import * as FetchHttpClient from 'effect/http/FetchHttpClient'
@@ -569,5 +573,66 @@ describe('Pi-compatible Anthropic consent', () => {
           assert.strictEqual(f.requests.length, 2)
         }).pipe(Effect.provide(f.layer))
       }),
+  )
+})
+
+describe('Anthropic wrapped secret state ownership', () => {
+  it.effect('closing the authorization service scope discards wrapped pending attempts', () => {
+    const f = fixture()
+    return Effect.gen(function* () {
+      const acquired = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const context = yield* Layer.build(f.layer)
+          const auth = Context.get(context, OAuth.OAuth)
+          const attempt = yield* auth.begin({ account: 'closed-scope' })
+          return { auth, attempt }
+        }),
+      )
+      const error = yield* acquired.auth.complete(acquired.attempt.state, 'code').pipe(Effect.flip)
+      assert.strictEqual(error.reason._tag, 'AuthCallbackError')
+      assert.strictEqual(f.requests.length, 0)
+    })
+  })
+
+  it.effect(
+    'pending state is redacted, reconstructed equal keys complete once and cancel by value',
+    () => {
+      const f = fixture()
+      return Effect.gen(function* () {
+        const auth = yield* OAuth.OAuth
+        const insert = vi.mocked(HashMap.set)
+        insert.mockClear()
+        const attempt = yield* auth.begin({ account: 'wrapped-key' })
+        const rawState = Redacted.value(attempt.state)
+        const call = insert.mock.calls.find((args) => Redacted.isRedacted(args[1]))
+        assert.isDefined(call)
+        if (call === undefined) return yield* Effect.die('Expected redacted pending map key')
+        assert.strictEqual(call[1], attempt.state)
+        const pending = HashMap.set(call[0], call[1], call[2])
+        assert.isFalse(Inspectable.toStringUnknown(pending).includes(rawState))
+        assert.isFalse(JSON.stringify(pending).includes(rawState))
+        const reconstructed = Redacted.make(rawState)
+        const saved = yield* auth.complete(reconstructed, `wrapped-code#${rawState}`)
+        assert.strictEqual(saved.kind, 'opaqueOAuth')
+        assert.strictEqual(
+          (yield* auth.complete(Redacted.make(rawState), 'again').pipe(Effect.flip)).reason._tag,
+          'AuthCallbackError',
+        )
+        const wire = f.requests[0]
+        if (wire === undefined) return yield* Effect.die('Expected JSON token request')
+        assert.strictEqual(wire.headers['content-type'], 'application/json')
+        const serialized = body(wire)
+        assert.strictEqual(serialized.code, 'wrapped-code')
+        assert.strictEqual(serialized.state, rawState)
+        assert.strictEqual(serialized.code_verifier, rawState)
+        const cancelled = yield* auth.begin({ account: 'cancelled' })
+        yield* auth.cancel(Redacted.make(Redacted.value(cancelled.state)))
+        assert.strictEqual(
+          (yield* auth.complete(cancelled.state, 'again').pipe(Effect.flip)).reason._tag,
+          'AuthCallbackError',
+        )
+        assert.strictEqual(f.requests.length, 1)
+      }).pipe(Effect.provide(f.layer))
+    },
   )
 })

@@ -1,3 +1,4 @@
+import * as Config from 'effect/Config'
 import {
   AuthCallbackError,
   AuthConfigurationError,
@@ -113,5 +114,15 @@ export const layer = (options?: { readonly account?: string | undefined }) =>
           )
         }),
       })
+    }),
+  )
+
+/** Resolves all layer options through the caller's ConfigProvider. */
+export const layerConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
+): Layer.Layer<Callback, AuthError | Config.ConfigError, ChatGpt | HttpServer.HttpServer> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layer(yield* Config.unwrap(config))
     }),
   )

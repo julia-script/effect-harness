@@ -1,3 +1,10 @@
+import { vi } from 'vitest'
+vi.mock('@effect/ai-anthropic/AnthropicLanguageModel', { spy: true })
+import * as Config from 'effect/Config'
+import * as ConfigProvider from 'effect/ConfigProvider'
+import * as Context from 'effect/Context'
+import * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
+import * as Prompt from '../src/Prompt.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import * as LanguageModel from 'effect/ai/LanguageModel'
@@ -169,4 +176,74 @@ describe('Anthropic native Effect AI provider', () => {
       assert.strictEqual(available.data[0]?.id, 'claude-sonnet-4-5')
     }),
   )
+})
+
+describe('Anthropic configured provider capability', () => {
+  it.effect(
+    'Prompt configuration reexports the exact native client with one model construction',
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const http = HttpClient.make((request) =>
+            Effect.succeed(HttpClientResponse.fromWeb(request, Response.json(message))),
+          )
+          const client = yield* AnthropicClient.make({ apiKey: Redacted.make('fake-key') }).pipe(
+            Effect.provideService(HttpClient.HttpClient, http),
+          )
+          const spy = vi.mocked(AnthropicLanguageModel.make)
+          spy.mockClear()
+          yield* Effect.gen(function* () {
+            const context = yield* Layer.build(
+              Prompt.layerConfig({ model: Config.String('MODEL') }).pipe(
+                Layer.provide(Layer.succeed(AnthropicClient.AnthropicClient, client)),
+              ),
+            ).pipe(
+              Effect.provideService(
+                ConfigProvider.ConfigProvider,
+                ConfigProvider.fromUnknown({ MODEL: 'configured-model' }),
+              ),
+            )
+            assert.strictEqual(Context.get(context, AnthropicClient.AnthropicClient), client)
+            assert.isDefined(Context.get(context, LanguageModel.LanguageModel))
+            assert.strictEqual(spy.mock.calls.length, 1)
+          })
+        }),
+      ),
+  )
+  it.effect('default-key configuration retains ANTHROPIC_API_KEY and all model options', () => {
+    let requests = 0
+    const http = HttpClient.make((request) => {
+      requests++
+      assert.strictEqual(request.headers['x-api-key'], 'configured-key')
+      assert.strictEqual(request.url, 'https://config.example/v1/messages?beta=true')
+      if (request.body._tag !== 'Uint8Array') return Effect.die('Expected final JSON body')
+      const payload = JSON.parse(new TextDecoder().decode(request.body.body))
+      assert.strictEqual(payload.model, 'configured-model')
+      assert.strictEqual(payload.max_tokens, 2000)
+      return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json(message)))
+    })
+    const layer = Anthropic.layerDefaultConfig({
+      model: Config.String('MODEL'),
+      apiUrl: Config.String('API_URL'),
+      config: { max_tokens: Config.Int('MAX_TOKENS') },
+    }).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, http)))
+    return Effect.gen(function* () {
+      yield* LanguageModel.generateText({ prompt: 'Hello' }).pipe(
+        Anthropic.withConfigOverride({ max_tokens: 2000 }),
+      )
+      assert.isDefined(yield* AnthropicClient.AnthropicClient)
+      assert.strictEqual(requests, 1)
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(
+        ConfigProvider.ConfigProvider,
+        ConfigProvider.fromUnknown({
+          MODEL: 'configured-model',
+          API_URL: 'https://config.example',
+          MAX_TOKENS: 1000,
+          ANTHROPIC_API_KEY: 'configured-key',
+        }),
+      ),
+    )
+  })
 })

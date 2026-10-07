@@ -6,7 +6,7 @@
     "dependencies:build": "bun run --cwd ../../packages/harness build && bun run --cwd ../../packages/durable build",
     "typecheck": "bun run dependencies:build && tsc --noEmit",
     "build": "bun run dependencies:build && tsc",
-    "test": "bun dist/main.js"
+    "test": "bunx vitest run --config vitest.config.ts --root ../.. apps/example/test && bun dist/main.js"
   },
   "dependencies": {
     "@effect-harness/durable": "workspace:*",

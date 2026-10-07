@@ -1,3 +1,5 @@
+import type * as HttpClient from 'effect/http/HttpClient'
+import * as Config from 'effect/Config'
 import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
 import * as Generated from '@effect/ai-anthropic/Generated'
@@ -307,3 +309,27 @@ export const layerApiKey = (
     readonly provider?: string | undefined
   },
 ) => layer(options).pipe(Layer.provideMerge(AnthropicClient.layer(options)))
+
+/** Resolves all layer options through the caller's ConfigProvider. */
+export const layerConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
+): Layer.Layer<Model.Catalog, ModelError | Config.ConfigError, AnthropicClient.AnthropicClient> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layer(yield* Config.unwrap(config))
+    }),
+  )
+
+/** Resolves all layerApiKey options through the caller's ConfigProvider. */
+export const layerApiKeyConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layerApiKey>[0]>>,
+): Layer.Layer<
+  Model.Catalog | AnthropicClient.AnthropicClient,
+  ModelError | Config.ConfigError,
+  HttpClient.HttpClient
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layerApiKey(yield* Config.unwrap(config))
+    }),
+  )

@@ -12,23 +12,27 @@ export class SessionDirectory extends Context.Service<
   }
 >()('@effect-harness/durable/SessionDirectory') {}
 
-/** Registers scoped sessions without creating or owning a separate runtime. */
-export const layer = (
-  sessions: ReadonlyMap<string, SessionService>,
-): Layer.Layer<SessionDirectory> => {
-  const entries = new Map(sessions)
-  return Layer.succeed(
-    SessionDirectory,
-    SessionDirectory.of({
+/** Explicit application binding of already scoped Session references; no default registrations. */
+export class Registrations extends Context.Service<
+  Registrations,
+  ReadonlyMap<string, SessionService>
+>()('@effect-harness/durable/SessionDirectory/Registrations') {}
+
+/** Snapshot the explicitly supplied registration map when this Layer is built. */
+export const layer: Layer.Layer<SessionDirectory, never, Registrations> = Layer.effect(
+  SessionDirectory,
+  Effect.gen(function* () {
+    const entries = new Map(yield* Registrations)
+    return SessionDirectory.of({
       resolve: (sessionId) => {
         const session = entries.get(sessionId)
         return session === undefined
           ? Effect.fail(rejected(`Session ${sessionId} is not registered`, NotFound))
           : Effect.succeed(session)
       },
-    }),
-  )
-}
+    })
+  }),
+)
 
 /** Associates the application's ordinary Session Layer with one durable session identity. */
 export const layerSingle = (sessionId: string): Layer.Layer<SessionDirectory, never, Session> =>

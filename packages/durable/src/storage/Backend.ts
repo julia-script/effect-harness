@@ -332,14 +332,6 @@ export const make = Effect.fnUntraced(function* (
     ).pipe(Effect.flatMap((seq) => validate(Record.Seq, seq)))
   })
   return Store.of({
-    mintId: <S extends Schema.Constraint>(schema: S) =>
-      transact((state) =>
-        Effect.gen(function* () {
-          if (!Number.isSafeInteger(state.nextId)) return yield* rejected('ID space is exhausted')
-          yield* validate(schema, state.nextId)
-          return { state: { ...state, nextId: state.nextId + 1 }, writes: [], result: state.nextId }
-        }),
-      ).pipe(Effect.flatMap((id) => validate(schema, id))),
     read: read(backend.load),
     committed: read(backend.committed),
     transact,

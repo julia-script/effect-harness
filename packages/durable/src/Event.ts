@@ -530,45 +530,45 @@ export const translate = Effect.fnUntraced(function* (
     events.push({ type: 'turn_start' })
   return events
 })
-export const make = (views: View.Service): Service => ({
-  watch: Effect.fnUntraced(function* (id) {
-    const held = new Set<Record.TaskId>()
-    let initial: Snapshot | undefined
-    const seedHeld = (tasks: ReadonlyArray<Record.Task>) => {
-      held.clear()
-      for (const task of tasks)
-        if (generationKind(task.kind) && task.state.status === 'completing') held.add(task.id)
-    }
-    const subscription = yield* views.observe<Batch>(id, {
-      initial: Effect.fnUntraced(function* (value, tasks) {
-        seedHeld(tasks)
-        initial = yield* snapshot(value)
-        return [initial]
-      }),
-      project: (change) =>
-        translate(id, change, held).pipe(
-          Effect.map((batch) => (batch.length === 0 ? undefined : batch)),
-        ),
-      reset: Effect.fnUntraced(function* (value, _seq, tasks) {
-        seedHeld(tasks)
-        return [yield* snapshot(value)]
-      }),
-    })
-    if (initial === undefined) return yield* rejected('Event snapshot was not initialized', Corrupt)
-    return {
-      get value() {
-        return subscription.value
-      },
-      snapshot: initial,
-      changes: subscription.changes,
-      closed: subscription.closed,
-      stop: subscription.stop,
-      listen: subscription.listen,
-    }
-  }),
+export const make: Effect.Effect<Service, never, View.View> = Effect.gen(function* () {
+  const views = yield* View.View
+  return Event.of({
+    watch: Effect.fnUntraced(function* (id) {
+      const held = new Set<Record.TaskId>()
+      let initial: Snapshot | undefined
+      const seedHeld = (tasks: ReadonlyArray<Record.Task>) => {
+        held.clear()
+        for (const task of tasks)
+          if (generationKind(task.kind) && task.state.status === 'completing') held.add(task.id)
+      }
+      const subscription = yield* views.observe<Batch>(id, {
+        initial: Effect.fnUntraced(function* (value, tasks) {
+          seedHeld(tasks)
+          initial = yield* snapshot(value)
+          return [initial]
+        }),
+        project: (change) =>
+          translate(id, change, held).pipe(
+            Effect.map((batch) => (batch.length === 0 ? undefined : batch)),
+          ),
+        reset: Effect.fnUntraced(function* (value, _seq, tasks) {
+          seedHeld(tasks)
+          return [yield* snapshot(value)]
+        }),
+      })
+      if (initial === undefined)
+        return yield* rejected('Event snapshot was not initialized', Corrupt)
+      return {
+        get value() {
+          return subscription.value
+        },
+        snapshot: initial,
+        changes: subscription.changes,
+        closed: subscription.closed,
+        stop: subscription.stop,
+        listen: subscription.listen,
+      }
+    }),
+  })
 })
-export const layer = Layer.effect(Event)(
-  Effect.gen(function* () {
-    return make(yield* View.View)
-  }),
-)
+export const layer = Layer.effect(Event, make)

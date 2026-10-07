@@ -750,10 +750,10 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
   }),
 )
 function noToolCall(id: string): ToolCall['Service'] {
-  return {
+  return ToolCall.of({
     id,
     output: () => Effect.void,
     details: () => Effect.void,
     diagnostic: () => Effect.void,
-  }
+  })
 }

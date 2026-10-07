@@ -6,7 +6,7 @@ import * as Schema from 'effect/Schema'
 import * as Document from '../Document.ts'
 import * as Record from '../Record.ts'
 import * as Session from '../Session.ts'
-import { Store } from '../Store.ts'
+import { Store, mintId } from '../Store.ts'
 import { rejected, StorageError } from '../StorageError.ts'
 import type { Assertions, Case } from './Storage.ts'
 
@@ -80,7 +80,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
       const store = yield* Store
       const session = yield* Session.Session
       assert.deepStrictEqual((yield* store.read).conversations, [])
-      assert.strictEqual(yield* store.mintId(Record.EntryId), 2)
+      assert.strictEqual(yield* mintId(Record.EntryId), 2)
       let calls = 0
       const initialize = (tx: Session.Transaction) =>
         Effect.gen(function* () {
@@ -667,7 +667,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
       yield* store.commit([
         { type: 'entry', value: { id: eid(100), conversationId: root, kind: 'explicit' } },
       ])
-      assert.strictEqual(yield* store.mintId(Record.TaskId), 101)
+      assert.strictEqual(yield* mintId(Record.TaskId), 101)
       yield* failure(store.commit([{ type: 'task', value: pending(tid(100)) }]))
       yield* store.commit([
         {
@@ -675,8 +675,8 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
           value: { id: eid(Number.MAX_SAFE_INTEGER), conversationId: root, kind: 'last' },
         },
       ])
-      yield* failure(store.mintId(Record.EntryId))
-      yield* failure(store.mintId(Record.EntryId))
+      yield* failure(mintId(Record.EntryId))
+      yield* failure(mintId(Record.EntryId))
     }),
   )
   test(
@@ -875,7 +875,7 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
         store.read.pipe(Effect.as(null)),
         store.committed.pipe(Effect.as(null)),
         store.commit([]).pipe(Effect.as(null)),
-        store.mintId(Record.EntryId).pipe(Effect.as(null)),
+        mintId(Record.EntryId).pipe(Effect.as(null)),
         session.conversation(root).pipe(Effect.as(null)),
         store.journal(0).pipe(Effect.as(null)),
       ])

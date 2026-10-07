@@ -6,7 +6,7 @@ import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import * as Record from './Record.ts'
-import type * as Session from './Session.ts'
+import * as Session from './Session.ts'
 import { ExecutionError, InvalidState, Closed, Aborted } from './workflow/ExecutionError.ts'
 
 /** Durable references identify native Workflow executions; they contain no custom scheduler state. */
@@ -22,9 +22,8 @@ export class Declarations extends Context.Service<
   Declarations,
   {
     readonly get: (name: string) => Workflow.Any | undefined
-    readonly execute: (
-      binding: Binding,
-    ) => Effect.Effect<unknown, ExecutionError, WorkflowEngine.WorkflowEngine>
+    /** Schema context captured when the heterogeneous declaration registry is constructed. */
+    readonly schemaContext: Context.Context<never>
   }
 >()('@effect-harness/durable/Ownership/Declarations') {}
 /** Schema services retained structurally across heterogeneous native declarations. */
@@ -44,61 +43,64 @@ export const layerDeclarations = <const W extends ReadonlyArray<Workflow.Any>>(
       const declarations = new Map(workflows.map((workflow) => [workflow._tag, workflow]))
       return Declarations.of({
         get: (name) => declarations.get(name),
-        execute: (binding) =>
-          Effect.gen(function* () {
-            const declaration = declarations.get(binding.workflow)
-            if (declaration === undefined)
-              return yield* new ExecutionError({
-                reason: new InvalidState({
-                  message: `Workflow ${binding.workflow} is not declared`,
-                }),
-              })
-            // Native metadata is erased by this heterogeneous registry. Every entry is a
-            // Workflow declaration; schema services are captured when its Layer is built.
-            const workflow = Workflow.make(declaration._tag, {
-              payload: declaration.payloadSchema,
-              success: declaration.successSchema,
-              error: declaration.errorSchema,
-              annotations: declaration.annotations,
-              idempotencyKey: () => binding.executionId,
-            })
-            const engine = yield* WorkflowEngine.WorkflowEngine
-            // The native heterogeneous schema interface erases its services. This
-            // private boundary provides the exact captured client services below.
-            // oxlint-disable effecttsgo/any-unknown-in-error-context
-            return yield* Effect.gen(function* () {
-              const decode = Schema.decodeEffect(Schema.toCodecJson(workflow.payloadSchema))(
-                binding.payload,
-              )
-              const parent = yield* Effect.serviceOption(WorkflowEngine.WorkflowInstance)
-              const payload = yield* Option.isSome(parent)
-                ? Workflow.wrapActivityResult(decode, () => false).pipe(
-                    Effect.provideService(WorkflowEngine.WorkflowInstance, parent.value),
-                  )
-                : decode
-              return yield* engine.execute(workflow, {
-                executionId: binding.executionId,
-                payload,
-                suspendedRetrySchedule: declaration.suspendedRetrySchedule,
-              })
-            }).pipe(
-              Effect.provideContext(context as Context.Context<unknown>),
-              Effect.mapError((error) =>
-                error instanceof ExecutionError
-                  ? error
-                  : new ExecutionError({
-                      reason: new InvalidState({
-                        message: `Native workflow ${binding.workflow} failed`,
-                        cause: error,
-                      }),
-                    }),
-              ),
-            )
-            // oxlint-enable effecttsgo/any-unknown-in-error-context
-          }),
+        // Never retain a construction-time native execution identity or engine.
+        schemaContext: context.pipe(
+          Context.omit(WorkflowEngine.WorkflowInstance, WorkflowEngine.WorkflowEngine),
+        ),
       })
     }),
   )
+
+/** Execute native declarations with their captured schema context and the caller's optional WorkflowInstance. */
+export const execute = Effect.fnUntraced(function* (
+  binding: Binding,
+): Effect.fn.Return<unknown, ExecutionError, Declarations | WorkflowEngine.WorkflowEngine> {
+  const declarations = yield* Declarations
+  const declaration = declarations.get(binding.workflow)
+  if (declaration === undefined)
+    return yield* new ExecutionError({
+      reason: new InvalidState({ message: `Workflow ${binding.workflow} is not declared` }),
+    })
+  const workflow = Workflow.make(declaration._tag, {
+    payload: declaration.payloadSchema,
+    success: declaration.successSchema,
+    error: declaration.errorSchema,
+    annotations: declaration.annotations,
+    idempotencyKey: () => binding.executionId,
+  })
+  const engine = yield* WorkflowEngine.WorkflowEngine
+  const parent = yield* Effect.serviceOption(WorkflowEngine.WorkflowInstance)
+  // Native Workflow.Any erases heterogeneous schema service requirements. The
+  // registry's Layer required every declaration service and captured their exact
+  // Context; only this execution boundary restores that erased schema environment.
+  // oxlint-disable effecttsgo/any-unknown-in-error-context
+  return yield* Effect.gen(function* () {
+    const decode = Schema.decodeEffect(Schema.toCodecJson(workflow.payloadSchema))(binding.payload)
+    const payload = yield* Option.isSome(parent)
+      ? Workflow.wrapActivityResult(decode, () => false).pipe(
+          Effect.provideService(WorkflowEngine.WorkflowInstance, parent.value),
+        )
+      : decode
+    return yield* engine.execute(workflow, {
+      executionId: binding.executionId,
+      payload,
+      suspendedRetrySchedule: declaration.suspendedRetrySchedule,
+    })
+  }).pipe(
+    Effect.provideContext(declarations.schemaContext as Context.Context<unknown>),
+    Effect.mapError((error) =>
+      error instanceof ExecutionError
+        ? error
+        : new ExecutionError({
+            reason: new InvalidState({
+              message: `Native workflow ${binding.workflow} failed`,
+              cause: error,
+            }),
+          }),
+    ),
+  )
+  // oxlint-enable effecttsgo/any-unknown-in-error-context
+})
 
 export interface Identity {
   readonly sessionId: string
@@ -114,9 +116,10 @@ export class Current extends Context.Service<
   }
 >()('@effect-harness/durable/Ownership/Current') {}
 
-export const layerCurrent = (identity: Identity, session: Session.Service): Layer.Layer<Current> =>
+export const layerCurrent = (identity: Identity): Layer.Layer<Current, never, Session.Session> =>
   Layer.effect(Current)(
     Effect.gen(function* () {
+      const session = yield* Session.Session
       let active = true
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {

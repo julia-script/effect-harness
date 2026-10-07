@@ -606,7 +606,9 @@ describe('faithful native Anthropic system normalization', () => {
     () => {
       const f = fixture('apiKey')
       const layer = Anthropic.layerConfig({
-        ...options,
+        model: Config.succeed(options.model),
+        config: Config.succeed(options.config),
+        transformClient: Config.succeed(options.transformClient),
         apiKey: Config.succeed(Redacted.make('config-key')),
         apiUrl: Config.succeed(options.apiUrl),
         apiVersion: Config.succeed(options.apiVersion),

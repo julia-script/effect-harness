@@ -1,3 +1,4 @@
+import * as Config from 'effect/Config'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
 import * as OpenAiLanguageModel from '@effect/ai-openai/OpenAiLanguageModel'
 import * as OpenAiSchema from '@effect/ai-openai/OpenAiSchema'
@@ -20,23 +21,49 @@ import * as ToolResult from './ToolResult.ts'
 /** Constructs the native model with canonical tool-media translation at its captured client boundary. */
 export const make = Effect.fnUntraced(function* (
   options: Parameters<typeof OpenAiLanguageModel.make>[0],
-) {
+): Effect.fn.Return<
+  typeof NativeLanguageModel.LanguageModel.Service,
+  never,
+  OpenAiClient.OpenAiClient
+> {
   const native = yield* OpenAiClient.OpenAiClient
   return yield* OpenAiLanguageModel.make(options).pipe(
     Effect.provideService(OpenAiClient.OpenAiClient, ToolResult.client(native, options.config)),
   )
 })
 
+/** Provides the exact selected client with a single native model construction. */
+export const layer = (
+  options: Parameters<typeof OpenAiLanguageModel.make>[0],
+): Layer.Layer<
+  NativeLanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
+  never,
+  OpenAiClient.OpenAiClient
+> =>
+  Layer.effectContext(
+    Effect.gen(function* () {
+      const client = yield* OpenAiClient.OpenAiClient
+      const model = yield* make(options)
+      return Context.make(NativeLanguageModel.LanguageModel, model).pipe(
+        Context.add(OpenAiClient.OpenAiClient, client),
+      )
+    }),
+  )
+
 export const layerApiKey = (options: {
   readonly apiKey: Redacted.Redacted<string>
   readonly model: string
   readonly config?: Omit<typeof OpenAiLanguageModel.Config.Service, 'model'> | undefined
   readonly apiUrl?: string | undefined
-}) =>
+}): Layer.Layer<
+  NativeLanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
+  never,
+  HttpClient.HttpClient
+> =>
   Layer.effect(
     NativeLanguageModel.LanguageModel,
     make({ model: options.model, config: options.config }),
-  ).pipe(Layer.provide(OpenAiClient.layer({ apiKey: options.apiKey, apiUrl: options.apiUrl })))
+  ).pipe(Layer.provideMerge(OpenAiClient.layer({ apiKey: options.apiKey, apiUrl: options.apiUrl })))
 
 const authenticationError = (error: AuthError) => {
   let reason: AiError.AiErrorReason
@@ -176,7 +203,9 @@ const completedStream = (
   })
 
 /** Standard OpenAiClient service. Both generated and streamed text use the public streaming Responses endpoint. */
-export const layerChatGptClient = (options: { readonly account: string }) =>
+export const layerChatGptClient = (options: {
+  readonly account: string
+}): Layer.Layer<OpenAiClient.OpenAiClient, never, ChatGpt | HttpClient.HttpClient> =>
   Layer.effect(OpenAiClient.OpenAiClient)(
     Effect.gen(function* () {
       const auth = yield* ChatGpt
@@ -272,11 +301,67 @@ export const layerChatGpt = (options: {
   readonly account: string
   readonly model: string
   readonly config?: Omit<typeof OpenAiLanguageModel.Config.Service, 'model'> | undefined
-}) =>
+}): Layer.Layer<
+  NativeLanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
+  never,
+  ChatGpt | HttpClient.HttpClient
+> =>
   Layer.effect(
     NativeLanguageModel.LanguageModel,
     make({
       model: options.model,
       config: { ...options.config, store: false },
     }),
-  ).pipe(Layer.provide(layerChatGptClient({ account: options.account })))
+  ).pipe(Layer.provideMerge(layerChatGptClient({ account: options.account })))
+
+/** Resolves all layerApiKey options through the caller's ConfigProvider. */
+export const layerApiKeyConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layerApiKey>[0]>>,
+): Layer.Layer<
+  NativeLanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
+  Config.ConfigError,
+  HttpClient.HttpClient
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layerApiKey(yield* Config.unwrap(config))
+    }),
+  )
+
+/** Resolves all layerChatGptClient options through the caller's ConfigProvider. */
+export const layerChatGptClientConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layerChatGptClient>[0]>>,
+): Layer.Layer<OpenAiClient.OpenAiClient, Config.ConfigError, ChatGpt | HttpClient.HttpClient> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layerChatGptClient(yield* Config.unwrap(config))
+    }),
+  )
+
+/** Resolves all layerChatGpt options through the caller's ConfigProvider. */
+export const layerChatGptConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layerChatGpt>[0]>>,
+): Layer.Layer<
+  NativeLanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
+  Config.ConfigError,
+  ChatGpt | HttpClient.HttpClient
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layerChatGpt(yield* Config.unwrap(config))
+    }),
+  )
+
+/** Resolves the model options while retaining the caller's exact native client. */
+export const layerConfig = (
+  config: Config.Wrap<Parameters<typeof layer>[0]>,
+): Layer.Layer<
+  NativeLanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
+  Config.ConfigError,
+  OpenAiClient.OpenAiClient
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layer(yield* Config.unwrap(config))
+    }),
+  )

@@ -1,3 +1,6 @@
+import type * as HttpClient from 'effect/http/HttpClient'
+import type { ChatGpt } from './ChatGpt.ts'
+import * as Config from 'effect/Config'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
 import * as OpenAiLanguageModel from '@effect/ai-openai/OpenAiLanguageModel'
 import * as OpenAiSchema from '@effect/ai-openai/OpenAiSchema'
@@ -256,4 +259,42 @@ export const layerChatGpt = (options: {
 }) =>
   layer({ ...options, account: true }).pipe(
     Layer.provideMerge(Provider.layerChatGptClient({ account: options.account })),
+  )
+
+/** Resolves all layer options through the caller's ConfigProvider. */
+export const layerConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
+): Layer.Layer<Model.Catalog, ModelError | Config.ConfigError, OpenAiClient.OpenAiClient> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layer(yield* Config.unwrap(config))
+    }),
+  )
+
+/** Resolves all layerApiKey options through the caller's ConfigProvider. */
+export const layerApiKeyConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layerApiKey>[0]>>,
+): Layer.Layer<
+  Model.Catalog | OpenAiClient.OpenAiClient,
+  ModelError | Config.ConfigError,
+  HttpClient.HttpClient
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layerApiKey(yield* Config.unwrap(config))
+    }),
+  )
+
+/** Resolves all layerChatGpt options through the caller's ConfigProvider. */
+export const layerChatGptConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layerChatGpt>[0]>>,
+): Layer.Layer<
+  Model.Catalog | OpenAiClient.OpenAiClient,
+  ModelError | Config.ConfigError,
+  ChatGpt | HttpClient.HttpClient
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layerChatGpt(yield* Config.unwrap(config))
+    }),
   )

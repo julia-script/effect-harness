@@ -5,7 +5,7 @@ import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
-import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as Env from '../../src/Env.ts'
 import * as NodeEnv from '../../src/env/Node.ts'
 import * as Conformance from '../../src/testing/EnvConformance.ts'
@@ -34,7 +34,7 @@ const fresh = (mode: 'native' | 'polling') =>
       watch: { mode, pollIntervalMs: 20 },
       env: { BASH_ENV: '', PATH: '/usr/bin:/bin' },
     }),
-  ).pipe(Layer.provide(NodeFileSystem.layer))
+  ).pipe(Layer.provide(NodeServices.layer))
 
 for (const mode of ['native', 'polling'] as const)
   Runner.registerEnvConformance(
@@ -62,7 +62,7 @@ describe('public conformance adapter and scope ownership', () => {
             return Context.get(yield* Layer.build(NodeEnv.layer({ cwd })), Env.Env)
           }),
         ),
-      ).pipe(Layer.provide(NodeFileSystem.layer))
+      ).pipe(Layer.provide(NodeServices.layer))
       const program = Conformance.withEnv(
         Effect.gen(function* () {
           assert.deepStrictEqual(yield* (yield* Env.Env).listDir('.'), [])
@@ -128,7 +128,7 @@ describe('public conformance adapter and scope ownership', () => {
         assert.deepStrictEqual(cleaned, directories)
         const fs = yield* FileSystem.FileSystem
         for (const directory of directories) assert.isFalse(yield* fs.exists(directory))
-      }).pipe(Effect.provide(NodeFileSystem.layer)),
+      }).pipe(Effect.provide(NodeServices.layer)),
   )
 
   it.live(
@@ -170,7 +170,7 @@ describe('public conformance adapter and scope ownership', () => {
                 }),
               ),
           })),
-        ).pipe(Layer.provide(NodeFileSystem.layer))
+        ).pipe(Layer.provide(NodeServices.layer))
         const first = cases[0]
         assert.ok(first)
         const exit = yield* Conformance.withEnv(first.run, broken).pipe(Effect.exit)

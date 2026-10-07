@@ -102,6 +102,44 @@ const settings = Agent.settings({ progress: { outputIntervalMs: 0 } })
 const user = (text: string) => Prompt.userMessage({ content: [Prompt.textPart({ text })] })
 
 describe('native AI executor intent/request boundaries', () => {
+  it.effect('intent codecs receive the selected call id and silent ToolCall capabilities', () =>
+    Effect.gen(function* () {
+      const seen = yield* Ref.make<ReadonlyArray<string>>([])
+      const originals = yield* binding(() => Effect.die('intent preparation must not execute'))
+      const inspect = Effect.gen(function* () {
+        const call = yield* ToolCall
+        yield* Ref.update(seen, (values) => [...values, call.id])
+        yield* call.output('codec output')
+        yield* call.details({ phase: 'codec' })
+        yield* call.diagnostic({ kind: 'codec' })
+      })
+      const tools = originals.map((original): Tool.Registration => ({
+        ...original,
+        decode: (args) => inspect.pipe(Effect.andThen(original.decode(args))),
+        encodeArgs: (args) => inspect.pipe(Effect.andThen(original.encodeArgs(args))),
+      }))
+      const executor = yield* runtime([{ name: 'tools', tools }])
+      const agent = yield* executor.resolve(state, settings)
+      const intent = yield* executor.prepareTool(agent, {
+        id: 'selected-call',
+        name: 'echo',
+        args: { n: '7' },
+      })
+      assert.strictEqual(intent.id, 'selected-call')
+      assert.deepStrictEqual(intent.args, { n: 7 })
+      assert.deepStrictEqual(yield* Ref.get(seen), ['selected-call', 'selected-call'])
+    }).pipe(
+      Effect.provide(
+        Layer.succeed(
+          Invocation,
+          Invocation.of({
+            ...quiet,
+            progress: () => Effect.die('intent codecs must not publish execution progress'),
+          }),
+        ),
+      ),
+    ),
+  )
   it.effect(
     'prepares native Prompt, pins declaration/options/cutoff and does not execute offered tools',
     () =>

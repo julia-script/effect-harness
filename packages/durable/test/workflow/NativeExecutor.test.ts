@@ -969,10 +969,11 @@ describe('ownership domain capabilities', () => {
             }),
           )
           const count = yield* Ref.make(0)
-          const scope = Ownership.layerCurrent(
-            { sessionId: 'native', conversationId: root.id, taskId },
-            session,
-          )
+          const scope = Ownership.layerCurrent({
+            sessionId: 'native',
+            conversationId: root.id,
+            taskId,
+          }).pipe(Layer.provide(Layer.succeed(Session.Session, session)))
           yield* Effect.gen(function* () {
             const first = yield* Ownership.memo(
               '__proto__',

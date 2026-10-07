@@ -1,3 +1,8 @@
+import { vi } from 'vitest'
+vi.mock('effect/ai/LanguageModel', { spy: true })
+import * as Config from 'effect/Config'
+import * as ConfigProvider from 'effect/ConfigProvider'
+import * as Context from 'effect/Context'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -561,5 +566,49 @@ describe('native Claude Code LanguageModel', () => {
             'AiError',
           )
       }),
+  )
+})
+
+describe('CLI configured provider capability', () => {
+  it.effect(
+    'reexports exact substituted Cli and constructs one model with configured options',
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const requests: Array<Cli.Request> = []
+          const cli = Cli.Cli.of({
+            status: Effect.succeed({ loggedIn: true, account: true }),
+            run: (request) => {
+              requests.push(request)
+              return decode(textFrames)
+            },
+          })
+          const spy = vi.mocked(NativeLanguageModel.make)
+          spy.mockClear()
+          const layer = Provider.layerConfig({
+            model: Config.String('MODEL'),
+            cwd: Config.String('CWD'),
+            effort: Config.succeed('high'),
+          }).pipe(
+            Layer.provide(Layer.merge(Layer.succeed(Cli.Cli, cli), IntentServer.layerDisabled)),
+          )
+          yield* Effect.gen(function* () {
+            const context = yield* Layer.build(layer).pipe(
+              Effect.provideService(
+                ConfigProvider.ConfigProvider,
+                ConfigProvider.fromUnknown({ MODEL: 'configured-cli', CWD: '/caller/workspace' }),
+              ),
+            )
+            assert.strictEqual(Context.get(context, Cli.Cli), cli)
+            yield* NativeLanguageModel.generateText({ prompt: 'Hello' }).pipe(
+              Effect.provideContext(context),
+            )
+            assert.strictEqual(requests[0]?.model, 'configured-cli')
+            assert.strictEqual(requests[0]?.cwd, '/caller/workspace')
+            assert.strictEqual(requests[0]?.effort, 'high')
+            assert.strictEqual(spy.mock.calls.length, 1)
+          })
+        }),
+      ),
   )
 })

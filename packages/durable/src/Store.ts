@@ -2,7 +2,8 @@ import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Record from './Record.ts'
-import type { StorageError } from './StorageError.ts'
+import { rejected, type StorageError } from './StorageError.ts'
+import { validate } from './storage/State.ts'
 
 export interface UnkeyedOptions {
   readonly key?: never
@@ -34,9 +35,6 @@ export interface Journal {
   readonly state: Record.State
 }
 export interface Service {
-  readonly mintId: <S extends Schema.Constraint>(
-    schema: S,
-  ) => Effect.Effect<S['Type'], StorageError, S['DecodingServices']>
   readonly read: Effect.Effect<Record.State, StorageError>
   /** Reads outside an inherited SQL transaction, waiting for physical settlement. */
   readonly committed: Effect.Effect<Record.State, StorageError>
@@ -52,3 +50,19 @@ export interface Service {
   readonly awaitClosed: Effect.Effect<void, StorageError>
 }
 export class Store extends Context.Service<Store, Service>()('@effect-harness/durable/Store') {}
+
+/** Allocate through the transaction callback, validating before publication and again after allocation. */
+export const mintId = Effect.fnUntraced(function* <S extends Schema.Constraint>(
+  schema: S,
+): Effect.fn.Return<S['Type'], StorageError, Store | S['DecodingServices']> {
+  const store = yield* Store
+  return yield* store
+    .transact((state) =>
+      Effect.gen(function* () {
+        if (!Number.isSafeInteger(state.nextId)) return yield* rejected('ID space is exhausted')
+        yield* validate(schema, state.nextId)
+        return { state: { ...state, nextId: state.nextId + 1 }, writes: [], result: state.nextId }
+      }),
+    )
+    .pipe(Effect.flatMap((id) => validate(schema, id)))
+})

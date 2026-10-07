@@ -10,7 +10,7 @@ import * as Option from 'effect/Option'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import * as Ownership from '../Ownership.ts'
-import type * as Session from '../Session.ts'
+import * as Session from '../Session.ts'
 import { ExecutionError, InvalidState, Aborted } from './ExecutionError.ts'
 
 /** Owner-local capabilities supplement native engine cancellation without replacing its journal. */
@@ -137,7 +137,13 @@ export const activity = <A, E, R>(
             const fiber = yield* FiberHandle.run(
               handle,
               Effect.scoped(
-                body.pipe(Effect.provide(Ownership.layerCurrent(identity, session))),
+                body.pipe(
+                  Effect.provide(
+                    Ownership.layerCurrent(identity).pipe(
+                      Layer.provide(Layer.succeed(Session.Session, session)),
+                    ),
+                  ),
+                ),
               ).pipe(
                 Effect.raceFirst(Deferred.await(closed).pipe(Effect.andThen(pause))),
                 Effect.interruptible,

@@ -12,7 +12,11 @@ import * as Stream from 'effect/Stream'
 import * as Queue from 'effect/Queue'
 import * as Layer from 'effect/Layer'
 import * as Semaphore from 'effect/Semaphore'
-import * as NodeServices from '@effect/platform-node/NodeServices'
+import * as Config from 'effect/Config'
+import * as Option from 'effect/Option'
+import * as FileSystem from 'effect/FileSystem'
+import * as Path from 'effect/Path'
+import type { ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
 import {
   FileError,
   ExecutionError,
@@ -21,7 +25,7 @@ import {
   NativeFiles,
   type BinaryReader,
   type FileInfo,
-  type Options,
+  type Options as EnvOptions,
   layer as environmentLayer,
   ExecutionShellUnavailable,
   FileInvalid,
@@ -358,16 +362,38 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
     }),
   }),
 )
-const resolveShell = (custom?: string): Effect.Effect<ShellConfiguration, ExecutionError> =>
+/** Host metadata only: cwd/home and path-list syntax are not supplied by Effect Path. */
+export interface Host {
+  readonly platform: string
+  readonly cwd: string
+  readonly home: string
+  readonly searchPathDelimiter: string
+}
+export interface Options extends Partial<EnvOptions> {
+  readonly host?: Host | undefined
+}
+/** Narrow Node host adapter, evaluated at Layer construction rather than factory declaration.
+ * Shell environment is supplied by ConfigProvider; this adapter reads only runtime identity,
+ * cwd/home and the host search-path delimiter absent from stable Effect Path.
+ */
+export const hostDefaults: Effect.Effect<Host> = Effect.sync(() => ({
+  platform: process.platform,
+  cwd: process.cwd(),
+  home: Os.homedir(),
+  searchPathDelimiter: NodePath.delimiter,
+}))
+const resolveShell = (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  host: Host,
+  custom?: string,
+): Effect.Effect<ShellConfiguration, ExecutionError> =>
   Effect.gen(function* () {
     const exists = (value: string) =>
-      Effect.tryPromise({
-        try: () => Fsp.access(value).then(() => true),
-        catch: (cause) =>
-          new ExecutionError({
-            reason: new ExecutionShellUnavailable({ message: `Shell not found: ${value}`, cause }),
-          }),
-      }).pipe(Effect.orElseSucceed(() => false))
+      fs.access(value).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      )
     const configuration = (program: string): ShellConfiguration => {
       const normalized = program.replace(/\//g, '\\').toLowerCase()
       if (/^[a-z]:\\windows\\(?:system32|sysnative)\\bash\.exe$/.test(normalized))
@@ -382,18 +408,29 @@ const resolveShell = (custom?: string): Effect.Effect<ShellConfiguration, Execut
         }),
       })
     }
+    const configFailure = (cause: Config.ConfigError) =>
+      new ExecutionError({
+        reason: new ExecutionShellUnavailable({
+          message: `Shell discovery configuration failed: ${cause.message}`,
+          cause,
+        }),
+      })
     const candidates: string[] = []
-    if (process.platform === 'win32') {
+    if (host.platform === 'win32') {
       for (const key of ['ProgramFiles', 'ProgramFiles(x86)']) {
-        const base = process.env[key]
-        if (base !== undefined) candidates.push(NodePath.join(base, 'Git', 'bin', 'bash.exe'))
+        const base = yield* Config.option(Config.String(key)).pipe(Effect.mapError(configFailure))
+        if (Option.isSome(base)) candidates.push(path.join(base.value, 'Git', 'bin', 'bash.exe'))
       }
     } else candidates.push('/bin/bash')
-    for (const directory of (process.env['PATH'] ?? '').split(NodePath.delimiter))
-      candidates.push(NodePath.join(directory, process.platform === 'win32' ? 'bash.exe' : 'bash'))
+    const searchPath = yield* Config.String('PATH').pipe(
+      Config.withDefault(''),
+      Effect.mapError(configFailure),
+    )
+    for (const directory of searchPath.split(host.searchPathDelimiter))
+      candidates.push(path.join(directory, host.platform === 'win32' ? 'bash.exe' : 'bash'))
     for (const candidate of candidates)
       if (yield* exists(candidate)) return configuration(candidate)
-    if (process.platform === 'win32')
+    if (host.platform === 'win32')
       return yield* new ExecutionError({
         reason: new ExecutionShellUnavailable({
           message: 'No Bash shell is available; install Git Bash or configure a shell path',
@@ -406,12 +443,14 @@ const unreliableFileSystems = new Set([
   0x00c36400, 0x5346414f, 0x6b414653, 0x5dca2df5,
 ])
 /** Windows and Linux network/FUSE mounts require polling to see remote changes. */
-export const resolveWatchMode = (
+const watchMode = (
+  path: Path.Path,
+  platform: string,
   targets: ReadonlyArray<WatchTarget>,
 ): Effect.Effect<'native' | 'polling'> =>
   Effect.gen(function* () {
-    if (process.platform === 'win32') return 'polling'
-    if (process.platform !== 'linux' && process.platform !== 'android') return 'native'
+    if (platform === 'win32') return 'polling'
+    if (platform !== 'linux' && platform !== 'android') return 'native'
     for (const target of targets) {
       let candidate = target.path
       while (true) {
@@ -423,21 +462,53 @@ export const resolveWatchMode = (
           if (unreliableFileSystems.has(stat.type)) return 'polling'
           break
         }
-        const parent = NodePath.dirname(candidate)
+        const parent = path.dirname(candidate)
         if (parent === candidate) break
         candidate = parent
       }
     }
     return 'native'
   })
-/** Own Env plus native services in a Layer; command resources are separately scoped per execution. */
-export const layer = (options: Partial<Options> = {}): Layer.Layer<import('../Env.ts').Env> =>
-  environmentLayer({
-    id: options.id ?? 'node:local',
-    cwd: options.cwd ?? process.cwd(),
-    home: options.home ?? Os.homedir(),
-    resolveShell: options.resolveShell ?? resolveShell(options.shell),
-    resolveWatchMode: options.resolveWatchMode ?? resolveWatchMode,
-    ...(options.watch === undefined ? {} : { watch: options.watch }),
-    ...(options.env === undefined ? {} : { env: options.env }),
-  }).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, nativeLayer)))
+/** Native statfs policy accessor; normal parent traversal requires the supplied Path service. */
+export const resolveWatchMode = (
+  targets: ReadonlyArray<WatchTarget>,
+): Effect.Effect<'native' | 'polling', never, Path.Path> =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path
+    const host = yield* hostDefaults
+    return yield* watchMode(path, host.platform, targets)
+  })
+/** Constructs Env with caller-supplied FileSystem, Path and ChildProcessSpawner.
+ * Only the narrow NativeFiles adapter is provided here; platform services belong at the application edge.
+ */
+export const layer = (
+  options: Options = {},
+): Layer.Layer<
+  import('../Env.ts').Env,
+  never,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const host = options.host ?? (yield* hostDefaults)
+      return environmentLayer({
+        id: options.id ?? 'node:local',
+        cwd: options.cwd ?? host.cwd,
+        home: options.home ?? host.home,
+        resolveShell: options.resolveShell ?? resolveShell(fs, path, host, options.shell),
+        resolveWatchMode:
+          options.resolveWatchMode ?? ((targets) => watchMode(path, host.platform, targets)),
+        ...(options.watch === undefined ? {} : { watch: options.watch }),
+        ...(options.env === undefined ? {} : { env: options.env }),
+      })
+    }),
+  ).pipe(Layer.provide(nativeLayer))
+export const layerConfig = (
+  config: Config.Wrap<Options>,
+): Layer.Layer<
+  import('../Env.ts').Env,
+  Config.ConfigError,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner
+> => Layer.unwrap(Config.unwrap(config).pipe(Effect.map(layer)))

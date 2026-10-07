@@ -80,7 +80,7 @@ export class DrainConversations extends Context.Service<
   }
 >()('@effect-harness/durable/Structured/DrainConversations') {}
 export const layerDrainConversations = (drain: DrainConversations['Service']['drain']) =>
-  Layer.succeed(DrainConversations, { drain })
+  Layer.succeed(DrainConversations, DrainConversations.of({ drain }))
 
 const pendingConversations = (graph: Ownership.Graph, reached: Ownership.Reached | undefined) =>
   (reached?.conversations ?? []).flatMap((conversation) => {
@@ -150,7 +150,7 @@ const execute = Effect.fnUntraced(function* (
     )
     return
   }
-  yield* declarations.execute(binding).pipe(Effect.catch(() => Effect.void))
+  yield* Ownership.execute(binding).pipe(Effect.catch(() => Effect.void))
 })
 
 /**

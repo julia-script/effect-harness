@@ -1,3 +1,10 @@
+import { vi } from 'vitest'
+vi.mock('@effect/ai-openai/OpenAiLanguageModel', { spy: true })
+import * as Config from 'effect/Config'
+import * as ConfigProvider from 'effect/ConfigProvider'
+import * as Context from 'effect/Context'
+import * as NativeLanguageModel from 'effect/ai/LanguageModel'
+import * as Provider from '../src/LanguageModel.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as Model from '@effect-harness/harness/Model'
 import * as Usage from '@effect-harness/harness/Usage'
@@ -288,7 +295,77 @@ function fixtureLayer() {
   const f = fixture()
   return Layer.merge(f.layer, Layer.succeed(Inspection, f))
 }
-import * as Context from 'effect/Context'
 class Inspection extends Context.Service<Inspection, ReturnType<typeof fixture>>()(
   'openai-catalog-test',
 ) {}
+
+describe('OpenAI configured provider capability', () => {
+  it.effect('reexports the exact substituted native client and constructs one model', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const http = HttpClient.make((request) =>
+          Effect.succeed(HttpClientResponse.fromWeb(request, globalThis.Response.json(response))),
+        )
+        const client = yield* OpenAiClient.make({ apiKey: Redacted.make('fake-key') }).pipe(
+          Effect.provideService(HttpClient.HttpClient, http),
+        )
+        const spy = vi.mocked(OpenAiLanguageModel.make)
+        spy.mockClear()
+        yield* Effect.gen(function* () {
+          const context = yield* Layer.build(
+            Provider.layerConfig({ model: Config.String('MODEL') }).pipe(
+              Layer.provide(Layer.succeed(OpenAiClient.OpenAiClient, client)),
+            ),
+          ).pipe(
+            Effect.provideService(
+              ConfigProvider.ConfigProvider,
+              ConfigProvider.fromUnknown({ MODEL: 'substituted-model' }),
+            ),
+          )
+          assert.strictEqual(Context.get(context, OpenAiClient.OpenAiClient), client)
+          assert.isDefined(Context.get(context, NativeLanguageModel.LanguageModel))
+          assert.strictEqual(spy.mock.calls.length, 1)
+        })
+      }),
+    ),
+  )
+  it.effect(
+    'API-key configuration loads real provider values and preserves per-call overrides',
+    () => {
+      const requests: Array<HttpClientRequest.HttpClientRequest> = []
+      const http = HttpClient.make((request) => {
+        requests.push(request)
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(request, globalThis.Response.json(response)),
+        )
+      })
+      const layer = Provider.layerApiKeyConfig({
+        model: Config.String('MODEL'),
+        apiKey: Config.Redacted('API_KEY'),
+        apiUrl: Config.String('API_URL'),
+      }).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, http)))
+      return Effect.gen(function* () {
+        yield* NativeLanguageModel.generateText({ prompt: 'Hello' }).pipe(
+          OpenAiLanguageModel.withConfigOverride({ max_output_tokens: 1000 }),
+        )
+        const request = requests[0]
+        if (request === undefined) return yield* Effect.die('Expected configured request')
+        assert.strictEqual(request.headers.authorization, 'Bearer configured-key')
+        assert.strictEqual(request.url, 'https://config.example/responses')
+        assert.strictEqual(body(request).model, 'configured-model')
+        assert.strictEqual(body(request).max_output_tokens, 1000)
+        assert.isDefined(yield* OpenAiClient.OpenAiClient)
+      }).pipe(
+        Effect.provide(layer),
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({
+            MODEL: 'configured-model',
+            API_KEY: 'configured-key',
+            API_URL: 'https://config.example',
+          }),
+        ),
+      )
+    },
+  )
+})

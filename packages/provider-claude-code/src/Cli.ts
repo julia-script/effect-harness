@@ -1,3 +1,4 @@
+import * as Config from 'effect/Config'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -269,5 +270,19 @@ export const layer = (options?: {
             }),
           ),
       })
+    }),
+  )
+
+/** Resolves all layer options through the caller's ConfigProvider. */
+export const layerConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
+): Layer.Layer<
+  Cli,
+  AiError.AiError | Config.ConfigError,
+  ChildProcessSpawner.ChildProcessSpawner
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layer(yield* Config.unwrap(config))
     }),
   )

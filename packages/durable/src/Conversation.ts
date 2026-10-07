@@ -376,7 +376,7 @@ export const awaitIdle = Effect.fnUntraced(function* (
           )
           if (declarations.get(binding.workflow) === undefined) continue
           started.add(task.id)
-          yield* declarations.execute(binding).pipe(
+          yield* Ownership.execute(binding).pipe(
             Effect.catch((error) =>
               Effect.sync(() => {
                 failures.set(task.id, error)

@@ -16,12 +16,11 @@ import * as Model from '@effect-harness/harness/Model'
 import * as Registry from '@effect-harness/harness/Registry'
 import * as Tool from '@effect-harness/harness/Tool'
 import * as Context from 'effect/Context'
+import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
-import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
-import * as Path from 'effect/Path'
 import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
@@ -34,6 +33,7 @@ import * as ClusterWorkflowEngine from 'effect/cluster/ClusterWorkflowEngine'
 import * as SingleRunner from 'effect/cluster/SingleRunner'
 import * as Activity from 'effect/workflow/Activity'
 import * as Workflow from 'effect/workflow/Workflow'
+import * as Database from './Database.ts'
 
 // An application-authored Workflow uses the ordinary native declaration and executor API.
 const Greeting = Workflow.make('example/greeting/v1', {
@@ -115,15 +115,8 @@ const checkUnknownToolBoundary = Effect.gen(function* () {
 
 const main = Effect.gen(function* () {
   yield* checkUnknownToolBoundary
-  const fs = yield* FileSystem.FileSystem
-  const path = yield* Path.Path
   // Set EXAMPLE_DB to an absolute path to keep the same database across invocations.
-  const filename =
-    process.env['EXAMPLE_DB'] ??
-    path.join(
-      yield* fs.makeTempDirectoryScoped({ prefix: 'effect-harness-example-' }),
-      'example.sqlite',
-    )
+  const filename = yield* Database.filename
   const modelCalls = yield* Ref.make(0)
   const toolCalls = yield* Ref.make(0)
   const native = yield* NativeModel.make({
@@ -270,4 +263,15 @@ const main = Effect.gen(function* () {
   }).pipe(Effect.provide(runtime.pipe(Layer.provide(database))))
 })
 
-BunRuntime.runMain(main.pipe(Effect.scoped, Effect.provide(BunServices.layer)))
+BunRuntime.runMain(
+  main.pipe(
+    Effect.scoped,
+    // Preserve explicit empty environment values, matching the previous nullish fallback.
+    Effect.provide(
+      Layer.merge(
+        ConfigProvider.layer(ConfigProvider.fromEnv({ preserveEmptyStrings: true })),
+        BunServices.layer,
+      ),
+    ),
+  ),
+)

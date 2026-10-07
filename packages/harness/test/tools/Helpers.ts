@@ -1,6 +1,7 @@
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Ref from 'effect/Ref'
+import * as Layer from 'effect/Layer'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as NodeEnv from '../../src/env/Node.ts'
 import { Env } from '../../src/Env.ts'
@@ -15,31 +16,36 @@ export const withEnv = <A, E, R>(
       const cwd = yield* fs.makeTempDirectoryScoped({ prefix: 'harness-tools-test-' })
       return yield* program.pipe(
         Effect.provide(
-          NodeEnv.layer({
-            cwd,
-            shell: '/bin/sh',
-            env: {
-              BASH_ENV: '',
-              PATH: '/usr/bin:/bin',
-              SSH_CLIENT: '',
-              SSH2_CLIENT: '',
-              SSH_CONNECTION: '',
-              SSH_TTY: '',
-            },
-          }),
+          Layer.mergeAll(
+            NodeEnv.layer({
+              cwd,
+              shell: '/bin/sh',
+              env: {
+                BASH_ENV: '',
+                PATH: '/usr/bin:/bin',
+                SSH_CLIENT: '',
+                SSH2_CLIENT: '',
+                SSH_CONNECTION: '',
+                SSH_TTY: '',
+              },
+            }),
+            Layer.succeed(
+              Invocation,
+              Invocation.of({
+                cwd,
+                report: () => Effect.void,
+                progress: () => Effect.void,
+              }),
+            ),
+          ),
         ),
-        Effect.provideService(Invocation, {
-          cwd,
-          report: () => Effect.void,
-          progress: () => Effect.void,
-        }),
       )
     }),
   ).pipe(Effect.provide(NodeServices.layer))
 export const recording = Effect.gen(function* () {
   const output = yield* Ref.make('')
   const diagnostics = yield* Ref.make<ReadonlyArray<Diagnostic>>([])
-  const api: ToolCall['Service'] = {
+  const api = ToolCall.of({
     id: 'test',
     output: (text) =>
       Ref.update(
@@ -48,7 +54,7 @@ export const recording = Effect.gen(function* () {
       ),
     details: () => Effect.void,
     diagnostic: (diagnostic) => Ref.update(diagnostics, (values) => [...values, diagnostic]),
-  }
+  })
   return { output, diagnostics, api }
 })
 export const message = (result: {

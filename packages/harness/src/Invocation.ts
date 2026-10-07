@@ -46,8 +46,6 @@ export class Invocation extends Context.Service<
     readonly progress: (value: Progress) => Effect.Effect<void>
   }
 >()('@effect-harness/harness/Invocation') {}
-export const layer = (value: Invocation['Service']): Layer.Layer<Invocation> =>
-  Layer.succeed(Invocation, value)
 /** Injectable tool execution capabilities, scoped to one executor call. */
 export class ToolCall extends Context.Service<
   ToolCall,
@@ -71,4 +69,7 @@ export class ToolCall extends Context.Service<
     readonly diagnostic: (value: Diagnostic) => Effect.Effect<void, ToolError>
   }
 >()('@effect-harness/harness/ToolCall') {}
-export const silent = layer({ cwd: '.', report: () => Effect.void, progress: () => Effect.void })
+export const layerSilent: Layer.Layer<Invocation> = Layer.succeed(
+  Invocation,
+  Invocation.of({ cwd: '.', report: () => Effect.void, progress: () => Effect.void }),
+)

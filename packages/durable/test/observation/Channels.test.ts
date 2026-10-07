@@ -283,22 +283,24 @@ describe('typed scoped observation channels', () => {
             const captured = yield* Deferred.make<void>()
             let block = false
             let committedReads = 0
-            const views = yield* View.make({
-              ...store,
-              committed: Effect.sync(() => {
-                committedReads++
-              }).pipe(Effect.andThen(store.committed)),
-              journal: (after) =>
-                store.journal(after).pipe(
-                  Effect.tap(() => {
-                    if (!block) return Effect.void
-                    block = false
-                    return Deferred.succeed(captured, undefined).pipe(
-                      Effect.andThen(Deferred.await(release)),
-                    )
-                  }),
-                ),
-            })
+            const views = yield* View.make.pipe(
+              Effect.provideService(Store.Store, {
+                ...store,
+                committed: Effect.sync(() => {
+                  committedReads++
+                }).pipe(Effect.andThen(store.committed)),
+                journal: (after) =>
+                  store.journal(after).pipe(
+                    Effect.tap(() => {
+                      if (!block) return Effect.void
+                      block = false
+                      return Deferred.succeed(captured, undefined).pipe(
+                        Effect.andThen(Deferred.await(release)),
+                      )
+                    }),
+                  ),
+              }),
+            )
             const original = yield* views.watch(root.id)
             yield* original.stop
             block = true
@@ -372,7 +374,8 @@ describe('typed scoped observation channels', () => {
             ]
           }),
         )
-        const watch = yield* Event.make(views).watch(root.id)
+        const events = yield* Event.make.pipe(Effect.provideService(View.View, views))
+        const watch = yield* events.watch(root.id)
         yield* append(session, root.id)
         yield* session.transaction((tx) =>
           Effect.gen(function* () {

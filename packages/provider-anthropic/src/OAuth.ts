@@ -1,3 +1,4 @@
+import * as Config from 'effect/Config'
 import {
   AuthError,
   makeAuthErrorReason,
@@ -7,6 +8,9 @@ import {
 } from '@effect-harness/auth/Credential'
 import { CredentialStore } from '@effect-harness/auth/CredentialStore'
 import * as Pkce from '@effect-harness/auth/Pkce'
+import type { Fields as TokenFields } from '@effect-harness/auth/Token'
+import * as HashMap from 'effect/HashMap'
+import * as Equal from 'effect/Equal'
 import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
 import * as Crypto from 'effect/Crypto'
@@ -116,14 +120,26 @@ export const layer = (options?: {
       const store = yield* CredentialStore
       const http = yield* HttpClient.HttpClient
       const crypto = yield* Effect.context<Crypto.Crypto>()
-      const pending = new Map<string, Pending>()
-      yield* Effect.addFinalizer(() => Effect.sync(() => pending.clear()))
+      let pending = HashMap.empty<Redacted.Redacted<string>, Pending>()
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          pending = HashMap.empty()
+        }),
+      )
       const request = Effect.fnUntraced(
-        function* (fields: Readonly<Record<string, string>>) {
+        function* (fields: TokenFields) {
           const response = yield* http
             .execute(
               HttpClientRequest.post(tokenUrl).pipe(
-                HttpClientRequest.bodyJsonUnsafe(fields),
+                HttpClientRequest.bodyJsonUnsafe(
+                  Object.fromEntries(
+                    Object.entries(fields).flatMap(([key, value]) =>
+                      value === undefined
+                        ? []
+                        : [[key, Redacted.isRedacted(value) ? Redacted.value(value) : value]],
+                    ),
+                  ),
+                ),
                 HttpClientRequest.acceptJson,
               ),
             )
@@ -204,7 +220,7 @@ export const layer = (options?: {
             const token = yield* request({
               grant_type: 'refresh_token',
               client_id: clientId,
-              refresh_token: Redacted.value(previous.refreshToken),
+              refresh_token: previous.refreshToken,
             })
             return yield* credential(token, previous.scopes, previous.redirectUri)
           }),
@@ -224,7 +240,7 @@ export const layer = (options?: {
           if (beginOptions.account.length === 0)
             return yield* failure('configuration', 'Supply a nonempty account storage key')
           const challenge = yield* Pkce.make().pipe(Effect.provideContext(crypto))
-          const state = Redacted.value(challenge.verifier)
+          const state = challenge.verifier
           const redirectUri =
             beginOptions.method === 'copyCode' ? copyCodeRedirectUri : browserRedirectUri
           const expiresAt = (yield* Clock.currentTimeMillis) + lifetime
@@ -236,7 +252,7 @@ export const layer = (options?: {
             scope: scopes.join(' '),
             code_challenge: challenge.challenge,
             code_challenge_method: 'S256',
-            state,
+            state: Redacted.value(state),
           })
           const authorization = {
             url: Redacted.make(`${authorizeUrl}?${params.toString()}`),
@@ -246,22 +262,26 @@ export const layer = (options?: {
           }
           for (const [key, value] of pending)
             if (value.authorization.expiresAt <= (yield* Clock.currentTimeMillis))
-              pending.delete(key)
-          pending.set(state, { account: beginOptions.account, authorization, challenge })
+              pending = HashMap.remove(pending, key)
+          pending = HashMap.set(pending, state, {
+            account: beginOptions.account,
+            authorization,
+            challenge,
+          })
           return authorization
         }),
         complete: Effect.fnUntraced(function* (secretState, input) {
-          const state = Redacted.value(secretState)
-          const attempt = pending.get(state)
+          const state = secretState
+          const attempt = Option.getOrUndefined(HashMap.get(pending, state))
           if (attempt === undefined)
             return yield* failure('callback', 'Unknown or consumed Anthropic authorization')
           if (attempt.authorization.expiresAt <= (yield* Clock.currentTimeMillis)) {
-            pending.delete(state)
+            pending = HashMap.remove(pending, state)
             return yield* failure('expired', 'Anthropic authorization expired')
           }
           const value = input.trim()
           let code = value
-          let receivedState: string | undefined
+          let receivedState: Redacted.Redacted<string> | undefined
           if (/^https?:\/\//.test(value)) {
             const url = yield* Effect.try({
               try: () => new URL(value),
@@ -283,35 +303,36 @@ export const layer = (options?: {
             )
               return yield* failure('callback', 'Incomplete or ambiguous Anthropic callback')
             code = url.searchParams.get('code') ?? ''
-            receivedState = url.searchParams.get('state') ?? undefined
+            receivedState = Redacted.make(url.searchParams.get('state') ?? '')
           } else if (value.includes('#')) {
             const pieces = value.split('#')
             if (pieces.length !== 2)
               return yield* failure('callback', 'Invalid Anthropic authorization input')
             code = pieces[0] ?? ''
-            receivedState = pieces[1]
+            receivedState = pieces[1] === undefined ? undefined : Redacted.make(pieces[1])
           } else if (value.includes('code=')) {
             const params = new URLSearchParams(value)
             if (params.getAll('code').length !== 1 || params.getAll('state').length > 1)
               return yield* failure('callback', 'Ambiguous Anthropic authorization input')
             code = params.get('code') ?? ''
-            receivedState = params.get('state') ?? undefined
+            const parsedState = params.get('state')
+            receivedState = parsedState === null ? undefined : Redacted.make(parsedState)
           }
-          if (receivedState !== undefined && receivedState !== state)
+          if (receivedState !== undefined && !Equal.equals(receivedState, state))
             return yield* failure('callback', 'Anthropic authorization state mismatch')
           if (code.length === 0)
             return yield* failure('callback', 'Missing Anthropic authorization code')
           // Consume before yielding: an attempt cannot exchange twice, even concurrently or after failure.
-          if (pending.get(state) !== attempt)
+          if (Option.getOrUndefined(HashMap.get(pending, state)) !== attempt)
             return yield* failure('callback', 'Consumed or cancelled Anthropic authorization')
-          pending.delete(state)
+          pending = HashMap.remove(pending, state)
           const token = yield* request({
             grant_type: 'authorization_code',
             client_id: clientId,
-            code,
+            code: Redacted.make(code),
             state,
             redirect_uri: attempt.authorization.redirectUri,
-            code_verifier: Redacted.value(attempt.challenge.verifier),
+            code_verifier: attempt.challenge.verifier,
           })
           const saved = yield* credential(token, scopes, attempt.authorization.redirectUri)
           yield* store.set(attempt.account, saved)
@@ -322,7 +343,7 @@ export const layer = (options?: {
         signOut: (account) => store.remove(account),
         cancel: (state) =>
           Effect.sync(() => {
-            pending.delete(Redacted.value(state))
+            pending = HashMap.remove(pending, state)
           }),
       })
     }),
@@ -370,7 +391,12 @@ export const layerCallback = (options: { readonly account: string }) =>
             parsed.value.pathname !== '/callback'
           )
             return HttpServerResponse.empty({ status: 404 })
-          if (parsed.value.searchParams.get('state') !== Redacted.value(authorization.state))
+          if (
+            !Equal.equals(
+              Redacted.make(parsed.value.searchParams.get('state') ?? ''),
+              authorization.state,
+            )
+          )
             return HttpServerResponse.text('Invalid sign-in attempt', { status: 400 })
           const exit = yield* Effect.uninterruptibleMask((restore) =>
             Ref.getAndSet(claimed, true).pipe(
@@ -418,5 +444,29 @@ export const layerCallback = (options: { readonly account: string }) =>
           )
         }),
       })
+    }),
+  )
+
+/** Resolves all layer options through the caller's ConfigProvider. */
+export const layerConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
+): Layer.Layer<
+  OAuth,
+  AuthError | Config.ConfigError,
+  CredentialStore | Crypto.Crypto | HttpClient.HttpClient
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layer(yield* Config.unwrap(config))
+    }),
+  )
+
+/** Resolves all layerCallback options through the caller's ConfigProvider. */
+export const layerCallbackConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layerCallback>[0]>>,
+): Layer.Layer<Callback, AuthError | Config.ConfigError, OAuth | HttpServer.HttpServer> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layerCallback(yield* Config.unwrap(config))
     }),
   )

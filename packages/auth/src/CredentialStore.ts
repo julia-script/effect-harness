@@ -1,3 +1,4 @@
+import * as Config from 'effect/Config'
 import * as Context from 'effect/Context'
 import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
@@ -65,39 +66,40 @@ const makeService = (
   write: (snapshot: Snapshot) => Effect.Effect<void, AuthError>,
   lock: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | AuthError, R>,
   uuid: Effect.Effect<string, AuthError>,
-): Service => {
-  const modify: Service['modify'] = Effect.fnUntraced(function* (key, update) {
-    const snapshot = yield* read
-    const value = yield* update(find(snapshot, key))
-    yield* write(replace(snapshot, key, value))
-    return value
-  }, lock)
-  return CredentialStore.of({
-    get: (key) => read.pipe(Effect.map((snapshot) => find(snapshot, key))),
-    list: read.pipe(
-      Effect.map((snapshot) => snapshot.entries.map(({ key, value }) => [key, value] as const)),
-    ),
-    set: (key, value) => modify(key, () => Effect.succeed(value)).pipe(Effect.asVoid),
-    remove: (key) =>
-      lock(Effect.flatMap(read, (snapshot) => write(replace(snapshot, key, undefined)))),
-    modify,
-    hostId: Effect.fnUntraced(function* (provider) {
+): Effect.Effect<Service> =>
+  Effect.sync(() => {
+    const modify: Service['modify'] = Effect.fnUntraced(function* (key, update) {
       const snapshot = yield* read
-      const existing = snapshot.hosts.find((host) => host.provider === provider)
-      if (existing !== undefined) return existing.id
-      const id = `urn:uuid:${yield* uuid}`
-      yield* write({ ...snapshot, hosts: [...snapshot.hosts, { provider, id }] })
-      return id
-    }, lock),
+      const value = yield* update(find(snapshot, key))
+      yield* write(replace(snapshot, key, value))
+      return value
+    }, lock)
+    return CredentialStore.of({
+      get: (key) => read.pipe(Effect.map((snapshot) => find(snapshot, key))),
+      list: read.pipe(
+        Effect.map((snapshot) => snapshot.entries.map(({ key, value }) => [key, value] as const)),
+      ),
+      set: (key, value) => modify(key, () => Effect.succeed(value)).pipe(Effect.asVoid),
+      remove: (key) =>
+        lock(Effect.flatMap(read, (snapshot) => write(replace(snapshot, key, undefined)))),
+      modify,
+      hostId: Effect.fnUntraced(function* (provider) {
+        const snapshot = yield* read
+        const existing = snapshot.hosts.find((host) => host.provider === provider)
+        if (existing !== undefined) return existing.id
+        const id = `urn:uuid:${yield* uuid}`
+        yield* write({ ...snapshot, hosts: [...snapshot.hosts, { provider, id }] })
+        return id
+      }, lock),
+    })
   })
-}
 
 export const layerMemory = Layer.effect(CredentialStore)(
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto
     const mutex = yield* Semaphore.make(1)
     let snapshot = empty
-    return makeService(
+    return yield* makeService(
       Effect.sync(() => snapshot),
       (next) =>
         Effect.sync(() => {
@@ -246,11 +248,25 @@ export const layerProtectedFile = (options: {
           }),
         )
       })
-      return makeService(
+      return yield* makeService(
         read,
         write,
         diskLock,
         crypto.randomUUIDv4.pipe(Effect.mapError(storageError)),
       )
+    }),
+  )
+
+/** Resolves all layerProtectedFile options through the caller's ConfigProvider. */
+export const layerProtectedFileConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layerProtectedFile>[0]>>,
+): Layer.Layer<
+  CredentialStore,
+  AuthError | Config.ConfigError,
+  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layerProtectedFile(yield* Config.unwrap(config))
     }),
   )

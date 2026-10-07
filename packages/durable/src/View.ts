@@ -347,292 +347,289 @@ const advance = Effect.fnUntraced(function* (
   return { state: { ...mount, seq: frame.seq }, change, tasks: [...mount.tasks.values()] }
 })
 
-export const make = Effect.fnUntraced(function* (
-  store: Store.Service,
-): Effect.fn.Return<Service, never, Scope.Scope> {
-  const semaphore = yield* Semaphore.make(1)
-  const authoritative = yield* Ref.make(Record.emptyState())
-  let after: Record.Seq | 0 = 0
-  let closed: Observation.End | undefined
-  const mounts = yield* RcMap.make({
-    lookup: (id: Record.ConversationId) =>
-      Effect.gen(function* (): Effect.fn.Return<Mount, StorageError, Scope.Scope> {
-        // Lookup runs inside serialized acquisition/refresh and uses its exact snapshot.
-        const state = yield* hydrate(yield* Ref.get(authoritative), id)
-        const events = yield* Effect.acquireRelease(PubSub.unbounded<Envelope>(), PubSub.shutdown)
-        const terminal = yield* Deferred.make<Observation.End>()
-        yield* Effect.addFinalizer(() => Deferred.succeed(terminal, closed ?? 'cancelled'))
-        return { state: yield* Ref.make<MountedState>(state), events, closed: terminal }
-      }),
-  })
-  const close = Effect.fnUntraced(function* (reason: Observation.End) {
-    if (closed !== undefined) return
-    closed = reason
-    // RcMap exposes a live key iterable; scoped leases can evict entries while closing.
-    const ids = [...(yield* RcMap.keys(mounts))]
-    for (const id of ids) {
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          const mount = yield* RcMap.get(mounts, id)
-          yield* Deferred.succeed(mount.closed, reason)
-        }),
-      ).pipe(Effect.ignore)
-    }
-  })
-  const refreshUnlocked = Effect.gen(function* () {
-    if (closed !== undefined) return yield* rejected('View service is closed', Closed)
-    const journal = yield* store.journal(after)
-    yield* Ref.set(authoritative, journal.state)
-    let previousSeq = after
-    const gapped = journal.frames.some((frame) => {
-      const gap = frame.seq > previousSeq + 1
-      previousSeq = frame.seq
-      return gap
-    })
-    const ids = [...(yield* RcMap.keys(mounts))]
-    for (const id of ids) {
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          const mount = yield* RcMap.get(mounts, id)
-          let current = yield* Ref.get(mount.state)
-          const relevant = journal.frames.filter(
-            (frame) => frame.seq > current.seq && touches(frame, id),
-          )
-          const rebasing = (journal.reset || gapped) && relevant.length > 100
-          const rebase = rebasing
-            ? new Set(
-                relevant.flatMap((frame) =>
-                  frame.documents.map((publication) => publication.record.id),
-                ),
-              )
-            : undefined
-          for (const frame of journal.frames) {
-            if (frame.seq <= current.seq) continue
-            if (touches(frame, id)) {
-              const next = yield* advance(current, frame, rebase)
-              current = next.state
-              yield* Ref.set(mount.state, current)
-              yield* PubSub.publish(mount.events, {
-                type: 'change',
-                change: next.change,
-                tasks: next.tasks,
-              })
-            } else {
-              const tasks = new Map(current.tasks)
-              for (const write of frame.writes)
-                if (write.type === 'task' && write.value.conversationId === id)
-                  tasks.set(write.value.id, write.value)
-              current = { ...current, seq: frame.seq, tasks }
-            }
-          }
-          if (rebasing) {
-            const hydrated = yield* hydrate(journal.state, id)
-            const change: Change = {
-              seq: hydrated.seq,
-              before: current.value,
-              value: hydrated.value,
-              ops: [['replace', hydrated.value]],
-              reset: true,
-            }
-            current = hydrated
-            yield* PubSub.publish(mount.events, {
-              type: 'resync',
-              change,
-              tasks: [...hydrated.tasks.values()],
-            })
-          }
-          // New subscribers receive the final authoritative sequence and task baseline.
-          current = {
-            ...current,
-            seq: (journal.state.nextSeq - 1) as Record.Seq | 0,
-            tasks: new Map(
-              journal.state.tasks
-                .filter((task) => task.conversationId === id)
-                .map((task) => [task.id, task]),
-            ),
-          }
-          yield* Ref.set(mount.state, current)
-        }),
-      )
-    }
-    after = (journal.state.nextSeq - 1) as Record.Seq | 0
-  })
-  yield* Effect.addFinalizer(() => close('cancelled'))
-  yield* Effect.forkScoped(
-    Effect.forever(
-      semaphore.withPermit(refreshUnlocked).pipe(Effect.andThen(Effect.sleep('20 millis'))),
-    ).pipe(
-      Effect.catch((error) =>
-        close(error.reason._tag === 'Closed' ? 'session_closed' : 'listener_error'),
-      ),
-    ),
-  )
-  const observe: Service['observe'] = Effect.fnUntraced(function* (id, projection) {
-    const scope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
-      Scope.close(owned, exit),
-    )
-    return yield* semaphore
-      .withPermit(
-        Effect.gen(function* () {
-          yield* refreshUnlocked
-          const mount = yield* RcMap.get(mounts, id)
-          const baseline = yield* Ref.get(mount.state)
+export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Effect.gen(
+  function* () {
+    const store = yield* Store.Store
+    const semaphore = yield* Semaphore.make(1)
+    const authoritative = yield* Ref.make(Record.emptyState())
+    let after: Record.Seq | 0 = 0
+    let closed: Observation.End | undefined
+    const mounts = yield* RcMap.make({
+      lookup: (id: Record.ConversationId) =>
+        Effect.gen(function* (): Effect.fn.Return<Mount, StorageError, Scope.Scope> {
+          // Lookup runs inside serialized acquisition/refresh and uses its exact snapshot.
+          const state = yield* hydrate(yield* Ref.get(authoritative), id)
+          const events = yield* Effect.acquireRelease(PubSub.unbounded<Envelope>(), PubSub.shutdown)
           const terminal = yield* Deferred.make<Observation.End>()
-          const queue = yield* Queue.make<
-            {
-              readonly value: Effect.Success<ReturnType<typeof projection.initial>>
-              readonly reset: boolean
-            },
-            Cause.Done
-          >({ capacity: 100 })
-          const delivery = yield* Semaphore.make(1)
-          const value = yield* Ref.make(
-            yield* projection.initial(baseline.value, [...baseline.tasks.values()]),
-          )
-          let ended = false
-          let started = false
-          const finish = Effect.fnUntraced(function* (reason: Observation.End) {
-            if (ended) return
-            ended = true
-            // Ending discards history immediately; a stopped consumer cannot drain stale values.
-            yield* Queue.clear(queue)
-            yield* Queue.end(queue)
-            yield* Deferred.succeed(terminal, reason)
-          }, Effect.uninterruptible)
-          const stop = (reason: Observation.End) =>
-            finish(reason).pipe(Effect.andThen(Scope.close(scope, Exit.void)))
-          yield* Effect.addFinalizer(() => finish('cancelled'))
-          const project = (event: Envelope) =>
-            delivery.withPermit(
-              Effect.gen(function* () {
-                if (ended) return
-                if (event.type === 'resync') {
-                  const pending = yield* Queue.clear(queue)
-                  if (pending.some((item) => item.reset)) {
-                    const next = yield* projection.reset(
+          yield* Effect.addFinalizer(() => Deferred.succeed(terminal, closed ?? 'cancelled'))
+          return { state: yield* Ref.make<MountedState>(state), events, closed: terminal }
+        }),
+    })
+    const close = Effect.fnUntraced(function* (reason: Observation.End) {
+      if (closed !== undefined) return
+      closed = reason
+      // RcMap exposes a live key iterable; scoped leases can evict entries while closing.
+      const ids = [...(yield* RcMap.keys(mounts))]
+      for (const id of ids) {
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const mount = yield* RcMap.get(mounts, id)
+            yield* Deferred.succeed(mount.closed, reason)
+          }),
+        ).pipe(Effect.ignore)
+      }
+    })
+    const refreshUnlocked = Effect.gen(function* () {
+      if (closed !== undefined) return yield* rejected('View service is closed', Closed)
+      const journal = yield* store.journal(after)
+      yield* Ref.set(authoritative, journal.state)
+      let previousSeq = after
+      const gapped = journal.frames.some((frame) => {
+        const gap = frame.seq > previousSeq + 1
+        previousSeq = frame.seq
+        return gap
+      })
+      const ids = [...(yield* RcMap.keys(mounts))]
+      for (const id of ids) {
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const mount = yield* RcMap.get(mounts, id)
+            let current = yield* Ref.get(mount.state)
+            const relevant = journal.frames.filter(
+              (frame) => frame.seq > current.seq && touches(frame, id),
+            )
+            const rebasing = (journal.reset || gapped) && relevant.length > 100
+            const rebase = rebasing
+              ? new Set(
+                  relevant.flatMap((frame) =>
+                    frame.documents.map((publication) => publication.record.id),
+                  ),
+                )
+              : undefined
+            for (const frame of journal.frames) {
+              if (frame.seq <= current.seq) continue
+              if (touches(frame, id)) {
+                const next = yield* advance(current, frame, rebase)
+                current = next.state
+                yield* Ref.set(mount.state, current)
+                yield* PubSub.publish(mount.events, {
+                  type: 'change',
+                  change: next.change,
+                  tasks: next.tasks,
+                })
+              } else {
+                const tasks = new Map(current.tasks)
+                for (const write of frame.writes)
+                  if (write.type === 'task' && write.value.conversationId === id)
+                    tasks.set(write.value.id, write.value)
+                current = { ...current, seq: frame.seq, tasks }
+              }
+            }
+            if (rebasing) {
+              const hydrated = yield* hydrate(journal.state, id)
+              const change: Change = {
+                seq: hydrated.seq,
+                before: current.value,
+                value: hydrated.value,
+                ops: [['replace', hydrated.value]],
+                reset: true,
+              }
+              current = hydrated
+              yield* PubSub.publish(mount.events, {
+                type: 'resync',
+                change,
+                tasks: [...hydrated.tasks.values()],
+              })
+            }
+            // New subscribers receive the final authoritative sequence and task baseline.
+            current = {
+              ...current,
+              seq: (journal.state.nextSeq - 1) as Record.Seq | 0,
+              tasks: new Map(
+                journal.state.tasks
+                  .filter((task) => task.conversationId === id)
+                  .map((task) => [task.id, task]),
+              ),
+            }
+            yield* Ref.set(mount.state, current)
+          }),
+        )
+      }
+      after = (journal.state.nextSeq - 1) as Record.Seq | 0
+    })
+    yield* Effect.addFinalizer(() => close('cancelled'))
+    yield* Effect.forkScoped(
+      Effect.forever(
+        semaphore.withPermit(refreshUnlocked).pipe(Effect.andThen(Effect.sleep('20 millis'))),
+      ).pipe(
+        Effect.catch((error) =>
+          close(error.reason._tag === 'Closed' ? 'session_closed' : 'listener_error'),
+        ),
+      ),
+    )
+    const observe: Service['observe'] = Effect.fnUntraced(function* (id, projection) {
+      const scope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
+        Scope.close(owned, exit),
+      )
+      return yield* semaphore
+        .withPermit(
+          Effect.gen(function* () {
+            yield* refreshUnlocked
+            const mount = yield* RcMap.get(mounts, id)
+            const baseline = yield* Ref.get(mount.state)
+            const terminal = yield* Deferred.make<Observation.End>()
+            const queue = yield* Queue.make<
+              {
+                readonly value: Effect.Success<ReturnType<typeof projection.initial>>
+                readonly reset: boolean
+              },
+              Cause.Done
+            >({ capacity: 100 })
+            const delivery = yield* Semaphore.make(1)
+            const value = yield* Ref.make(
+              yield* projection.initial(baseline.value, [...baseline.tasks.values()]),
+            )
+            let ended = false
+            let started = false
+            const finish = Effect.fnUntraced(function* (reason: Observation.End) {
+              if (ended) return
+              ended = true
+              // Ending discards history immediately; a stopped consumer cannot drain stale values.
+              yield* Queue.clear(queue)
+              yield* Queue.end(queue)
+              yield* Deferred.succeed(terminal, reason)
+            }, Effect.uninterruptible)
+            const stop = (reason: Observation.End) =>
+              finish(reason).pipe(Effect.andThen(Scope.close(scope, Exit.void)))
+            yield* Effect.addFinalizer(() => finish('cancelled'))
+            const project = (event: Envelope) =>
+              delivery.withPermit(
+                Effect.gen(function* () {
+                  if (ended) return
+                  if (event.type === 'resync') {
+                    const pending = yield* Queue.clear(queue)
+                    if (pending.some((item) => item.reset)) {
+                      const next = yield* projection.reset(
+                        event.change.value,
+                        event.change.seq,
+                        event.tasks,
+                      )
+                      if (!ended) yield* Queue.offer(queue, { value: next, reset: true })
+                    } else if (!ended) yield* Queue.offerAll(queue, pending)
+                    return
+                  }
+                  const next = yield* projection.project(event.change)
+                  if (next === undefined || ended) return
+                  if ((yield* Queue.size(queue)) >= 100) {
+                    yield* Queue.clear(queue)
+                    const reset = yield* projection.reset(
                       event.change.value,
                       event.change.seq,
                       event.tasks,
                     )
-                    if (!ended) yield* Queue.offer(queue, { value: next, reset: true })
-                  } else if (!ended) yield* Queue.offerAll(queue, pending)
-                  return
-                }
-                const next = yield* projection.project(event.change)
-                if (next === undefined || ended) return
-                if ((yield* Queue.size(queue)) >= 100) {
-                  yield* Queue.clear(queue)
-                  const reset = yield* projection.reset(
-                    event.change.value,
-                    event.change.seq,
-                    event.tasks,
-                  )
-                  if (!ended) yield* Queue.offer(queue, { value: reset, reset: true })
-                } else yield* Queue.offer(queue, { value: next, reset: false })
+                    if (!ended) yield* Queue.offer(queue, { value: reset, reset: true })
+                  } else yield* Queue.offer(queue, { value: next, reset: false })
+                }),
+              )
+            // Immediate startup installs the PubSub subscription before releasing acquisition serialization.
+            yield* Stream.runForEach(Stream.fromPubSub(mount.events), project).pipe(
+              Effect.catch(() => stop('listener_error')),
+              Effect.onExit((exit) =>
+                Exit.isFailure(exit)
+                  ? stop(Cause.hasInterruptsOnly(exit.cause) ? 'cancelled' : 'listener_error')
+                  : Effect.void,
+              ),
+              Effect.forkIn(scope, { startImmediately: true }),
+            )
+            // This independent monitor can end a subscriber even while its projection is blocked.
+            yield* Deferred.await(mount.closed).pipe(
+              Effect.flatMap(stop),
+              Effect.forkIn(scope, { startImmediately: true }),
+            )
+            const changes = Stream.unwrap(
+              Effect.gen(function* () {
+                if (started || ended) return yield* rejected('Watch is stopped or already consumed')
+                started = true
+                // Native Stream.fromQueue drains chunks with takeAll, hiding buffered history
+                // from Queue.size. Pull one item so the 100 pending-value policy remains exact.
+                return Stream.fromChannel(
+                  Channel.fromQueue(queue).pipe(Channel.map((next) => [next] as const)),
+                ).pipe(
+                  Stream.takeWhile(() => !ended),
+                  Stream.tap((next) => Ref.set(value, next.value)),
+                  Stream.map((next) => next.value),
+                )
               }),
             )
-          // Immediate startup installs the PubSub subscription before releasing acquisition serialization.
-          yield* Stream.runForEach(Stream.fromPubSub(mount.events), project).pipe(
-            Effect.catch(() => stop('listener_error')),
-            Effect.onExit((exit) =>
-              Exit.isFailure(exit)
-                ? stop(Cause.hasInterruptsOnly(exit.cause) ? 'cancelled' : 'listener_error')
-                : Effect.void,
-            ),
-            Effect.forkIn(scope, { startImmediately: true }),
-          )
-          // This independent monitor can end a subscriber even while its projection is blocked.
-          yield* Deferred.await(mount.closed).pipe(
-            Effect.flatMap(stop),
-            Effect.forkIn(scope, { startImmediately: true }),
-          )
-          const changes = Stream.unwrap(
-            Effect.gen(function* () {
-              if (started || ended) return yield* rejected('Watch is stopped or already consumed')
-              started = true
-              // Native Stream.fromQueue drains chunks with takeAll, hiding buffered history
-              // from Queue.size. Pull one item so the 100 pending-value policy remains exact.
-              return Stream.fromChannel(
-                Channel.fromQueue(queue).pipe(Channel.map((next) => [next] as const)),
-              ).pipe(
-                Stream.takeWhile(() => !ended),
-                Stream.tap((next) => Ref.set(value, next.value)),
-                Stream.map((next) => next.value),
-              )
-            }),
-          )
-          return {
-            get value() {
-              return Ref.getUnsafe(value)
-            },
-            changes,
-            closed: Deferred.await(terminal),
-            stop: stop('stopped'),
-            listen: <E, R>(
-              listener: (
-                value: Effect.Success<ReturnType<typeof projection.initial>>,
-              ) => Effect.Effect<void, E, R>,
-            ) =>
-              Stream.runForEach(changes, listener).pipe(
-                Effect.catchCause((cause) =>
-                  stop(Cause.hasInterruptsOnly(cause) ? 'cancelled' : 'listener_error').pipe(
-                    Effect.andThen(Effect.failCause(cause)),
+            return {
+              get value() {
+                return Ref.getUnsafe(value)
+              },
+              changes,
+              closed: Deferred.await(terminal),
+              stop: stop('stopped'),
+              listen: <E, R>(
+                listener: (
+                  value: Effect.Success<ReturnType<typeof projection.initial>>,
+                ) => Effect.Effect<void, E, R>,
+              ) =>
+                Stream.runForEach(changes, listener).pipe(
+                  Effect.catchCause((cause) =>
+                    stop(Cause.hasInterruptsOnly(cause) ? 'cancelled' : 'listener_error').pipe(
+                      Effect.andThen(Effect.failCause(cause)),
+                    ),
                   ),
+                  Effect.ensuring(stop('cancelled')),
                 ),
-                Effect.ensuring(stop('cancelled')),
-              ),
-          }
-        }).pipe(Scope.provide(scope)),
-      )
-      .pipe(
-        Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
-      )
-  })
-  const watch: Service['watch'] = Effect.fnUntraced(function* (id) {
-    const subscription = yield* observe<Change>(id, {
-      initial: (value) =>
-        Effect.succeed({ seq: after, before: value, value, ops: [], reset: false }),
-      project: (change) => Effect.succeed(change.ops.length === 0 ? undefined : change),
-      reset: (value, seq) =>
-        Effect.succeed({ seq, before: value, value, ops: [['replace', value]], reset: true }),
-    })
-    return {
-      get value() {
-        return subscription.value.value
-      },
-      changes: subscription.changes,
-      closed: subscription.closed,
-      stop: subscription.stop,
-      listen: subscription.listen,
-    }
-  })
-  return {
-    observe,
-    watch,
-    state: Effect.fnUntraced(function* (id) {
-      const subscription = yield* watch(id)
-      let cursor = 0
-      yield* subscription
-        .listen(() =>
-          Effect.sync(() => {
-            cursor++
-          }),
+            }
+          }).pipe(Scope.provide(scope)),
         )
-        .pipe(Effect.ignore, Effect.forkScoped)
+        .pipe(
+          Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
+        )
+    })
+    const watch: Service['watch'] = Effect.fnUntraced(function* (id) {
+      const subscription = yield* observe<Change>(id, {
+        initial: (value) =>
+          Effect.succeed({ seq: after, before: value, value, ops: [], reset: false }),
+        project: (change) => Effect.succeed(change.ops.length === 0 ? undefined : change),
+        reset: (value, seq) =>
+          Effect.succeed({ seq, before: value, value, ops: [['replace', value]], reset: true }),
+      })
       return {
         get value() {
-          return subscription.value
+          return subscription.value.value
         },
-        get cursor() {
-          return cursor
-        },
+        changes: subscription.changes,
         closed: subscription.closed,
+        stop: subscription.stop,
+        listen: subscription.listen,
       }
-    }),
-  }
-})
-export const layer = Layer.effect(View)(
-  Effect.gen(function* () {
-    return yield* make(yield* Store.Store)
-  }),
+    })
+    return View.of({
+      observe,
+      watch,
+      state: Effect.fnUntraced(function* (id) {
+        const subscription = yield* watch(id)
+        let cursor = 0
+        yield* subscription
+          .listen(() =>
+            Effect.sync(() => {
+              cursor++
+            }),
+          )
+          .pipe(Effect.ignore, Effect.forkScoped)
+        return {
+          get value() {
+            return subscription.value
+          },
+          get cursor() {
+            return cursor
+          },
+          closed: subscription.closed,
+        }
+      }),
+    })
+  },
 )
+export const layer = Layer.effect(View, make)

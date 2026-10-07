@@ -762,15 +762,15 @@ describe('native race parity', () => {
             const result = yield* Submission.execute(input('idle')).pipe(Effect.forkScoped)
             yield* Deferred.await(entered)
             const before = yield* session.committed
-            const declarations = yield* Ownership.Declarations
+            const engine = yield* WorkflowEngine.WorkflowEngine
             const joined = yield* Deferred.make<void>()
             const waiting = yield* Conversation.awaitIdle(session).pipe(
-              Effect.provideService(Ownership.Declarations, {
-                ...declarations,
-                execute: (binding) =>
+              Effect.provideService(WorkflowEngine.WorkflowEngine, {
+                ...engine,
+                execute: (workflow, options) =>
                   Effect.gen(function* () {
-                    const client = yield* declarations
-                      .execute(binding)
+                    const client = yield* engine
+                      .execute(workflow, options)
                       .pipe(Effect.forkScoped({ startImmediately: true }))
                     yield* Deferred.succeed(joined, undefined)
                     return yield* Fiber.join(client)

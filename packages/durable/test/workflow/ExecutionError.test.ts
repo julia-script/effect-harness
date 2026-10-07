@@ -19,14 +19,11 @@ const codec: Schema.Codec<ExecutionError.ExecutionError, Schema.Json> = Schema.t
 describe('workflow.ExecutionError', () => {
   it.effect('retains the native declaration decoder failure when wrapping it', () =>
     Effect.gen(function* () {
-      const declarations = yield* Ownership.Declarations
-      const exit = yield* declarations
-        .execute({
-          workflow: Generation._tag,
-          executionId: 'malformed-binding',
-          payload: { invalid: true },
-        })
-        .pipe(Effect.exit)
+      const exit = yield* Ownership.execute({
+        workflow: Generation._tag,
+        executionId: 'malformed-binding',
+        payload: { invalid: true },
+      }).pipe(Effect.exit)
       assert.ok(Exit.isFailure(exit))
       const error = Result.getOrThrow(Cause.findError(exit.cause))
       assert.strictEqual(error.reason._tag, 'InvalidState')

@@ -11,5 +11,5 @@
       "@effect-harness/provider-claude-code/*": ["./packages/provider-claude-code/src/*.ts"]
     }
   },
-  "include": ["packages/*/test/**/*.ts", "vitest.config.ts"]
+  "include": ["packages/*/test/**/*.ts", "apps/*/test/**/*.ts", "vitest.config.ts"]
 }

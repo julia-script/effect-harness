@@ -27,32 +27,33 @@ export const layer = (
     Layer.provideMerge(AnthropicClient.layer(options)),
   )
 
-/** Loads an API key from Config and provides the ordinary Effect AI services. */
-export const layerConfig = (options: {
-  readonly model: AnthropicLanguageModel.Model | (string & {})
-  readonly apiKey?: Config.Config<Redacted.Redacted<string>> | undefined
-  readonly apiUrl?: Config.Config<string> | undefined
-  readonly apiVersion?: Config.Config<string> | undefined
-  readonly config?: Omit<typeof AnthropicLanguageModel.Config.Service, 'model'> | undefined
-  readonly transformClient?: AnthropicClient.Options['transformClient']
-}): Layer.Layer<
+/** Resolves every model and transport option through the caller's ConfigProvider. */
+export const layerConfig = (
+  config: Config.Wrap<Options>,
+): Layer.Layer<
   LanguageModel.LanguageModel | AnthropicClient.AnthropicClient,
   Config.ConfigError,
   HttpClient.HttpClient
 > =>
   Layer.unwrap(
     Effect.gen(function* () {
-      const apiKey = yield* options.apiKey ?? Config.Redacted('ANTHROPIC_API_KEY')
-      const apiUrl = options.apiUrl === undefined ? undefined : yield* options.apiUrl
-      const apiVersion = options.apiVersion === undefined ? undefined : yield* options.apiVersion
-      return layer({
-        apiKey,
-        apiUrl,
-        apiVersion,
-        model: options.model,
-        config: options.config,
-        transformClient: options.transformClient,
-      })
+      return layer(yield* Config.unwrap(config))
+    }),
+  )
+
+/** Reads ANTHROPIC_API_KEY by default; all other options use the caller's ConfigProvider. */
+export const layerDefaultConfig = (
+  config: Config.Wrap<Omit<Options, 'apiKey'>>,
+): Layer.Layer<
+  LanguageModel.LanguageModel | AnthropicClient.AnthropicClient,
+  Config.ConfigError,
+  HttpClient.HttpClient
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const options = yield* Config.unwrap(config)
+      const apiKey = yield* Config.Redacted('ANTHROPIC_API_KEY')
+      return layer({ ...options, apiKey })
     }),
   )
 

@@ -1,3 +1,6 @@
+import * as Config from 'effect/Config'
+import * as Context from 'effect/Context'
+import type * as AiError from 'effect/ai/AiError'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Stream from 'effect/Stream'
@@ -17,7 +20,13 @@ export interface Options {
 }
 
 /** Native Effect AI provider. The caller supplies CLI transport and a scoped intent-only MCP server. */
-export const make = (options: Options) =>
+export const make = (
+  options: Options,
+): Effect.Effect<
+  typeof NativeLanguageModel.LanguageModel.Service,
+  AiError.AiError,
+  Cli.Cli | IntentServer.IntentServer
+> =>
   Effect.gen(function* () {
     if (options.model.length === 0) return yield* unsupported('an empty model name')
     const cli = yield* Cli.Cli
@@ -56,5 +65,31 @@ export const make = (options: Options) =>
     })
   })
 
-export const layer = (options: Options) =>
-  Layer.effect(NativeLanguageModel.LanguageModel)(make(options))
+export const layer = (
+  options: Options,
+): Layer.Layer<
+  NativeLanguageModel.LanguageModel | Cli.Cli,
+  AiError.AiError,
+  Cli.Cli | IntentServer.IntentServer
+> =>
+  Layer.effectContext(
+    Effect.gen(function* () {
+      const cli = yield* Cli.Cli
+      const model = yield* make(options)
+      return Context.make(NativeLanguageModel.LanguageModel, model).pipe(Context.add(Cli.Cli, cli))
+    }),
+  )
+
+/** Resolves all layer options through the caller's ConfigProvider. */
+export const layerConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
+): Layer.Layer<
+  NativeLanguageModel.LanguageModel | Cli.Cli,
+  AiError.AiError | Config.ConfigError,
+  Cli.Cli | IntentServer.IntentServer
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layer(yield* Config.unwrap(config))
+    }),
+  )

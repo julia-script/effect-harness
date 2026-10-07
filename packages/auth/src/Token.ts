@@ -1,3 +1,4 @@
+import * as Redacted from 'effect/Redacted'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
@@ -19,14 +20,37 @@ export const TokenResponse = Schema.Struct({
   earliest_refresh_at: Schema.optional(Schema.Finite),
 })
 export type TokenResponse = typeof TokenResponse.Type
+/** Sensitive protocol fields stay wrapped until the final HTTP body serialization. */
+export interface Fields {
+  readonly [key: string]: string | Redacted.Redacted<string> | undefined
+  readonly refresh_token?: Redacted.Redacted<string> | undefined
+  readonly access_token?: Redacted.Redacted<string> | undefined
+  readonly token?: Redacted.Redacted<string> | undefined
+  readonly code?: Redacted.Redacted<string> | undefined
+  readonly code_verifier?: Redacted.Redacted<string> | undefined
+  readonly state?: Redacted.Redacted<string> | undefined
+}
+
 /** Failures omit raw requests and response bodies, which can contain credentials. */
 export const request = Effect.fnUntraced(function* (
   endpoint: string,
-  fields: Readonly<Record<string, string>>,
+  fields: Fields,
 ): Effect.fn.Return<TokenResponse, AuthError, HttpClient.HttpClient> {
   const client = yield* HttpClient.HttpClient
   const response = yield* client
-    .execute(HttpClientRequest.post(endpoint).pipe(HttpClientRequest.bodyUrlParams(fields)))
+    .execute(
+      HttpClientRequest.post(endpoint).pipe(
+        HttpClientRequest.bodyUrlParams(
+          Object.fromEntries(
+            Object.entries(fields).flatMap(([key, value]) =>
+              value === undefined
+                ? []
+                : [[key, Redacted.isRedacted(value) ? Redacted.value(value) : value]],
+            ),
+          ),
+        ),
+      ),
+    )
     .pipe(
       Effect.mapError(
         (cause) =>
@@ -72,11 +96,23 @@ export const request = Effect.fnUntraced(function* (
 })
 export const revoke = Effect.fnUntraced(function* (
   endpoint: string,
-  fields: Readonly<Record<string, string>>,
+  fields: Fields,
 ): Effect.fn.Return<void, AuthError, HttpClient.HttpClient> {
   const client = yield* HttpClient.HttpClient
   const response = yield* client
-    .execute(HttpClientRequest.post(endpoint).pipe(HttpClientRequest.bodyUrlParams(fields)))
+    .execute(
+      HttpClientRequest.post(endpoint).pipe(
+        HttpClientRequest.bodyUrlParams(
+          Object.fromEntries(
+            Object.entries(fields).flatMap(([key, value]) =>
+              value === undefined
+                ? []
+                : [[key, Redacted.isRedacted(value) ? Redacted.value(value) : value]],
+            ),
+          ),
+        ),
+      ),
+    )
     .pipe(
       Effect.mapError(
         (cause) =>

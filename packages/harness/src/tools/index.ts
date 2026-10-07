@@ -21,7 +21,7 @@ export const handlers = (options: Bash.Options = {}) =>
 export const make = (options: Bash.Options = {}): Effect.Effect<Extension.Extension, never, Env> =>
   Tool.bind(toolkit).pipe(
     Effect.provide(handlers(options)),
-    Effect.map((tools) => ({ name: 'coding-tools', tools })),
+    Effect.map((tools) => CodingTools.of({ name: 'coding-tools', tools })),
   )
 export class CodingTools extends Context.Service<CodingTools, Extension.Extension>()(
   '@effect-harness/harness/tools/CodingTools',

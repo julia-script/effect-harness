@@ -1,3 +1,4 @@
+import * as Redacted from 'effect/Redacted'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as BunPath from '@effect/platform-bun/BunPath'
 import { assert, describe, it } from '@effect/vitest'
@@ -142,7 +143,7 @@ describe('AuthError structured reasons and provenance', () => {
     () =>
       Effect.gen(function* () {
         const request = HttpClientRequest.post('https://auth.example/token').pipe(
-          HttpClientRequest.bodyUrlParams({ refresh_token: 'private-refresh' }),
+          HttpClientRequest.bodyUrlParams({ refresh_token: Redacted.make('private-refresh') }),
         )
         const caught = new HttpClientError.HttpClientError({
           reason: new HttpClientError.TransportError({
@@ -153,8 +154,10 @@ describe('AuthError structured reasons and provenance', () => {
         })
         const http = HttpClient.make(() => Effect.fail(caught))
         for (const operation of [
-          Token.request('https://auth.example/token', { refresh_token: 'private-refresh' }),
-          Token.revoke('https://auth.example/revoke', { token: 'private-refresh' }),
+          Token.request('https://auth.example/token', {
+            refresh_token: Redacted.make('private-refresh'),
+          }),
+          Token.revoke('https://auth.example/revoke', { token: Redacted.make('private-refresh') }),
         ]) {
           const error = yield* operation.pipe(
             Effect.provideService(HttpClient.HttpClient, http),

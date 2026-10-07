@@ -19,6 +19,7 @@ import { exportJWK, generateKeyPair, SignJWT } from 'jose'
 import { AuthIdentityError, AuthNetworkError, AuthError, Credential } from '../src/Credential.ts'
 import * as Store from '../src/CredentialStore.ts'
 import * as Jwt from '../src/Jwt.ts'
+import * as JoseJwt from '../src/JoseJwt.ts'
 import * as Pkce from '../src/Pkce.ts'
 import * as Token from '../src/Token.ts'
 
@@ -111,7 +112,7 @@ describe('auth', () => {
     Effect.gen(function* () {
       const request = yield* Token.request('https://auth.example/token', {
         grant_type: 'refresh_token',
-        refresh_token: 'not-logged',
+        refresh_token: Redacted.make('not-logged'),
       }).pipe(
         Effect.provideService(
           HttpClient.HttpClient,
@@ -136,7 +137,7 @@ describe('auth', () => {
       )
       assert.strictEqual(Redacted.value(request.refresh_token), 'rotated')
       const rejected = yield* Token.request('https://auth.example/token', {
-        refresh_token: 'not-logged',
+        refresh_token: Redacted.make('not-logged'),
       }).pipe(
         Effect.provideService(
           HttpClient.HttpClient,
@@ -445,7 +446,9 @@ describe('auth', () => {
           ),
         )
         const verifier = yield* Jwt.Jwt.pipe(
-          Effect.provide(Jwt.layer.pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, http)))),
+          Effect.provide(
+            JoseJwt.layer.pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, http))),
+          ),
         )
         const signed = Redacted.make(yield* sign({}))
         const options = {

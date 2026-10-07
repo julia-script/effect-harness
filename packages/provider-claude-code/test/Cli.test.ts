@@ -1,3 +1,5 @@
+import * as Config from 'effect/Config'
+import * as ConfigProvider from 'effect/ConfigProvider'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
@@ -72,6 +74,7 @@ const fixture = (options?: {
   )
   return {
     commands,
+    spawn,
     inputs,
     get released() {
       return released
@@ -207,4 +210,36 @@ describe('Claude Code portable process boundary', () => {
       assert.strictEqual(f.inferenceReleased, 1)
     }),
   )
+})
+
+describe('CLI ConfigProvider boundary', () => {
+  it.effect('configured executable and output limits use the substituted process service', () => {
+    const f = fixture()
+    const layer = Cli.layerConfig({
+      executable: Config.String('CLI_PATH'),
+      maxOutputBytes: Config.Int('OUTPUT_LIMIT'),
+    }).pipe(Layer.provide(Layer.succeed(Spawner.ChildProcessSpawner, f.spawn)))
+    const run = (limit: number) =>
+      Cli.Cli.use((cli) => cli.status).pipe(
+        Effect.provide(layer),
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({ CLI_PATH: '/configured/claude', OUTPUT_LIMIT: limit }),
+        ),
+      )
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(yield* run(1000), { loggedIn: true, account: true })
+      assert.strictEqual(f.commands[0]?.command, '/configured/claude')
+      const limited = yield* run(1).pipe(Effect.flip)
+      assert.strictEqual(limited._tag, 'AiError')
+      assert.isFalse(JSON.stringify(limited).includes('private@example.com'))
+      const missing = yield* Effect.scoped(Layer.build(layer)).pipe(
+        Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown({})),
+        Effect.flip,
+      )
+      assert.strictEqual(missing._tag, 'ConfigError')
+      assert.strictEqual(f.commands.length, 2)
+      assert.strictEqual(f.released, 2)
+    })
+  })
 })

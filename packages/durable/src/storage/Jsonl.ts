@@ -1,10 +1,11 @@
 import * as Effect from 'effect/Effect'
+import * as Config from 'effect/Config'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Path from 'effect/Path'
 import * as Schema from 'effect/Schema'
 import * as Record from '../Record.ts'
-import { rejected, uncertain, Io, Corrupt, Invalid } from '../StorageError.ts'
+import { rejected, uncertain, Io, Corrupt, Invalid, type StorageError } from '../StorageError.ts'
 import { Store } from '../Store.ts'
 import * as Backend from './Backend.ts'
 import { detachedEffect, validateState, validate } from './State.ts'
@@ -95,3 +96,9 @@ export const make = Effect.fnUntraced(function* (options: Options) {
   })
 })
 export const layer = (options: Options) => Layer.effect(Store, make(options))
+
+/** Resolve journal options through the caller's ConfigProvider without changing storage ownership. */
+export const layerConfig = (
+  config: Config.Wrap<Options>,
+): Layer.Layer<Store, StorageError | Config.ConfigError, FileSystem.FileSystem | Path.Path> =>
+  Layer.effect(Store, Config.unwrap(config).pipe(Effect.flatMap(make)))

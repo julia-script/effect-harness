@@ -1,3 +1,4 @@
+import * as Config from 'effect/Config'
 import {
   AuthBusyError,
   AuthCallbackError,
@@ -215,7 +216,7 @@ export const layer = (options: {
             const token = yield* Token.request(tokenEndpoint, {
               grant_type: 'refresh_token',
               client_id: credential.clientId,
-              refresh_token: Redacted.value(credential.refreshToken),
+              refresh_token: credential.refreshToken,
               resource,
             }).pipe(Effect.provideService(HttpClient.HttpClient, client))
             const scopes = token.scope === undefined ? credential.scopes : scopeList(token.scope)
@@ -407,8 +408,8 @@ export const layer = (options: {
           const token = yield* Token.request(tokenEndpoint, {
             grant_type: 'authorization_code',
             client_id: clientId,
-            code,
-            code_verifier: Redacted.value(attempt.challenge.verifier),
+            code: Redacted.make(code),
+            code_verifier: attempt.challenge.verifier,
             redirect_uri: attempt.authorization.redirectUri,
             resource,
           }).pipe(Effect.provideService(HttpClient.HttpClient, client))
@@ -516,7 +517,7 @@ export const layer = (options: {
               const credential = current.value
               if (credential.kind === 'registration') return credential
               yield* Token.revoke(`${issuer}/api/accounts/oauth/revoke`, {
-                token: Redacted.value(credential.refreshToken),
+                token: credential.refreshToken,
                 token_type_hint: 'refresh_token',
                 client_id: credential.clientId,
               }).pipe(Effect.provideService(HttpClient.HttpClient, client))
@@ -540,5 +541,19 @@ export const layer = (options: {
             pending.delete(state)
           }),
       })
+    }),
+  )
+
+/** Resolves all layer options through the caller's ConfigProvider. */
+export const layerConfig = (
+  config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
+): Layer.Layer<
+  ChatGpt,
+  AuthError | Config.ConfigError,
+  CredentialStore | Crypto.Crypto | HttpClient.HttpClient | Jwt
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      return layer(yield* Config.unwrap(config))
     }),
   )

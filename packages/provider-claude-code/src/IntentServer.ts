@@ -30,9 +30,12 @@ export class IntentServer extends Context.Service<
 >()('@effect-harness/provider-claude-code/IntentServer') {}
 
 /** Explicit text-only capability: attempts to supply tools produce a native typed error. */
-export const layerDisabled = Layer.succeed(IntentServer, {
-  open: () => Effect.fail(unsupported('tools without a scoped loopback IntentServer Layer')),
-})
+export const layerDisabled: Layer.Layer<IntentServer, never, never> = Layer.succeed(
+  IntentServer,
+  IntentServer.of({
+    open: () => Effect.fail(unsupported('tools without a scoped loopback IntentServer Layer')),
+  }),
+)
 
 /** Serves native MCP descriptors; every tools/call handler waits forever and never runs a real tool. */
 export const layer = Layer.effect(IntentServer)(

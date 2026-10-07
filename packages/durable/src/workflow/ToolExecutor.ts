@@ -1,4 +1,4 @@
-import type * as Layer from 'effect/Layer'
+import * as Layer from 'effect/Layer'
 import * as Harness from '@effect-harness/harness/Executor'
 import * as Invocation from '@effect-harness/harness/Invocation'
 import * as Tool from '@effect-harness/harness/Tool'
@@ -14,7 +14,7 @@ import * as Document from '../Document.ts'
 import * as Inbox from '../Inbox.ts'
 import * as Ownership from '../Ownership.ts'
 import * as Record from '../Record.ts'
-import type * as Session from '../Session.ts'
+import * as Session from '../Session.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
 import * as Usage from '../Usage.ts'
 import { ExecutionError, InvalidState, ExecutionErrorCodec, Aborted } from './ExecutionError.ts'
@@ -183,7 +183,11 @@ export const layer: Layer.Layer<
               })
               .pipe(
                 Effect.provideService(Invocation.Invocation, invocation),
-                Effect.provide(Ownership.layerCurrent(payload, session)),
+                Effect.provide(
+                  Ownership.layerCurrent(payload).pipe(
+                    Layer.provide(Layer.succeed(Session.Session, session)),
+                  ),
+                ),
               ),
           )
           if (intent._tag === 'Failure')
