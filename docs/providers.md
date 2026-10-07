@@ -1,43 +1,99 @@
-# Choose and authorize a provider
+# How to connect a model provider
 
-Provider packages supply native Effect AI LanguageModels and harness Model.Catalog Layers. The host supplies HTTP, Crypto, credential storage and optional callback servers through ordinary Effect Layers. Model IDs, context/output limits, supported thinking/caching and prices come from caller-declared catalogue entries. Prices are USD per million tokens. Missing usage fields or price information remain unknown rather than silently claiming a reliable total.
+Use this guide to replace a local model with OpenAI or Anthropic while keeping the harness Executor, Registry and durable Workflow composition. You need an API key, a model ID available to that account and that model's context/output limits.
 
-| Transport            | LanguageModel boundary                                   | Harness catalogue                                                      |
-| -------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------- |
-| OpenAI API key       | `provider-openai/OpenAiLanguageModel.layerApiKey`        | `provider-openai/Catalog.layerApiKey`                                  |
-| ChatGPT account      | `provider-openai/ChatGptLanguageModel.layer`             | `provider-openai/Catalog.layerChatGpt`                                 |
-| Anthropic API key    | `provider-anthropic/AnthropicLanguageModel.layerApiKey`  | `provider-anthropic/Catalog.layerApiKey`                               |
-| Anthropic account    | `provider-anthropic/AnthropicAccountLanguageModel.layer` | `provider-anthropic/Catalog.layer` with `AnthropicAccountClient.layer` |
-| Installed Claude CLI | `provider-claude-code/ClaudeCodeLanguageModel.layer`     | `provider-claude-code/Catalog.layer`                                   |
+## Install the provider adapter
 
-The [offline demo model](../apps/example/src/DemoModel.ts) supplies a deterministic native LanguageModel directly. Replace its descriptor catalogue with your provider catalogue, preserve its generic Executor/Registry composition, and supply the provider's required services. API keys are Redacted values. Do not print credential values or authorization URLs in general application logs.
+For OpenAI:
 
-## ChatGPT consent and refresh
+```sh
+bun add @effect-harness/provider-openai effect@4.0.1
+```
 
-Provide `auth/CredentialStore`, `auth/Jwt`, native HttpClient and Crypto to `ChatGpt.layer({ appName })`. The app name must identify the actual application. Begin sign-in only after an explicit user action. `begin({ redirectUri, account? })` returns URL/state/expiry; the host opens the URL and returns the full callback URL to `complete`. Completion validates state, PKCE, redirect, OIDC claims and direct-inference scope. The stored identity key derives from verified issuer/client/subject, not email.
+For Anthropic:
 
-For a local browser flow, provide a scoped HttpServer bound to IPv4 `127.0.0.1` to `Callback.layer`. The listener exposes `authorization` and `await`; it is installed before the host opens the URL and is cancelled with its scope. Alternatively, the host can deliver a validated callback through its own UI boundary. `accessToken(account)` refreshes when needed under credential-store serialization; `refresh(account, { force: true })` requests an explicit refresh. Sign-out revokes the refresh token and retains the dynamic client registration for future sign-in.
+```sh
+bun add @effect-harness/provider-anthropic effect@4.0.1
+```
 
-Authorized account inference uses the public streaming Responses endpoint with storage disabled and validates completed responses. `models(account)` discovers visible models; catalogue entries still need declared limits/capabilities. Account entitlement and current server availability are runtime checks, not guarantees provided by these docs.
+Each adapter builds native Effect AI LanguageModels. A harness application uses its `Catalog` Layer to select those models by provider/model reference. An application making direct native LanguageModel calls can use the LanguageModel Layer instead; see [provider services](reference/packages.md#providers).
 
-## Anthropic consent and refresh
+## Build an OpenAI catalogue
 
-Provide CredentialStore, HttpClient and Crypto to `OAuth.layer`. On user-initiated sign-in, `begin({ account, method })` selects `browser` or `copyCode`. The host opens the Redacted URL and sends the callback URL or copied code to `complete(state, input)`. State itself is Redacted because the protocol uses its PKCE verifier as state. Completion requires the granted inference scope. The caller chooses the account key; the resulting OpaqueOAuth credential does not assert a verified OIDC identity.
+Supply the API key and the limits through your ConfigProvider. This example declares one model and uses the native fetch HTTP client:
 
-`OAuth.layerCallback({ account })` handles the browser flow with a caller-supplied scoped HttpServer at the expected loopback address/port. Copy-code mode needs no local server. `accessToken` and `refresh` serialize token refresh/rotation; `cancel` closes a pending attempt and `signOut` removes the stored account. `AnthropicAccountClient.layer` authenticates native Anthropic Messages requests, preserves full structured Prompt history and adapts protocol identity/tool names at the boundary. It does not read the installed Claude CLI's credentials.
+```ts
+import * as Catalog from '@effect-harness/provider-openai/Catalog'
+import * as Config from 'effect/Config'
+import * as Layer from 'effect/Layer'
+import * as FetchHttpClient from 'effect/http/FetchHttpClient'
 
-## Optional installed CLI
+export const Models = Catalog.layerApiKeyConfig({
+  provider: Config.succeed('openai'),
+  apiKey: Config.Redacted('OPENAI_API_KEY'),
+  models: Config.all({
+    modelId: Config.String('OPENAI_MODEL'),
+    contextWindow: Config.Int('MODEL_CONTEXT_WINDOW'),
+    maxOutputTokens: Config.Int('MODEL_MAX_OUTPUT_TOKENS'),
+  }).pipe(Config.map((model) => [model])),
+}).pipe(Layer.provide(FetchHttpClient.layer))
+```
 
-Use an already installed and independently signed-in Claude CLI only when that is the integration you intend. `Cli.layer` consumes a native ChildProcessSpawner. Requests require explicit `policyTrust: 'trusted-installed-cli'`: the host is responsible for auditing the executable and its managed policy. The adapter clears alternate provider credentials, restricts built-in tool execution and routes tool intents to the framework's scoped MCP server. Supply `IntentServer.layer` with a loopback HttpServer for tools, or `layerDisabled` without tools.
+Set all four variables through your application's ConfigProvider. Context and output limits must be positive, and the output limit cannot exceed the context window. Use values for the selected model rather than copying another model's advertised limits.
 
-The default history mode rejects history it cannot faithfully import. Choosing `historyMode: 'transcript'` renders prior canonical messages as input data; it does not resume the CLI's own session. Unsupported files/options/history features produce typed errors. Prefer the direct Anthropic transport when full canonical multi-turn Prompt behavior is required.
+Provide `Models` to `harness/Executor.layer` and to the durable executor registration graph. Reuse the same Layer value so descriptors and requests share the captured client.
 
-These account flows are implemented and exercised with protocol fixtures. Live sign-in, account entitlements, paid inference and an installed CLI were not run by the offline example. Credential stores are application-owned; providers never silently import another application's credential files.
+## Build an Anthropic catalogue
+
+The equivalent Anthropic Layer is:
+
+```ts
+import * as Catalog from '@effect-harness/provider-anthropic/Catalog'
+import * as Config from 'effect/Config'
+import * as Layer from 'effect/Layer'
+import * as FetchHttpClient from 'effect/http/FetchHttpClient'
+
+export const Models = Catalog.layerApiKeyConfig({
+  provider: Config.succeed('anthropic'),
+  apiKey: Config.Redacted('ANTHROPIC_API_KEY'),
+  models: Config.all({
+    modelId: Config.String('ANTHROPIC_MODEL'),
+    contextWindow: Config.Int('MODEL_CONTEXT_WINDOW'),
+    maxOutputTokens: Config.Int('MODEL_MAX_OUTPUT_TOKENS'),
+  }).pipe(Config.map((model) => [model])),
+}).pipe(Layer.provide(FetchHttpClient.layer))
+```
+
+Declare thinking, caching and request-option capabilities in the catalogue entry when enabling those features. The adapter validates requested options against that declaration; [configuration reference](reference/configuration.md#model-configuration) describes the boundary.
+
+## Select the model for a conversation
+
+Commit the matching provider/model reference to the conversation's agent document. This helper updates the root conversation:
+
+```ts
+import * as Conversation from '@effect-harness/durable/Conversation'
+import * as Session from '@effect-harness/durable/Session'
+import type * as Agent from '@effect-harness/harness/Agent'
+import * as Effect from 'effect/Effect'
+
+export const selectModel = Effect.fn('selectModel')(function* (model: Agent.ModelRef) {
+  const session = yield* Session.Session
+  const root = yield* session.root()
+  yield* session.transaction(
+    Effect.fnUntraced(function* (tx) {
+      const agent = yield* tx.doc(Conversation.AgentDoc, { owner: root.id })
+      agent.model = model
+    }),
+  )
+})
+```
+
+For the OpenAI catalogue, use provider `openai` and the model ID from `OPENAI_MODEL`. For Anthropic, use `anthropic` and your declared model ID. Successful catalogue construction validates local configuration; inference still checks remote credentials and availability.
+
+You can now submit messages through `Submission.execute`. If the caller should authorize an account instead of supplying an API key, follow [add account sign-in](how-to/account-sign-in.md).
 
 ## Tool media and native validation
 
-The generic `harness/ToolResult.encode` stores a validated `@effect-harness/ToolContent` envelope in a native Prompt tool-result value. It carries ordered native user-message parts and rendered diagnostics; private details, controls and usage stay outside the model-facing envelope. Ordinary JSON tool results remain ordinary JSON. Anthropic and OpenAI adapters recognize the envelope at their captured native client boundary and expand it within the original tool-result item, preserving call identity and mixed text/media order. They do not add a new user turn.
+For mixed text/media results, bind a tool projector that returns native Prompt parts in ToolResult.content. Keep private details and controls in their separate fields. Select a provider/model that accepts those parts and handle typed AI failures for unsupported content. The [tool-media reference](reference/packages.md#tool-media-and-native-validation) lists the translation and validation boundaries.
 
-Anthropic maps native image/PDF/text-document inputs to Messages content blocks, retaining applicable cache, title, context and citation options and the required document beta. OpenAI maps to Responses text/image/file inputs, including image detail, file IDs, data and URL sources, and PDF filenames. Validated envelopes with unsupported media or invalid mapped provider options fail with typed native AI errors; values that do not decode as an envelope retain ordinary JSON behavior. Both API-key and account transports use the same conversion. Supported media still depend on the selected provider and model.
-
-Undeclared tool-call preservation separately requires the [pinned Effect AI patch](../README.md). Native SDK validation remains the default; the opt-in is for callers that own unavailable-tool settlement. The optional installed CLI has its own documented media/history limits and is not equivalent to either direct transport.
+Unknown tool-call settlement has an additional [Effect compatibility requirement](reference/compatibility.md). The installed Claude Code adapter has different [history and media constraints](reference/packages.md#installed-claude-code).

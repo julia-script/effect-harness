@@ -1,29 +1,84 @@
-# Use portable coding tools
+# How to register application and coding tools
 
-The generic harness offers native Effect AI `read`, `write`, `edit` and `bash` declarations in `@effect-harness/harness/tools`. `CodingTools.make()` binds them as a `coding-tools` extension; supply `Env.Env` and the host's shared `MutationLocks` before adding that extension to the Registry. A separate PowerShell toolkit/handler is available when the host selects that shell. Custom tools use the same Toolkit binding shown in the [example tool](../apps/example/src/Uppercase.ts).
+Use this guide to expose application functions to a harness conversation. Tools are ordinary Effect AI declarations and Toolkit handlers, bound into a named Registry extension.
 
-`Env.layer({ id, cwd, home?, shell?, watch?, env? })` consumes native FileSystem, Path, ChildProcessSpawner and NativeFiles. NativeFiles supplies directory watching, lstat and bounded readers that the generic FileSystem interface cannot express. The Node adapter `harness/NodeNativeFiles.layerNative` implements that narrow capability boundary. `NodeEnv.layer(options)` provides NativeFiles and leaves FileSystem, Path and ChildProcessSpawner to the caller; supply `NodeServices.layer` at the application edge or substitute your own platform services. Portable callers supply their own native capability Layer. File/process failures remain typed, readers and watchers are scoped, and cancellation terminates process work and joins cleanup.
+## Bind a Toolkit
 
-`NodeEnv.layerConfig` accepts `Config.Wrap<NodeEnv.Options>`. Default shell discovery reads search paths from the active ConfigProvider and uses the supplied FileSystem and Path services. Its optional `host` configuration supplies platform, cwd, home and the search-path delimiter; the default host adapter obtains those values when the Layer is built. Child-process environment inheritance remains controlled by the execution options.
+Install the generic harness:
 
-Build `harness/MutationLocks.layer` once in the host's Scope and provide that Context when binding the mutation tools. All Env layers and runtime boundaries that operate on the same environment namespace must receive that same manager instance. Its scoped locks serialize each canonical file path and remain leased until an admitted write settles, including during cancellation. Building a separate manager for each invocation would let those writes overlap.
+```sh
+bun add @effect-harness/harness effect@4.0.1
+```
 
-`NativeFiles.watchDirectory(path)` returns a single-consumer `changes` Stream and a `started` Effect that reports installation success or failure. Consuming the Stream installs the native watcher in that consumption's Scope. `Env.watch` waits for installation before returning and supervises stream failures, including recovery through polling when native coverage is unavailable. Closing its acquisition Scope joins native producers before ending delivery.
+Define the schemas, supply the handlers and bind them when constructing the Registry:
 
-Tool paths resolve against invocation cwd, support configured home paths and Unicode/path normalization, and use the host Path service. The environment does not act as a filesystem sandbox. The host owns access policy and determines which tools/extensions a conversation can select.
+```ts
+import * as Registry from '@effect-harness/harness/Registry'
+import * as ToolBinding from '@effect-harness/harness/Tool'
+import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
+import * as Schema from 'effect/Schema'
+import * as Tool from 'effect/ai/Tool'
+import * as Toolkit from 'effect/ai/Toolkit'
 
-`read` supports bounded text line windows, returning native Prompt content. Recognized images return an explicit `unsupported_image` diagnostic; this tool does not decode or resize them. `write` creates parent directories. `edit` requires a unique text match, with controlled whitespace/typography matching, line-ending/BOM preservation and a diff in details. Mutations serialize access to the target file so parallel tools do not interleave partial edits.
+const Uppercase = Tool.make('uppercase', {
+  description: 'Convert text to uppercase.',
+  parameters: Schema.Struct({ text: Schema.String }),
+  success: Schema.String,
+})
+const toolkit = Toolkit.make(Uppercase)
+const handlers = toolkit.toLayer({ uppercase: ({ text }) => Effect.succeed(text.toUpperCase()) })
 
-Text truncation defaults to 2,000 lines and 50 KiB and respects UTF-8 character boundaries. An oversized first line shows a bounded prefix with a truncation diagnostic and continuation instructions. Shell output uses bounded windows and spill files for full output, carries truncation notices and typed spill paths, and can report stdout/stderr progress with throttling. Persisted tool progress retains output/details/diagnostics separately from the final model-facing result. A result's output policy controls byte/line limits and head/tail retention.
+export const Tools = Layer.unwrap(
+  ToolBinding.bind(toolkit, { uppercase: { replay: 'safe' } }).pipe(
+    Effect.map((tools) => Registry.layer([{ name: 'text-tools', tools }])),
+  ),
+).pipe(Layer.provide(handlers))
+```
 
-Shell execution requires a configured usable shell. It supports timeout, environment inheritance control and scoped cancellation; nonzero command exits are represented in results, while spawn/timeout/output-callback failures use typed errors. Built-in coding tools use unsafe replay by default. Repeating a filesystem mutation or shell command after a crash may be unacceptable; native activity persistence cannot undo an external action that occurred before its receipt committed.
+Provide `Tools` to the harness Executor. If conversation settings restrict extensions, include `text-tools` in the selected extension names. If agent settings restrict tools, include `uppercase`. See [selection rules](reference/configuration.md#conversation-overrides).
 
-Library timeout and polling options accept `Duration.Input`, such as `'5 seconds'`; the model-facing `bash` timeout remains a number of seconds. File modification instants use `DateTime.Utc` and retain native fractional millisecond precision. `read` retries one detected file change within its existing reader Scope and propagates genuine I/O errors immediately.
+Provide host service Layers while binding handlers. `Tool.bind` captures them for later calls. Keep per-call `Invocation` and `ToolCall` services dynamic; additional request services belong in the explicit `requestServices` argument.
 
-`TextLineReader.readLine` returns an Effect containing `Option<TextLine>`: `None` marks end of input, while read failures remain typed errors. Custom environment adapters construct owned reader and watcher handles through the public factories, retaining their nominal contracts.
+## Report progress during execution
 
-See [harness tests](../packages/harness/test) for path, image, truncation, environment, shell spill, native watch and cancellation cases.
+Add `Invocation.ToolCall` as a dependency to the native Tool declaration and yield that service inside its handler. Its `output`, `details` and `diagnostic` operations report distinct channels of progress. The [tutorial Toolkit](tutorials/first-conversation.md#2-bind-an-ordinary-ai-toolkit) shows the minimal binding; the API comments in `harness/Invocation` describe the reporting operations.
 
-Mixed tool content keeps media between its original text anchors when text is bounded. Failure settlement adds a rendered `tool_error` diagnostic; truncation diagnostics remain alongside it. `ToolResult.encode` includes content and rendered diagnostics in the model-facing envelope, while details, controls and usage remain committed metadata. [ToolResult.test.ts](../packages/harness/test/ToolResult.test.ts) checks those boundaries; provider adapters translate supported media as described in [providers.md](providers.md#tool-media-and-native-validation).
+For richer results, provide `Tool.Metadata.project` to map the native result to model-facing content and committed metadata. Keep model content in `content`; private details and control requests remain separate. Provider media translation is described in [the provider guide](providers.md#tool-media-and-native-validation).
 
-The public `@effect-harness/harness/testing` export provides `Assertions`, `EnvConformance` and `Runner`. `EnvConformance.makeEnvConformance` supplies shared adapter cases; `freshLayer` and `withEnv` scope a fresh environment per case, and `Runner.registerEnvConformance` adapts them to an Effect-aware test runner. The [conformance suite](../packages/harness/test/testing/EnvConformance.integration.test.ts) exercises native Node capabilities and polling fallbacks, including cleanup after failure.
+## Bind the portable coding tools
+
+The Node environment adapter supplies narrow filesystem capabilities in addition to native Effect platform services. This Layer registers `read`, `write`, `edit` and `bash`:
+
+```ts
+import * as NodeServices from '@effect/platform-node/NodeServices'
+import * as MutationLocks from '@effect-harness/harness/MutationLocks'
+import * as NodeEnv from '@effect-harness/harness/NodeEnv'
+import * as Registry from '@effect-harness/harness/Registry'
+import * as CodingTools from '@effect-harness/harness/tools/CodingTools'
+import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
+
+const Environment = NodeEnv.layer({ id: 'workspace', cwd: '/srv/project' })
+const Locks = MutationLocks.layer
+
+export const CodingRegistry = Layer.unwrap(
+  CodingTools.make().pipe(Effect.map((extension) => Registry.layer([extension]))),
+).pipe(Layer.provide(Layer.mergeAll(Environment, Locks)), Layer.provide(NodeServices.layer))
+```
+
+Install `@effect/platform-node@4.0.1` for this adapter. Replace `/srv/project` with the application's working directory. Share `Locks` across every runtime that writes files in the same environment namespace.
+
+The environment is a capability boundary, not a filesystem sandbox. The host chooses access policy and which tools a conversation can select. For a remote or restricted environment, supply your own Env capabilities instead of the Node adapter.
+
+## Choose an honest recovery policy
+
+Replay is `unsafe` by default. Mark a tool `safe` only when repeating its body after a crash is acceptable. Pure transformations are a straightforward case; a payment, shell command or file mutation needs an application-specific decision. Built-in coding tools retain unsafe replay.
+
+Use [replay and recovery](explanation/recovery.md#external-actions) to reason about an external action that completes before its receipt commits. The [tool policy reference](reference/configuration.md#tool-policy) lists execution and output defaults.
+
+## Verify registration
+
+Build the Registry and inspect Registry.snapshot. The bound tools should appear under the coding-tools extension. Check the [coding tool behavior reference](reference/configuration.md#coding-tool-behavior) when selecting read windows, shell timeouts and output limits.
+
+For custom environment adapters, run the public harness/testing conformance helpers. Check scoped reader/watcher lifetimes and process cancellation before offering those tools to a conversation.

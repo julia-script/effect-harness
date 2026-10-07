@@ -1,17 +1,59 @@
-# Observe committed conversations
+# How to display committed conversation progress
 
-For a UI or integration that needs coherent conversation state, supply `View.layer` from the domain Store and `Event.layer` from View. Public subpaths are `@effect-harness/durable/View` and `/Event`. Acquire watches inside an Effect scope.
+Use this guide to drive a UI, terminal or integration from saved conversation state. It assumes an existing Store and Session. Observations expose committed partial responses and tool progress; they do not expose uncommitted provider tokens.
 
-Partial lookups and acquisitions return `Option`: `None` means the requested conversation, document or incarnation is absent. Narrow or match the result before using the watch or snapshot. Storage and acquisition errors remain in the Effect error channel.
+## Build the observation services
 
-`View.watch(conversationId)` returns an initial `value`, a Stream of changes, a closed result, `stop` and an effectful `listen`. Its value contains the conversation, visible entries and the built-in singleton documents: agent configuration, live execution, inbox, provider affinity and usage. Those document fields carry their owning schema types. Changes contain before/after values, structural operations, commit sequence and reset information. `View.state` maintains a live committed value; projections share a conversation mount and driver instead of starting independent storage polling for every consumer.
+Provide `View.layer` with the same Store as the Session. Provide `Event.layer` with that View:
 
-`Event.watch(conversationId)` returns an initial semantic snapshot and ordered batches of subsequent events. Snapshots include entries, run/generation/tool/compaction state, queued submissions, agent and usage. Events describe run/turn/message boundaries, message content deltas, tool output/details/diagnostics, queue updates, submission settlement, retry/compaction and configuration changes. Event batches derive from the same committed frame as their structural changes. They do not expose a provider's uncommitted token stream.
+```ts
+import * as Event from '@effect-harness/durable/Event'
+import * as View from '@effect-harness/durable/View'
+import * as Layer from 'effect/Layer'
 
-The initial snapshot is separate from the changes Stream. A late joiner receives current committed state, including an ongoing partial generation or tool output. Consumers should process each batch in order. Each watch retains at most 100 pending batches, excluding the batch already delivered to a listener. On overflow, it replaces pending history with the latest reset/snapshot. A slow listener cannot force another watch to reset. State that changes during a slow listener is reconciled into that reset.
+export const Observations = Event.layer.pipe(Layer.provideMerge(View.layer))
+```
 
-Stop or close the acquisition scope to release a listener. Closing the last watch for a conversation releases its shared mount; session closure and document retirement have explicit terminal reasons. `listen` joins its listener lifetime, and listener failures close that watch. Reopening a retired document does not silently transfer an existing document watch to its new incarnation.
+This Layer exposes both services and requires Store. Choose View for structural conversation snapshots and changes, or Event for semantic batches such as message, tool and submission transitions. Their contracts are listed in [execution and observations](reference/execution-and-observation.md#conversation-watches).
 
-For arbitrary documents, use `session.snapshot`, `snapshotAsOf`, `watchDoc` or document `state`, with the document token and target. For committed ownership diagnostics, `Inspection.get(session)` and `Inspection.changes(store)` expose persisted facts and graph deltas without executing handlers or consulting a scheduler.
+## Acquire a watch in the connection's Scope
 
-An ordinary failed tool/task result is an expected domain outcome. `task_failed` reports faulted or orphaned task outcomes, not every failed receipt. Session close ends View, Event and document watches while handler cleanup may still be in progress. This reports the observation lifetime ending, not successful execution or a durable abort.
+This listener logs an initial entry count and ordered semantic batches. Provide `Observations` from your application's Store before running it:
+
+```ts
+import * as Event from '@effect-harness/durable/Event'
+import type * as Record from '@effect-harness/durable/Record'
+import * as Console from 'effect/Console'
+import * as Effect from 'effect/Effect'
+
+export const watchConversation = Effect.fn('watchConversation')(function* (
+  conversationId: Record.ConversationId,
+) {
+  const events = yield* Event.Event
+  const watch = yield* events.watch(conversationId)
+  yield* Console.log(`Initial entries: ${watch.snapshot.entries.length}`)
+  yield* watch.listen((batch) => Console.log(batch.map((event) => event._tag).join(', ')))
+}, Effect.scoped)
+```
+
+Use the initial snapshot to populate the UI before consuming updates. `listen` joins the listener lifetime, so run it in the connection's scoped fiber when the rest of your application must continue. Close that Scope when the client disconnects.
+
+A missing conversation fails with `StorageError` carrying `NotFound`. For document `snapshot` and `watchDoc` operations, absence instead returns `Option.none`; handle that before accessing a document value.
+
+## Replace state on a reset
+
+Process batches in order. For an Event watch, a `snapshot` event replaces the prior semantic state. For a View watch, a change with `reset: true` replaces the baseline with `change.value`; use that complete value instead of assuming all earlier operations arrived.
+
+Each watch has a bounded backlog. A slow consumer can receive the newest coherent snapshot in place of intermediate history. Treat these streams as UI synchronization, not an unbounded audit trail. One watch's backlog does not force another watch to reset.
+
+## Observe application documents
+
+Use `session.watchDoc(token, target)` for a specific document and `session.state(token, target)` for a maintained current value. Check the Option returned during acquisition. Keep one consumption per watch and close its Scope when finished.
+
+Document watches stay attached to the acquired incarnation. Retirement ends that watch; creating another document at the same address requires a new acquisition. See [document lifetime](reference/documents-and-storage.md#history-forks-and-lifetime).
+
+## Handle the end of observation
+
+`watch.stop` ends delivery deliberately. `watch.closed` reports the terminal reason. A listener failure ends that watch; session closure ends its observations before handler cleanup necessarily finishes. An observation ending is not evidence that a task succeeded or was aborted.
+
+For ownership diagnostics, use `Inspection.get(session)` or `Inspection.changes(store)`. They read committed domain facts and do not run Workflows. See [lifetime rules](reference/execution-and-observation.md#lifetime).

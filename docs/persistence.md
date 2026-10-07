@@ -1,39 +1,74 @@
-# Persist domain state and native execution
+# How to persist conversations across restarts
 
-The durable package stores conversation, entry, task and submission records; schema-versioned documents; ordered commit frames; and idempotency receipts. The native WorkflowEngine stores its own messages, activities, deferred results and execution state. Both are needed for restart recovery. A persistent domain Store paired with an in-memory engine cannot restore lost native execution history.
+Use this guide to keep conversation state and native execution history when an application process restarts. Start with a working registration graph, such as [the first conversation tutorial](tutorials/first-conversation.md).
 
-The [example Layer graph](../apps/example/src/Application.ts) supplies a native SQLite client to Effect's `KeyValueStore.layerSql`, `SqlEventJournal.layer`, `SingleRunner` and `ClusterWorkflowEngine`. The harness consumes only the key/value and journal services. SQL message storage persists even with memory runner membership. All scopes close at the application boundary.
+A recoverable application needs persistent storage for **both** the domain Store and the WorkflowEngine. This guide uses Effect's SQLite-backed persistence services and ClusterWorkflowEngine in one application process.
 
-| Domain Store    | Layer                                     | Boundary                                                                 |
-| --------------- | ----------------------------------------- | ------------------------------------------------------------------------ |
-| Memory          | `Store.layerMemory`                       | Scoped process-local state                                               |
-| JSONL           | `JsonlStore.layer({ directory, fsync? })` | Native FileSystem and Path; self-contained commit frames                 |
-| Effect snapshot | `SnapshotStore.layer`                     | Application-supplied KeyValueStore and EventJournal; the example default |
+## 1. Install the SQLite adapter
 
-`SnapshotStore.layer` stores authoritative state, receipts and retained observer frames as one versioned, schema-encoded key/value entry. `SnapshotStore.layerWith({ key })` selects a session's snapshot key. Effect owns database tables and CRUD. `EventJournal.withLock` coordinates initialization and updates; the harness does not import SqlClient, issue SQL, inspect transaction leases or implement database migrations.
+```sh
+bun add @effect-harness/durable effect@4.0.1 @effect/platform-bun@4.0.1 @effect/sql-sqlite-bun@4.0.1
+mkdir -p data
+```
 
-All writers of one snapshot key must use the same coordinating journal/backend. For memory, share one native memory journal and key/value Layer instance. For SQLite, build the SQL journal and key/value Layers from the same native client. SQLite's native journal owns the transaction; the single snapshot write is the publication point. A memory journal paired with persistent SQL key/value storage only coordinates writers sharing that memory journal. Other SQL backends and arbitrary journal/key/value combinations have not been validated; do not assume their locks provide equivalent serialization. The journal is used for its native coordination service; observer frames remain inside the snapshot.
+Keep `data/` on a volume that survives process replacement. Review [Effect compatibility](reference/compatibility.md) when using transaction-annotated Activities.
 
-Built-in executor Activities use ordinary native replay without `WithTransaction` annotations. Domain mutations and their complete replay results commit together in receipts. If the process stops before Workflow caches an Activity reply, replay returns the saved result. Final generation and compaction settlements recover before terminal-task startup checks, restoring the same native Activity and finishing child draining and notification delivery. External provider/tool calls retain their explicit native Activity and tool replay policies.
+## 2. Build shared persistence Layers
 
-The snapshot format rewrites retained frames alongside state on each commit. It favors simple persistence over an independently indexed journal. The old `SqliteStore`, platform factories and compatibility subpaths have been retired. Existing `durable_state` / `durable_journal` / `durable_receipt` data is not automatically imported. Preserve an old database for explicit export/migration with its previous checkout; use a fresh database for this example. Retaining native engine records while replacing their domain state with an empty snapshot is unsupported. Existing key/value snapshots use the same version-1 envelope.
+Create a module with one database Layer value shared by the domain primitives and native engine:
 
-JSONL is a single-writer store; coordinate ownership externally. It repairs an incomplete final line, rejects malformed complete frames, and poisons the open Store when a write's outcome is uncertain. Snapshot storage also poisons an open Store on uncertain persistence/coordination outcomes. Reopen to inspect saved receipts before continuing. `fsync` controls JSONL durable flushing; disabling it does not guarantee crash durability.
+```ts
+import { SqliteClient } from '@effect/sql-sqlite-bun'
+import * as SnapshotStore from '@effect-harness/durable/storage/SnapshotStore'
+import * as Layer from 'effect/Layer'
+import * as KeyValueStore from 'effect/persistence/KeyValueStore'
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as ClusterWorkflowEngine from 'effect/cluster/ClusterWorkflowEngine'
+import * as SingleRunner from 'effect/cluster/SingleRunner'
 
-`JsonlStore.layerConfig` resolves complete `Config.Wrap` options through the caller's ConfigProvider. For snapshot storage, configure native persistence Layers at the application boundary. `Store.mintId(schema)` requires Store and the schema's decoding services, validating before publication and again within the serialized commit.
+const Database = SqliteClient.layer({ filename: './data/harness.sqlite' })
+const Primitives = Layer.mergeAll(KeyValueStore.layerSql(), SqlEventJournal.layer()).pipe(
+  Layer.provide(Database),
+)
 
-The pinned Effect patch still includes a separate repair for user-authored transaction-annotated Activities. A recovered Activity RPC otherwise can take SQLite's transaction while waiting for its definition, blocking the engine's earlier cached reply read. Built-in executors do not use transaction-annotated Activities.
+export const StoreLive = SnapshotStore.layerWith({ key: 'app/session/main' }).pipe(
+  Layer.provide(Primitives),
+)
+export const EngineLive = ClusterWorkflowEngine.layer.pipe(
+  Layer.provide(SingleRunner.layer({ runnerStorage: 'memory' })),
+  Layer.provide(Database),
+)
+export const Infrastructure = Layer.mergeAll(StoreLive, EngineLive)
+```
 
-`Session.transaction` accepts an Effect callback with its own typed error channel. It commits all writes atomically, or rolls them back. Query tables before mutating them: subsequent table reads after table writes are rejected, so prefetch the facts needed by the callback. Documents are acquired as mutable transaction drafts, including read-your-own staged changes. Drafts are revoked when the callback ends. `Document.copy` returns a typed `Result` containing detached data; lift it with `Effect.fromResult` while the draft is active. Copying supports nested immutable JSON data without leaking draft proxies. `Document.copyUnsafe` provides the explicitly throwing synchronous variant for boundaries that already own exception handling.
+`runnerStorage: 'memory'` selects process-local runner membership. Native messages and Activity replies still use SQLite. The harness receives KeyValueStore and EventJournal, and Effect owns the database tables and coordination.
 
-Unkeyed transactions preserve arbitrary callback results, including `void`. A transaction with an idempotency key accepts only JSON-safe results or void and stores its replay result atomically with domain writes. An explicit void receipt distinguishes void from JSON null. A replay returns the original result without rerunning the callback. This protects database facts, not arbitrary outside effects; keep those in native Activities and select an honest tool replay policy.
+## 3. Replace the in-memory Layers
 
-Define a singleton with `Document.define`, or a keyed document with `Document.family`. Both return a typed `Result` so invalid definitions can be handled before use; `defineUnsafe` and `familyUnsafe` are the explicitly throwing variants. Definitions declare kind, positive schema version, scope (`session`, `conversation` or `task`), codec and initial value. Conversation documents also declare history (`latest` or `rewindable`) and fork policy (`asOf`, `current` or `initial`); `asOf` requires rewindable history. Scope/owner/family keys determine the address. Pure migration functions lift older content to the declared version; newer stored versions and mismatched definitions fail. A read can project a migration; mutation persists it.
+Provide `StoreLive` when constructing `Session.layer`. Provide `EngineLive` to the executor registration graph in place of `WorkflowEngine.layerMemory`. Supply the Bun platform services at the outer application boundary. Build those resources within the application's Scope.
 
-Forks copy visible entry history and apply each document's declared fork policy. `asOf` copies historical content at the fork cutoff, `current` copies present content and `initial` creates fresh initial state. Built-in agent configuration uses historical inheritance; provider affinity starts fresh. Retirement closes a document incarnation, and recreating its address gets a new incarnation. Watchers remain bound to the old incarnation and close when it retires. Terminal task projection retires all task documents atomically.
+Keep `Conversation.layerCreation` in Session construction. It creates the built-in documents and retains the recovery initializer. Register the same Workflow declarations and handlers before resuming their saved executions.
 
-`Conversation.layerCreation` captures native Crypto for provider-affinity initialization, including a recovery initializer on Session's optional CreationHook. `session.initialize(conversationId)` repairs missing legacy affinity atomically without rerunning conversation-created callbacks. Generation and compaction invoke it before any request. A persisted provider UUID is reused on retry/reopen; it is not the native execution ID, conversation ID or authorization account key. Construct Sessions with the creation Layer when using the built-in executors.
+For independent Sessions in one backend, assign each Store a distinct snapshot key and register the already scoped Sessions in `SessionDirectory`. Keep session IDs and key mapping stable across restarts. Equal keys address equal domain state; a different directory registration does not partition storage.
 
-`Store.seal` ends admission and observers while retaining resources needed by cleanup. Scope owns Session and Store release: for early release, build their composed Layers in a caller-owned child Scope and close that Scope. Session cleanup seals admission and joins registered handler finalizers before the Store drains admitted operations and releases its backend. `session.awaitClosed` observes their shared terminal cleanup result through a typed `StorageError` channel; it does not initiate release. Cancelling that wait does not abandon cleanup. Reopen uses committed truth; closure is not a task-abort receipt.
+## 4. Resume from saved identities
 
-Snapshot observers read the saved value in the Store construction context, without inheriting temporary coordinator services. Candidates stay private until publication, and observer frames are saved alongside state. Store commits are independent of Workflow reply persistence; do not wrap Store operations in an external database transaction. Commit journals are bounded and retain relevant document/conversation categories; consumers must resynchronize from a coherent committed snapshot when their own backlog exceeds retention. Use View/Event for UI observation rather than treating the journal as an unlimited audit log.
+Retain each submission's request ID. Retry the same payload with the same ID after a caller loses its response. The saved admission and settlement select the original work. A new request ID admits new work.
+
+Retain native execution IDs when using `{ discard: true }`; use the declaration's native `poll` and `resume` APIs. Display the conversation through [committed observations](observations.md). Native execution status and domain observations describe different persisted facts.
+
+A normal shutdown closes the application Scope. An individual Session can be closed and reopened while the engine remains alive in an outer Scope. Closing a Session pauses recoverable work; it does not produce an Abort receipt.
+
+The configuration is complete when a second process opens the same backend and a repeated request returns its existing settlement. The repository's [integration example](../apps/example/README.md) demonstrates this with a local model and SQLite.
+
+## JSONL and other backends
+
+For domain documents without native executions, follow [persistent application state](tutorials/persistent-state.md). JSONL needs a single writer; enable `fsync` for durable flushing. A persistent JSONL Store still needs a persistent WorkflowEngine if the application runs Workflows.
+
+For SnapshotStore, all writers of a key must share compatible journal coordination. SQLite with native SQL KeyValueStore and SqlEventJournal is the validated SQL composition. Other backends need verification of locking, serialization and publication behavior before use. See [storage contracts](reference/documents-and-storage.md#storage-adapters).
+
+## Handle storage failures
+
+Inspect `StorageError.certainty`. A rejected candidate was not published. An uncertain failure means persistence may have happened; the open Store becomes poisoned. Close and reopen it, inspect saved receipts and reconcile the operation before admitting more writes. Blindly retrying the same external side effect cannot resolve that uncertainty.
+
+Keep domain Store operations outside caller-owned database transactions. Use Session transactions for domain changes and native Activities for execution boundaries. [Replay and recovery](explanation/recovery.md) explains the separate commit points.

@@ -1,9 +1,13 @@
 # @effect-harness/auth
 
-Application-owned credentials and authorization building blocks. Public subpaths include `/Credential`, `/CredentialStore`, `/Pkce`, `/Token` and `/Jwt`. Secrets are `Redacted` values; provider services expose typed `AuthError` failures.
+Application-owned credentials and authorization building blocks for Effect v4. Secrets use Redacted values, and protocol/storage failures use structured AuthError reasons.
 
-`CredentialStore.layerMemory` requires native Crypto. `layerProtectedFile({ path })` requires FileSystem, Path and Crypto, and stores credentials in a dedicated owner-only directory/file with atomic replacement and cross-process locking. The file contains secrets protected by permissions, not encryption. `modify` serializes credential updates, including refresh-token rotation. Stale locks are reported as busy rather than stolen; operators must establish that the prior process is gone before recovering one.
+```sh
+bun add @effect-harness/auth effect@4.0.1
+```
 
-OAuth identity keys use verified provider/issuer/client/subject identity, not email. Anthropic account credentials use a distinct `OpaqueOAuth` record under a caller-selected account key and make no OIDC identity claim. API keys, OAuth credentials and dynamic client registrations have separate schemas. `JoseJwt.layer` verifies claims using JWKS and consumes a native HttpClient.
+Public subpaths include `Credential`, `CredentialStore`, `Pkce`, `Token`, `Jwt` and `JoseJwt`. Root imports expose concept namespaces.
 
-The host initiates consent explicitly and owns the browser/UI interaction. These services do not import another application's credential files. Follow [providers.md](../../docs/providers.md) for provider-specific begin/complete/refresh flows and scoped loopback callbacks. Credential protocol tests use fake HTTP and crypto boundaries; no live account is required by the public example.
+CredentialStore.layerMemory requires Crypto. Its protected-file Layer requires FileSystem, Path and Crypto, with atomic replacement and serialized credential updates. Files contain plaintext secrets protected by owner-only permissions; they are not encrypted. JoseJwt.layer supplies signature and claim verification using HttpClient.
+
+Follow [account sign-in](../../docs/how-to/account-sign-in.md) to compose these services with a provider's authorization flow. [Authorization reference](../../docs/reference/packages.md#authorization) describes account identities, service dependencies and storage constraints.
