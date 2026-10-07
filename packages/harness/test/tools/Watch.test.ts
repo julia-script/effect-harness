@@ -12,6 +12,7 @@ import * as NodeEnv from '../../src/env/Node.ts'
 import * as Stream from 'effect/Stream'
 import { Env, NativeFiles, type Watcher, type WatchChange } from '../../src/Env.ts'
 import { withEnv } from './Helpers.ts'
+import * as DirectoryFixture from './DirectoryFixture.ts'
 const hasPath = (value: WatchChange, path: string): boolean =>
   'paths' in value &&
   value.paths.some((changed) => changed === path || path.startsWith(changed + '/'))
@@ -157,16 +158,20 @@ describe('watch supervision coverage and scoped close', () => {
             path,
             {
               ...native,
-              watchDirectory: (directory, callback) =>
-                Effect.acquireRelease(
-                  Effect.sync(() => {
-                    callbacks.set(directory, callback)
-                  }),
-                  () =>
+              watchDirectory: (directory) =>
+                DirectoryFixture.notifications((queue) =>
+                  Effect.acquireRelease(
                     Effect.sync(() => {
-                      callbacks.delete(directory)
+                      callbacks.set(directory, (changed) => {
+                        Queue.offerUnsafe(queue, changed)
+                      })
                     }),
-                ).pipe(Effect.asVoid),
+                    () =>
+                      Effect.sync(() => {
+                        callbacks.delete(directory)
+                      }),
+                  ).pipe(Effect.asVoid),
+                ),
             },
             [{ path: path.join(env.cwd, 'tree'), recursive: true }, { path: explicit }],
           ).pipe(Scope.provide(watcherScope))

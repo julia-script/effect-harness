@@ -11,12 +11,14 @@ import type * as PlatformError from 'effect/PlatformError'
 import * as Ref from 'effect/Ref'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
+import * as Queue from 'effect/Queue'
 import { ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
 import { Env, NativeFiles } from '../../src/Env.ts'
 import * as NodeEnv from '../../src/env/Node.ts'
 import * as Exec from '../../src/env/Exec.ts'
 import * as Watch from '../../src/env/Watch.ts'
 import { withEnv } from './Helpers.ts'
+import * as DirectoryFixture from './DirectoryFixture.ts'
 
 const native = vi.hoisted(() => ({
   path: '',
@@ -406,16 +408,20 @@ describe('ScopedLifetime', () => {
             path,
             {
               ...files,
-              watchDirectory: (directory, callback) =>
-                Effect.acquireRelease(
-                  Effect.sync(() => {
-                    callbacks.set(directory, callback)
-                  }),
-                  () =>
+              watchDirectory: (directory) =>
+                DirectoryFixture.notifications((queue) =>
+                  Effect.acquireRelease(
                     Effect.sync(() => {
-                      callbacks.delete(directory)
+                      callbacks.set(directory, (changed) => {
+                        Queue.offerUnsafe(queue, changed)
+                      })
                     }),
-                ).pipe(Effect.asVoid),
+                    () =>
+                      Effect.sync(() => {
+                        callbacks.delete(directory)
+                      }),
+                  ).pipe(Effect.asVoid),
+                ),
             },
             [{ path: env.path.join(env.cwd, 'target') }],
           ).pipe(Scope.provide(owner))

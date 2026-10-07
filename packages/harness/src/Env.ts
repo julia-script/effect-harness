@@ -79,6 +79,11 @@ export interface WatchOptions {
   readonly pollIntervalMs?: number | undefined
   readonly directoryBudget?: number | undefined
 }
+/** A single-consumer directory stream; started settles when its native installation succeeds or fails. */
+export interface DirectoryNotifications {
+  readonly changes: Stream.Stream<string | undefined, FileError>
+  readonly started: Effect.Effect<void, FileError>
+}
 /** Missing native FileSystem capabilities; a remote or platform Layer implements this narrow boundary. */
 export class NativeFiles extends Context.Service<
   NativeFiles,
@@ -89,10 +94,7 @@ export class NativeFiles extends Context.Service<
       options?: { readonly noFollow?: boolean | undefined },
     ) => Effect.Effect<BinaryReader, FileError, Scope.Scope>
     readonly openDirReader: (path: string) => Effect.Effect<DirReader, FileError, Scope.Scope>
-    readonly watchDirectory: (
-      path: string,
-      onChange: (path: string | undefined, error?: FileError) => void,
-    ) => Effect.Effect<void, FileError, Scope.Scope>
+    readonly watchDirectory: (path: string) => Effect.Effect<DirectoryNotifications, FileError>
   }
 >()('@effect-harness/harness/Env/NativeFiles') {}
 export interface ShellOutputInfo {

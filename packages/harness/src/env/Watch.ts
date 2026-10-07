@@ -3,6 +3,7 @@ import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Base64 from 'effect/encoding/Base64'
 import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
 import type * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
 import type * as Path from 'effect/Path'
@@ -221,19 +222,57 @@ export const make = Effect.fnUntraced(function* (
     for (const [value, identity] of wanted)
       if (!watchers.has(value)) {
         const child = yield* Scope.fork(scope)
-        const installed = yield* native
-          .watchDirectory(value, (changed, error) => {
-            if (!closed) Queue.offerUnsafe(events, { path: changed, error, owner: value })
-          })
-          .pipe(
-            Effect.provideService(Scope.Scope, child),
-            Effect.onError(() => Scope.close(child, Exit.void)),
-            Effect.as(true),
-            Effect.catchIf(
-              (error) => error.code === 'not_found' || error.code === 'permission_denied',
-              () => Effect.succeed(false),
+        const installed = yield* Effect.gen(function* () {
+          const notifications = yield* native.watchDirectory(value)
+          const consumer = yield* notifications.changes.pipe(
+            Stream.runForEach((changed) =>
+              Effect.suspend(() =>
+                closed ? Effect.void : Queue.offer(events, { path: changed, owner: value }),
+              ),
             ),
+            Effect.andThen(
+              Effect.fail(
+                new FileError({
+                  reason: new FileUnknown({
+                    message: 'Native directory notifications ended',
+                    path: value,
+                  }),
+                }),
+              ),
+            ),
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterrupts(cause)) return Effect.failCause(cause)
+              const caught = Cause.squash(cause)
+              const error =
+                caught instanceof FileError
+                  ? caught
+                  : new FileError({
+                      reason: new FileUnknown({
+                        message: Serialization.errorText(caught),
+                        path: value,
+                        cause,
+                      }),
+                    })
+              return Effect.suspend(() =>
+                closed
+                  ? Effect.fail(error)
+                  : Queue.offer(events, { error, owner: value }).pipe(
+                      Effect.andThen(Effect.fail(error)),
+                    ),
+              )
+            }),
+            Effect.forkScoped,
           )
+          yield* notifications.started.pipe(Effect.raceFirst(Fiber.join(consumer)))
+          return true
+        }).pipe(
+          Scope.provide(child),
+          Effect.onError(() => Scope.close(child, Exit.void)),
+          Effect.catchIf(
+            (error) => error.code === 'not_found' || error.code === 'permission_denied',
+            () => Effect.succeed(false),
+          ),
+        )
         if (installed) {
           watchers.set(value, { scope: child, identity })
           added = true

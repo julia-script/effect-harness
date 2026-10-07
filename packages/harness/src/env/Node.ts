@@ -5,6 +5,11 @@ import * as Fsp from 'node:fs/promises'
 import * as Os from 'node:os'
 import * as NodePath from 'node:path'
 import * as Effect from 'effect/Effect'
+import * as Deferred from 'effect/Deferred'
+import * as Cause from 'effect/Cause'
+import * as Exit from 'effect/Exit'
+import * as Stream from 'effect/Stream'
+import * as Queue from 'effect/Queue'
 import * as Layer from 'effect/Layer'
 import * as Semaphore from 'effect/Semaphore'
 import * as NodeServices from '@effect/platform-node/NodeServices'
@@ -278,20 +283,79 @@ export const nativeLayer: Layer.Layer<NativeFiles> = Layer.succeed(
           ),
       }
     }),
-    watchDirectory: (path, onChange) =>
-      Effect.acquireRelease(
-        Effect.try({
-          try: () => {
-            const watcher = Fs.watch(path, { persistent: false }, (_event, filename) =>
-              onChange(filename === null ? undefined : NodePath.join(path, filename.toString())),
-            )
-            watcher.on('error', (error) => onChange(undefined, fileError(error, path)))
-            return watcher
-          },
-          catch: (cause) => fileError(cause, path),
-        }),
-        (watcher) => Effect.sync(() => watcher.close()),
-      ).pipe(Effect.asVoid),
+    watchDirectory: Effect.fnUntraced(function* (path) {
+      const installed = yield* Deferred.make<void, FileError>()
+      let consumed = false
+      const changes = Stream.callback<string | undefined, FileError>((queue) =>
+        Effect.gen(function* () {
+          if (consumed)
+            return yield* new FileError({
+              reason: new FileInvalid({
+                message: 'Directory notifications already consumed',
+                path,
+              }),
+            })
+          consumed = true
+          return yield* Effect.acquireRelease(
+            Effect.try({
+              try: () => {
+                let active = true
+                let nativeClosed = false
+                const onChange = (_event: string, filename: string | Buffer | null | undefined) => {
+                  if (active)
+                    Queue.offerUnsafe(
+                      queue,
+                      filename === null || filename === undefined
+                        ? undefined
+                        : NodePath.join(path, filename.toString()),
+                    )
+                }
+                const onError = (error: Error) => {
+                  if (active) Queue.failCauseUnsafe(queue, Cause.fail(fileError(error, path)))
+                }
+                const onClose = () => {
+                  nativeClosed = true
+                  if (active) Queue.endUnsafe(queue)
+                }
+                const watcher = Fs.watch(path, { persistent: false }, onChange)
+                watcher.on('error', onError)
+                watcher.on('close', onClose)
+                return {
+                  release: () =>
+                    new Promise<void>((resolve) => {
+                      active = false
+                      watcher.off('change', onChange)
+                      if (nativeClosed) {
+                        watcher.off('error', onError)
+                        watcher.off('close', onClose)
+                        resolve()
+                      } else {
+                        watcher.once('close', () => {
+                          watcher.off('error', onError)
+                          watcher.off('close', onClose)
+                          resolve()
+                        })
+                        watcher.close()
+                      }
+                    }),
+                }
+              },
+              catch: (cause) => fileError(cause, path),
+            }),
+            (watcher) => Effect.promise(watcher.release),
+          )
+        }).pipe(
+          Effect.onExit((exit) =>
+            Effect.gen(function* () {
+              yield* Deferred.done(installed, Exit.asVoid(exit))
+              // Stream.callback forks its producer; its failed Exit must also settle the queue.
+              if (exit._tag === 'Failure') yield* Queue.failCause(queue, exit.cause)
+            }),
+          ),
+        ),
+      ).pipe(Stream.onExit((exit) => Deferred.done(installed, Exit.asVoid(exit))))
+      return { changes, started: Deferred.await(installed) }
+    }),
   }),
 )
 const resolveShell = (custom?: string): Effect.Effect<ShellConfiguration, ExecutionError> =>

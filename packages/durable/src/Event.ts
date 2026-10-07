@@ -129,44 +129,18 @@ const decode = <S extends Schema.Constraint>(schema: S, value: unknown) =>
   )
 const messageCodec = Schema.toCodecJson(Prompt.Message)
 const assistantCodec = Schema.toCodecJson(Prompt.AssistantMessage)
-const liveJson = (view: View.Value) => view.docs['harness.live']
-const partialJson = (view: View.Value) => object(liveJson(view)?.generation)?.message
-const usageJson = (view: View.Value) => object(liveJson(view)?.generation)?.usage
-const toolJson = (view: View.Value) => {
-  const values = liveJson(view)?.tools
-  const result = new Map<string, Record.JsonObject>()
-  if (Array.isArray(values))
-    for (const value of values) {
-      const slot = object(value)
-      if (slot !== undefined && typeof slot.callId === 'string') result.set(slot.callId, slot)
-    }
-  return result
-}
 const queued = (inbox: typeof Inbox.State.Type | undefined): ReadonlyArray<QueuedItem> =>
   (inbox?.items ?? []).map(({ id, mode }) => ({ id, mode }))
 const parts = Effect.fnUntraced(function* (view: View.Value) {
-  const live = yield* decode(Inbox.LiveState, view.docs['harness.live'] ?? {})
-  const inbox =
-    view.docs['harness.inbox'] === undefined
-      ? undefined
-      : yield* decode(Inbox.State, view.docs['harness.inbox'])
-  const agent =
-    view.docs['harness.agent'] === undefined
-      ? undefined
-      : yield* decode(Agent.State, view.docs['harness.agent'])
-  const usage =
-    view.docs['harness.usage'] === undefined
-      ? undefined
-      : yield* decode(Totals.State, view.docs['harness.usage'])
+  const live = view.docs['harness.live'] ?? {}
+  const inbox = view.docs['harness.inbox']
+  const agent = view.docs['harness.agent']
+  const usage = view.docs['harness.usage']
   const partial =
     live.generation?.message === undefined
       ? undefined
       : yield* decode(assistantCodec, live.generation.message)
-  const partialUsage = view.docs['harness.live']?.generation
-  const currentUsage =
-    isObject(partialUsage) && partialUsage.usage !== undefined
-      ? yield* decode(Totals.Usage, partialUsage.usage)
-      : undefined
+  const currentUsage = live.generation?.usage
   return { live, inbox, agent, usage, partial, currentUsage }
 })
 export const snapshot = Effect.fnUntraced(function* (
@@ -395,8 +369,6 @@ export const translate = Effect.fnUntraced(function* (
   const now = yield* parts(change.value)
   const events: AgentEvent[] = []
   const previousSlots = new Map((was.live.tools ?? []).map((slot) => [slot.callId, slot]))
-  const rawBefore = toolJson(change.before)
-  const rawNow = toolJson(change.value)
   const slots = now.live.tools ?? []
   for (const slot of slots) {
     if (slot.status !== 'running' || previousSlots.get(slot.callId)?.status === 'running') continue
@@ -414,8 +386,8 @@ export const translate = Effect.fnUntraced(function* (
   else if (
     now.partial !== undefined &&
     was.partial !== undefined &&
-    ((touchedPartial && partialJson(change.value) !== partialJson(change.before)) ||
-      (touchedUsage && usageJson(change.value) !== usageJson(change.before)))
+    ((touchedPartial && now.live.generation?.message !== was.live.generation?.message) ||
+      (touchedUsage && now.live.generation?.usage !== was.live.generation?.usage))
   ) {
     events.push({
       type: 'message_update',
@@ -427,9 +399,8 @@ export const translate = Effect.fnUntraced(function* (
     const previous = previousSlots.get(slot.callId)
     if (slot.status !== 'running' || previous?.status !== 'running') continue
     const output = outputChange(previous.output, slot.output)
-    const detailsChanged = rawBefore.get(slot.callId)?.details !== rawNow.get(slot.callId)?.details
-    const diagnosticsChanged =
-      rawBefore.get(slot.callId)?.diagnostics !== rawNow.get(slot.callId)?.diagnostics
+    const detailsChanged = previous.details !== slot.details
+    const diagnosticsChanged = previous.diagnostics !== slot.diagnostics
     if (output === undefined && !detailsChanged && !diagnosticsChanged) continue
     events.push({
       type: 'tool_execution_update',
