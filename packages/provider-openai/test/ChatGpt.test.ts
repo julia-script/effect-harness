@@ -1,3 +1,11 @@
+import { vi } from 'vitest'
+vi.mock('effect/Ref', { spy: true })
+import * as Ref from 'effect/Ref'
+import * as HashMap from 'effect/HashMap'
+import * as Deferred from 'effect/Deferred'
+import * as Duration from 'effect/Duration'
+import * as Time from '@effect-harness/auth/Time'
+import * as DateTime from 'effect/DateTime'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
 import {
@@ -47,10 +55,17 @@ const responseBody = {
 }
 const sse = (type: string) =>
   `data: ${JSON.stringify({ type, sequence_number: 1, response: responseBody })}\n\n`
-const makeFixture = () => {
+const makeFixture = (
+  durationOptions: {
+    readonly authorizationLifetimeMs?: Duration.Input
+    readonly refreshSkewMs?: Duration.Input
+  } = {},
+) => {
   const requests: Array<HttpClientRequest.HttpClientRequest> = []
   const options = {
     tokenStatus: 200,
+    modelsStatus: 200,
+    modelSlug: 'first',
     subject: 'account-1',
     scopes: 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct',
     clientId: 'issued-1',
@@ -79,15 +94,16 @@ const makeFixture = () => {
         token_type: 'Bearer',
         scope: options.scopes,
       }
-    } else if (request.url.endsWith('/models'))
+    } else if (request.url.endsWith('/models')) {
+      status = options.modelsStatus
       body = {
         models: [
-          { slug: 'first', display_name: 'First', visibility: 'list' },
+          { slug: options.modelSlug, display_name: 'First', visibility: 'list' },
           { slug: 'hidden', display_name: 'Hidden', visibility: 'hidden' },
           { slug: 'last', display_name: 'Last', visibility: 'list' },
         ],
       }
-    else if (request.url.endsWith('/responses')) {
+    } else if (request.url.endsWith('/responses')) {
       body = options.stream
       contentType = 'text/event-stream'
     } else body = {}
@@ -116,13 +132,13 @@ const makeFixture = () => {
       return Effect.succeed({
         sub: options.subject,
         iss: verifyOptions.issuer,
-        exp: 3600,
+        exp: Time.fromEpochMillis(3600000),
         email: 'same@email.test',
         ...(verifyOptions.nonce === undefined ? {} : { nonce: verifyOptions.nonce }),
       })
     },
   })
-  const layer = ChatGpt.layer({ appName: 'Effect Harness' }).pipe(
+  const layer = ChatGpt.layer({ appName: 'Effect Harness', ...durationOptions }).pipe(
     Layer.provideMerge(Store.layerMemory.pipe(Layer.provide(BunCrypto.layer))),
     Layer.provide(Layer.succeed(Jwt, jwt)),
     Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, http)),
@@ -139,6 +155,131 @@ const login = Effect.fnUntraced(function* () {
 })
 
 describe('ChatGPT account', () => {
+  it.effect('nonfinite and forged Duration options fail with typed configuration errors', () =>
+    Effect.gen(function* () {
+      const invalidValues: ReadonlyArray<Duration.Input> = [
+        NaN,
+        Infinity,
+        -Infinity,
+        { '~effect/Duration': '~effect/Duration' },
+        { '~effect/Duration': '~effect/Duration', value: { _tag: 'Nanos', nanos: 'invalid' } },
+        { '~effect/Duration': '~effect/Duration', value: { _tag: 'Unknown' } },
+        { '~effect/Duration': '~effect/Duration', value: { _tag: 'Millis', millis: NaN } },
+      ] as unknown as ReadonlyArray<Duration.Input>
+      for (const field of ['authorizationLifetimeMs', 'refreshSkewMs'] as const) {
+        for (const input of invalidValues) {
+          const options = { [field]: input }
+          const f = makeFixture(options)
+          const error = yield* ChatGpt.ChatGpt.pipe(Effect.provide(f.layer), Effect.flip)
+          assert.strictEqual(error.reason._tag, 'AuthConfigurationError')
+          assert.strictEqual(f.requests.length, 0)
+        }
+      }
+    }),
+  )
+
+  it.effect('throwing Duration getters preserve actual causes at both option boundaries', () =>
+    Effect.gen(function* () {
+      for (const field of ['authorizationLifetimeMs', 'refreshSkewMs'] as const) {
+        const cause = { diagnostic: 'original duration getter failure' }
+        let reads = 0
+        const input = {
+          '~effect/Duration': '~effect/Duration',
+          get value() {
+            reads++
+            throw cause
+          },
+        } as unknown as Duration.Input
+        const options = { [field]: input }
+        const f = makeFixture(options)
+        const error = yield* ChatGpt.ChatGpt.pipe(Effect.provide(f.layer), Effect.flip)
+        assert.strictEqual(error.reason._tag, 'AuthConfigurationError')
+        assert.strictEqual(error.cause, cause)
+        assert.strictEqual(reads, 1)
+        assert.strictEqual(f.requests.length, 0)
+      }
+    }),
+  )
+  it.effect('concurrent callbacks reading the same attempt have one atomic exchange owner', () => {
+    const f = makeFixture()
+    return Effect.gen(function* () {
+      const auth = yield* ChatGpt.ChatGpt
+      const attempt = yield* auth.begin({ redirectUri: 'http://127.0.0.1:12345/auth/callback' })
+      const together = yield* Deferred.make<void>()
+      const original = (yield* Effect.promise(() => vi.importActual<typeof Ref>('effect/Ref'))).get
+      let observed = 0
+      vi.mocked(Ref.get).mockImplementation(<A>(ref: Ref.Ref<A>) =>
+        original(ref).pipe(
+          Effect.tap((value) => {
+            if (!HashMap.isHashMap(value) || HashMap.size(value) === 0 || observed >= 2)
+              return Effect.void
+            observed++
+            return observed === 2 ? Deferred.succeed(together, undefined) : Deferred.await(together)
+          }),
+        ),
+      )
+      const results = yield* Effect.forEach(
+        [0, 1],
+        () => auth.complete(callback(attempt, 'issued-1')).pipe(Effect.result),
+        { concurrency: 2 },
+      ).pipe(Effect.ensuring(Effect.sync(() => vi.mocked(Ref.get).mockImplementation(original))))
+      assert.strictEqual(observed, 2)
+      assert.strictEqual(results.filter((result) => result._tag === 'Success').length, 1)
+      assert.strictEqual(
+        f.requests.filter((request) => request.url.endsWith('/oauth/token')).length,
+        1,
+      )
+    }).pipe(Effect.provide(f.layer))
+  })
+
+  it.effect(
+    'duration inputs preserve fractional authorization instants and reject invalid configuration',
+    () =>
+      Effect.gen(function* () {
+        const f = makeFixture({
+          authorizationLifetimeMs: { milliseconds: 10000.25 },
+          refreshSkewMs: '0 seconds',
+        })
+        yield* Effect.gen(function* () {
+          const auth = yield* ChatGpt.ChatGpt
+          const now = yield* DateTime.now
+          const attempt = yield* auth.begin({ redirectUri: 'http://127.0.0.1:12345/auth/callback' })
+          assert.strictEqual(
+            DateTime.toEpochMillis(attempt.expiresAt),
+            DateTime.toEpochMillis(now) + 10000.25,
+          )
+          yield* auth.cancel(attempt.state)
+        }).pipe(Effect.provide(f.layer))
+        for (const input of [0, -1, Infinity, NaN, 'invalid' as Duration.Input]) {
+          const invalid = makeFixture({ authorizationLifetimeMs: input })
+          const error = yield* ChatGpt.ChatGpt.pipe(Effect.provide(invalid.layer), Effect.flip)
+          assert.strictEqual(error.reason._tag, 'AuthConfigurationError')
+          assert.strictEqual(invalid.requests.length, 0)
+        }
+      }),
+  )
+  it.effect(
+    'account catalogue independently observes visibility, failures and rotated authorization',
+    () => {
+      const f = makeFixture()
+      return Effect.gen(function* () {
+        const auth = yield* ChatGpt.ChatGpt
+        const key = accountKey(yield* login())
+        assert.strictEqual((yield* auth.models(key))[0]?.slug, 'first')
+        f.options.modelSlug = 'changed'
+        assert.strictEqual((yield* auth.models(key))[0]?.slug, 'changed')
+        f.options.modelsStatus = 503
+        assert.strictEqual((yield* auth.models(key).pipe(Effect.flip)).status, 503)
+        f.options.modelsStatus = 200
+        yield* auth.refresh(key, { force: true })
+        assert.strictEqual((yield* auth.models(key))[0]?.slug, 'changed')
+        const requests = f.requests.filter((request) => request.url.endsWith('/models'))
+        assert.strictEqual(requests.length, 4)
+        assert.strictEqual(requests.at(-1)?.headers.authorization, 'Bearer access-2')
+      }).pipe(Effect.provide(f.layer))
+    },
+  )
+
   it.effect(
     'native client HTTP field retains public URL and refreshed account authentication',
     () => {
@@ -563,8 +704,13 @@ describe('ChatGPT account', () => {
     f.options.earliestRefreshAt = 0.00025
     return Effect.gen(function* () {
       const credential = yield* login()
-      assert.strictEqual(credential.expiresAt % 1, 0.25)
-      assert.strictEqual(credential.earliestRefreshAt, 0.25)
+      assert.strictEqual(DateTime.toEpochMillis(credential.expiresAt) % 1, 0.25)
+      assert.strictEqual(
+        credential.earliestRefreshAt === undefined
+          ? undefined
+          : DateTime.toEpochMillis(credential.earliestRefreshAt),
+        0.25,
+      )
       assert.strictEqual(
         (yield* (yield* Store.CredentialStore).get(accountKey(credential)))._tag,
         'Some',

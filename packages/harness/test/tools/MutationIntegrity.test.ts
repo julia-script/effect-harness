@@ -336,7 +336,7 @@ describe('MutationIntegrity', () => {
           let interrupted = false
           const failure = yield* Effect.flip(
             env.exec('printf timeout', {
-              timeout: 0.05,
+              timeout: '50 millis',
               onOutput: () =>
                 Effect.never.pipe(
                   Effect.onInterrupt(() =>

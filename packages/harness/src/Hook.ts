@@ -65,9 +65,9 @@ export interface Registration {
   readonly handlers: Handlers
 }
 /** Report callback faults, but propagate cancellation rather than converting it to an omitted hook result. */
-export const recover = <A, E>(
-  effect: Effect.Effect<A, E, Invocation>,
-): Effect.Effect<A | undefined, never, Invocation> =>
+export const recover = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A | undefined, never, R | Invocation> =>
   Effect.catchCause(effect, (cause) =>
     Cause.hasInterrupts(cause)
       ? Effect.failCause(Cause.fromReasons(cause.reasons.filter(Cause.isInterruptReason)))
@@ -160,43 +160,42 @@ export const conversationCreated = Effect.fnUntraced(function* (
 })
 
 /** Capture host dependencies and declare services supplied for each durable/native invocation. */
-export const bind = <R, RequestServices = never>(
+export const bind = Effect.fnUntraced(function* <R, RequestServices = never>(
   handlers: Handlers<R>,
   requestServices: ReadonlyArray<Services.Key<RequestServices, unknown>> = [],
-): Effect.Effect<Handlers, never, Exclude<R, Invocation | RequestServices>> =>
-  Effect.gen(function* () {
-    const captured = yield* Effect.context<Exclude<R, Invocation | RequestServices>>()
-    const wrap = <Args extends unknown[], A>(
-      callback: ((...args: Args) => Effect.Effect<A, HookError, R>) | undefined,
-    ): ((...args: Args) => Effect.Effect<A, HookError, Invocation>) | undefined =>
-      callback === undefined
-        ? undefined
-        : (...args) =>
-            Effect.flatMap(Effect.context<Invocation>(), (current) => {
-              for (const service of requestServices)
-                if (!current.mapUnsafe.has(service.key))
-                  return Effect.fail(
-                    new HookError({
-                      reason: new HookFailure({
-                        message: `Request service ${service.key} is absent`,
-                      }),
+): Effect.fn.Return<Handlers, never, Exclude<R, Invocation | RequestServices>> {
+  const captured = yield* Effect.context<Exclude<R, Invocation | RequestServices>>()
+  const wrap = <Args extends unknown[], A>(
+    callback: ((...args: Args) => Effect.Effect<A, HookError, R>) | undefined,
+  ): ((...args: Args) => Effect.Effect<A, HookError, Invocation>) | undefined =>
+    callback === undefined
+      ? undefined
+      : (...args) =>
+          Effect.flatMap(Effect.context<Invocation>(), (current) => {
+            for (const service of requestServices)
+              if (!current.mapUnsafe.has(service.key))
+                return Effect.fail(
+                  new HookError({
+                    reason: new HookFailure({
+                      message: `Request service ${service.key} is absent`,
                     }),
-                  )
-              // bind's R is checked before heterogeneous callbacks enter the registry.
-              // Captured host services and validated invocation services satisfy R.
-              return Effect.provideContext(
-                Effect.suspend(() => callback.apply(handlers, args)),
-                Services.makeUnsafe<R>(Services.merge(captured, current).mapUnsafe),
-              )
-            })
-    return {
-      conversationCreated: wrap(handlers.conversationCreated),
-      beforeRequest: wrap(handlers.beforeRequest),
-      afterResponse: wrap(handlers.afterResponse),
-      onYield: wrap(handlers.onYield),
-      beforeTool: wrap(handlers.beforeTool),
-      afterTool: wrap(handlers.afterTool),
-      afterTools: wrap(handlers.afterTools),
-      beforeCompact: wrap(handlers.beforeCompact),
-    }
-  })
+                  }),
+                )
+            // bind's R is checked before heterogeneous callbacks enter the registry.
+            // Captured host services and validated invocation services satisfy R.
+            return Effect.provideContext(
+              Effect.suspend(() => callback.apply(handlers, args)),
+              Services.makeUnsafe<R>(Services.merge(captured, current).mapUnsafe),
+            )
+          })
+  return {
+    conversationCreated: wrap(handlers.conversationCreated),
+    beforeRequest: wrap(handlers.beforeRequest),
+    afterResponse: wrap(handlers.afterResponse),
+    onYield: wrap(handlers.onYield),
+    beforeTool: wrap(handlers.beforeTool),
+    afterTool: wrap(handlers.afterTool),
+    afterTools: wrap(handlers.afterTools),
+    beforeCompact: wrap(handlers.beforeCompact),
+  }
+})

@@ -1,3 +1,6 @@
+import * as Duration from 'effect/Duration'
+import * as DateTime from 'effect/DateTime'
+import * as Time from '../../src/Time.ts'
 import * as Deferred from 'effect/Deferred'
 import * as Fiber from 'effect/Fiber'
 import * as Scope from 'effect/Scope'
@@ -104,7 +107,7 @@ const runtime = Effect.fnUntraced(function* (
   )
 })
 const state: Agent.State = { model: ref }
-const settings = Agent.settings({ progress: { outputIntervalMs: 0 } })
+const settings = Effect.runSync(Agent.settings({ progress: { outputIntervalMs: 0 } }))
 const user = (text: string) => Prompt.userMessage({ content: [Prompt.textPart({ text })] })
 
 describe('native AI executor intent/request boundaries', () => {
@@ -131,7 +134,7 @@ describe('native AI executor intent/request boundaries', () => {
         const executor = yield* runtime([{ name: 'tools', tools }])
         const agent = yield* executor.resolve(
           state,
-          Agent.settings({ progress: { outputIntervalMs: 10000 } }),
+          yield* Agent.settings({ progress: { outputIntervalMs: 10000 } }),
         )
         const running = yield* executor
           .tool({ id: 'projection', name: 'echo', args: { n: 1 }, replay: 'unsafe' }, agent)
@@ -604,7 +607,9 @@ describe('native AI executor intent/request boundaries', () => {
         )
         const selected = yield* executor.prepareCompaction({
           state,
-          settings: Agent.settings({ compaction: { keepRecentTokens: 1, reserveTokens: 20 } }),
+          settings: yield* Agent.settings({
+            compaction: { keepRecentTokens: 1, reserveTokens: 20 },
+          }),
           view: ConversationContext.derive([
             { id: entryId(1), messages: [user('old long text')] },
             { id: entryId(2), messages: [user('new')] },
@@ -660,7 +665,7 @@ describe('native AI executor intent/request boundaries', () => {
         )
         const selected = yield* executor.prepareCompaction({
           state,
-          settings: Agent.settings({ compaction: { keepRecentTokens: 1 } }),
+          settings: yield* Agent.settings({ compaction: { keepRecentTokens: 1 } }),
           view: ConversationContext.derive([
             { id: entryId(1), messages: [user('old')] },
             { id: entryId(2), messages: [user('new')] },
@@ -915,7 +920,7 @@ describe('native AI executor intent/request boundaries', () => {
           inspect: (parts) =>
             parts.some((part) => part.type === 'finish')
               ? undefined
-              : { handle: { request: 'provider-request' }, pollAfterMs: -10 },
+              : { handle: { request: 'provider-request' }, pollAfterMs: Duration.millis(-10) },
           fetch: (handle, options) =>
             Stream.fromEffect(Ref.update(seen, (values) => [...values, { handle, options }])).pipe(
               Stream.flatMap(() => Stream.empty),
@@ -997,8 +1002,18 @@ describe('native AI executor intent/request boundaries', () => {
       reason: new AiError.UnknownError({ description: 'stream ended before message_stop' }),
     })
     assert.strictEqual(Model.providerError(unknown).reason._tag, 'InternalProviderError')
-    assert.strictEqual(Model.pollAt(100, undefined, -10), 90)
-    assert.strictEqual(Model.pollAt(100, 200, -10), 201)
+    assert.strictEqual(
+      DateTime.toEpochMillis(
+        Model.pollAt(Time.fromEpochMillis(100), undefined, Duration.millis(-10)),
+      ),
+      90,
+    )
+    assert.strictEqual(
+      DateTime.toEpochMillis(
+        Model.pollAt(Time.fromEpochMillis(100), Time.fromEpochMillis(200), Duration.millis(-10)),
+      ),
+      201,
+    )
   })
   it.effect(
     'native preliminary results replace previews, share progress pacing and remain final fallback',

@@ -1,3 +1,8 @@
+import * as Duration from 'effect/Duration'
+vi.mock('effect/Ref', { spy: true })
+import * as Ref from 'effect/Ref'
+import * as Time from '@effect-harness/auth/Time'
+import * as DateTime from 'effect/DateTime'
 import { vi } from 'vitest'
 vi.mock('effect/HashMap', { spy: true })
 import * as HashMap from 'effect/HashMap'
@@ -66,10 +71,125 @@ const old = (expiresAt = 0): OpaqueOAuth => ({
   accessToken: Redacted.make('old-access'),
   refreshToken: Redacted.make('old-refresh'),
   scopes: ['user:inference'],
-  expiresAt,
+  expiresAt: Time.fromEpochMillis(expiresAt),
 })
 
 describe('Pi-compatible Anthropic consent', () => {
+  it.effect('nonfinite and forged Duration options fail with typed configuration errors', () =>
+    Effect.gen(function* () {
+      const invalidValues: ReadonlyArray<Duration.Input> = [
+        NaN,
+        Infinity,
+        -Infinity,
+        { '~effect/Duration': '~effect/Duration' },
+        { '~effect/Duration': '~effect/Duration', value: { _tag: 'Nanos', nanos: 'invalid' } },
+        { '~effect/Duration': '~effect/Duration', value: { _tag: 'Unknown' } },
+        { '~effect/Duration': '~effect/Duration', value: { _tag: 'Millis', millis: NaN } },
+      ] as unknown as ReadonlyArray<Duration.Input>
+      for (const field of ['authorizationLifetimeMs', 'refreshSkewMs'] as const) {
+        for (const input of invalidValues) {
+          const options = { [field]: input }
+          const f = fixture()
+          const error = yield* OAuth.OAuth.pipe(
+            Effect.provide(OAuth.layer(options).pipe(Layer.provide(f.layer))),
+            Effect.flip,
+          )
+          assert.strictEqual(error.reason._tag, 'AuthConfigurationError')
+          assert.strictEqual(f.requests.length, 0)
+        }
+      }
+    }),
+  )
+
+  it.effect('throwing Duration getters preserve actual causes at both option boundaries', () =>
+    Effect.gen(function* () {
+      for (const field of ['authorizationLifetimeMs', 'refreshSkewMs'] as const) {
+        const cause = { diagnostic: 'original duration getter failure' }
+        let reads = 0
+        const input = {
+          '~effect/Duration': '~effect/Duration',
+          get value() {
+            reads++
+            throw cause
+          },
+        } as unknown as Duration.Input
+        const options = { [field]: input }
+        const f = fixture()
+        const error = yield* OAuth.OAuth.pipe(
+          Effect.provide(OAuth.layer(options).pipe(Layer.provide(f.layer))),
+          Effect.flip,
+        )
+        assert.strictEqual(error.reason._tag, 'AuthConfigurationError')
+        assert.strictEqual(error.cause, cause)
+        assert.strictEqual(reads, 1)
+        assert.strictEqual(f.requests.length, 0)
+      }
+    }),
+  )
+  it.effect('Anthropic duration inputs validate once and keep exact authorization deadlines', () =>
+    Effect.gen(function* () {
+      const f = fixture()
+      const dependencies = f.layer
+      const options = {
+        authorizationLifetimeMs: Duration.millis(5000.25),
+        refreshSkewMs: '0 seconds' as const,
+      }
+      yield* Effect.gen(function* () {
+        const auth = yield* OAuth.OAuth
+        const now = yield* DateTime.now
+        const authorization = yield* auth.begin({ account: 'duration' })
+        assert.strictEqual(
+          DateTime.toEpochMillis(authorization.expiresAt),
+          DateTime.toEpochMillis(now) + 5000.25,
+        )
+        yield* auth.cancel(authorization.state)
+      }).pipe(Effect.provide(OAuth.layer(options).pipe(Layer.provide(dependencies))))
+      for (const authorizationLifetimeMs of [0, -1, Infinity, NaN, 'invalid' as Duration.Input]) {
+        const error = yield* OAuth.OAuth.pipe(
+          Effect.provide(
+            OAuth.layer({ authorizationLifetimeMs }).pipe(Layer.provide(dependencies)),
+          ),
+          Effect.flip,
+        )
+        assert.strictEqual(error.reason._tag, 'AuthConfigurationError')
+      }
+      assert.strictEqual(f.requests.length, 0)
+    }),
+  )
+
+  it.effect('concurrent callbacks reading the same attempt have one atomic exchange owner', () => {
+    const f = fixture()
+    return Effect.gen(function* () {
+      const auth = yield* OAuth.OAuth
+      const attempt = yield* auth.begin({ account: 'atomic' })
+      const together = yield* Deferred.make<void>()
+      const original = (yield* Effect.promise(() => vi.importActual<typeof Ref>('effect/Ref'))).get
+      let observed = 0
+      vi.mocked(Ref.get).mockImplementation(<A>(ref: Ref.Ref<A>) =>
+        original(ref).pipe(
+          Effect.tap((value) => {
+            if (!HashMap.isHashMap(value) || HashMap.size(value) === 0 || observed >= 2)
+              return Effect.void
+            observed++
+            return observed === 2 ? Deferred.succeed(together, undefined) : Deferred.await(together)
+          }),
+        ),
+      )
+      const results = yield* Effect.forEach(
+        [0, 1],
+        () =>
+          auth.complete(attempt.state, `code#${Redacted.value(attempt.state)}`).pipe(Effect.result),
+        { concurrency: 2 },
+      ).pipe(Effect.ensuring(Effect.sync(() => vi.mocked(Ref.get).mockImplementation(original))))
+      assert.strictEqual(observed, 2)
+      assert.strictEqual(results.filter((result) => result._tag === 'Success').length, 1)
+      assert.strictEqual(
+        f.requests.filter((request) => request.url.endsWith('/v1/oauth/token')).length,
+        1,
+      )
+    }).pipe(Effect.provide(f.layer))
+  })
+
   it.effect('interruption during browser begin cancels the acquired pending attempt', () => {
     const f = fixture()
     return Effect.gen(function* () {
@@ -142,7 +262,10 @@ describe('Pi-compatible Anthropic consent', () => {
           assert.isFalse(JSON.stringify(attempt).includes(state))
           const credential = yield* auth.complete(attempt.state, `private-code#${state}`)
           assert.strictEqual(credential.kind, 'opaqueOAuth')
-          assert.strictEqual(credential.expiresAt, (yield* Clock.currentTimeMillis) + 3600000)
+          assert.strictEqual(
+            DateTime.toEpochMillis(credential.expiresAt),
+            (yield* Clock.currentTimeMillis) + 3600000,
+          )
           assert.isFalse('subject' in credential)
           const request = f.requests.at(-1)
           if (request === undefined) return yield* Effect.die('Missing request')

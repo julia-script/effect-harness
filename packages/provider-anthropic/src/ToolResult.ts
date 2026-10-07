@@ -92,11 +92,13 @@ export const request = Effect.fnUntraced(function* (
   options: Parameters<AnthropicClient.Service['createMessage']>[0],
 ) {
   let documents = false
-  const messages = yield* Effect.forEach(options.payload.messages, (message) =>
-    Effect.gen(function* () {
+  const messages = yield* Effect.forEach(
+    options.payload.messages,
+    Effect.fnUntraced(function* (message) {
       if (typeof message.content === 'string') return message
-      const blocks = yield* Effect.forEach(message.content, (block) =>
-        Effect.gen(function* () {
+      const blocks = yield* Effect.forEach(
+        message.content,
+        Effect.fnUntraced(function* (block) {
           if (block.type !== 'tool_result' || typeof block.content !== 'string') return block
           const envelope = yield* decode(block.content)
           if (Option.isNone(envelope)) return block
@@ -121,7 +123,12 @@ export const request = Effect.fnUntraced(function* (
 export const client = (native: AnthropicClient.Service): AnthropicClient.Service =>
   AnthropicClient.AnthropicClient.of({
     ...native,
-    createMessage: (options) => request(options).pipe(Effect.flatMap(native.createMessage)),
-    createMessageStream: (options) =>
-      request(options).pipe(Effect.flatMap(native.createMessageStream)),
+    createMessage: Effect.fnUntraced(function* (options) {
+      const translated = yield* request(options)
+      return yield* native.createMessage(translated)
+    }),
+    createMessageStream: Effect.fnUntraced(function* (options) {
+      const translated = yield* request(options)
+      return yield* native.createMessageStream(translated)
+    }),
   })

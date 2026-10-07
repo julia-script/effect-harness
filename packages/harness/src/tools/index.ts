@@ -1,3 +1,4 @@
+import type { MutationLocks } from '../MutationLocks.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -18,7 +19,9 @@ export const handlers = (options: Bash.Options = {}) =>
     edit: Edit.handler,
     bash: Bash.handler(options),
   })
-export const make = (options: Bash.Options = {}): Effect.Effect<Extension.Extension, never, Env> =>
+export const make = (
+  options: Bash.Options = {},
+): Effect.Effect<Extension.Extension, never, Env | MutationLocks> =>
   Tool.bind(toolkit).pipe(
     Effect.provide(handlers(options)),
     Effect.map((tools) => CodingTools.of({ name: 'coding-tools', tools })),
@@ -26,8 +29,9 @@ export const make = (options: Bash.Options = {}): Effect.Effect<Extension.Extens
 export class CodingTools extends Context.Service<CodingTools, Extension.Extension>()(
   '@effect-harness/harness/tools/CodingTools',
 ) {}
-export const layer = (options: Bash.Options = {}): Layer.Layer<CodingTools, never, Env> =>
-  Layer.effect(CodingTools, make(options))
+export const layer = (
+  options: Bash.Options = {},
+): Layer.Layer<CodingTools, never, Env | MutationLocks> => Layer.effect(CodingTools, make(options))
 export const powerShellToolkit = Toolkit.make(Bash.powershell)
 export const makePowerShell = (
   options: Bash.PowerShellOptions = {},

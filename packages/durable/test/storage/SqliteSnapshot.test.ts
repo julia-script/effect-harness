@@ -38,7 +38,7 @@ describe('Sqlite.load', () => {
           )
         },
       })
-      const store = yield* Sqlite.make().pipe(Effect.provideService(SqlClient.SqlClient, wrapped))
+      const store = yield* Sqlite.make.pipe(Effect.provideService(SqlClient.SqlClient, wrapped))
       gate = true
       const reading = yield* store.read.pipe(Effect.forkScoped)
       const leased = yield* Deferred.await(entered)
@@ -65,7 +65,7 @@ describe('Sqlite.load', () => {
   it.effect('preserves native transaction-local preview and excludes rolled-back receipts', () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
-      const store = yield* Sqlite.make()
+      const store = yield* Sqlite.make
       yield* sql
         .withTransaction(
           Effect.gen(function* () {

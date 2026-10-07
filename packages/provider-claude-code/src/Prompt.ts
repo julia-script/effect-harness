@@ -63,20 +63,21 @@ export interface Input {
 }
 const encodeTranscript = Schema.encodeEffect(Schema.fromJsonString(Transcript))
 export const encodeUserFrame = Schema.encodeEffect(Schema.fromJsonString(UserFrame))
-const fileContent = (part: NativePrompt.FilePart | NativePrompt.FilePartEncoded) =>
-  Effect.gen(function* () {
-    if (part.data instanceof URL) return yield* unsupported('remote file URLs')
-    const image = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(part.mediaType)
-    if (!image && part.mediaType !== 'application/pdf')
-      return yield* unsupported(`file media type ${part.mediaType}`)
-    const data = typeof part.data === 'string' ? part.data : Base64.encode(part.data)
-    if (Result.isFailure(Base64.decode(data)))
-      return yield* unsupported('invalid base64 file content')
-    return {
-      type: image ? ('image' as const) : ('document' as const),
-      source: { type: 'base64' as const, media_type: part.mediaType, data },
-    }
-  })
+const fileContent = Effect.fnUntraced(function* (
+  part: NativePrompt.FilePart | NativePrompt.FilePartEncoded,
+) {
+  if (part.data instanceof URL) return yield* unsupported('remote file URLs')
+  const image = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(part.mediaType)
+  if (!image && part.mediaType !== 'application/pdf')
+    return yield* unsupported(`file media type ${part.mediaType}`)
+  const data = typeof part.data === 'string' ? part.data : Base64.encode(part.data)
+  if (Result.isFailure(Base64.decode(data)))
+    return yield* unsupported('invalid base64 file content')
+  return {
+    type: image ? ('image' as const) : ('document' as const),
+    source: { type: 'base64' as const, media_type: part.mediaType, data },
+  }
+})
 
 /** Transcript mode is explicit: roles/history become canonical data, not imported Claude session messages. */
 export const prepare = Effect.fnUntraced(function* (

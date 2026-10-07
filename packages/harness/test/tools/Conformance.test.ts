@@ -1,3 +1,4 @@
+import * as Duration from 'effect/Duration'
 import { assert, describe, expect, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -40,7 +41,10 @@ for (const mode of ['native', 'polling'] as const)
   Runner.registerEnvConformance(
     {
       describe,
-      test: (name, run, timeoutMs) => it.live(name, run, { timeout: timeoutMs ?? 5000 }),
+      test: (name, run, timeoutMs) =>
+        it.live(name, run, {
+          timeout: timeoutMs === undefined ? 5000 : Duration.toMillis(timeoutMs),
+        }),
     },
     `public Env conformance (${mode})`,
     fresh(mode),
@@ -138,7 +142,7 @@ describe('public conformance adapter and scope ownership', () => {
         const cases = Conformance.createEnvConformance({ assertions: assert })
         assert.strictEqual(cases.length, 24)
         const names: string[] = []
-        const timeouts: Array<number | undefined> = []
+        const timeouts: Array<Duration.Input | undefined> = []
         Runner.registerEnvConformance(
           {
             describe: (_name, suite) => suite(),

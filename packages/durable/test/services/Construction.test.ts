@@ -58,8 +58,8 @@ describe('contextual durable service construction', () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const store = yield* Memory.make()
-          const session = yield* Session.make().pipe(Effect.provideService(Store.Store, store))
+          const store = yield* Memory.make
+          const session = yield* Session.make.pipe(Effect.provideService(Store.Store, store))
           const root = yield* session.root()
           const views = yield* View.make.pipe(Effect.provideService(Store.Store, store))
           const events = yield* Event.make.pipe(Effect.provideService(View.View, views))
@@ -76,9 +76,9 @@ describe('contextual durable service construction', () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const store = yield* Memory.make()
-          const first = yield* Session.make().pipe(Effect.provideService(Store.Store, store))
-          const second = yield* Session.make().pipe(Effect.provideService(Store.Store, store))
+          const store = yield* Memory.make
+          const first = yield* Session.make.pipe(Effect.provideService(Store.Store, store))
+          const second = yield* Session.make.pipe(Effect.provideService(Store.Store, store))
           const registrations = new Map([[Identity.SessionId.make('first'), first]])
           const context = yield* Layer.build(Directory.layer).pipe(
             Effect.provideService(Directory.Registrations, registrations),
@@ -111,9 +111,9 @@ describe('contextual durable service construction', () => {
   it.effect('uses the exact captured invocation Session instead of the ambient Session', () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const store = yield* Memory.make()
-        const invocation = yield* Session.make().pipe(Effect.provideService(Store.Store, store))
-        const ambient = yield* Session.make().pipe(Effect.provideService(Store.Store, store))
+        const store = yield* Memory.make
+        const invocation = yield* Session.make.pipe(Effect.provideService(Store.Store, store))
+        const ambient = yield* Session.make.pipe(Effect.provideService(Store.Store, store))
         const root = yield* invocation.root()
         const taskId = yield* invocation.transaction((tx) =>
           tx.createTask({

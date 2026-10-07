@@ -36,10 +36,13 @@ export const sessionTotals = Effect.fnUntraced(function* (session: Session.Servi
   let cursor: Record.Cursor | undefined
   do {
     const page = yield* session.scanConversations({}, 100, cursor)
-    for (const conversation of page.items) {
-      const snapshot = yield* session.snapshot(UsageDoc, { owner: conversation.id })
-      if (snapshot !== undefined) states.push(snapshot.value)
-    }
+    // Independent own ledgers share one authoritative snapshot per compatible page batch.
+    const snapshots = yield* Effect.forEach(
+      page.items,
+      (conversation) => session.snapshot(UsageDoc, { owner: conversation.id }),
+      { concurrency: 16 },
+    )
+    for (const snapshot of snapshots) if (snapshot !== undefined) states.push(snapshot.value)
     cursor = page.next
   } while (cursor !== undefined)
   return Totals.sum(states)

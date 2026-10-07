@@ -76,8 +76,9 @@ export const request = Effect.fnUntraced(function* (
   prefixes: ReadonlyArray<string> = [],
 ) {
   if (payload.input == null || typeof payload.input === 'string') return payload
-  const input = yield* Effect.forEach(payload.input, (item) =>
-    Effect.gen(function* () {
+  const input = yield* Effect.forEach(
+    payload.input,
+    Effect.fnUntraced(function* (item) {
       if (item.type !== 'function_call_output' || typeof item.output !== 'string') return item
       const envelope = yield* decode(item.output)
       if (Option.isNone(envelope)) return item
@@ -92,16 +93,22 @@ export const client = (
   native: OpenAiClient.Service,
   defaults?: Pick<typeof OpenAiLanguageModel.Config.Service, 'fileIdPrefixes'>,
 ): OpenAiClient.Service => {
-  const translate = (payload: typeof OpenAiSchema.CreateResponse.Encoded) =>
-    Effect.gen(function* () {
-      const dynamic = yield* Effect.serviceOption(OpenAiLanguageModel.Config)
-      const config = { ...defaults, ...Option.getOrUndefined(dynamic) }
-      return yield* request(payload, config.fileIdPrefixes ?? [])
-    })
+  const translate = Effect.fnUntraced(function* (
+    payload: typeof OpenAiSchema.CreateResponse.Encoded,
+  ) {
+    const dynamic = yield* Effect.serviceOption(OpenAiLanguageModel.Config)
+    const config = { ...defaults, ...Option.getOrUndefined(dynamic) }
+    return yield* request(payload, config.fileIdPrefixes ?? [])
+  })
   return OpenAiClient.OpenAiClient.of({
     ...native,
-    createResponse: (payload) => translate(payload).pipe(Effect.flatMap(native.createResponse)),
-    createResponseStream: (payload) =>
-      translate(payload).pipe(Effect.flatMap(native.createResponseStream)),
+    createResponse: Effect.fnUntraced(function* (payload) {
+      const translated = yield* translate(payload)
+      return yield* native.createResponse(translated)
+    }),
+    createResponseStream: Effect.fnUntraced(function* (payload) {
+      const translated = yield* translate(payload)
+      return yield* native.createResponseStream(translated)
+    }),
   })
 }

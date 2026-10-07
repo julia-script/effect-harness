@@ -1,3 +1,4 @@
+import * as Duration from 'effect/Duration'
 import * as Identity from '../../src/Identity.ts'
 /** Executable test boundary: each worker owns a fresh SQL-backed native engine and real harness Layers. */
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
@@ -182,7 +183,7 @@ const main = Effect.gen(function* () {
           first &&
           (base === 'deferred' || scenario === 'abort-deferred') &&
           parts.some((part) => part.type === 'finish')
-            ? { handle: { job: 'pinned-job' }, pollAfterMs: 1200 }
+            ? { handle: { job: 'pinned-job' }, pollAfterMs: Duration.millis(1200) }
             : undefined,
         fetch: (handle, options) =>
           Stream.unwrap(

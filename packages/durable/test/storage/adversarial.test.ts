@@ -379,8 +379,8 @@ describe('creation initializer', () => {
               if (rejectNext) return yield* rejected('hook failed')
             }),
         })
-        const store = yield* Memory.make()
-        const session = yield* Session.make().pipe(
+        const store = yield* Memory.make
+        const session = yield* Session.make.pipe(
           Effect.provideService(Store, store),
           Effect.provideService(Session.CreationHook, hook),
         )
@@ -424,8 +424,8 @@ describe('creation initializer', () => {
                 if (conversation.parent !== undefined) d.count++
               }),
           })
-          const store = yield* Memory.make()
-          const session = yield* Session.make().pipe(
+          const store = yield* Memory.make
+          const session = yield* Session.make.pipe(
             Effect.provideService(Store, store),
             Effect.provideService(Session.CreationHook, hook),
           )
@@ -461,8 +461,8 @@ describe('creation initializer', () => {
           run: () =>
             Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
         })
-        const store = yield* Memory.make()
-        const session = yield* Session.make().pipe(
+        const store = yield* Memory.make
+        const session = yield* Session.make.pipe(
           Effect.provideService(Store, store),
           Effect.provideService(Session.CreationHook, hook),
         )
@@ -490,8 +490,8 @@ describe('watch lifecycle', () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const store = yield* Memory.make()
-          const session = yield* Session.make().pipe(Effect.provideService(Store, store))
+          const store = yield* Memory.make
+          const session = yield* Session.make.pipe(Effect.provideService(Store, store))
           yield* session.transaction((tx) => tx.doc(token).pipe(Effect.as(null)))
           const first = yield* session.watchDoc(token)
           const second = yield* session.watchDoc(token)

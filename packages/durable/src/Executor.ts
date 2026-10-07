@@ -1,5 +1,5 @@
 import * as Identity from './Identity.ts'
-import * as Clock from 'effect/Clock'
+import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
@@ -47,12 +47,7 @@ export const layerConversationDrain = Layer.effect(
             const task = running === undefined ? undefined : yield* tx.task(running)
             if (task !== undefined && task.state.status !== 'terminal')
               return { binding: task.input, notify: [] }
-            const selected = yield* Inbox.apply(
-              tx,
-              prepared,
-              'final',
-              yield* Clock.currentTimeMillis,
-            )
+            const selected = yield* Inbox.apply(tx, prepared, 'final', yield* DateTime.now)
             const generation =
               selected.users.length > 0
                 ? yield* SubmissionExecutor.createGeneration(

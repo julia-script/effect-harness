@@ -1,9 +1,13 @@
+import * as Request from 'effect/Request'
+import * as RequestResolver from 'effect/RequestResolver'
 import * as Identity from './Identity.ts'
 import * as Context from 'effect/Context'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as FiberHandle from 'effect/FiberHandle'
 import * as Deferred from 'effect/Deferred'
+import * as HashMap from 'effect/HashMap'
+import * as HashSet from 'effect/HashSet'
 import * as Ref from 'effect/Ref'
 import * as Scope from 'effect/Scope'
 import * as Exit from 'effect/Exit'
@@ -470,7 +474,17 @@ const draft = <T extends object>(value: T, active: () => boolean, ops: Array<Rec
   return wrap(value, []) as T
 }
 
-export const make = Effect.fnUntraced(function* () {
+/** One projection completes with its own Exit; the resolver never retains results across writes. */
+class SnapshotRead<A> extends Request.Class<
+  {
+    readonly readContext: object
+    readonly project: (state: Record.State) => Effect.Effect<A, StorageError>
+  },
+  A,
+  StorageError
+> {}
+
+export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.gen(function* () {
   const underlying = yield* Store
   const cleanupScope = yield* Effect.acquireRelease(Scope.make(), (scope, exit) =>
     Scope.close(scope, exit),
@@ -478,36 +492,47 @@ export const make = Effect.fnUntraced(function* () {
   const handle = yield* FiberHandle.make<boolean, never>().pipe(Scope.provide(cleanupScope))
   const started = yield* Ref.make(false)
   const terminal = yield* Deferred.make<void, StorageError>()
-  let sealed = false
-  const cleanups = new Set<Effect.Effect<void>>()
-  const usable = Effect.suspend(() =>
-    sealed ? Effect.fail(rejected('Session is closed', Closed)) : Effect.void,
+  const lifecycle = yield* Ref.make<{
+    readonly sealed: boolean
+    readonly cleanups: ReadonlyArray<Effect.Effect<void>>
+  }>({ sealed: false, cleanups: [] })
+  const usable = Ref.get(lifecycle).pipe(
+    Effect.flatMap(({ sealed }) =>
+      sealed ? Effect.fail(rejected('Session is closed', Closed)) : Effect.void,
+    ),
   )
   const onClose: Service['onClose'] = (cleanup) =>
     Effect.acquireRelease(
-      Effect.sync(() => {
-        if (sealed) return undefined
+      Ref.modify(lifecycle, (state) => {
+        if (state.sealed) return [undefined, state] as const
         const registration = Effect.suspend(() => cleanup)
-        cleanups.add(registration)
-        return registration
+        return [
+          { registration },
+          { ...state, cleanups: [...state.cleanups, registration] },
+        ] as const
       }).pipe(
         Effect.filterOrFail(
-          (registration) => registration !== undefined,
+          (value) => value !== undefined,
           () => rejected('Session is closed', Closed),
         ),
       ),
-      (registration) =>
-        Effect.sync(() => {
-          // Captured cleanup belongs to shutdown, even if its invocation Scope ends meanwhile.
-          if (!sealed) cleanups.delete(registration)
-        }),
+      ({ registration }) =>
+        Ref.update(lifecycle, (state) =>
+          state.sealed
+            ? state
+            : {
+                ...state,
+                cleanups: state.cleanups.filter((entry) => entry !== registration),
+              },
+        ),
     ).pipe(Effect.asVoid)
   const shutdown = Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
       if (!(yield* Ref.getAndSet(started, true))) {
-        sealed = true
-        const admitted = [...cleanups].reverse()
-        cleanups.clear()
+        const admitted = yield* Ref.modify(
+          lifecycle,
+          (state) => [state.cleanups.toReversed(), { sealed: true, cleanups: [] }] as const,
+        )
         yield* FiberHandle.run(
           handle,
           Effect.gen(function* () {
@@ -558,7 +583,7 @@ export const make = Effect.fnUntraced(function* () {
     ) => usable.pipe(Effect.andThen(underlyingTransact(change, options))),
     journal: (after) => usable.pipe(Effect.andThen(underlying.journal(after))),
   })
-  const migrationCache = Document.makeMigrationCache()
+  const migrationCache = yield* Document.makeMigrationCache
   const creationHook = Option.getOrUndefined(yield* Effect.serviceOption(CreationHook))
   // Public overloads constrain keyed results; runtime validation is authoritative at the Store boundary.
   const transact: <A, E, R>(
@@ -573,65 +598,85 @@ export const make = Effect.fnUntraced(function* () {
     options?: CommitOptions,
   ): Effect.Effect<A, StorageError | E, R> =>
     transact(
-      (original) =>
-        Effect.gen(function* () {
-          let active = true
-          let tableWritten = false
-          let nextId = original.nextId
-          const mintPermit = yield* Semaphore.make(1)
-          const writes: Array<Record.Write> = []
-          const acquired = new Map<string, Acquired>()
-          const forkDocuments = new Set<Record.DocumentId>()
-          const forkParents = new Set<Record.ConversationId>()
-          let pendingOperations = 0
-          const track = <A, R>(effect: Effect.Effect<A, StorageError, R>) =>
-            Effect.suspend(() => {
-              pendingOperations++
-              return effect.pipe(
-                Effect.ensuring(
-                  Effect.sync(() => {
-                    pendingOperations--
-                  }),
-                ),
-              )
-            })
-          const localConversations = new Map(original.conversations.map((item) => [item.id, item]))
-          const localTasks = new Map(original.tasks.map((item) => [item.id, item]))
-          const localSubmissions = new Map(original.submissions.map((item) => [item.id, item]))
-          const abortingAncestor = (conversationId: Record.ConversationId): boolean => {
-            const seen = new Set<Record.TaskId>()
-            let owner = localConversations.get(conversationId)?.owner?.taskId
-            while (owner !== undefined && !seen.has(owner)) {
-              seen.add(owner)
-              const task = localTasks.get(owner)
-              if (task === undefined) return false
-              if (task.state.status === 'terminal') return false
-              if (task.abortRequested) return true
-              if (task.background) return false
-              owner = task.owner ?? localConversations.get(task.conversationId)?.owner?.taskId
-            }
-            return false
-          }
-          const retiredAddresses = new Set<string>()
-          const acquisitions = new Map<string, Effect.Effect<object, StorageError>>()
-          const open = Effect.suspend(() =>
-            active ? Effect.void : Effect.fail(rejected('Transaction is revoked', Revoked)),
+      Effect.fnUntraced(function* (original) {
+        const active = yield* Ref.make(true)
+        const tableWritten = yield* Ref.make(false)
+        const nextId = yield* Ref.make(original.nextId)
+        const mintPermit = yield* Semaphore.make(1)
+        const writePermit = yield* Semaphore.make(1)
+        const acquisitionPermit = yield* Semaphore.make(1)
+        const stagedWrites = yield* Ref.make<ReadonlyArray<Record.Write>>([])
+        const acquired = yield* Ref.make(HashMap.empty<string, Acquired>())
+        const acquiredOrder = yield* Ref.make<ReadonlyArray<string>>([])
+        const forkDocuments = yield* Ref.make(HashSet.empty<Record.DocumentId>())
+        const forkParents = yield* Ref.make(HashSet.empty<Record.ConversationId>())
+        const pendingOperations = yield* Ref.make(0)
+        const track = <A, R>(effect: Effect.Effect<A, StorageError, R>) =>
+          Effect.uninterruptibleMask((restore) =>
+            Ref.update(pendingOperations, (count) => count + 1).pipe(
+              Effect.andThen(restore(effect)),
+              Effect.ensuring(Ref.update(pendingOperations, (count) => count - 1)),
+            ),
           )
-          const read = Effect.fnUntraced(function* () {
-            yield* open
-            if (tableWritten)
-              return yield* rejected(
-                'Table reads after the first table write are forbidden',
-                ReadAfterWrite,
-              )
-          })
-          const mint = Effect.fnUntraced(function* <S extends Schema.Constraint>(schema: S) {
-            yield* open
-            const id = yield* validate(schema, nextId)
-            nextId++
-            return id
-          }, Semaphore.withPermit(mintPermit))
-          const write = Effect.fnUntraced(function* (value: Record.Write) {
+        const localConversations = yield* Ref.make(
+          HashMap.fromIterable(original.conversations.map((item) => [item.id, item] as const)),
+        )
+        const taskOrder = yield* Ref.make<ReadonlyArray<Record.TaskId>>(
+          original.tasks.map((task) => task.id),
+        )
+        const localTasks = yield* Ref.make(
+          HashMap.fromIterable(original.tasks.map((item) => [item.id, item] as const)),
+        )
+        const localSubmissions = yield* Ref.make(
+          HashMap.fromIterable(original.submissions.map((item) => [item.id, item] as const)),
+        )
+        const abortingAncestor = Effect.fnUntraced(function* (
+          conversationId: Record.ConversationId,
+        ) {
+          const seen = new Set<Record.TaskId>()
+          let owner = Option.getOrUndefined(
+            HashMap.get(yield* Ref.get(localConversations), conversationId),
+          )?.owner?.taskId
+          while (owner !== undefined && !seen.has(owner)) {
+            seen.add(owner)
+            const task = Option.getOrUndefined(HashMap.get(yield* Ref.get(localTasks), owner))
+            if (task === undefined) return false
+            if (task.state.status === 'terminal') return false
+            if (task.abortRequested) return true
+            if (task.background) return false
+            owner =
+              task.owner ??
+              Option.getOrUndefined(
+                HashMap.get(yield* Ref.get(localConversations), task.conversationId),
+              )?.owner?.taskId
+          }
+          return false
+        })
+        const retiredAddresses = yield* Ref.make(HashSet.empty<string>())
+        const acquisitions = yield* Ref.make(
+          HashMap.empty<string, Effect.Effect<object, StorageError>>(),
+        )
+        const open = Ref.get(active).pipe(
+          Effect.flatMap((active) =>
+            active ? Effect.void : Effect.fail(rejected('Transaction is revoked', Revoked)),
+          ),
+        )
+        const read = Effect.gen(function* () {
+          yield* open
+          if (yield* Ref.get(tableWritten))
+            return yield* rejected(
+              'Table reads after the first table write are forbidden',
+              ReadAfterWrite,
+            )
+        })
+        const mint = Effect.fnUntraced(function* <S extends Schema.Constraint>(schema: S) {
+          yield* open
+          const id = yield* validate(schema, yield* Ref.get(nextId))
+          yield* Ref.update(nextId, (id) => id + 1)
+          return id
+        }, Semaphore.withPermit(mintPermit))
+        const write = Effect.fnUntraced(
+          function* (value: Record.Write) {
             yield* open
             let valid = yield* validate(Record.Write, value)
             if (valid.type === 'task' && valid.value.state.status === 'terminal') {
@@ -639,7 +684,9 @@ export const make = Effect.fnUntraced(function* () {
               valid = { type: 'task', value: task }
             }
             if (valid.type === 'task') {
-              const previous = localTasks.get(valid.value.id)
+              const previous = Option.getOrUndefined(
+                HashMap.get(yield* Ref.get(localTasks), valid.value.id),
+              )
               if (
                 previous !== undefined &&
                 (previous.state.status === 'terminal' ||
@@ -647,61 +694,80 @@ export const make = Effect.fnUntraced(function* () {
               )
                 return yield* rejected('Task is terminal or cannot change conversations')
             }
-            writes.push(yield* detachedEffect(valid))
-            if (valid.type === 'conversation') localConversations.set(valid.value.id, valid.value)
-            if (valid.type === 'task') localTasks.set(valid.value.id, valid.value)
-            if (valid.type === 'submission') localSubmissions.set(valid.value.id, valid.value)
+            const detachedWrite = yield* detachedEffect(valid)
+            yield* Ref.update(stagedWrites, (writes) => [...writes, detachedWrite])
+            if (valid.type === 'conversation')
+              yield* Ref.update(localConversations, HashMap.set(valid.value.id, valid.value))
+            if (valid.type === 'task') {
+              const task = valid.value
+              if (!HashMap.has(yield* Ref.get(localTasks), task.id))
+                yield* Ref.update(taskOrder, (ids) => [...ids, task.id])
+              yield* Ref.update(localTasks, HashMap.set(task.id, task))
+            }
+            if (valid.type === 'submission')
+              yield* Ref.update(localSubmissions, HashMap.set(valid.value.id, valid.value))
             if (
               valid.type === 'conversation' ||
               valid.type === 'entry' ||
               valid.type === 'task' ||
               valid.type === 'submission'
             )
-              tableWritten = true
-          })
-          const owner = Effect.fnUntraced(function* (ownership: Ownership) {
-            if (ownership.kind === 'ownerless') return {}
-            const task = localTasks.get(ownership.taskId)
-            if (
-              task === undefined ||
-              task.abortRequested ||
-              task.state.status === 'terminal' ||
-              task.state.status === 'completing'
-            )
-              return yield* rejected('Conversation owner must be a live task')
-            return { owner: { taskId: task.id, conversationId: task.conversationId } }
-          })
-          const doc = <T extends object>(
-            token: Document.Document<T>,
-            target: Document.Target = {},
-          ): Effect.Effect<Document.Draft<T>, StorageError> =>
+              yield* Ref.set(tableWritten, true)
+          },
+          // The terminal check and all staged/local table updates form one bounded
+          // transition. Waiting for admission remains interruptible; admitted writes
+          // settle before another callback can check the same task or revoke the tx.
+          Effect.uninterruptible,
+          Semaphore.withPermit(writePermit),
+        )
+        const owner = Effect.fnUntraced(function* (ownership: Ownership) {
+          if (ownership.kind === 'ownerless') return {}
+          const task = Option.getOrUndefined(
+            HashMap.get(yield* Ref.get(localTasks), ownership.taskId),
+          )
+          if (
+            task === undefined ||
+            task.abortRequested ||
+            task.state.status === 'terminal' ||
+            task.state.status === 'completing'
+          )
+            return yield* rejected('Conversation owner must be a live task')
+          return { owner: { taskId: task.id, conversationId: task.conversationId } }
+        })
+        const doc = Effect.fnUntraced(function* <T extends object>(
+          token: Document.Document<T>,
+          target: Document.Target = {},
+        ): Effect.fn.Return<Document.Draft<T>, StorageError> {
+          yield* open
+          const logical = yield* address(token, target)
+          const key = Record.addressKey(logical)
+          const { acquisition } = yield* acquisitionPermit.withPermit(
             Effect.gen(function* () {
-              yield* open
-              const logical = yield* address(token, target)
-              const key = Record.addressKey(logical)
-              const cached = acquisitions.get(key)
-              if (cached !== undefined) return (yield* cached) as Document.Draft<T>
+              const cached = Option.getOrUndefined(HashMap.get(yield* Ref.get(acquisitions), key))
+              if (cached !== undefined) return { acquisition: cached }
               const acquisition = yield* Effect.cached(
                 Effect.gen(function* () {
                   yield* open
                   if (
                     logical.scope.kind === 'conversation' &&
-                    !localConversations.has(logical.scope.conversationId)
+                    !HashMap.has(yield* Ref.get(localConversations), logical.scope.conversationId)
                   )
                     return yield* rejected('Document conversation is absent', NotFound)
                   if (logical.scope.kind === 'task') {
-                    const task = localTasks.get(logical.scope.taskId)
+                    const task = Option.getOrUndefined(
+                      HashMap.get(yield* Ref.get(localTasks), logical.scope.taskId),
+                    )
                     if (task === undefined || task.state.status === 'terminal')
                       return yield* rejected('Document task is absent or settled', NotFound)
                   }
-                  const staged = retiredAddresses.has(key)
+                  const staged = HashSet.has(yield* Ref.get(retiredAddresses), key)
                     ? undefined
-                    : writes.findLast(
+                    : (yield* Ref.get(stagedWrites)).findLast(
                         (write) =>
                           (write.type === 'document.create' || write.type === 'document.copy') &&
                           Record.addressKey(write.record) === key,
                       )
-                  const persisted = retiredAddresses.has(key)
+                  const persisted = HashSet.has(yield* Ref.get(retiredAddresses), key)
                     ? undefined
                     : findDocument(original, logical, 'current')
                   let stored =
@@ -775,422 +841,460 @@ export const make = Effect.fnUntraced(function* () {
                     ...(stored === undefined ? {} : { stored }),
                     ...(stagedRecord === undefined ? {} : { staged: stagedRecord }),
                   }
-                  acquired.set(key, record)
-                  return draft(record.value, () => active, ops)
+                  yield* Ref.update(acquired, HashMap.set(key, record))
+                  yield* Ref.update(acquiredOrder, (keys) => [...keys, key])
+                  return draft(record.value, () => Ref.getUnsafe(active), ops)
                 }),
               )
-              acquisitions.set(key, acquisition)
-              return (yield* acquisition) as Document.Draft<T>
-            })
-          const rawTx: Transaction = {
-            mint,
-            write,
-            doc,
-            ensureRoot: Effect.suspend(() => {
-              const existing = localConversations.get(Record.ROOT_CONVERSATION_ID)
-              if (existing !== undefined) return detachedEffect(existing)
-              const root = { id: Record.ROOT_CONVERSATION_ID }
-              return write({ type: 'conversation', value: root }).pipe(
-                Effect.andThen(creationHook?.run(tx, root) ?? Effect.void),
-                Effect.as(root),
-              )
+              yield* Ref.update(acquisitions, HashMap.set(key, acquisition))
+              return { acquisition }
             }),
-            conversation: Effect.fnUntraced(function* (id) {
-              yield* read()
-              return yield* detachedEffect(original.conversations.find((item) => item.id === id))
-            }),
-            entry: Effect.fnUntraced(function* (id) {
-              yield* read()
-              return yield* detachedEffect(
-                original.entries.find((item) => item.entry.id === id)?.entry,
-              )
-            }),
-            task: Effect.fnUntraced(function* (id) {
-              yield* read()
-              return yield* detachedEffect(original.tasks.find((item) => item.id === id))
-            }),
-            submission: Effect.fnUntraced(function* (id) {
-              yield* read()
-              return yield* detachedEffect(original.submissions.find((item) => item.id === id))
-            }),
-            scanConversations: Effect.fnUntraced(function* (query, limit, cursor) {
-              yield* read()
-              return yield* conversationPage(original, query, limit, cursor)
-            }),
-            scanEntries: Effect.fnUntraced(function* (query, limit, cursor) {
-              yield* read()
-              return yield* entryPage(original, query, limit, cursor)
-            }),
-            scanTasks: Effect.fnUntraced(function* (query, limit, cursor) {
-              yield* read()
-              return yield* taskPage(original, query, limit, cursor)
-            }),
-            scanSubmissions: Effect.fnUntraced(function* (query, limit, cursor) {
-              yield* read()
-              return yield* submissionPage(original, query, limit, cursor)
-            }),
-            latestHeadMarker: Effect.fnUntraced(function* (conversationId, atOrBefore) {
-              yield* read()
-              return (yield* visibleEntries(original, conversationId, 0, atOrBefore)).find(
-                (item) => item.head !== undefined,
-              )
-            }),
-            submissionByRequest: Effect.fnUntraced(function* (conversationId, requestId) {
-              yield* read()
-              return yield* detachedEffect(
-                original.submissions.find(
-                  (item) => item.conversationId === conversationId && item.requestId === requestId,
-                ),
-              )
-            }),
-            createConversation: Effect.fnUntraced(function* (options) {
-              const ownership = yield* owner(options.ownership)
-              const id = yield* mint(Record.ConversationId)
-              const value = { id, ...ownership }
-              yield* write({ type: 'conversation', value })
-              if (creationHook !== undefined) yield* creationHook.run(tx, value)
-              return yield* detachedEffect(value)
-            }),
-            forkConversation: Effect.fnUntraced(function* (parent, at, options) {
-              yield* open
-              forkParents.add(parent)
-              const visible = yield* visibleEntries(original, parent)
-              const entry = visible.find((item) => item.id === at)
-              const committed = original.entries.find((item) => item.entry.id === at)
-              if (entry === undefined || committed === undefined)
-                return yield* rejected('Fork cutoff is not visible', NotFound)
-              const ownership = yield* owner(options.ownership)
-              const id = yield* mint(Record.ConversationId)
-              const selected = new Map<
-                string,
-                { readonly document: Record.StoredDocument; readonly at: Record.Point }
-              >()
-              for (const document of original.documents) {
-                const record = document.record
-                if (record.scope.kind !== 'conversation') continue
-                if (
-                  record.fork === 'asOf' &&
-                  record.scope.conversationId === entry.conversationId &&
-                  Record.isAlive(record, committed.commitSeq)
-                )
-                  selected.set(
-                    Record.addressKey({
-                      ...record,
-                      scope: { kind: 'conversation', conversationId: id },
-                    }),
-                    { document, at: committed.commitSeq },
-                  )
-                if (
-                  record.fork === 'current' &&
-                  record.scope.conversationId === parent &&
-                  Record.isAlive(record, 'current')
-                ) {
-                  const key = Record.addressKey({
-                    ...record,
-                    scope: { kind: 'conversation', conversationId: id },
-                  })
-                  if (selected.has(key))
-                    return yield* rejected('Fork selects ambiguous document source')
-                  selected.set(key, { document, at: 'current' })
-                }
-              }
-              for (const source of selected.values()) {
-                forkDocuments.add(source.document.record.id)
-                const documentId = yield* mint(Record.DocumentId)
-                const {
-                  createdAt: _created,
-                  retiredAt: _retired,
-                  ...record
-                } = source.document.record
-                yield* write({
-                  type: 'document.copy',
-                  record: {
-                    ...record,
-                    id: documentId,
-                    scope: { kind: 'conversation', conversationId: id },
-                  },
-                  source: { id: source.document.record.id, at: source.at },
-                })
-              }
-              const value = { id, parent: { conversationId: parent, at }, ...ownership }
-              yield* write({ type: 'conversation', value })
-              if (creationHook !== undefined) yield* creationHook.run(tx, value)
-              return yield* detachedEffect(value)
-            }),
-            appendEntry: Effect.fnUntraced(function* (conversationId, input) {
-              yield* open
-              if (!localConversations.has(conversationId))
-                return yield* rejected('Entry conversation is absent', NotFound)
-              const id = yield* mint(Record.EntryId)
-              const { head, ...draftValue } = input
-              const value = {
-                ...draftValue,
-                id,
-                conversationId,
-                ...(head === undefined ? {} : { head: head === 'self' ? id : head }),
-              }
-              yield* write({ type: 'entry', value })
-              return yield* detachedEffect(value)
-            }),
-            createTask: Effect.fnUntraced(function* (input) {
-              yield* open
-              if (!localConversations.has(input.conversationId))
-                return yield* rejected('Task conversation is absent', NotFound)
-              if (abortingAncestor(input.conversationId))
-                return yield* rejected('Task conversation has an aborting ancestor')
-              if (input.owner !== undefined) {
-                const parent = localTasks.get(input.owner)
-                if (
-                  parent === undefined ||
-                  parent.abortRequested ||
-                  parent.conversationId !== input.conversationId ||
-                  parent.state.status === 'terminal' ||
-                  parent.state.status === 'completing' ||
-                  input.background
-                )
-                  return yield* rejected('Invalid task owner')
-              }
-              const id = yield* mint(Record.TaskId)
-              yield* write({ type: 'task', value: { ...input, id } })
-              return id
-            }),
-            createSubmission: Effect.fnUntraced(function* (input) {
-              yield* open
-              if (!localConversations.has(input.conversationId))
-                return yield* rejected('Submission conversation is absent', NotFound)
-              if (abortingAncestor(input.conversationId))
-                return yield* rejected('Submission conversation has an aborting ancestor')
-              const id = yield* mint(Record.SubmissionId)
-              const value = { ...input, id }
-              yield* write({ type: 'submission', value })
-              return yield* detachedEffect(value)
-            }),
-            placeSubmission: Effect.fnUntraced(function* (id, entry) {
-              yield* open
-              const current = localSubmissions.get(id)
-              if (current === undefined) return yield* rejected('Submission is absent', NotFound)
-              if (current.status === 'done' || current.status === 'unanswered') return
-              if (current.status !== 'queued')
-                return yield* rejected('Only queued submissions may be placed')
-              const value: Record.Submission =
-                current.type === 'input'
-                  ? { ...current, entry, status: 'placed' }
-                  : { ...current, entry, status: 'done' }
-              yield* write({ type: 'submission', value })
-            }),
-            settleSubmission: Effect.fnUntraced(function* (id, settlement) {
-              yield* open
-              const current = localSubmissions.get(id)
-              if (current === undefined) return yield* rejected('Submission is absent', NotFound)
-              if (current.status === 'done' || current.status === 'unanswered') return
-              if (
-                settlement.status === 'done' &&
-                (current.type !== 'input' || current.status !== 'placed')
-              )
-                return yield* rejected('Only placed input may be answered')
-              const value = yield* validate(Record.Submission, { ...current, ...settlement })
-              yield* write({ type: 'submission', value })
-            }),
-            retire: Effect.fnUntraced(function* (token, target = {}) {
-              yield* open
-              const logical = yield* address(token, target)
-              const key = Record.addressKey(logical)
-              retiredAddresses.add(key)
-              const item = acquired.get(key)
-              if (item !== undefined) {
-                item.retire = true
-                acquisitions.delete(key)
-                acquired.delete(key)
-                acquired.set(`${key}\0retired:${item.id}`, item)
-                return
-              }
-              const stored = findDocument(original, logical, 'current')
-              if (
-                stored !== undefined &&
-                !writes.some(
-                  (write) => write.type === 'document.retire' && write.id === stored.record.id,
-                )
-              )
-                yield* write({ type: 'document.retire', id: stored.record.id })
-            }),
-          }
-          const tx: Transaction = {
-            ensureRoot: track(rawTx.ensureRoot),
-            mint: (schema) => track(rawTx.mint(schema)),
-            conversation: (id) => track(rawTx.conversation(id)),
-            entry: (id) => track(rawTx.entry(id)),
-            task: (id) => track(rawTx.task(id)),
-            submission: (id) => track(rawTx.submission(id)),
-            scanConversations: (query, limit, cursor) =>
-              track(rawTx.scanConversations(query, limit, cursor)),
-            scanEntries: (query, limit, cursor) => track(rawTx.scanEntries(query, limit, cursor)),
-            scanTasks: (query, limit, cursor) => track(rawTx.scanTasks(query, limit, cursor)),
-            scanSubmissions: (query, limit, cursor) =>
-              track(rawTx.scanSubmissions(query, limit, cursor)),
-            submissionByRequest: (id, request) => track(rawTx.submissionByRequest(id, request)),
-            latestHeadMarker: (id, atOrBefore) => track(rawTx.latestHeadMarker(id, atOrBefore)),
-            createConversation: (options) => track(rawTx.createConversation(options)),
-            forkConversation: (parent, at, options) =>
-              track(rawTx.forkConversation(parent, at, options)),
-            appendEntry: (id, entry) => track(rawTx.appendEntry(id, entry)),
-            createTask: (value) => track(rawTx.createTask(value)),
-            createSubmission: (value) => track(rawTx.createSubmission(value)),
-            placeSubmission: (id, entry) => track(rawTx.placeSubmission(id, entry)),
-            settleSubmission: (id, value) => track(rawTx.settleSubmission(id, value)),
-            write: (value) => track(rawTx.write(value)),
-            doc: (token, target) => track(rawTx.doc(token, target)),
-            retire: (token, target) => track(rawTx.retire(token, target)),
-          }
-          const result = yield* change(tx).pipe(
-            Effect.catchDefect((defect) =>
-              defect instanceof DraftMutationError
-                ? Effect.fail(rejected(defect.message, Invalid, defect.cause))
-                : Effect.die(defect),
-            ),
-            Effect.ensuring(
-              Effect.sync(() => {
-                active = false
-              }),
-            ),
           )
-          if (pendingOperations !== 0)
-            return yield* rejected('Transaction callback settled before its pending operations')
-          for (const item of acquired.values()) {
-            const definition = item.definition
-            const value = yield* item.prepare
-            if (item.staged !== undefined) {
-              const previousIndex = writes.findIndex(
-                (write) =>
-                  (write.type === 'document.create' || write.type === 'document.copy') &&
-                  write.record.id === item.id,
-              )
-              if (previousIndex >= 0) writes.splice(previousIndex, 1)
-              writes.push({
-                type: 'document.create',
-                record: item.staged,
-                content: { kind: 'base', version: definition.version, value },
-              })
-            } else if (item.stored === undefined) {
-              yield* validate(Record.DocumentId, item.id)
-              writes.push({
-                type: 'document.create',
-                record: {
-                  ...item.address,
-                  id: item.id,
-                  ...(definition.history === undefined ? {} : { history: definition.history }),
-                  ...(definition.fork === undefined ? {} : { fork: definition.fork }),
-                },
-                content: { kind: 'base', version: definition.version, value },
-              })
-            } else if (item.stored.version !== definition.version)
-              writes.push({
-                type: 'document.change',
-                id: item.id,
-                content: { kind: 'base', version: definition.version, value },
-              })
-            else if (item.ops.length > 0) {
-              const checkpoint = yield* item.checkpoint
-              // Preserve the exact draft operation batch unless array methods changed index structure.
-              const hasArrayMutation = item.ops.some(
-                (op) =>
-                  op[0] === 'replace' || (op[0] === 'delete' && typeof op[1].at(-1) === 'number'),
-              )
-              const ops: ReadonlyArray<Record.Op> = hasArrayMutation
-                ? [['replace', value]]
-                : item.ops
-              writes.push({
-                type: 'document.change',
-                id: item.id,
-                content: checkpoint
-                  ? { kind: 'base', version: definition.version, value }
-                  : { kind: 'delta', version: definition.version, ops },
-                ...(checkpoint ? { publicationOps: ops } : {}),
-              })
-            }
-            if (item.retire) writes.push({ type: 'document.retire', id: item.id })
-          }
-          for (const write of writes) {
-            if (
-              ((write.type === 'task' &&
-                !original.tasks.some((task) => task.id === write.value.id)) ||
-                (write.type === 'submission' &&
-                  !original.submissions.some((item) => item.id === write.value.id))) &&
-              abortingAncestor(write.value.conversationId)
+          return (yield* acquisition) as Document.Draft<T>
+        })
+        const rawTx: Transaction = {
+          mint,
+          write,
+          doc,
+          ensureRoot: Effect.gen(function* () {
+            const existing = Option.getOrUndefined(
+              HashMap.get(yield* Ref.get(localConversations), Record.ROOT_CONVERSATION_ID),
             )
-              return yield* rejected('New work cannot enter an aborting owned conversation')
-            let affected: Record.DocumentCreate | undefined
-            if (write.type === 'document.create') affected = write.record
-            else if (write.type === 'document.change' || write.type === 'document.retire')
-              affected = original.documents.find((item) => item.record.id === write.id)?.record
-            if (
-              (write.type === 'document.change' || write.type === 'document.retire') &&
-              forkDocuments.has(write.id)
+            if (existing !== undefined) return yield* detachedEffect(existing)
+            const root = { id: Record.ROOT_CONVERSATION_ID }
+            return yield* write({ type: 'conversation', value: root }).pipe(
+              Effect.andThen(creationHook?.run(tx, root) ?? Effect.void),
+              Effect.as(root),
             )
-              return yield* rejected(
-                'Cannot change a copied fork source document in its fork transaction',
-              )
-            if (
-              affected?.scope.kind === 'conversation' &&
-              affected.fork === 'current' &&
-              forkParents.has(affected.scope.conversationId)
+          }),
+          conversation: Effect.fnUntraced(function* (id) {
+            yield* read
+            return yield* detachedEffect(original.conversations.find((item) => item.id === id))
+          }),
+          entry: Effect.fnUntraced(function* (id) {
+            yield* read
+            return yield* detachedEffect(
+              original.entries.find((item) => item.entry.id === id)?.entry,
             )
-              return yield* rejected(
-                'Cannot change current-policy documents in their fork transaction',
-              )
-            let ownerId: Record.TaskId | undefined
-            if (write.type === 'conversation') ownerId = write.value.owner?.taskId
-            else if (
-              write.type === 'task' &&
-              !original.tasks.some((task) => task.id === write.value.id)
+          }),
+          task: Effect.fnUntraced(function* (id) {
+            yield* read
+            return yield* detachedEffect(original.tasks.find((item) => item.id === id))
+          }),
+          submission: Effect.fnUntraced(function* (id) {
+            yield* read
+            return yield* detachedEffect(original.submissions.find((item) => item.id === id))
+          }),
+          scanConversations: Effect.fnUntraced(function* (query, limit, cursor) {
+            yield* read
+            return yield* conversationPage(original, query, limit, cursor)
+          }),
+          scanEntries: Effect.fnUntraced(function* (query, limit, cursor) {
+            yield* read
+            return yield* entryPage(original, query, limit, cursor)
+          }),
+          scanTasks: Effect.fnUntraced(function* (query, limit, cursor) {
+            yield* read
+            return yield* taskPage(original, query, limit, cursor)
+          }),
+          scanSubmissions: Effect.fnUntraced(function* (query, limit, cursor) {
+            yield* read
+            return yield* submissionPage(original, query, limit, cursor)
+          }),
+          latestHeadMarker: Effect.fnUntraced(function* (conversationId, atOrBefore) {
+            yield* read
+            return (yield* visibleEntries(original, conversationId, 0, atOrBefore)).find(
+              (item) => item.head !== undefined,
             )
-              ownerId = write.value.owner
-            if (ownerId !== undefined) {
-              const task = localTasks.get(ownerId)
+          }),
+          submissionByRequest: Effect.fnUntraced(function* (conversationId, requestId) {
+            yield* read
+            return yield* detachedEffect(
+              original.submissions.find(
+                (item) => item.conversationId === conversationId && item.requestId === requestId,
+              ),
+            )
+          }),
+          createConversation: Effect.fnUntraced(function* (options) {
+            const ownership = yield* owner(options.ownership)
+            const id = yield* mint(Record.ConversationId)
+            const value = { id, ...ownership }
+            yield* write({ type: 'conversation', value })
+            if (creationHook !== undefined) yield* creationHook.run(tx, value)
+            return yield* detachedEffect(value)
+          }),
+          forkConversation: Effect.fnUntraced(function* (parent, at, options) {
+            yield* open
+            yield* Ref.update(forkParents, HashSet.add(parent))
+            const visible = yield* visibleEntries(original, parent)
+            const entry = visible.find((item) => item.id === at)
+            const committed = original.entries.find((item) => item.entry.id === at)
+            if (entry === undefined || committed === undefined)
+              return yield* rejected('Fork cutoff is not visible', NotFound)
+            const ownership = yield* owner(options.ownership)
+            const id = yield* mint(Record.ConversationId)
+            const selected = new Map<
+              string,
+              { readonly document: Record.StoredDocument; readonly at: Record.Point }
+            >()
+            for (const document of original.documents) {
+              const record = document.record
+              if (record.scope.kind !== 'conversation') continue
               if (
-                task === undefined ||
-                task.abortRequested ||
-                task.state.status === 'terminal' ||
-                task.state.status === 'completing'
+                record.fork === 'asOf' &&
+                record.scope.conversationId === entry.conversationId &&
+                Record.isAlive(record, committed.commitSeq)
               )
-                return yield* rejected('New owned work requires a live non-aborting owner')
+                selected.set(
+                  Record.addressKey({
+                    ...record,
+                    scope: { kind: 'conversation', conversationId: id },
+                  }),
+                  { document, at: committed.commitSeq },
+                )
+              if (
+                record.fork === 'current' &&
+                record.scope.conversationId === parent &&
+                Record.isAlive(record, 'current')
+              ) {
+                const key = Record.addressKey({
+                  ...record,
+                  scope: { kind: 'conversation', conversationId: id },
+                })
+                if (selected.has(key))
+                  return yield* rejected('Fork selects ambiguous document source')
+                selected.set(key, { document, at: 'current' })
+              }
             }
+            for (const source of selected.values()) {
+              yield* Ref.update(forkDocuments, HashSet.add(source.document.record.id))
+              const documentId = yield* mint(Record.DocumentId)
+              const { createdAt: _created, retiredAt: _retired, ...record } = source.document.record
+              yield* write({
+                type: 'document.copy',
+                record: {
+                  ...record,
+                  id: documentId,
+                  scope: { kind: 'conversation', conversationId: id },
+                },
+                source: { id: source.document.record.id, at: source.at },
+              })
+            }
+            const value = { id, parent: { conversationId: parent, at }, ...ownership }
+            yield* write({ type: 'conversation', value })
+            if (creationHook !== undefined) yield* creationHook.run(tx, value)
+            return yield* detachedEffect(value)
+          }),
+          appendEntry: Effect.fnUntraced(function* (conversationId, input) {
+            yield* open
+            if (!HashMap.has(yield* Ref.get(localConversations), conversationId))
+              return yield* rejected('Entry conversation is absent', NotFound)
+            const id = yield* mint(Record.EntryId)
+            const { head, ...draftValue } = input
+            const value = {
+              ...draftValue,
+              id,
+              conversationId,
+              ...(head === undefined ? {} : { head: head === 'self' ? id : head }),
+            }
+            yield* write({ type: 'entry', value })
+            return yield* detachedEffect(value)
+          }),
+          createTask: Effect.fnUntraced(function* (input) {
+            yield* open
+            if (!HashMap.has(yield* Ref.get(localConversations), input.conversationId))
+              return yield* rejected('Task conversation is absent', NotFound)
+            if (yield* abortingAncestor(input.conversationId))
+              return yield* rejected('Task conversation has an aborting ancestor')
+            if (input.owner !== undefined) {
+              const parent = Option.getOrUndefined(
+                HashMap.get(yield* Ref.get(localTasks), input.owner),
+              )
+              if (
+                parent === undefined ||
+                parent.abortRequested ||
+                parent.conversationId !== input.conversationId ||
+                parent.state.status === 'terminal' ||
+                parent.state.status === 'completing' ||
+                input.background
+              )
+                return yield* rejected('Invalid task owner')
+            }
+            const id = yield* mint(Record.TaskId)
+            yield* write({ type: 'task', value: { ...input, id } })
+            return id
+          }),
+          createSubmission: Effect.fnUntraced(function* (input) {
+            yield* open
+            if (!HashMap.has(yield* Ref.get(localConversations), input.conversationId))
+              return yield* rejected('Submission conversation is absent', NotFound)
+            if (yield* abortingAncestor(input.conversationId))
+              return yield* rejected('Submission conversation has an aborting ancestor')
+            const id = yield* mint(Record.SubmissionId)
+            const value = { ...input, id }
+            yield* write({ type: 'submission', value })
+            return yield* detachedEffect(value)
+          }),
+          placeSubmission: Effect.fnUntraced(function* (id, entry) {
+            yield* open
+            const current = Option.getOrUndefined(HashMap.get(yield* Ref.get(localSubmissions), id))
+            if (current === undefined) return yield* rejected('Submission is absent', NotFound)
+            if (current.status === 'done' || current.status === 'unanswered') return
+            if (current.status !== 'queued')
+              return yield* rejected('Only queued submissions may be placed')
+            const value: Record.Submission =
+              current.type === 'input'
+                ? { ...current, entry, status: 'placed' }
+                : { ...current, entry, status: 'done' }
+            yield* write({ type: 'submission', value })
+          }),
+          settleSubmission: Effect.fnUntraced(function* (id, settlement) {
+            yield* open
+            const current = Option.getOrUndefined(HashMap.get(yield* Ref.get(localSubmissions), id))
+            if (current === undefined) return yield* rejected('Submission is absent', NotFound)
+            if (current.status === 'done' || current.status === 'unanswered') return
+            if (
+              settlement.status === 'done' &&
+              (current.type !== 'input' || current.status !== 'placed')
+            )
+              return yield* rejected('Only placed input may be answered')
+            const value = yield* validate(Record.Submission, { ...current, ...settlement })
+            yield* write({ type: 'submission', value })
+          }),
+          retire: Effect.fnUntraced(function* (token, target = {}) {
+            yield* open
+            const logical = yield* address(token, target)
+            const key = Record.addressKey(logical)
+            yield* Ref.update(retiredAddresses, HashSet.add(key))
+            const item = Option.getOrUndefined(HashMap.get(yield* Ref.get(acquired), key))
+            if (item !== undefined) {
+              yield* Ref.update(acquisitions, HashMap.remove(key))
+              yield* Ref.update(acquired, HashMap.remove(key))
+              yield* Ref.update(acquiredOrder, (keys) => [
+                ...keys.filter((entry) => entry !== key),
+                `${key}\0retired:${item.id}`,
+              ])
+              yield* Ref.update(acquired, (entries) =>
+                HashMap.set(entries, `${key}\0retired:${item.id}`, { ...item, retire: true }),
+              )
+              return
+            }
+            const stored = findDocument(original, logical, 'current')
+            if (
+              stored !== undefined &&
+              !(yield* Ref.get(stagedWrites)).some(
+                (write) => write.type === 'document.retire' && write.id === stored.record.id,
+              )
+            )
+              yield* write({ type: 'document.retire', id: stored.record.id })
+          }),
+        }
+        const tx: Transaction = {
+          ensureRoot: track(rawTx.ensureRoot),
+          mint: (schema) => track(rawTx.mint(schema)),
+          conversation: (id) => track(rawTx.conversation(id)),
+          entry: (id) => track(rawTx.entry(id)),
+          task: (id) => track(rawTx.task(id)),
+          submission: (id) => track(rawTx.submission(id)),
+          scanConversations: (query, limit, cursor) =>
+            track(rawTx.scanConversations(query, limit, cursor)),
+          scanEntries: (query, limit, cursor) => track(rawTx.scanEntries(query, limit, cursor)),
+          scanTasks: (query, limit, cursor) => track(rawTx.scanTasks(query, limit, cursor)),
+          scanSubmissions: (query, limit, cursor) =>
+            track(rawTx.scanSubmissions(query, limit, cursor)),
+          submissionByRequest: (id, request) => track(rawTx.submissionByRequest(id, request)),
+          latestHeadMarker: (id, atOrBefore) => track(rawTx.latestHeadMarker(id, atOrBefore)),
+          createConversation: (options) => track(rawTx.createConversation(options)),
+          forkConversation: (parent, at, options) =>
+            track(rawTx.forkConversation(parent, at, options)),
+          appendEntry: (id, entry) => track(rawTx.appendEntry(id, entry)),
+          createTask: (value) => track(rawTx.createTask(value)),
+          createSubmission: (value) => track(rawTx.createSubmission(value)),
+          placeSubmission: (id, entry) => track(rawTx.placeSubmission(id, entry)),
+          settleSubmission: (id, value) => track(rawTx.settleSubmission(id, value)),
+          write: (value) => track(rawTx.write(value)),
+          doc: (token, target) => track(rawTx.doc(token, target)),
+          retire: (token, target) => track(rawTx.retire(token, target)),
+        }
+        const result = yield* change(tx).pipe(
+          Effect.catchDefect((defect) =>
+            defect instanceof DraftMutationError
+              ? Effect.fail(rejected(defect.message, Invalid, defect.cause))
+              : Effect.die(defect),
+          ),
+          Effect.ensuring(Ref.set(active, false)),
+        )
+        if ((yield* Ref.get(pendingOperations)) !== 0)
+          return yield* rejected('Transaction callback settled before its pending operations')
+        const writes = [...(yield* Ref.get(stagedWrites))]
+        for (const key of yield* Ref.get(acquiredOrder)) {
+          const item = Option.getOrUndefined(HashMap.get(yield* Ref.get(acquired), key))
+          if (item === undefined) continue
+          const definition = item.definition
+          const value = yield* item.prepare
+          if (item.staged !== undefined) {
+            const previousIndex = writes.findIndex(
+              (write) =>
+                (write.type === 'document.create' || write.type === 'document.copy') &&
+                write.record.id === item.id,
+            )
+            if (previousIndex >= 0) writes.splice(previousIndex, 1)
+            writes.push({
+              type: 'document.create',
+              record: item.staged,
+              content: { kind: 'base', version: definition.version, value },
+            })
+          } else if (item.stored === undefined) {
+            yield* validate(Record.DocumentId, item.id)
+            writes.push({
+              type: 'document.create',
+              record: {
+                ...item.address,
+                id: item.id,
+                ...(definition.history === undefined ? {} : { history: definition.history }),
+                ...(definition.fork === undefined ? {} : { fork: definition.fork }),
+              },
+              content: { kind: 'base', version: definition.version, value },
+            })
+          } else if (item.stored.version !== definition.version)
+            writes.push({
+              type: 'document.change',
+              id: item.id,
+              content: { kind: 'base', version: definition.version, value },
+            })
+          else if (item.ops.length > 0) {
+            const checkpoint = yield* item.checkpoint
+            // Preserve the exact draft operation batch unless array methods changed index structure.
+            const hasArrayMutation = item.ops.some(
+              (op) =>
+                op[0] === 'replace' || (op[0] === 'delete' && typeof op[1].at(-1) === 'number'),
+            )
+            const ops: ReadonlyArray<Record.Op> = hasArrayMutation ? [['replace', value]] : item.ops
+            writes.push({
+              type: 'document.change',
+              id: item.id,
+              content: checkpoint
+                ? { kind: 'base', version: definition.version, value }
+                : { kind: 'delta', version: definition.version, ops },
+              ...(checkpoint ? { publicationOps: ops } : {}),
+            })
           }
-          for (const task of localTasks.values())
-            if (task.state.status === 'terminal') {
-              for (const document of original.documents)
-                if (
-                  document.record.scope.kind === 'task' &&
-                  document.record.scope.taskId === task.id &&
-                  document.record.retiredAt === undefined &&
-                  !writes.some(
-                    (write) => write.type === 'document.retire' && write.id === document.record.id,
-                  )
+          if (item.retire) writes.push({ type: 'document.retire', id: item.id })
+        }
+        for (const write of writes) {
+          if (
+            ((write.type === 'task' &&
+              !original.tasks.some((task) => task.id === write.value.id)) ||
+              (write.type === 'submission' &&
+                !original.submissions.some((item) => item.id === write.value.id))) &&
+            (yield* abortingAncestor(write.value.conversationId))
+          )
+            return yield* rejected('New work cannot enter an aborting owned conversation')
+          let affected: Record.DocumentCreate | undefined
+          if (write.type === 'document.create') affected = write.record
+          else if (write.type === 'document.change' || write.type === 'document.retire')
+            affected = original.documents.find((item) => item.record.id === write.id)?.record
+          if (
+            (write.type === 'document.change' || write.type === 'document.retire') &&
+            HashSet.has(yield* Ref.get(forkDocuments), write.id)
+          )
+            return yield* rejected(
+              'Cannot change a copied fork source document in its fork transaction',
+            )
+          if (
+            affected?.scope.kind === 'conversation' &&
+            affected.fork === 'current' &&
+            HashSet.has(yield* Ref.get(forkParents), affected.scope.conversationId)
+          )
+            return yield* rejected(
+              'Cannot change current-policy documents in their fork transaction',
+            )
+          let ownerId: Record.TaskId | undefined
+          if (write.type === 'conversation') ownerId = write.value.owner?.taskId
+          else if (
+            write.type === 'task' &&
+            !original.tasks.some((task) => task.id === write.value.id)
+          )
+            ownerId = write.value.owner
+          if (ownerId !== undefined) {
+            const task = Option.getOrUndefined(HashMap.get(yield* Ref.get(localTasks), ownerId))
+            if (
+              task === undefined ||
+              task.abortRequested ||
+              task.state.status === 'terminal' ||
+              task.state.status === 'completing'
+            )
+              return yield* rejected('New owned work requires a live non-aborting owner')
+          }
+        }
+        for (const id of yield* Ref.get(taskOrder)) {
+          const task = Option.getOrUndefined(HashMap.get(yield* Ref.get(localTasks), id))
+          if (task?.state.status === 'terminal') {
+            for (const document of original.documents)
+              if (
+                document.record.scope.kind === 'task' &&
+                document.record.scope.taskId === task.id &&
+                document.record.retiredAt === undefined &&
+                !writes.some(
+                  (write) => write.type === 'document.retire' && write.id === document.record.id,
                 )
-                  writes.push({ type: 'document.retire', id: document.record.id })
-              for (const write of writes)
-                if (
-                  write.type === 'document.create' &&
-                  write.record.scope.kind === 'task' &&
-                  write.record.scope.taskId === task.id &&
-                  !writes.some(
-                    (item) => item.type === 'document.retire' && item.id === write.record.id,
-                  )
+              )
+                writes.push({ type: 'document.retire', id: document.record.id })
+            for (const write of writes)
+              if (
+                write.type === 'document.create' &&
+                write.record.scope.kind === 'task' &&
+                write.record.scope.taskId === task.id &&
+                !writes.some(
+                  (item) => item.type === 'document.retire' && item.id === write.record.id,
                 )
-                  writes.push({ type: 'document.retire', id: write.record.id })
-            }
-          return { state: { ...original, nextId }, writes, result }
-        }),
+              )
+                writes.push({ type: 'document.retire', id: write.record.id })
+          }
+        }
+        return { state: { ...original, nextId: yield* Ref.get(nextId) }, writes, result }
+      }),
       options,
     )
+  const reads = RequestResolver.makeGrouped<SnapshotRead<unknown>, object>({
+    key: (entry) => entry.request.readContext,
+    resolver: Effect.fnUntraced(function* (entries) {
+      const state = yield* store.read.pipe(Effect.provideContext(entries[0].context), Effect.exit)
+      yield* Effect.forEach(
+        entries,
+        Effect.fnUntraced(function* (entry) {
+          const exit = Exit.isFailure(state)
+            ? state
+            : yield* entry.request
+                .project(state.value)
+                .pipe(Effect.provideContext(entry.context), Effect.exit)
+          // RequestResolver's completion protocol requires its synchronous entry callback.
+          entry.completeUnsafe(exit)
+        }),
+        { discard: true },
+      )
+    }),
+  })
+  const project = Effect.fnUntraced(function* <A>(
+    projection: (state: Record.State) => Effect.Effect<A, StorageError>,
+  ): Effect.fn.Return<A, StorageError> {
+    // A custom Store without lease metadata is conservatively grouped by the full
+    // caller Context; native SQL groups the exact transaction connection/counter tuple.
+    const readContext = yield* store.readContext ?? Effect.context<never>()
+    return yield* Effect.request(new SnapshotRead({ readContext, project: projection }), reads)
+  })
   const snapshot: Service['snapshot'] = Effect.fnUntraced(function* (token, target = {}) {
     const logical = yield* address(token, target)
-    const state = yield* store.read
-    const document = findDocument(state, logical, 'current')
-    const snapshotValue =
-      document === undefined ? undefined : yield* materialize(document, 'current')
-    return snapshotValue === undefined
-      ? undefined
-      : yield* typed(token, snapshotValue, migrationCache)
+    return yield* project(
+      Effect.fnUntraced(function* (state) {
+        const document = findDocument(state, logical, 'current')
+        const snapshotValue =
+          document === undefined ? undefined : yield* materialize(document, 'current')
+        return snapshotValue === undefined
+          ? undefined
+          : yield* typed(token, snapshotValue, migrationCache)
+      }),
+    )
   })
   const service = Session.of({
     committed: store.committed,
@@ -1217,95 +1321,91 @@ export const make = Effect.fnUntraced(function* () {
     snapshotAsOf: Effect.fnUntraced(function* (token, conversationId, at, target = {}) {
       if (token.definition.scope !== 'conversation' || token.definition.history !== 'rewindable')
         return yield* rejected('Historical snapshot requires rewindable conversation document')
-      const state = yield* store.read
-      const visible = yield* visibleEntries(state, conversationId)
-      const entry = visible.find((item) => item.id === at)
-      const persisted = state.entries.find((item) => item.entry.id === at)
-      if (entry === undefined || persisted === undefined)
-        return yield* rejected('Historical entry is not visible', NotFound)
-      const logical = yield* address(token, { ...target, owner: entry.conversationId })
-      const document = findDocument(state, logical, persisted.commitSeq)
-      const snapshotValue =
-        document === undefined ? undefined : yield* materialize(document, persisted.commitSeq)
-      return snapshotValue === undefined
-        ? undefined
-        : yield* typed(token, snapshotValue, migrationCache)
+      return yield* project(
+        Effect.fnUntraced(function* (state) {
+          const visible = yield* visibleEntries(state, conversationId)
+          const entry = visible.find((item) => item.id === at)
+          const persisted = state.entries.find((item) => item.entry.id === at)
+          if (entry === undefined || persisted === undefined)
+            return yield* rejected('Historical entry is not visible', NotFound)
+          const logical = yield* address(token, { ...target, owner: entry.conversationId })
+          const document = findDocument(state, logical, persisted.commitSeq)
+          const snapshotValue =
+            document === undefined ? undefined : yield* materialize(document, persisted.commitSeq)
+          return snapshotValue === undefined
+            ? undefined
+            : yield* typed(token, snapshotValue, migrationCache)
+        }),
+      )
     }),
     state: (token, target) => Observation.state(store, token, target, migrationCache),
     watchDoc: (token, target) => Observation.watch(store, token, target, migrationCache),
     commits: Observation.commits(store),
     conversation: (id) =>
-      store.read.pipe(
-        Effect.flatMap((state) =>
-          detachedEffect(state.conversations.find((item) => item.id === id)),
-        ),
-      ),
+      project((state) => detachedEffect(state.conversations.find((item) => item.id === id))),
     entry: Effect.fnUntraced(function* (id, conversationId) {
-      const state = yield* store.read
-      if (
-        conversationId !== undefined &&
-        !(yield* visibleEntries(state, conversationId)).some((item) => item.id === id)
+      return yield* project(
+        Effect.fnUntraced(function* (state) {
+          if (
+            conversationId !== undefined &&
+            !(yield* visibleEntries(state, conversationId)).some((item) => item.id === id)
+          )
+            return undefined
+          return yield* detachedEffect(state.entries.find((item) => item.entry.id === id))
+        }),
       )
-        return undefined
-      return yield* detachedEffect(state.entries.find((item) => item.entry.id === id))
     }),
-    task: (id) =>
-      store.read.pipe(
-        Effect.flatMap((state) => detachedEffect(state.tasks.find((item) => item.id === id))),
-      ),
+    task: (id) => project((state) => detachedEffect(state.tasks.find((item) => item.id === id))),
     submission: (id) =>
-      store.read.pipe(
-        Effect.flatMap((state) => detachedEffect(state.submissions.find((item) => item.id === id))),
-      ),
+      project((state) => detachedEffect(state.submissions.find((item) => item.id === id))),
     submissionByRequest: (conversationId, requestId) =>
-      store.read.pipe(
-        Effect.flatMap((state) =>
-          detachedEffect(
-            state.submissions.find(
-              (item) => item.conversationId === conversationId && item.requestId === requestId,
-            ),
+      project((state) =>
+        detachedEffect(
+          state.submissions.find(
+            (item) => item.conversationId === conversationId && item.requestId === requestId,
           ),
         ),
       ),
     latestHeadMarker: Effect.fnUntraced(function* (conversationId, atOrBefore) {
-      const state = yield* store.read
-      return (yield* visibleEntries(state, conversationId, 0, atOrBefore)).find(
-        (item) => item.head !== undefined,
+      return yield* project(
+        Effect.fnUntraced(function* (state) {
+          return (yield* visibleEntries(state, conversationId, 0, atOrBefore)).find(
+            (item) => item.head !== undefined,
+          )
+        }),
       )
     }),
     scanConversations: (query, limit, cursor) =>
-      store.read.pipe(Effect.flatMap((state) => conversationPage(state, query, limit, cursor))),
+      project((state) => conversationPage(state, query, limit, cursor)),
     scanEntries: (query, limit, cursor) =>
-      store.read.pipe(Effect.flatMap((state) => entryPage(state, query, limit, cursor))),
-    scanTasks: (query, limit, cursor) =>
-      store.read.pipe(Effect.flatMap((state) => taskPage(state, query, limit, cursor))),
+      project((state) => entryPage(state, query, limit, cursor)),
+    scanTasks: (query, limit, cursor) => project((state) => taskPage(state, query, limit, cursor)),
     scanSubmissions: (query, limit, cursor) =>
-      store.read.pipe(Effect.flatMap((state) => submissionPage(state, query, limit, cursor))),
+      project((state) => submissionPage(state, query, limit, cursor)),
     scanDocuments: (query, limit, cursor) =>
-      store.read.pipe(
-        Effect.flatMap((state) =>
-          page(
-            documentsInScope(state, query.scope, query.at)
-              .map((item) => item.record)
-              .filter((item) => query.kind === undefined || item.kind === query.kind),
-            limit,
-            cursor,
-          ),
+      project((state) =>
+        page(
+          documentsInScope(state, query.scope, query.at)
+            .map((item) => item.record)
+            .filter((item) => query.kind === undefined || item.kind === query.kind),
+          limit,
+          cursor,
         ),
       ),
     findDocument: (logical, at = 'current') =>
-      store.read.pipe(
-        Effect.flatMap((state) => detachedEffect(findDocument(state, logical, at)?.record)),
-      ),
+      project((state) => detachedEffect(findDocument(state, logical, at)?.record)),
     document: Effect.fnUntraced(function* (id, at = 'current') {
-      const state = yield* store.read
-      const document = state.documents.find((item) => item.record.id === id)
-      return document === undefined ? undefined : yield* materialize(document, at)
+      return yield* project(
+        Effect.fnUntraced(function* (state) {
+          const document = state.documents.find((item) => item.record.id === id)
+          return document === undefined ? undefined : yield* materialize(document, at)
+        }),
+      )
     }),
-    isClosed: Effect.sync(() => sealed),
+    isClosed: Ref.get(lifecycle).pipe(Effect.map((state) => state.sealed)),
     onClose,
     awaitClosed,
   })
   return service
 })
-export const layer = Layer.effect(Session, make())
+export const layer = Layer.effect(Session, make)

@@ -34,7 +34,7 @@ const setup = Effect.gen(function* () {
 const fail = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.flip, Effect.orDie)
 const commit = (store: Store['Service']) =>
   Effect.gen(function* () {
-    const session = yield* Session.make().pipe(Effect.provideService(Store, store))
+    const session = yield* Session.make.pipe(Effect.provideService(Store, store))
     yield* session.root()
     return yield* session.transaction(
       Effect.fnUntraced(function* (tx) {
@@ -59,7 +59,7 @@ describe('JSONL recovery', () => {
         yield* Effect.scoped(
           Effect.gen(function* () {
             const store = yield* Jsonl.make({ directory })
-            const session = yield* Session.make().pipe(Effect.provideService(Store, store))
+            const session = yield* Session.make.pipe(Effect.provideService(Store, store))
             assert.strictEqual((yield* session.snapshot(token))?.value.count, 3)
             assert.deepStrictEqual(
               yield* session.transaction(() => Effect.die('receipt callback ran'), {
@@ -80,7 +80,7 @@ describe('JSONL recovery', () => {
         yield* Effect.scoped(
           Effect.gen(function* () {
             const store = yield* Jsonl.make({ directory })
-            const session = yield* Session.make().pipe(Effect.provideService(Store, store))
+            const session = yield* Session.make.pipe(Effect.provideService(Store, store))
             assert.strictEqual(
               yield* session.transaction((tx) => tx.ensureRoot.pipe(Effect.asVoid), {
                 key: 'void',
@@ -92,7 +92,7 @@ describe('JSONL recovery', () => {
         yield* Effect.scoped(
           Effect.gen(function* () {
             const store = yield* Jsonl.make({ directory })
-            const session = yield* Session.make().pipe(Effect.provideService(Store, store))
+            const session = yield* Session.make.pipe(Effect.provideService(Store, store))
             assert.strictEqual(
               yield* session.transaction(() => Effect.die('receipt callback ran'), { key: 'void' }),
               undefined,
@@ -207,14 +207,14 @@ describe('SQLite schema and reopen', () => {
       Effect.gen(function* () {
         const first = yield* Effect.scoped(
           Effect.gen(function* () {
-            const store = yield* Sqlite.make()
+            const store = yield* Sqlite.make
             return yield* commit(store)
           }),
         )
         yield* Effect.scoped(
           Effect.gen(function* () {
-            const store = yield* Sqlite.make()
-            const session = yield* Session.make().pipe(Effect.provideService(Store, store))
+            const store = yield* Sqlite.make
+            const session = yield* Session.make.pipe(Effect.provideService(Store, store))
             assert.strictEqual((yield* session.snapshot(token))?.value.count, 3)
             assert.deepStrictEqual(
               yield* session.transaction(() => Effect.die('receipt callback ran'), {
@@ -243,8 +243,8 @@ describe('SQLite schema and reopen', () => {
         const resourceScope = yield* Effect.acquireRelease(Scope.make(), (scope, exit) =>
           Scope.close(scope, exit),
         )
-        const store = yield* Sqlite.make().pipe(Scope.provide(resourceScope))
-        const session = yield* Session.make().pipe(
+        const store = yield* Sqlite.make.pipe(Scope.provide(resourceScope))
+        const session = yield* Session.make.pipe(
           Effect.provideService(Store, store),
           Scope.provide(resourceScope),
         )
@@ -264,8 +264,8 @@ describe('SQLite schema and reopen', () => {
           undefined,
         )
         yield* Scope.close(resourceScope, Exit.void)
-        const reopened = yield* Sqlite.make()
-        const session2 = yield* Session.make().pipe(Effect.provideService(Store, reopened))
+        const reopened = yield* Sqlite.make
+        const session2 = yield* Session.make.pipe(Effect.provideService(Store, reopened))
         assert.strictEqual(
           yield* session2.transaction(() => Effect.die('void replay ran'), { key: 'void' }),
           undefined,
@@ -279,11 +279,11 @@ describe('SQLite schema and reopen', () => {
       Effect.scoped(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
-          yield* Effect.scoped(Sqlite.make())
+          yield* Effect.scoped(Sqlite.make)
           yield* sql`DELETE FROM durable_state`
-          assert.strictEqual((yield* fail(Effect.scoped(Sqlite.make()))).reason._tag, 'Corrupt')
+          assert.strictEqual((yield* fail(Effect.scoped(Sqlite.make))).reason._tag, 'Corrupt')
           yield* sql`UPDATE durable_schema SET version=999`
-          assert.strictEqual((yield* fail(Effect.scoped(Sqlite.make()))).reason._tag, 'Corrupt')
+          assert.strictEqual((yield* fail(Effect.scoped(Sqlite.make))).reason._tag, 'Corrupt')
         }).pipe(Effect.provide(client)),
       ),
   )
@@ -318,7 +318,7 @@ describe('SQLite schema and reopen', () => {
       Effect.scoped(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
-          const store = yield* Sqlite.make()
+          const store = yield* Sqlite.make
           yield* commit(store)
           const before = yield* store.read
           yield* fail(

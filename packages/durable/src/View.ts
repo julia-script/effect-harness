@@ -6,6 +6,7 @@ import * as Channel from 'effect/Channel'
 import * as PubSub from 'effect/PubSub'
 import * as Queue from 'effect/Queue'
 import * as RcMap from 'effect/RcMap'
+import * as HashMap from 'effect/HashMap'
 import * as Ref from 'effect/Ref'
 import * as Agent from '@effect-harness/harness/Agent'
 import * as Totals from '@effect-harness/harness/Usage'
@@ -118,8 +119,8 @@ interface MountedDocument {
 interface MountedState {
   readonly value: Value
   readonly seq: Record.Seq | 0
-  readonly tasks: ReadonlyMap<Record.TaskId, Record.Task>
-  readonly documents: Map<string, MountedDocument>
+  readonly tasks: HashMap.HashMap<Record.TaskId, Record.Task>
+  readonly documents: HashMap.HashMap<string, MountedDocument>
 }
 interface Envelope {
   readonly type: 'change' | 'resync'
@@ -230,8 +231,8 @@ const hydrate = Effect.fnUntraced(function* (state: Record.State, id: Record.Con
   }
   return {
     value: { conversation, entries, docs },
-    documents,
-    tasks: new Map(
+    documents: HashMap.fromIterable(documents),
+    tasks: HashMap.fromIterable(
       state.tasks.filter((task) => task.conversationId === id).map((task) => [task.id, task]),
     ),
     seq: yield* journalCursor(state.nextSeq),
@@ -357,7 +358,16 @@ const advance = Effect.fnUntraced(function* (
     reset: false,
     rebased,
   }
-  return { state: { ...mount, seq: frame.seq }, change, tasks: [...mount.tasks.values()] }
+  return {
+    state: {
+      ...mount,
+      documents: HashMap.fromIterable(mount.documents),
+      tasks: HashMap.fromIterable(mount.tasks),
+      seq: frame.seq,
+    },
+    change,
+    tasks: [...mount.tasks.values()],
+  }
 })
 
 export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Effect.gen(
@@ -365,22 +375,26 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
     const store = yield* Store.Store
     const semaphore = yield* Semaphore.make(1)
     const authoritative = yield* Ref.make(Record.emptyState())
-    let after: Record.Seq | 0 = 0
-    let closed: Observation.End | undefined
+    const after = yield* Ref.make<Record.Seq | 0>(0)
+    const closed = yield* Ref.make<Observation.End | undefined>(undefined)
     const mounts = yield* RcMap.make({
-      lookup: (id: Record.ConversationId) =>
-        Effect.gen(function* (): Effect.fn.Return<Mount, StorageError, Scope.Scope> {
-          // Lookup runs inside serialized acquisition/refresh and uses its exact snapshot.
-          const state = yield* hydrate(yield* Ref.get(authoritative), id)
-          const events = yield* Effect.acquireRelease(PubSub.unbounded<Envelope>(), PubSub.shutdown)
-          const terminal = yield* Deferred.make<Observation.End>()
-          yield* Effect.addFinalizer(() => Deferred.succeed(terminal, closed ?? 'cancelled'))
-          return { state: yield* Ref.make<MountedState>(state), events, closed: terminal }
-        }),
+      lookup: Effect.fnUntraced(function* (
+        id: Record.ConversationId,
+      ): Effect.fn.Return<Mount, StorageError, Scope.Scope> {
+        // Lookup runs inside serialized acquisition/refresh and uses its exact snapshot.
+        const state = yield* hydrate(yield* Ref.get(authoritative), id)
+        const events = yield* Effect.acquireRelease(PubSub.unbounded<Envelope>(), PubSub.shutdown)
+        const terminal = yield* Deferred.make<Observation.End>()
+        yield* Effect.addFinalizer(() =>
+          Ref.get(closed).pipe(
+            Effect.flatMap((reason) => Deferred.succeed(terminal, reason ?? 'cancelled')),
+          ),
+        )
+        return { state: yield* Ref.make<MountedState>(state), events, closed: terminal }
+      }),
     })
     const close = Effect.fnUntraced(function* (reason: Observation.End) {
-      if (closed !== undefined) return
-      closed = reason
+      if ((yield* Ref.getAndSet(closed, reason)) !== undefined) return
       // RcMap exposes a live key iterable; scoped leases can evict entries while closing.
       const ids = [...(yield* RcMap.keys(mounts))]
       for (const id of ids) {
@@ -393,10 +407,11 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
       }
     })
     const refreshUnlocked = Effect.gen(function* () {
-      if (closed !== undefined) return yield* rejected('View service is closed', Closed)
-      const journal = yield* store.journal(after)
+      if ((yield* Ref.get(closed)) !== undefined)
+        return yield* rejected('View service is closed', Closed)
+      const journal = yield* store.journal(yield* Ref.get(after))
       yield* Ref.set(authoritative, journal.state)
-      let previousSeq = after
+      let previousSeq = yield* Ref.get(after)
       const gapped = journal.frames.some((frame) => {
         const gap = frame.seq > previousSeq + 1
         previousSeq = frame.seq
@@ -435,7 +450,7 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
                 for (const write of frame.writes)
                   if (write.type === 'task' && write.value.conversationId === id)
                     tasks.set(write.value.id, write.value)
-                current = { ...current, seq: frame.seq, tasks }
+                current = { ...current, seq: frame.seq, tasks: HashMap.fromIterable(tasks) }
               }
             }
             if (rebasing) {
@@ -451,14 +466,14 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
               yield* PubSub.publish(mount.events, {
                 type: 'resync',
                 change,
-                tasks: [...hydrated.tasks.values()],
+                tasks: [...HashMap.values(hydrated.tasks)].sort((a, b) => a.id - b.id),
               })
             }
             // New subscribers receive the final authoritative sequence and task baseline.
             current = {
               ...current,
               seq: yield* journalCursor(journal.state.nextSeq),
-              tasks: new Map(
+              tasks: HashMap.fromIterable(
                 journal.state.tasks
                   .filter((task) => task.conversationId === id)
                   .map((task) => [task.id, task]),
@@ -468,7 +483,7 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
           }),
         )
       }
-      after = yield* journalCursor(journal.state.nextSeq)
+      yield* Ref.set(after, yield* journalCursor(journal.state.nextSeq))
     })
     yield* Effect.addFinalizer(() => close('cancelled'))
     yield* Effect.forkScoped(
@@ -500,13 +515,15 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
             >({ capacity: 100 })
             const delivery = yield* Semaphore.make(1)
             const value = yield* Ref.make(
-              yield* projection.initial(baseline.value, [...baseline.tasks.values()]),
+              yield* projection.initial(
+                baseline.value,
+                [...HashMap.values(baseline.tasks)].sort((a, b) => a.id - b.id),
+              ),
             )
-            let ended = false
-            let started = false
+            const ended = yield* Ref.make(false)
+            const started = yield* Ref.make(false)
             const finish = Effect.fnUntraced(function* (reason: Observation.End) {
-              if (ended) return
-              ended = true
+              if (yield* Ref.getAndSet(ended, true)) return
               // Ending discards history immediately; a stopped consumer cannot drain stale values.
               yield* Queue.clear(queue)
               yield* Queue.end(queue)
@@ -515,35 +532,34 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
             const stop = (reason: Observation.End) =>
               finish(reason).pipe(Effect.andThen(Scope.close(scope, Exit.void)))
             yield* Effect.addFinalizer(() => finish('cancelled'))
-            const project = (event: Envelope) =>
-              delivery.withPermit(
-                Effect.gen(function* () {
-                  if (ended) return
-                  if (event.type === 'resync') {
-                    const pending = yield* Queue.clear(queue)
-                    if (pending.some((item) => item.reset)) {
-                      const next = yield* projection.reset(
-                        event.change.value,
-                        event.change.seq,
-                        event.tasks,
-                      )
-                      if (!ended) yield* Queue.offer(queue, { value: next, reset: true })
-                    } else if (!ended) yield* Queue.offerAll(queue, pending)
-                    return
-                  }
-                  const next = yield* projection.project(event.change)
-                  if (next === undefined || ended) return
-                  if ((yield* Queue.size(queue)) >= 100) {
-                    yield* Queue.clear(queue)
-                    const reset = yield* projection.reset(
-                      event.change.value,
-                      event.change.seq,
-                      event.tasks,
-                    )
-                    if (!ended) yield* Queue.offer(queue, { value: reset, reset: true })
-                  } else yield* Queue.offer(queue, { value: next, reset: false })
-                }),
-              )
+            const project = Effect.fnUntraced(function* (event: Envelope) {
+              if (yield* Ref.get(ended)) return
+              if (event.type === 'resync') {
+                const pending = yield* Queue.clear(queue)
+                if (pending.some((item) => item.reset)) {
+                  const next = yield* projection.reset(
+                    event.change.value,
+                    event.change.seq,
+                    event.tasks,
+                  )
+                  if (!(yield* Ref.get(ended)))
+                    yield* Queue.offer(queue, { value: next, reset: true })
+                } else if (!(yield* Ref.get(ended))) yield* Queue.offerAll(queue, pending)
+                return
+              }
+              const next = yield* projection.project(event.change)
+              if (next === undefined || (yield* Ref.get(ended))) return
+              if ((yield* Queue.size(queue)) >= 100) {
+                yield* Queue.clear(queue)
+                const reset = yield* projection.reset(
+                  event.change.value,
+                  event.change.seq,
+                  event.tasks,
+                )
+                if (!(yield* Ref.get(ended)))
+                  yield* Queue.offer(queue, { value: reset, reset: true })
+              } else yield* Queue.offer(queue, { value: next, reset: false })
+            }, Semaphore.withPermit(delivery))
             // Immediate startup installs the PubSub subscription before releasing acquisition serialization.
             yield* Stream.runForEach(Stream.fromPubSub(mount.events), project).pipe(
               Effect.catch(() => stop('listener_error')),
@@ -561,14 +577,14 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
             )
             const changes = Stream.unwrap(
               Effect.gen(function* () {
-                if (started || ended) return yield* rejected('Watch is stopped or already consumed')
-                started = true
+                if ((yield* Ref.getAndSet(started, true)) || (yield* Ref.get(ended)))
+                  return yield* rejected('Watch is stopped or already consumed')
                 // Native Stream.fromQueue drains chunks with takeAll, hiding buffered history
                 // from Queue.size. Pull one item so the 100 pending-value policy remains exact.
                 return Stream.fromChannel(
                   Channel.fromQueue(queue).pipe(Channel.map((next) => [next] as const)),
                 ).pipe(
-                  Stream.takeWhile(() => !ended),
+                  Stream.takeWhile(() => !Ref.getUnsafe(ended)),
                   Stream.tap((next) => Ref.set(value, next.value)),
                   Stream.map((next) => next.value),
                 )
@@ -603,8 +619,9 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
     })
     const watch: Service['watch'] = Effect.fnUntraced(function* (id) {
       const subscription = yield* observe<Change>(id, {
-        initial: (value) =>
-          Effect.succeed({ seq: after, before: value, value, ops: [], reset: false }),
+        initial: Effect.fnUntraced(function* (value) {
+          return { seq: yield* Ref.get(after), before: value, value, ops: [], reset: false }
+        }),
         project: (change) => Effect.succeed(change.ops.length === 0 ? undefined : change),
         reset: (value, seq) =>
           Effect.succeed({ seq, before: value, value, ops: [['replace', value]], reset: true }),
@@ -624,20 +641,16 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
       watch,
       state: Effect.fnUntraced(function* (id) {
         const subscription = yield* watch(id)
-        let cursor = 0
+        const cursor = yield* Ref.make(0)
         yield* subscription
-          .listen(() =>
-            Effect.sync(() => {
-              cursor++
-            }),
-          )
+          .listen(() => Ref.update(cursor, (value) => value + 1))
           .pipe(Effect.ignore, Effect.forkScoped)
         return {
           get value() {
             return subscription.value
           },
           get cursor() {
-            return cursor
+            return Ref.getUnsafe(cursor)
           },
           closed: subscription.closed,
         }

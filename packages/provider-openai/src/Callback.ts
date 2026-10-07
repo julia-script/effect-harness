@@ -7,7 +7,8 @@ import {
   type OAuth,
 } from '@effect-harness/auth/Credential'
 import * as Context from 'effect/Context'
-import * as Clock from 'effect/Clock'
+import * as DateTime from 'effect/DateTime'
+import * as Duration from 'effect/Duration'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -94,7 +95,10 @@ export const layer = (options?: { readonly account?: string | undefined }) =>
       return Callback.of({
         authorization,
         await: Effect.gen(function* () {
-          const remaining = Math.max(0, authorization.expiresAt - (yield* Clock.currentTimeMillis))
+          const now = yield* DateTime.now
+          const remaining = DateTime.isGreaterThan(authorization.expiresAt, now)
+            ? DateTime.distance(now, authorization.expiresAt)
+            : Duration.zero
           return yield* Deferred.await(result).pipe(
             Effect.timeoutOrElse({
               duration: remaining,

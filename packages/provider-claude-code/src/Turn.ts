@@ -59,10 +59,10 @@ const reason = (stop: string | null | undefined): Response.FinishReason => {
 }
 
 /** One model turn. MCP handlers remain blocked; all tool calls are emitted only after the complete turn. */
-export const translate = (
-  events: Stream.Stream<Protocol.Event, AiError.AiError>,
+export const translate = <E, R>(
+  events: Stream.Stream<Protocol.Event, E, R>,
   aliases: ReadonlyMap<string, string>,
-): Stream.Stream<Part, AiError.AiError> =>
+): Stream.Stream<Part, E | AiError.AiError, R> =>
   Stream.suspend(() => {
     const blocks = new Map<number, Block>()
     const completedTools = new Map<
@@ -167,21 +167,20 @@ export const translate = (
         }
       }
     })
-    const toolFinish = () =>
-      Effect.gen(function* () {
-        if ([...blocks.values()].some((b) => !b.closed) || completedTools.size === 0)
-          return yield* protocol('Incomplete Claude Code tool turn')
-        toolDone = true
-        return [
-          ...completedTools.values(),
-          {
-            type: 'finish',
-            reason: 'tool-calls',
-            usage: usage(tokenUsage),
-            metadata: { claudeCode: { interruptedAfterToolIntent: true, costUnavailable: true } },
-          },
-        ] satisfies Array<Part>
-      })
+    const toolFinish = Effect.gen(function* () {
+      if ([...blocks.values()].some((b) => !b.closed) || completedTools.size === 0)
+        return yield* protocol('Incomplete Claude Code tool turn')
+      toolDone = true
+      return [
+        ...completedTools.values(),
+        {
+          type: 'finish',
+          reason: 'tool-calls',
+          usage: usage(tokenUsage),
+          metadata: { claudeCode: { interruptedAfterToolIntent: true, costUnavailable: true } },
+        },
+      ] satisfies Array<Part>
+    })
     const consume = Effect.fnUntraced(function* (
       event: Protocol.Event,
     ): Effect.fn.Return<Array<Part>, AiError.AiError> {
@@ -306,7 +305,7 @@ export const translate = (
           const index = blocks.size
           output.push(...(yield* start(index, source)), ...(yield* close(index)))
         }
-        if (stopReason === 'tool_use') output.push(...(yield* toolFinish()))
+        if (stopReason === 'tool_use') output.push(...(yield* toolFinish))
         return output
       }
       partial = true
@@ -365,11 +364,12 @@ export const translate = (
           )
             return yield* protocol('Incomplete Claude Code message')
           messageStopped = true
-          return stopReason === 'tool_use' ? yield* toolFinish() : []
+          return stopReason === 'tool_use' ? yield* toolFinish : []
         }
       }
     })
     return events.pipe(
+      // P2-fn-pipeline-args-not-pipe: this validation captures tokenUsage allocated per stream execution; moving it to module scope would share accounting between turns.
       Stream.mapEffect((event) =>
         consume(event).pipe(
           Effect.filterOrFail(
@@ -422,52 +422,53 @@ export const translate = (
   })
 
 /** Consolidates the same validated stream used by streaming generation. */
-export const collect = (stream: Stream.Stream<Part, AiError.AiError>) =>
-  Effect.gen(function* () {
-    const parts: Array<Response.PartEncoded> = []
-    const positions = new Map<string, number>()
-    yield* stream.pipe(
-      Stream.runForEach((part) =>
-        Effect.sync(() => {
-          if (part.type === 'text-start' || part.type === 'reasoning-start') {
-            positions.set(part.id, parts.length)
-            parts.push({
-              type: part.type === 'text-start' ? 'text' : 'reasoning',
-              text: '',
-              metadata: { claudeCode: part.metadata?.claudeCode ?? {} },
-            })
-          } else if (part.type === 'text-delta' || part.type === 'reasoning-delta') {
-            const index = positions.get(part.id)
-            const current = index === undefined ? undefined : parts[index]
-            if (
-              index !== undefined &&
-              current !== undefined &&
-              (current.type === 'text' || current.type === 'reasoning')
-            )
-              parts[index] = { ...current, text: current.text + part.delta }
-          } else if (part.type === 'text-end' || part.type === 'reasoning-end') {
-            const index = positions.get(part.id)
-            const current = index === undefined ? undefined : parts[index]
-            if (
-              index !== undefined &&
-              current !== undefined &&
-              (current.type === 'text' || current.type === 'reasoning')
-            )
-              parts[index] = {
-                ...current,
-                metadata: {
-                  claudeCode: part.metadata?.claudeCode ?? current.metadata?.claudeCode ?? {},
-                },
-              }
-          } else if (
-            part.type !== 'tool-params-start' &&
-            part.type !== 'tool-params-delta' &&
-            part.type !== 'tool-params-end' &&
-            part.type !== 'error'
+export const collect = Effect.fnUntraced(function* <E, R>(
+  stream: Stream.Stream<Part, E, R>,
+): Effect.fn.Return<Array<Response.PartEncoded>, E, R> {
+  const parts: Array<Response.PartEncoded> = []
+  const positions = new Map<string, number>()
+  yield* stream.pipe(
+    Stream.runForEach((part) =>
+      Effect.sync(() => {
+        if (part.type === 'text-start' || part.type === 'reasoning-start') {
+          positions.set(part.id, parts.length)
+          parts.push({
+            type: part.type === 'text-start' ? 'text' : 'reasoning',
+            text: '',
+            metadata: { claudeCode: part.metadata?.claudeCode ?? {} },
+          })
+        } else if (part.type === 'text-delta' || part.type === 'reasoning-delta') {
+          const index = positions.get(part.id)
+          const current = index === undefined ? undefined : parts[index]
+          if (
+            index !== undefined &&
+            current !== undefined &&
+            (current.type === 'text' || current.type === 'reasoning')
           )
-            parts.push(part)
-        }),
-      ),
-    )
-    return parts
-  })
+            parts[index] = { ...current, text: current.text + part.delta }
+        } else if (part.type === 'text-end' || part.type === 'reasoning-end') {
+          const index = positions.get(part.id)
+          const current = index === undefined ? undefined : parts[index]
+          if (
+            index !== undefined &&
+            current !== undefined &&
+            (current.type === 'text' || current.type === 'reasoning')
+          )
+            parts[index] = {
+              ...current,
+              metadata: {
+                claudeCode: part.metadata?.claudeCode ?? current.metadata?.claudeCode ?? {},
+              },
+            }
+        } else if (
+          part.type !== 'tool-params-start' &&
+          part.type !== 'tool-params-delta' &&
+          part.type !== 'tool-params-end' &&
+          part.type !== 'error'
+        )
+          parts.push(part)
+      }),
+    ),
+  )
+  return parts
+})

@@ -2,6 +2,7 @@ import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
+import type * as Scope from 'effect/Scope'
 import * as SqlError from 'effect/sql/SqlError'
 import * as SqlClient from 'effect/sql/SqlClient'
 import * as Record from '../Record.ts'
@@ -109,7 +110,11 @@ export const migrate = Effect.fnUntraced(function* (
       ),
     )
 })
-export const make = Effect.fnUntraced(function* () {
+export const make: Effect.Effect<
+  Store['Service'],
+  StorageError,
+  Scope.Scope | SqlClient.SqlClient
+> = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
   yield* migrate()
   const load = Effect.gen(function* () {
@@ -196,8 +201,12 @@ export const make = Effect.fnUntraced(function* () {
     ),
   )
   yield* load
+  const committedReadContext = {}
   return yield* Backend.make({
     load,
+    readContext: Effect.serviceOption(sql.transactionService).pipe(
+      Effect.map((lease) => (lease._tag === 'Some' ? lease.value : committedReadContext)),
+    ),
     committed,
     save,
     atomic: (effect) =>
@@ -212,4 +221,4 @@ export const make = Effect.fnUntraced(function* () {
         ),
   })
 })
-export const layer = Layer.effect(Store, make())
+export const layer = Layer.effect(Store, make)

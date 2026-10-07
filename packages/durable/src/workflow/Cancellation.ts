@@ -6,6 +6,8 @@ import * as Fiber from 'effect/Fiber'
 import * as FiberHandle from 'effect/FiberHandle'
 import * as Scope from 'effect/Scope'
 import * as Ref from 'effect/Ref'
+import * as HashMap from 'effect/HashMap'
+import * as HashSet from 'effect/HashSet'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Workflow from 'effect/workflow/Workflow'
@@ -29,38 +31,58 @@ export class Cancellation extends Context.Service<
   }
 >()('@effect-harness/durable/Cancellation') {}
 
-export const layer = Layer.sync(Cancellation, () => {
-  const live = new Map<string, Set<Effect.Effect<void>>>()
-  const key = (sessionId: Identity.SessionId, id: number) => JSON.stringify([sessionId, id])
-  return Cancellation.of({
-    register: (identity, cancel) =>
-      Effect.acquireRelease(
-        Effect.sync(() => {
-          const registration = Effect.suspend(() => cancel)
-          const address = key(identity.sessionId, identity.taskId)
-          const registrations = live.get(address) ?? new Set<Effect.Effect<void>>()
-          registrations.add(registration)
-          live.set(address, registrations)
-          return { address, registrations, registration }
-        }),
-        ({ address, registrations, registration }) =>
-          Effect.sync(() => {
-            registrations.delete(registration)
-            if (registrations.size === 0 && live.get(address) === registrations)
-              live.delete(address)
+export const layer = Layer.effect(
+  Cancellation,
+  Effect.gen(function* () {
+    const live = yield* Ref.make(HashMap.empty<string, HashSet.HashSet<Effect.Effect<void>>>())
+    const key = (sessionId: Identity.SessionId, id: number) => JSON.stringify([sessionId, id])
+    return Cancellation.of({
+      register: (identity, cancel) =>
+        Effect.acquireRelease(
+          Effect.gen(function* () {
+            const registration = Effect.suspend(() => cancel)
+            const address = key(identity.sessionId, identity.taskId)
+            yield* Ref.update(live, (entries) =>
+              HashMap.set(
+                entries,
+                address,
+                HashSet.add(
+                  Option.getOrElse(HashMap.get(entries, address), () => HashSet.empty()),
+                  registration,
+                ),
+              ),
+            )
+            return { address, registration }
           }),
-      ).pipe(Effect.asVoid),
-    cancel: (sessionId, reached) =>
-      Effect.forEach(
-        reached.tasks,
-        (task) =>
-          Effect.forEach([...(live.get(key(sessionId, task.id)) ?? [])], (cancel) => cancel, {
-            discard: true,
-          }),
-        { discard: true },
-      ),
-  })
-})
+          ({ address, registration }) =>
+            Ref.update(live, (entries) => {
+              const registrations = Option.getOrElse(HashMap.get(entries, address), () =>
+                HashSet.empty(),
+              )
+              const remaining = HashSet.remove(registrations, registration)
+              return HashSet.size(remaining) === 0
+                ? HashMap.remove(entries, address)
+                : HashMap.set(entries, address, remaining)
+            }),
+        ).pipe(Effect.asVoid),
+      cancel: Effect.fnUntraced(function* (sessionId, reached) {
+        const entries = yield* Ref.get(live)
+        yield* Effect.forEach(
+          reached.tasks,
+          (task) =>
+            Effect.forEach(
+              Option.getOrElse(HashMap.get(entries, key(sessionId, task.id)), () =>
+                HashSet.empty(),
+              ),
+              (cancel) => cancel,
+              { discard: true },
+            ),
+          { discard: true },
+        )
+      }),
+    })
+  }),
+)
 
 /** Commit the complete bottom-up reach before any owner-local cancellation is signalled. */
 export const mark = Effect.fnUntraced(function* (
@@ -107,7 +129,7 @@ export const activity = <A, E, R>(
       const instance = yield* Effect.serviceOption(WorkflowEngine.WorkflowInstance)
       const pause = Option.isSome(instance) ? Workflow.suspend(instance.value) : Effect.interrupt
       if (yield* session.isClosed) return yield* pause
-      let closing = false
+      const closing = yield* Ref.make(false)
       const closed = yield* Deferred.make<void>()
       const completed = yield* Deferred.make<void>()
       // Published once: None means the invocation closed before body startup.
@@ -117,7 +139,7 @@ export const activity = <A, E, R>(
         yield* session
           .onClose(
             Effect.gen(function* () {
-              closing = true
+              yield* Ref.set(closing, true)
               yield* Deferred.succeed(closed, undefined)
               // Actual exit must precede receipt observation: an early receipt can
               // interrupt the enclosing native Activity before it records suspension.
@@ -132,7 +154,7 @@ export const activity = <A, E, R>(
               () => pause,
             ),
           )
-        if (closing || (yield* session.isClosed)) return yield* pause
+        if ((yield* Ref.get(closing)) || (yield* session.isClosed)) return yield* pause
         // Acquired after registration: Scope joins the body handle before removing
         // its cleanup membership, including external invocation interruption.
         const handle = yield* FiberHandle.make<A, E>()
@@ -167,7 +189,7 @@ export const activity = <A, E, R>(
           }),
         )
         const exit = yield* Fiber.await(fiber)
-        if (closing || (yield* session.isClosed)) return yield* pause
+        if ((yield* Ref.get(closing)) || (yield* session.isClosed)) return yield* pause
         return yield* exit
       }).pipe(
         Effect.ensuring(
@@ -218,13 +240,13 @@ export const run = <A, E, R>(
               message: 'Invocation task belongs to another conversation',
             }),
           })
-        let aborted = false
+        const aborted = yield* Ref.make(false)
         const fiber = yield* body.pipe(Effect.interruptible, Effect.forkScoped)
         const stop = Effect.gen(function* () {
           if (yield* session.isClosed) return
           const task = (yield* session.committed).tasks.find((task) => task.id === identity.taskId)
           if (task !== undefined && !task.abortRequested) return
-          aborted = true
+          yield* Ref.set(aborted, true)
           yield* Fiber.interrupt(fiber)
         }).pipe(
           Effect.catchIf(
@@ -249,7 +271,7 @@ export const run = <A, E, R>(
           }),
         ).pipe(Effect.forkScoped)
         const exit = yield* Effect.raceFirst(Fiber.await(fiber), Fiber.join(monitor))
-        if (aborted)
+        if (yield* Ref.get(aborted))
           return yield* new ExecutionError({
             reason: new Aborted({ message: 'Task has a durable abort mark' }),
           })

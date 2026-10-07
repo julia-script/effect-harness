@@ -1,3 +1,4 @@
+import * as Time from '@effect-harness/harness/Time'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
 import * as Tool from '@effect-harness/harness/Tool'
@@ -5,9 +6,9 @@ import * as Conversation from './Conversation.ts'
 import * as Record from './Record.ts'
 
 /** Stored input timestamps are absent on caller-authored and onYield entries. */
-export const UserData = Schema.Struct({ timestamp: Schema.optionalKey(Schema.Finite) })
+export const UserData = Schema.Struct({ timestamp: Schema.optionalKey(Time.EpochMillis) })
 export const AssistantData = Schema.Struct({
-  timestamp: Schema.optionalKey(Schema.Finite),
+  timestamp: Schema.optionalKey(Time.EpochMillis),
   harness: Conversation.Metadata,
 })
 export const SystemData = Schema.Struct({
@@ -15,7 +16,7 @@ export const SystemData = Schema.Struct({
 })
 /** Durable execution metadata includes both executed and immediately unavailable calls. */
 export const ToolResultData = Schema.Struct({
-  timestamp: Schema.Finite,
+  timestamp: Time.EpochMillis,
   assistantId: Record.EntryId,
   callId: Schema.String,
   name: Schema.String,

@@ -1,3 +1,4 @@
+import * as Entry from '../Entry.ts'
 import * as Serialization from '../Serialization.ts'
 import { ToolCheckpoint } from './Outcome.ts'
 import * as Layer from 'effect/Layer'
@@ -5,7 +6,8 @@ import * as Harness from '@effect-harness/harness/Executor'
 import * as Invocation from '@effect-harness/harness/Invocation'
 import * as Tool from '@effect-harness/harness/Tool'
 import * as ToolResult from '@effect-harness/harness/ToolResult'
-import * as Clock from 'effect/Clock'
+import * as DateTime from 'effect/DateTime'
+import * as Ref from 'effect/Ref'
 import * as Effect from 'effect/Effect'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
@@ -66,22 +68,19 @@ export const appendResult = Effect.fnUntraced(function* (
       ],
     }),
   ]).pipe(Effect.mapError(codecError))
-  const encodedExecution = yield* Schema.encodeEffect(Schema.toCodecJson(Tool.Execution))(
-    execution,
-  ).pipe(Effect.mapError(codecError))
   const entry = yield* tx.appendEntry(payload.conversationId, {
     kind: 'harness.tool',
     model: yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Json))(model).pipe(
       Effect.mapError(codecError),
     ),
     ...(payload.taskId === undefined ? {} : { byTaskId: payload.taskId }),
-    data: {
-      timestamp: yield* Clock.currentTimeMillis,
+    data: yield* Schema.encodeEffect(Serialization.json(Entry.ToolResultData))({
+      timestamp: yield* DateTime.now,
       assistantId: payload.assistantId,
       callId: payload.callId,
       name: payload.name,
-      execution: encodedExecution,
-    },
+      execution,
+    }).pipe(Effect.mapError(codecError)),
   })
   const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
   const slot = live.tools?.find((slot) => slot.callId === payload.callId)
@@ -272,15 +271,11 @@ export const layer: Layer.Layer<
             task.state.outcome ?? null,
           ).pipe(Effect.mapError(codecError))
         }
-        let committed: Record.Json | undefined
+        const committed = yield* Ref.make<Record.Json | undefined>(undefined)
         const commit = (execution: Tool.Execution) =>
           settle(execution).pipe(
             Effect.provideContext(settlementContext),
-            Effect.tap((value) =>
-              Effect.sync(() => {
-                committed = value
-              }),
-            ),
+            Effect.tap((value) => Ref.set(committed, value)),
             Effect.asVoid,
             Effect.orDie,
           )
@@ -374,11 +369,11 @@ export const layer: Layer.Layer<
                 : invalid('Tool terminal projection failed', cause),
             ),
           )
-          if (committed === undefined) yield* commit(execution)
+          if ((yield* Ref.get(committed)) === undefined) yield* commit(execution)
         }
-        return yield* Schema.decodeEffect(Schema.toCodecJson(Outcome))(committed ?? null).pipe(
-          Effect.mapError(codecError),
-        )
+        return yield* Schema.decodeEffect(Schema.toCodecJson(Outcome))(
+          (yield* Ref.get(committed)) ?? null,
+        ).pipe(Effect.mapError(codecError))
       }),
     })
     return outcome.receipt

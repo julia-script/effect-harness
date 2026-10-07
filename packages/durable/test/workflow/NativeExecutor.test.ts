@@ -1,3 +1,4 @@
+import * as Duration from 'effect/Duration'
 import * as Identity from '../../src/Identity.ts'
 import { assert, describe, it } from '@effect/vitest'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
@@ -198,7 +199,10 @@ describe('native submission executor', () => {
                 deferred: {
                   inspect: (parts) =>
                     parts.some((part) => part.type === 'finish' && part.reason === 'other')
-                      ? { handle: { job: 'pinned' }, pollAfterMs: abort ? 60000 : 0 }
+                      ? {
+                          handle: { job: 'pinned' },
+                          pollAfterMs: Duration.millis(abort ? 60000 : 0),
+                        }
                       : undefined,
                   fetch: (handle, options) =>
                     Stream.unwrap(
@@ -281,6 +285,7 @@ describe('native submission executor', () => {
   }
   for (const scenario of [
     'eof-retry',
+    'eof-exhaustion',
     'continuation',
     'threshold',
     'overflow',
@@ -315,7 +320,10 @@ describe('native submission executor', () => {
               Stream.unwrap(
                 Effect.gen(function* () {
                   const call = yield* Ref.updateAndGet(calls, (n) => n + 1)
-                  if (call === 1 && scenario === 'eof-retry')
+                  if (
+                    (call === 1 && scenario === 'eof-retry') ||
+                    (call <= 2 && scenario === 'eof-exhaustion')
+                  )
                     return Stream.fromIterable<NativeResponse.StreamPartEncoded>([
                       { type: 'text-start', id: 'text' },
                       { type: 'text-delta', id: 'text', delta: 'partial' },
@@ -415,7 +423,9 @@ describe('native submission executor', () => {
             )
             assert.strictEqual(
               result.status,
-              scenario === 'overflow-incomplete' ? 'unanswered' : 'done',
+              scenario === 'overflow-incomplete' || scenario === 'eof-exhaustion'
+                ? 'unanswered'
+                : 'done',
             )
             assert.strictEqual(
               yield* Ref.get(calls),
@@ -430,6 +440,14 @@ describe('native submission executor', () => {
             const live = yield* session.snapshot(Inbox.LiveDoc, { owner: root.id })
             assert.strictEqual(live?.value.run, undefined)
             assert.strictEqual(live?.value.generation, undefined)
+            if (scenario === 'eof-retry' || scenario === 'eof-exhaustion') {
+              const preparations = (yield* session.committed).receipts.filter((receipt) =>
+                receipt.key.startsWith('workflow/generation/prepare/'),
+              )
+              assert.strictEqual(preparations.length, 2)
+              assert.isTrue(preparations.some((receipt) => receipt.key.endsWith('/1/0')))
+              assert.isTrue(preparations.some((receipt) => receipt.key.endsWith('/2/0')))
+            }
             if (scenario === 'continuation') {
               assert.deepStrictEqual(yield* Ref.get(yielded), ['answer-1', 'answer-2'])
               const view = yield* Conversation.context(session, root.id)

@@ -6,6 +6,8 @@ The generic harness offers native Effect AI `read`, `write`, `edit` and `bash` d
 
 `Node.layerConfig` accepts `Config.Wrap<Node.Options>`. Default shell discovery reads search paths from the active ConfigProvider and uses the supplied FileSystem and Path services. Its optional `host` configuration supplies platform, cwd, home and the search-path delimiter; the default host adapter obtains those values when the Layer is built. Child-process environment inheritance remains controlled by the execution options.
 
+Build `harness/MutationLocks.layer` once in the host's Scope and provide that Context when binding the mutation tools. All Env layers and runtime boundaries that operate on the same environment namespace must receive that same manager instance. Its scoped locks serialize each canonical file path and remain leased until an admitted write settles, including during cancellation. Building a separate manager for each invocation would let those writes overlap.
+
 `NativeFiles.watchDirectory(path)` returns a single-consumer `changes` Stream and a `started` Effect that reports installation success or failure. Consuming the Stream installs the native watcher in that consumption's Scope. `Env.watch` waits for installation before returning and supervises stream failures, including recovery through polling when native coverage is unavailable. Closing its acquisition Scope joins native producers before ending delivery.
 
 Tool paths resolve against invocation cwd, support configured home paths and Unicode/path normalization, and use the host Path service. The environment does not act as a filesystem sandbox. The host owns access policy and determines which tools/extensions a conversation can select.
@@ -15,6 +17,8 @@ Tool paths resolve against invocation cwd, support configured home paths and Uni
 Text truncation defaults to 2,000 lines and 50 KiB and respects UTF-8 character boundaries. An oversized first line shows a bounded prefix with a truncation diagnostic and continuation instructions. Shell output uses bounded windows and spill files for full output, carries truncation notices and typed spill paths, and can report stdout/stderr progress with throttling. Persisted tool progress retains output/details/diagnostics separately from the final model-facing result. A result's output policy controls byte/line limits and head/tail retention.
 
 Shell execution requires a configured usable shell. It supports timeout, environment inheritance control and scoped cancellation; nonzero command exits are represented in results, while spawn/timeout/output-callback failures use typed errors. Built-in coding tools use unsafe replay by default. Repeating a filesystem mutation or shell command after a crash may be unacceptable; native activity persistence cannot undo an external action that occurred before its receipt committed.
+
+Library timeout and polling options accept `Duration.Input`, such as `'5 seconds'`; the model-facing `bash` timeout remains a number of seconds. File modification instants use `DateTime.Utc` and retain native fractional millisecond precision. `read` retries one detected file change within its existing reader Scope and propagates genuine I/O errors immediately.
 
 See [harness tool tests](../packages/harness/test/tools) for path, image, truncation, environment, shell spill, native watch and cancellation cases.
 

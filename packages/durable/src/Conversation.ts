@@ -8,6 +8,9 @@ import * as Context from 'effect/Context'
 import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import * as Ref from 'effect/Ref'
+import * as HashMap from 'effect/HashMap'
+import * as HashSet from 'effect/HashSet'
 import * as Option from 'effect/Option'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
@@ -44,6 +47,9 @@ export const ProviderDoc = Document.defineUnsafe({
 })
 
 export interface Options {
+  /** Positive safe integer, default sixteen; sequential tool rounds remain one. */
+  readonly toolConcurrency?: number
+
   readonly settings?: Agent.SettingsInput | undefined
   readonly cwd?: string | undefined
   readonly report?: ((error: unknown) => Effect.Effect<void>) | undefined
@@ -58,6 +64,7 @@ export class Configuration extends Context.Service<
   Configuration,
   {
     readonly settings: Agent.Settings
+    readonly toolConcurrency: number
     /** Replace host defaults for subsequent preparation and current retry/compaction policy decisions. */
     readonly updateSettings: (
       options: Agent.SettingsInput,
@@ -76,22 +83,26 @@ export const layerConfiguration = (
   Layer.effect(
     Configuration,
     Effect.gen(function* () {
-      let settings = yield* Schema.decodeEffect(Agent.Settings)(Agent.settings(options.settings))
+      const settings = yield* Ref.make(yield* Agent.settings(options.settings))
       return Configuration.of({
         get settings() {
           // effect-review-allow P1-throw-only-in-unsafe-orthrow: this synchronous
           // service getter copies settings already validated by Agent.Settings.
-          return Document.copyUnsafe(settings)
+          return Schema.decodeSync(Agent.Settings)(
+            Schema.encodeSync(Agent.Settings)(Ref.getUnsafe(settings)),
+          )
         },
         updateSettings: (input) =>
-          Schema.decodeEffect(Agent.Settings)(Agent.settings(input)).pipe(
-            Effect.tap((next) =>
-              Effect.sync(() => {
-                settings = next
-              }),
-            ),
+          Agent.settings(input).pipe(
+            Effect.tap((next) => Ref.set(settings, next)),
             Effect.asVoid,
           ),
+        toolConcurrency: yield* Schema.decodeEffect(
+          Schema.Int.check(
+            Schema.isGreaterThan(0),
+            Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+          ),
+        )(options.toolConcurrency ?? 16),
         cwd: options.cwd ?? '.',
         report: options.report ?? (() => Effect.void),
         created: options.created ?? (() => Effect.void),
@@ -335,8 +346,8 @@ export const awaitIdle = Effect.fnUntraced(function* (
   const declarations = yield* Ownership.Declarations
   return yield* Effect.scoped(
     Effect.gen(function* () {
-      const started = new Set<Record.TaskId>()
-      const failures = new Map<Record.TaskId, ExecutionError>()
+      const started = yield* Ref.make(HashSet.empty<Record.TaskId>())
+      const failures = yield* Ref.make(HashMap.empty<Record.TaskId, ExecutionError>())
       while (true) {
         const state = yield* session.committed
         const roots =
@@ -353,9 +364,9 @@ export const awaitIdle = Effect.fnUntraced(function* (
         }
         if (tasks.size === 0) return
         for (const task of tasks.values()) {
-          const failure = failures.get(task.id)
+          const failure = Option.getOrUndefined(HashMap.get(yield* Ref.get(failures), task.id))
           if (failure !== undefined) return yield* failure
-          if (started.has(task.id)) continue
+          if (HashSet.has(yield* Ref.get(started), task.id)) continue
           const binding = yield* Schema.decodeUnknownEffect(Ownership.Binding)(task.input).pipe(
             Effect.mapError(
               (cause) =>
@@ -368,13 +379,9 @@ export const awaitIdle = Effect.fnUntraced(function* (
             ),
           )
           if (declarations.get(binding.workflow) === undefined) continue
-          started.add(task.id)
+          yield* Ref.update(started, HashSet.add(task.id))
           yield* Ownership.execute(binding).pipe(
-            Effect.catch((error) =>
-              Effect.sync(() => {
-                failures.set(task.id, error)
-              }),
-            ),
+            Effect.catch((error) => Ref.update(failures, HashMap.set(task.id, error))),
             Effect.forkScoped,
           )
         }

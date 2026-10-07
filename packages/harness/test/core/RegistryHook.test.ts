@@ -152,7 +152,7 @@ describe('atomic registry and selected code', () => {
         const agent = yield* Registry.resolve(
           yield* registry.snapshot,
           { tools: [] },
-          Agent.settings(),
+          yield* Agent.settings(),
         )
         assert.strictEqual(yield* Ref.get(wrapped), 1)
         assert.strictEqual(agent.tools.length, 0)
@@ -197,7 +197,11 @@ describe('atomic registry and selected code', () => {
           ],
         },
       ])
-      const agent = yield* Registry.resolve(yield* registry.snapshot, {}, Agent.settings()).pipe(
+      const agent = yield* Registry.resolve(
+        yield* registry.snapshot,
+        {},
+        yield* Agent.settings(),
+      ).pipe(
         Effect.provideService(Invocation, {
           ...quiet,
           report: (cause) => Ref.update(reports, (old) => [...old, cause]),
@@ -216,7 +220,7 @@ describe('atomic registry and selected code', () => {
         (yield* Registry.resolve(
           yield* registry.snapshot,
           state,
-          Agent.settings({ extensions: ['a'] }),
+          yield* Agent.settings({ extensions: ['a'] }),
         )).extensions,
         [],
       )
@@ -225,7 +229,7 @@ describe('atomic registry and selected code', () => {
         (yield* Registry.resolve(
           yield* registry.snapshot,
           state,
-          Agent.settings({ extensions: ['a'] }),
+          yield* Agent.settings({ extensions: ['a'] }),
         )).extensions.map((extension) => extension.name),
         ['missing'],
       )
@@ -251,7 +255,7 @@ describe('atomic registry and selected code', () => {
         const agent = yield* Registry.resolve(
           yield* registry.snapshot,
           { instructions: 'do it' },
-          Agent.settings(),
+          yield* Agent.settings(),
         )
         const rendered = yield* Registry.render(
           agent,

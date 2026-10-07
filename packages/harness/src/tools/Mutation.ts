@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect'
-import * as Semaphore from 'effect/Semaphore'
+import * as RcMap from 'effect/RcMap'
+import { MutationLocks } from '../MutationLocks.ts'
 import { Env, type FileError } from '../Env.ts'
-const queues = new Map<string, { readonly lock: Semaphore.Semaphore; users: number }>()
 const canonical = Effect.fnUntraced(function* (
   env: Env['Service'],
   absolute: string,
@@ -19,28 +19,15 @@ const canonical = Effect.fnUntraced(function* (
   )
 })
 /** Namespace and canonical path mutex; noncancelable writes retain the permit until actual settlement. */
-export const withFile = <A, E, R>(
+export const withFile = Effect.fnUntraced(function* <A, E, R>(
   absolute: string,
   effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E | FileError, R | Env> =>
-  Effect.gen(function* () {
-    const env = yield* Env
-    const key = JSON.stringify([env.id, yield* canonical(env, absolute)])
-    return yield* Effect.acquireUseRelease(
-      Effect.sync(() => {
-        let value = queues.get(key)
-        if (value === undefined) {
-          value = { lock: Semaphore.makeUnsafe(1), users: 0 }
-          queues.set(key, value)
-        }
-        value.users++
-        return value
-      }),
-      (queue) => queue.lock.withPermit(effect),
-      (queue) =>
-        Effect.sync(() => {
-          queue.users--
-          if (queue.users === 0 && queues.get(key) === queue) queues.delete(key)
-        }),
-    )
-  })
+): Effect.fn.Return<A, E | FileError, R | Env | MutationLocks> {
+  const env = yield* Env
+  const manager = yield* MutationLocks
+  const key = JSON.stringify([env.id, yield* canonical(env, absolute)])
+  return yield* RcMap.get(manager, key).pipe(
+    Effect.flatMap((lock) => lock.withPermit(effect)),
+    Effect.scoped,
+  )
+})

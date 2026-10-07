@@ -166,13 +166,14 @@ const main = Effect.gen(function* () {
   const tools = yield* Tool.bind(toolkit, { uppercase: { replay: 'safe' } }).pipe(
     Effect.provide(
       toolkit.toLayer({
-        uppercase: ({ text }) =>
-          Effect.gen(function* () {
-            const call = yield* Invocation.ToolCall
-            yield* Ref.update(toolCalls, (count) => count + 1)
-            yield* call.output(text.toUpperCase())
-            return text.toUpperCase()
-          }),
+        uppercase: Effect.fn('example.uppercase')(function* ({
+          text,
+        }: typeof uppercase.parametersSchema.Type) {
+          const call = yield* Invocation.ToolCall
+          yield* Ref.update(toolCalls, (count) => count + 1)
+          yield* call.output(text.toUpperCase())
+          return text.toUpperCase()
+        }),
       }),
     ),
   )
@@ -181,7 +182,7 @@ const main = Effect.gen(function* () {
     settings: {
       retry: { enabled: false },
       compaction: { enabled: false },
-      progress: { partialIntervalMs: 0, outputIntervalMs: 0 },
+      progress: { partialIntervalMs: '0 millis', outputIntervalMs: '0 millis' },
     },
   })
   const database = SqliteClient.layer({ filename })

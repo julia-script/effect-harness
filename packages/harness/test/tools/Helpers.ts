@@ -1,3 +1,4 @@
+import * as MutationLocks from '../../src/MutationLocks.ts'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Ref from 'effect/Ref'
@@ -8,7 +9,11 @@ import { Env } from '../../src/Env.ts'
 import { Invocation, ToolCall, type Diagnostic } from '../../src/Invocation.ts'
 import type { ToolError } from '../../src/Error.ts'
 export const withEnv = <A, E, R>(
-  program: Effect.Effect<A, E, R | Env | FileSystem.FileSystem | Invocation>,
+  program: Effect.Effect<
+    A,
+    E,
+    R | Env | FileSystem.FileSystem | Invocation | MutationLocks.MutationLocks
+  >,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -17,6 +22,7 @@ export const withEnv = <A, E, R>(
       return yield* program.pipe(
         Effect.provide(
           Layer.mergeAll(
+            MutationLocks.layer,
             NodeEnv.layer({
               cwd,
               shell: '/bin/sh',

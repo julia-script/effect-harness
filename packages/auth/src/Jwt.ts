@@ -1,3 +1,4 @@
+import type * as DateTime from 'effect/DateTime'
 import * as Context from 'effect/Context'
 import type * as Effect from 'effect/Effect'
 import type * as Redacted from 'effect/Redacted'
@@ -6,7 +7,7 @@ import type { AuthError } from './Credential.ts'
 export interface Identity {
   readonly sub: string
   readonly iss: string
-  readonly exp: number
+  readonly exp: DateTime.Utc
   readonly nonce?: string | undefined
   readonly email?: string | undefined
 }

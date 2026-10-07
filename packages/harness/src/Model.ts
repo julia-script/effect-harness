@@ -1,3 +1,6 @@
+import * as DateTime from 'effect/DateTime'
+import * as Duration from 'effect/Duration'
+import * as Time from './Time.ts'
 import * as SchemaField from './SchemaField.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -85,7 +88,7 @@ export const noOptions = (
 
 export const DeferredDecision = Schema.Struct({
   handle: Schema.Json,
-  pollAfterMs: SchemaField.optional(Schema.Finite),
+  pollAfterMs: SchemaField.optional(Time.DurationMillis),
 })
 export type DeferredDecision = typeof DeferredDecision.Type
 export interface DeferredCapability {
@@ -103,8 +106,17 @@ export interface DeferredCapability {
   ) => Effect.Effect<void, ModelError | import('effect/ai/AiError').AiError>
 }
 /** Root persists this absolute deadline; the harness does not create a timer or poll loop. */
-export const pollAt = (now: number, previous?: number, delay = 5000): number =>
-  Math.max(now + delay, previous === undefined ? -Infinity : previous + 1)
+export const pollAt = (
+  now: DateTime.Utc,
+  previous?: DateTime.Utc,
+  delay: Duration.Duration = importDefaultPollDelay,
+): DateTime.Utc => {
+  const next = DateTime.addDuration(now, delay)
+  return previous === undefined
+    ? next
+    : DateTime.max(next, DateTime.addDuration(previous, '1 millis'))
+}
+const importDefaultPollDelay = Duration.millis(5000)
 
 // Error patterns adapted from pi-ai (MIT), pinned 636703a0; see the package NOTICE.
 const overflowPatterns = [

@@ -1,3 +1,5 @@
+import * as Time from '@effect-harness/harness/Time'
+import * as DateTime from 'effect/DateTime'
 import * as Outcome from './workflow/Outcome.ts'
 import * as Ownership from './Ownership.ts'
 import { ToolCall } from './workflow/ToolCall.ts'
@@ -7,6 +9,8 @@ import * as Agent from '@effect-harness/harness/Agent'
 import * as Invocation from '@effect-harness/harness/Invocation'
 import * as Totals from '@effect-harness/harness/Usage'
 import * as Context from 'effect/Context'
+import * as Ref from 'effect/Ref'
+import * as HashSet from 'effect/HashSet'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Scope from 'effect/Scope'
@@ -48,16 +52,16 @@ export const Snapshot = Schema.Struct({
   run: Schema.optionalKey(Schema.Struct({ inputs: Schema.Array(Record.SubmissionId) })),
   generation: Schema.optionalKey(
     Schema.Struct({
-      attempt: Inbox.LiveState.fields.generation.schema.fields.attempt,
-      model: Inbox.LiveState.fields.generation.schema.fields.model,
-      retry: Inbox.LiveState.fields.generation.schema.fields.retry,
-      deferred: Inbox.LiveState.fields.generation.schema.fields.deferred,
+      attempt: Inbox.LiveDomain.fields.generation.schema.fields.attempt,
+      model: Inbox.LiveDomain.fields.generation.schema.fields.model,
+      retry: Inbox.LiveDomain.fields.generation.schema.fields.retry,
+      deferred: Inbox.LiveDomain.fields.generation.schema.fields.deferred,
       message: Schema.optionalKey(Prompt.AssistantMessage),
       usage: Schema.optionalKey(Totals.Usage),
     }),
   ),
   tools: Schema.Array(Inbox.ToolSlot),
-  compactions: Inbox.LiveState.fields.compactions.schema,
+  compactions: Inbox.LiveDomain.fields.compactions.schema,
   inbox: Schema.Array(QueuedItem),
   agent: Agent.State,
   usage: Totals.State,
@@ -112,11 +116,11 @@ export const AgentEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal('auto_retry_start'),
     attempt: Schema.Int,
-    at: Schema.Finite,
+    at: Time.EpochMillis,
     errorMessage: Schema.String,
   }),
   Schema.Struct({ type: Schema.Literal('auto_retry_end'), attempt: Schema.Int }),
-  Schema.Struct({ type: Schema.Literal('deferred_poll'), pollAt: Schema.Finite }),
+  Schema.Struct({ type: Schema.Literal('deferred_poll'), pollAt: Time.EpochMillis }),
   Schema.Struct({ type: Schema.Literal('agent_changed'), agent: Agent.State }),
   Schema.Struct({ type: Schema.Literal('usage_changed'), usage: Totals.State }),
   Schema.Struct({
@@ -154,7 +158,7 @@ const assistantCodec = Schema.toCodecJson(Prompt.AssistantMessage)
 const queued = (inbox: typeof Inbox.State.Type | undefined): ReadonlyArray<QueuedItem> =>
   (inbox?.items ?? []).map(({ id, mode }) => ({ id, mode }))
 const parts = Effect.fnUntraced(function* (view: View.Value) {
-  const live = view.docs['harness.live'] ?? {}
+  const live = Inbox.domain(view.docs['harness.live'] ?? {})
   const inbox = view.docs['harness.inbox']
   const agent = view.docs['harness.agent']
   const usage = view.docs['harness.usage']
@@ -346,7 +350,7 @@ export function outputChange(
 export const translate = Effect.fnUntraced(function* (
   id: Record.ConversationId,
   change: View.Change,
-  held: Set<Record.TaskId>,
+  held: Ref.Ref<HashSet.HashSet<Record.TaskId>>,
 ): Effect.fn.Return<Batch, StorageError> {
   const frame = change.publication
   if (frame === undefined) return [yield* snapshot(change.value)]
@@ -452,7 +456,8 @@ export const translate = Effect.fnUntraced(function* (
     events.push({ type: 'auto_retry_end', attempt: generationBefore.attempt })
   if (
     generation?.deferred !== undefined &&
-    generation.deferred.pollAt !== generationBefore?.deferred?.pollAt
+    (generationBefore?.deferred === undefined ||
+      !DateTime.Equivalence(generation.deferred.pollAt, generationBefore.deferred.pollAt))
   )
     events.push({ type: 'deferred_poll', pollAt: generation.deferred.pollAt })
   const decodedEntries = yield* Effect.forEach(
@@ -513,12 +518,19 @@ export const translate = Effect.fnUntraced(function* (
       events.push({ type: 'compaction_end', taskId, reason })
   let turnEnded = false
   for (const task of tasks.values()) {
-    if (generationKind(task.kind) && task.state.status === 'completing' && !held.has(task.id)) {
-      held.add(task.id)
+    if (
+      generationKind(task.kind) &&
+      task.state.status === 'completing' &&
+      !HashSet.has(yield* Ref.get(held), task.id)
+    ) {
+      yield* Ref.update(held, HashSet.add(task.id))
       turnEnded = true
     }
     if (task.state.status !== 'terminal') continue
-    if (generationKind(task.kind) && !held.delete(task.id)) turnEnded = true
+    if (generationKind(task.kind)) {
+      if (!HashSet.has(yield* Ref.get(held), task.id)) turnEnded = true
+      yield* Ref.update(held, HashSet.remove(task.id))
+    }
     const outcome = Outcome.classifyTask(task)
     const status = outcome?.directStatus
     if (status === 'faulted' || status === 'orphaned') {
@@ -560,16 +572,20 @@ export const make: Effect.Effect<Service, never, View.View> = Effect.gen(functio
   const views = yield* View.View
   return Event.of({
     watch: Effect.fnUntraced(function* (id) {
-      const held = new Set<Record.TaskId>()
+      const held = yield* Ref.make(HashSet.empty<Record.TaskId>())
       let initial: Snapshot | undefined
-      const seedHeld = (tasks: ReadonlyArray<Record.Task>) => {
-        held.clear()
-        for (const task of tasks)
-          if (generationKind(task.kind) && task.state.status === 'completing') held.add(task.id)
-      }
+      const seedHeld = (tasks: ReadonlyArray<Record.Task>) =>
+        Ref.set(
+          held,
+          HashSet.fromIterable(
+            tasks
+              .filter((task) => generationKind(task.kind) && task.state.status === 'completing')
+              .map((task) => task.id),
+          ),
+        )
       const subscription = yield* views.observe<Batch>(id, {
         initial: Effect.fnUntraced(function* (value, tasks) {
-          seedHeld(tasks)
+          yield* seedHeld(tasks)
           initial = yield* snapshot(value)
           return [initial]
         }),
@@ -578,7 +594,7 @@ export const make: Effect.Effect<Service, never, View.View> = Effect.gen(functio
             Effect.map((batch) => (batch.length === 0 ? undefined : batch)),
           ),
         reset: Effect.fnUntraced(function* (value, _seq, tasks) {
-          seedHeld(tasks)
+          yield* seedHeld(tasks)
           return [yield* snapshot(value)]
         }),
       })

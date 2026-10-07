@@ -1,3 +1,4 @@
+import * as DateTime from 'effect/DateTime'
 // Read selection/truncation adapted from pi-durable (MIT), pinned 636703a0; see ../LICENSE.pi.txt.
 import * as SchemaField from '../SchemaField.ts'
 import * as Effect from 'effect/Effect'
@@ -154,6 +155,9 @@ const readText = Effect.fnUntraced(function* (
     diagnostics,
   }
 })
+class FileChanged extends Schema.TaggedError<FileChanged>(
+  '@effect-harness/harness/tools/Read/FileChanged',
+)('FileChanged', {}) {}
 export const handler = Effect.fnUntraced(function* (input: Input) {
   const env = yield* Env
   const absolute = yield* Path.resolveRead(input.path).pipe(
@@ -167,23 +171,32 @@ export const handler = Effect.fnUntraced(function* (input: Input) {
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const reader = yield* env.openBinaryReader(absolute)
-      for (let attempt = 0; ; attempt++) {
+      const attempt = Effect.gen(function* () {
         const before = yield* reader.info
         const result = yield* readText(reader, before, input)
         const after = yield* reader.info
         if (
           after.size > before.size ||
-          (after.size === before.size && after.mtimeMs === before.mtimeMs)
+          (after.size === before.size && DateTime.Equivalence(after.mtimeMs, before.mtimeMs))
         )
           return result
-        if (attempt === 1)
-          return yield* new ToolError({
-            reason: new ToolExecution({
-              name: 'read',
-              message: `${input.path} changed while it was read`,
-            }),
-          })
-      }
+        return yield* new FileChanged({})
+      })
+      return yield* attempt.pipe(
+        Effect.retry({ times: 1, while: (error) => error instanceof FileChanged }),
+        Effect.catchIf(
+          (error) => error instanceof FileChanged,
+          () =>
+            Effect.fail(
+              new ToolError({
+                reason: new ToolExecution({
+                  name: 'read',
+                  message: `${input.path} changed while it was read`,
+                }),
+              }),
+            ),
+        ),
+      )
     }),
   ).pipe(
     Effect.mapError((cause) =>

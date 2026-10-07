@@ -1,3 +1,5 @@
+import { expectTypeOf } from 'vitest'
+import type * as AiError from 'effect/ai/AiError'
 import { vi } from 'vitest'
 vi.mock('effect/ai/LanguageModel', { spy: true })
 import * as Config from 'effect/Config'
@@ -821,4 +823,47 @@ it.effect(
       const error = yield* translate(2).pipe(Stream.runDrain, Effect.flip)
       assert.strictEqual(error.reason._tag, 'InvalidOutputError')
     }),
+)
+
+class CallerService extends Context.Service<CallerService, { readonly event: Protocol.Event }>()(
+  'test/CallerService',
+) {}
+const callerFailure = { _tag: 'CallerFailure' as const }
+it.effect('translator and collector preserve caller services and foreign errors', () =>
+  Effect.gen(function* () {
+    const source = Stream.fromEffect(
+      Effect.flatMap(CallerService, () => Effect.fail(callerFailure)),
+    )
+    const translated = Turn.translate(source, new Map())
+    expectTypeOf(translated).toEqualTypeOf<
+      Stream.Stream<
+        import('effect/ai/Response').StreamPartEncoded,
+        typeof callerFailure | AiError.AiError,
+        CallerService
+      >
+    >()
+    const direct = Turn.collect(source)
+    expectTypeOf(direct).toEqualTypeOf<
+      Effect.Effect<
+        Array<import('effect/ai/Response').PartEncoded>,
+        typeof callerFailure,
+        CallerService
+      >
+    >()
+    const collected = Turn.collect(translated)
+    expectTypeOf(collected).toEqualTypeOf<
+      Effect.Effect<
+        Array<import('effect/ai/Response').PartEncoded>,
+        typeof callerFailure | AiError.AiError,
+        CallerService
+      >
+    >()
+    const error = yield* collected.pipe(
+      Effect.provideService(CallerService, {
+        event: { type: 'system', subtype: 'init', tools: [] },
+      }),
+      Effect.flip,
+    )
+    assert.strictEqual(error, callerFailure)
+  }),
 )

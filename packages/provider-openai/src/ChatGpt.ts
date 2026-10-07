@@ -1,3 +1,4 @@
+import * as AuthDuration from '@effect-harness/auth/Duration'
 import * as Config from 'effect/Config'
 import {
   AuthBusyError,
@@ -19,7 +20,10 @@ import { CredentialStore } from '@effect-harness/auth/CredentialStore'
 import { Jwt } from '@effect-harness/auth/Jwt'
 import * as Pkce from '@effect-harness/auth/Pkce'
 import * as Token from '@effect-harness/auth/Token'
-import * as Clock from 'effect/Clock'
+import * as DateTime from 'effect/DateTime'
+import * as Duration from 'effect/Duration'
+import * as Ref from 'effect/Ref'
+import * as HashMap from 'effect/HashMap'
 import * as Context from 'effect/Context'
 import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
@@ -48,7 +52,7 @@ export interface Authorization {
   readonly url: Redacted.Redacted<string>
   readonly state: string
   readonly redirectUri: string
-  readonly expiresAt: number
+  readonly expiresAt: DateTime.Utc
 }
 interface Pending {
   readonly authorization: Authorization
@@ -103,7 +107,7 @@ const requireDirect = (scopes: ReadonlyArray<string>) =>
 
 /** Validate arithmetic against the same finite timestamp codecs used by persisted OAuth grants. */
 const deadlines = (
-  now: number,
+  now: DateTime.Utc,
   token: { readonly expires_in: number; readonly earliest_refresh_at?: number | undefined },
 ) =>
   Schema.decodeEffect(
@@ -112,7 +116,9 @@ const deadlines = (
       earliestRefreshAt: OAuth.fields.earliestRefreshAt,
     }),
   )({
-    expiresAt: now + token.expires_in * 1000,
+    expiresAt: DateTime.toEpochMillis(
+      DateTime.addDuration(now, Duration.seconds(token.expires_in)),
+    ),
     ...(token.earliest_refresh_at === undefined
       ? {}
       : { earliestRefreshAt: token.earliest_refresh_at * 1000 }),
@@ -133,8 +139,8 @@ const deadlines = (
 
 export const layer = (options: {
   readonly appName: string
-  readonly authorizationLifetimeMs?: number | undefined
-  readonly refreshSkewMs?: number | undefined
+  readonly authorizationLifetimeMs?: Duration.Input | undefined
+  readonly refreshSkewMs?: Duration.Input | undefined
 }) =>
   Layer.effect(ChatGpt)(
     Effect.gen(function* () {
@@ -144,23 +150,25 @@ export const layer = (options: {
             message: 'An actual application name is required',
           }),
         })
-      if (
-        (options.authorizationLifetimeMs !== undefined &&
-          (!Number.isFinite(options.authorizationLifetimeMs) ||
-            options.authorizationLifetimeMs <= 0)) ||
-        (options.refreshSkewMs !== undefined &&
-          (!Number.isFinite(options.refreshSkewMs) || options.refreshSkewMs < 0))
+      const message = 'Authorization lifetime and refresh skew must be finite valid durations'
+      const lifetime = yield* AuthDuration.fromInput(
+        options.authorizationLifetimeMs ?? '10 minutes',
+        message,
       )
-        return yield* new AuthError({
-          reason: new AuthConfigurationError({
-            message: 'Authorization lifetime and refresh skew must be finite valid durations',
-          }),
-        })
+      const skew = yield* AuthDuration.fromInput(options.refreshSkewMs ?? '1 minute', message)
+      if (
+        !Number.isFinite(Duration.toMillis(lifetime)) ||
+        Duration.toMillis(lifetime) <= 0 ||
+        !Number.isFinite(Duration.toMillis(skew)) ||
+        Duration.toMillis(skew) < 0
+      )
+        return yield* new AuthError({ reason: new AuthConfigurationError({ message }) })
       const store = yield* CredentialStore
       const jwt = yield* Jwt
       const client = yield* HttpClient.HttpClient
       const cryptoContext = yield* Effect.context<Crypto.Crypto>()
-      const pending = new Map<string, Pending>()
+      const pending = yield* Ref.make(HashMap.empty<string, Pending>())
+      yield* Effect.addFinalizer(() => Ref.set(pending, HashMap.empty()))
       const load = Effect.fnUntraced(function* (key: string) {
         const current = yield* store.get(key)
         if (
@@ -199,14 +207,17 @@ export const layer = (options: {
                 }),
               })
             yield* requireDirect(credential.scopes)
-            const now = yield* Clock.currentTimeMillis
+            const now = yield* DateTime.now
             if (
               !refreshOptions?.force &&
-              credential.expiresAt > now + (options.refreshSkewMs ?? 60_000)
+              DateTime.isGreaterThan(credential.expiresAt, DateTime.addDuration(now, skew))
             )
               return credential
-            if (credential.earliestRefreshAt !== undefined && now < credential.earliestRefreshAt) {
-              if (credential.expiresAt > now) return credential
+            if (
+              credential.earliestRefreshAt !== undefined &&
+              DateTime.isLessThan(now, credential.earliestRefreshAt)
+            ) {
+              if (DateTime.isGreaterThan(credential.expiresAt, now)) return credential
               return yield* new AuthError({
                 reason: new AuthExpiredError({
                   message: 'Credential cannot yet be refreshed',
@@ -253,8 +264,10 @@ export const layer = (options: {
           })
         return updated
       })
-      const accessToken: Service['accessToken'] = (account) =>
-        refresh(account).pipe(Effect.map((credential) => credential.accessToken))
+      const accessToken: Service['accessToken'] = Effect.fnUntraced(function* (account) {
+        const credential = yield* refresh(account)
+        return credential.accessToken
+      })
       return ChatGpt.of({
         begin: Effect.fnUntraced(function* (beginOptions) {
           const redirect = yield* parseUrl(beginOptions.redirectUri)
@@ -303,16 +316,8 @@ export const layer = (options: {
                 message: 'Account registration belongs to another host',
               }),
             })
-          const challenge = yield* Pkce.make().pipe(Effect.provideContext(cryptoContext))
-          const now = yield* Clock.currentTimeMillis
-          for (const [state, attempt] of pending)
-            if (attempt.authorization.expiresAt <= now) pending.delete(state)
-          if (pending.size >= 32)
-            return yield* new AuthError({
-              reason: new AuthBusyError({
-                message: 'Too many pending authorization attempts',
-              }),
-            })
+          const challenge = yield* Pkce.make.pipe(Effect.provideContext(cryptoContext))
+          const now = yield* DateTime.now
           const query = new URLSearchParams({
             client_id: returning?.clientId ?? 'dynamic_agent_client',
             ext_agent_host_id: hostId,
@@ -335,15 +340,37 @@ export const layer = (options: {
             url: Redacted.make(`${issuer}/api/accounts/authorize?${query.toString()}`),
             state: challenge.state,
             redirectUri: beginOptions.redirectUri,
-            expiresAt: now + (options.authorizationLifetimeMs ?? 600_000),
+            expiresAt: DateTime.addDuration(now, lifetime),
           }
-          pending.set(challenge.state, { authorization, challenge, hostId, returning })
+          const admitted = yield* Ref.modify(pending, (attempts) => {
+            const fresh = HashMap.filter(attempts, (attempt) =>
+              DateTime.isGreaterThan(attempt.authorization.expiresAt, now),
+            )
+            return HashMap.size(fresh) >= 32
+              ? ([false, fresh] as const)
+              : ([
+                  true,
+                  HashMap.set(fresh, challenge.state, {
+                    authorization,
+                    challenge,
+                    hostId,
+                    returning,
+                  }),
+                ] as const)
+          })
+          if (!admitted)
+            return yield* new AuthError({
+              reason: new AuthBusyError({ message: 'Too many pending authorization attempts' }),
+            })
           return authorization
         }),
         complete: Effect.fnUntraced(function* (callbackUrl) {
           const callback = yield* parseUrl(callbackUrl)
           const state = callback.searchParams.get('state')
-          const attempt = state === null ? undefined : pending.get(state)
+          const attempt =
+            state === null
+              ? undefined
+              : Option.getOrUndefined(HashMap.get(yield* Ref.get(pending), state))
           if (attempt === undefined || state === null)
             return yield* new AuthError({
               reason: new AuthCallbackError({
@@ -370,8 +397,18 @@ export const layer = (options: {
                   message: 'Duplicate authorization callback parameter',
                 }),
               })
-          pending.delete(state)
-          if ((yield* Clock.currentTimeMillis) >= attempt.authorization.expiresAt)
+          const consumed = yield* Ref.modify(pending, (attempts) =>
+            Option.getOrUndefined(HashMap.get(attempts, state)) === attempt
+              ? ([true, HashMap.remove(attempts, state)] as const)
+              : ([false, attempts] as const),
+          )
+          if (!consumed)
+            return yield* new AuthError({
+              reason: new AuthCallbackError({
+                message: 'Authorization was already consumed or cancelled',
+              }),
+            })
+          if (DateTime.isGreaterThanOrEqualTo(yield* DateTime.now, attempt.authorization.expiresAt))
             return yield* new AuthError({
               reason: new AuthExpiredError({
                 message: 'Authorization attempt expired',
@@ -434,7 +471,7 @@ export const layer = (options: {
             })
           const scopes = scopeList(token.scope)
           yield* requireDirect(scopes)
-          const now = yield* Clock.currentTimeMillis
+          const now = yield* DateTime.now
           const credential: OAuth = {
             kind: 'oauth',
             provider: 'openai',
@@ -456,6 +493,10 @@ export const layer = (options: {
         refresh,
         accessToken,
         models: Effect.fnUntraced(function* (account) {
+          // P5-request-resolver-batching: this endpoint has no multi-account bulk read. Each call
+          // refreshes this account first, then independently samples current plan visibility with
+          // its provider/resource and current grant. Dedup/cache would hide authorization changes
+          // or replay a failed catalogue; no reusable HTTP response/result crosses calls.
           const access = yield* accessToken(account)
           const response = yield* client
             .execute(
@@ -536,10 +577,7 @@ export const layer = (options: {
             }),
           )
         }),
-        cancel: (state) =>
-          Effect.sync(() => {
-            pending.delete(state)
-          }),
+        cancel: (state) => Ref.update(pending, HashMap.remove(state)),
       })
     }),
   )

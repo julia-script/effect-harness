@@ -10,6 +10,8 @@ import * as SharedIdentity from '@effect-harness/harness/Identity'
 import * as SharedPatch from '@effect-harness/harness/SystemPatch'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Context from 'effect/Context'
+import * as Ref from 'effect/Ref'
+import * as HashSet from 'effect/HashSet'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
@@ -275,7 +277,7 @@ describe('Unknown-before-Json receipt policy', () => {
   it.effect('rejects a reflected receipt before saving and leaves admission state intact', () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const store = yield* Memory.make()
+        const store = yield* Memory.make
         const before = yield* store.read
         const result = new Proxy(
           { value: 1 },
@@ -313,7 +315,7 @@ it.effect(
           )
         },
       })
-      const store = yield* Sqlite.make().pipe(Effect.provideService(SqlClient.SqlClient, wrapped))
+      const store = yield* Sqlite.make.pipe(Effect.provideService(SqlClient.SqlClient, wrapped))
       const exhausted = {
         ...Record.emptyState(),
         nextId: Number.MAX_SAFE_INTEGER + 1,
@@ -335,7 +337,7 @@ it.effect(
   'omits optional undefined at the schema storage boundary and reopens the decoded document',
   () =>
     Effect.gen(function* () {
-      const store = yield* Sqlite.make()
+      const store = yield* Sqlite.make
       const schema = Schema.Struct({ value: Schema.String, note: Schema.optional(Schema.String) })
       const token = Document.defineUnsafe({
         kind: 'undefined-friendly',
@@ -344,15 +346,15 @@ it.effect(
         schema: Document.jsonObjectCodec(schema),
         initial: () => ({ value: 'kept', note: undefined }),
       })
-      const session = yield* Session.make().pipe(Effect.provideService(Store.Store, store))
+      const session = yield* Session.make.pipe(Effect.provideService(Store.Store, store))
       yield* session.transaction((tx) => tx.doc(token).pipe(Effect.asVoid))
       const encoded = yield* Document.encode(token, { value: 'kept', note: undefined })
       assert.deepStrictEqual(encoded, { value: 'kept' })
       const sql = yield* SqlClient.SqlClient
       const row = yield* sql`SELECT state FROM durable_state`
       assert.isFalse(JSON.stringify(row).includes('null'))
-      const reopened = yield* Sqlite.make()
-      const next = yield* Session.make().pipe(Effect.provideService(Store.Store, reopened))
+      const reopened = yield* Sqlite.make
+      const next = yield* Session.make.pipe(Effect.provideService(Store.Store, reopened))
       const snapshot = yield* next.snapshot(token)
       assert.deepStrictEqual(snapshot?.value, { value: 'kept' })
       const copied: { value: string; note?: string | undefined } = Document.copyUnsafe({
@@ -402,12 +404,9 @@ for (const [select, bad] of [
         },
       })
       const failure = active
-        ? yield* Sqlite.make().pipe(
-            Effect.provideService(SqlClient.SqlClient, wrapped),
-            Effect.flip,
-          )
+        ? yield* Sqlite.make.pipe(Effect.provideService(SqlClient.SqlClient, wrapped), Effect.flip)
         : yield* Effect.gen(function* () {
-            const store = yield* Sqlite.make().pipe(
+            const store = yield* Sqlite.make.pipe(
               Effect.provideService(SqlClient.SqlClient, wrapped),
             )
             active = true
@@ -469,7 +468,11 @@ it.effect('uses declared tool payload and pinned checkpoint schemas for tool-sta
         documents: [],
       },
     }
-    const events = yield* Event.translate(conversation.id, change, new Set())
+    const events = yield* Event.translate(
+      conversation.id,
+      change,
+      yield* Ref.make(HashSet.empty<Record.TaskId>()),
+    )
     assert.deepStrictEqual(events[0], {
       type: 'tool_execution_start',
       toolCallId: 'call',
@@ -488,12 +491,19 @@ it.effect('uses declared tool payload and pinned checkpoint schemas for tool-sta
         ],
       },
     }
-    assert.deepStrictEqual((yield* Event.translate(conversation.id, invalid, new Set()))[0], {
-      type: 'tool_execution_start',
-      toolCallId: 'call',
-      toolName: 'tool',
-      args: {},
-    })
+    assert.deepStrictEqual(
+      (yield* Event.translate(
+        conversation.id,
+        invalid,
+        yield* Ref.make(HashSet.empty<Record.TaskId>()),
+      ))[0],
+      {
+        type: 'tool_execution_start',
+        toolCallId: 'call',
+        toolName: 'tool',
+        args: {},
+      },
+    )
   }),
 )
 
@@ -507,7 +517,7 @@ it.effect('rejects a schema encoding failure before any SQL write and retains it
         return Reflect.apply(target, self, args)
       },
     })
-    const store = yield* Sqlite.make().pipe(Effect.provideService(SqlClient.SqlClient, wrapped))
+    const store = yield* Sqlite.make.pipe(Effect.provideService(SqlClient.SqlClient, wrapped))
     const shape = Schema.Struct({ value: Schema.String })
     const rejectedCodec = shape.pipe(
       Schema.decodeTo(shape, {
@@ -524,7 +534,7 @@ it.effect('rejects a schema encoding failure before any SQL write and retains it
       schema: rejectedCodec,
       initial: () => ({ value: 'decode succeeds' }),
     })
-    const session = yield* Session.make().pipe(Effect.provideService(Store.Store, store))
+    const session = yield* Session.make.pipe(Effect.provideService(Store.Store, store))
     const before = yield* store.read
     const error = yield* session
       .transaction((tx) => tx.doc(token).pipe(Effect.asVoid))
@@ -541,7 +551,7 @@ it.effect(
   'preserves scalar receipt columns and state/frame bytes through schema serialization',
   () =>
     Effect.gen(function* () {
-      const store = yield* Sqlite.make()
+      const store = yield* Sqlite.make
       const result: Record.JsonObject = { z: ['first', 1], a: { text: 'unicode \ud800' } }
       Object.defineProperty(result, '__proto__', { value: 'own', enumerable: true })
       const key = 'key:\ud800'
@@ -566,7 +576,7 @@ it.effect(
           result: JSON.stringify(result),
         },
       ])
-      const reopened = yield* Sqlite.make()
+      const reopened = yield* Sqlite.make
       assert.deepStrictEqual(
         yield* reopened.transact(() => Effect.die('receipt replay callback'), { key, fingerprint }),
         result,

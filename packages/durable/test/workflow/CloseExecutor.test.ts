@@ -96,10 +96,10 @@ describe('public observer/native compensation lifetime', () => {
             get: (target, key, receiver) =>
               key === 'withTransaction' ? withTransaction : Reflect.get(target, key, receiver),
           })
-          const store = yield* Sqlite.make().pipe(
+          const store = yield* Sqlite.make.pipe(
             Effect.provideService(SqlClient.SqlClient, instrumented),
           )
-          const session = yield* Session.make().pipe(Effect.provideService(Store.Store, store))
+          const session = yield* Session.make.pipe(Effect.provideService(Store.Store, store))
           yield* session.root()
           const native = yield* sql
             .withTransaction(

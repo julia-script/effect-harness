@@ -1,11 +1,15 @@
 import * as Cause from 'effect/Cause'
-import * as Clock from 'effect/Clock'
+import * as DateTime from 'effect/DateTime'
+import * as Duration from 'effect/Duration'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Queue from 'effect/Queue'
+import * as Ref from 'effect/Ref'
+import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
+import * as Time from './Time.ts'
 
 export const bytesPerSecond = 100 * 1024
 export interface Progress<E> {
@@ -14,68 +18,103 @@ export interface Progress<E> {
   /** Stop future writes and join any admitted write. The final domain commit must settle returned waiters. */
   readonly stop: Effect.Effect<ReadonlyArray<Deferred.Deferred<void, E>>>
 }
+interface State<E> {
+  readonly dirty: boolean
+  readonly stopped: boolean
+  readonly nextAt: DateTime.Utc | undefined
+  readonly waiters: ReadonlyArray<Deferred.Deferred<void, E>>
+}
 /** Scoped, one-in-flight progress writer. First change is immediate; later changes coalesce behind time/size pacing. */
-export const make = <E, R>(
+export const make = Effect.fnUntraced(function* <E, R>(
   write: Effect.Effect<number, E, R>,
-  minIntervalMs: number,
+  minIntervalMs: Duration.Input,
   report: (cause: Cause.Cause<E>) => Effect.Effect<void> = () => Effect.void,
-): Effect.Effect<Progress<E>, never, R | Scope.Scope> =>
-  Effect.gen(function* () {
-    const services = yield* Effect.context<R>()
-    const wake = yield* Queue.unbounded<void>()
-    let dirty = false
-    let stopped = false
-    let nextAt = 0
-    let waiters: Array<Deferred.Deferred<void, E>> = []
-    const worker = yield* Effect.forever(
-      Effect.gen(function* () {
-        yield* Queue.take(wake)
-        while (dirty && !stopped) {
-          const now = yield* Clock.currentTimeMillis
-          if (nextAt > now) yield* Effect.sleep(nextAt - now)
-          if (stopped) break
-          dirty = false
-          const pending = waiters
-          waiters = []
-          const started = yield* Clock.currentTimeMillis
-          // Domain progress writers must settle atomically once admitted. Stop cannot interrupt an in-flight writer.
-          yield* Effect.uninterruptible(
-            Effect.gen(function* () {
-              const outcome = yield* Effect.exit(write.pipe(Effect.provideContext(services)))
-              nextAt =
-                started +
-                Math.max(
-                  minIntervalMs,
-                  outcome._tag === 'Success' ? (outcome.value * 1000) / bytesPerSecond : 0,
-                )
-              const receipt = Exit.map(outcome, () => undefined)
-              for (const waiter of pending) yield* Deferred.done(waiter, receipt)
-              if (outcome._tag === 'Failure') yield* report(outcome.cause)
-            }),
-          )
-        }
-      }),
-    ).pipe(Effect.forkScoped)
-    const mark = Effect.suspend(() => {
-      if (stopped) return Effect.void
-      dirty = true
-      return Effect.asVoid(Queue.offer(wake, undefined))
-    })
-    const markAndWait = Effect.gen(function* () {
-      const waiter = yield* Deferred.make<void, E>()
-      waiters.push(waiter)
-      yield* mark
-      yield* Deferred.await(waiter)
-    })
-    const stop = Effect.gen(function* () {
-      stopped = true
-      yield* Fiber.interrupt(worker)
-      const pending = waiters
-      waiters = []
-      return pending
-    })
-    return { mark, markAndWait, stop }
+): Effect.fn.Return<Progress<E>, Schema.SchemaError, R | Scope.Scope> {
+  // Standalone pacing accepted finite fractional intervals before this migration;
+  // Settings/window codecs retain their own integer/range policies at admission.
+  const interval = yield* Time.duration(minIntervalMs)
+  const services = yield* Effect.context<R>()
+  const wake = yield* Queue.unbounded<void>()
+  const state = yield* Ref.make<State<E>>({
+    dirty: false,
+    stopped: false,
+    nextAt: undefined,
+    waiters: [],
   })
+  const worker = yield* Effect.forever(
+    Effect.gen(function* () {
+      yield* Queue.take(wake)
+      while (true) {
+        const current = yield* Ref.get(state)
+        if (!current.dirty || current.stopped) break
+        const now = yield* DateTime.now
+        if (current.nextAt !== undefined && DateTime.isGreaterThan(current.nextAt, now))
+          yield* Effect.sleep(DateTime.distance(now, current.nextAt))
+        // Admission, native write and waiter receipts form one uninterruptible settlement.
+        yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            const pending = yield* Ref.modify(state, (value) =>
+              value.stopped || !value.dirty
+                ? ([undefined, value] as const)
+                : ([value.waiters, { ...value, dirty: false, waiters: [] }] as const),
+            )
+            if (pending === undefined) return
+            const started = yield* DateTime.now
+            const outcome = yield* Effect.exit(write.pipe(Effect.provideContext(services)))
+            const spacing = Duration.max(
+              interval,
+              Duration.millis(
+                outcome._tag === 'Success' ? (outcome.value * 1000) / bytesPerSecond : 0,
+              ),
+            )
+            yield* Ref.update(state, (value) => ({
+              ...value,
+              nextAt: DateTime.addDuration(started, spacing),
+            }))
+            const receipt = Exit.map(outcome, () => undefined)
+            for (const waiter of pending) yield* Deferred.done(waiter, receipt)
+            if (outcome._tag === 'Failure') yield* report(outcome.cause)
+          }),
+        )
+      }
+    }),
+  ).pipe(Effect.forkScoped)
+  const mark = Ref.modify(state, (value) =>
+    value.stopped ? ([false, value] as const) : ([true, { ...value, dirty: true }] as const),
+  ).pipe(
+    Effect.flatMap((admitted) =>
+      admitted ? Queue.offer(wake, undefined).pipe(Effect.asVoid) : Effect.void,
+    ),
+  )
+  const markAndWait = Effect.gen(function* () {
+    const waiter = yield* Deferred.make<void, E>()
+    const stopped = yield* Ref.modify(
+      state,
+      (value) =>
+        [
+          value.stopped,
+          {
+            ...value,
+            dirty: value.stopped ? value.dirty : true,
+            waiters: [...value.waiters, waiter],
+          },
+        ] as const,
+    )
+    if (!stopped) yield* Queue.offer(wake, undefined)
+    yield* Deferred.await(waiter)
+  })
+  const stop = Effect.uninterruptible(
+    Effect.gen(function* () {
+      yield* Ref.update(state, (value) => ({ ...value, stopped: true }))
+      yield* Fiber.interrupt(worker)
+      return yield* Ref.modify(
+        state,
+        (value) => [value.waiters, { ...value, waiters: [] }] as const,
+      )
+    }),
+  )
+  return { mark, markAndWait, stop }
+})
 export const settle = <E>(
   waiters: ReadonlyArray<Deferred.Deferred<void, E>>,
   outcome: Exit.Exit<void, E>,

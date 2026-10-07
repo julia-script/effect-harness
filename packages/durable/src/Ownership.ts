@@ -1,6 +1,7 @@
 import * as Id from './Identity.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
+import * as Ref from 'effect/Ref'
 import * as Option from 'effect/Option'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
@@ -121,23 +122,21 @@ export const layerCurrent = (identity: Identity): Layer.Layer<Current, never, Se
   Layer.effect(Current)(
     Effect.gen(function* () {
       const session = yield* Session.Session
-      let active = true
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          active = false
-        }),
-      )
+      const active = yield* Ref.make(true)
+      yield* Effect.addFinalizer(() => Ref.set(active, false))
       return Current.of({
         ...identity,
         session,
-        check: Effect.suspend(() =>
-          active
-            ? Effect.void
-            : Effect.fail(
-                new ExecutionError({
-                  reason: new Closed({ message: 'Task invocation has ended' }),
-                }),
-              ),
+        check: Ref.get(active).pipe(
+          Effect.flatMap((active) =>
+            active
+              ? Effect.void
+              : Effect.fail(
+                  new ExecutionError({
+                    reason: new Closed({ message: 'Task invocation has ended' }),
+                  }),
+                ),
+          ),
         ),
       })
     }),

@@ -1,3 +1,4 @@
+import * as Time from '@effect-harness/auth/Time'
 import {
   AuthCallbackError,
   AuthDeniedError,
@@ -31,7 +32,7 @@ const credential: OAuth = {
   accessToken: Redacted.make('access'),
   refreshToken: Redacted.make('refresh'),
   idToken: Redacted.make('id'),
-  expiresAt: 3600000,
+  expiresAt: Time.fromEpochMillis(3600000),
   scopes: [ChatGpt.directScope],
 }
 const makeFixture = (
@@ -74,7 +75,7 @@ const makeFixture = (
           url: Redacted.make('https://auth.openai.com/authorize'),
           state: 'expected',
           redirectUri,
-          expiresAt: now + 60000,
+          expiresAt: Time.fromEpochMillis(now + 60000),
         })),
         Effect.tap(() => afterBegin),
       ),

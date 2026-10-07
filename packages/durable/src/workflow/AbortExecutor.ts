@@ -78,8 +78,14 @@ export const layer: Layer.Layer<
                 reason: new InvalidState({ message: 'Abort target is absent' }),
               })
             const deferred: Array<(typeof Marked.Type.deferred)[number]> = []
-            for (const task of reached.tasks) {
-              const request = yield* session.snapshot(RequestDoc, { owner: task.id })
+            // Read all per-task handles under this same native SQL lease before writes.
+            const requests = yield* Effect.forEach(
+              reached.tasks,
+              (task) => session.snapshot(RequestDoc, { owner: task.id }),
+              { concurrency: 16 },
+            )
+            for (const [index, task] of reached.tasks.entries()) {
+              const request = requests[index]
               if (request?.value.handle !== undefined)
                 deferred.push({ taskId: task.id, ...request.value })
             }

@@ -1,3 +1,6 @@
+import * as Ref from 'effect/Ref'
+import * as HashMap from 'effect/HashMap'
+import * as Option from 'effect/Option'
 import * as Context from 'effect/Context'
 import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
@@ -53,12 +56,15 @@ export const layer = Layer.effect(IntentServer)(
       never,
       HttpServerRequest.HttpServerRequest | Scope.Scope
     >
-    const sessions = new Map<string, Handler>()
+    const sessions = yield* Ref.make(HashMap.empty<string, Handler>())
     yield* server.serve(
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
         const match = /^\/mcp\/([a-f0-9-]+)(?:\?|$)/.exec(request.url)
-        const handler = match?.[1] === undefined ? undefined : sessions.get(match[1])
+        const handler =
+          match?.[1] === undefined
+            ? undefined
+            : Option.getOrUndefined(HashMap.get(yield* Ref.get(sessions), match[1]))
         return handler === undefined ? HttpServerResponse.empty({ status: 404 }) : yield* handler
       }),
     )
@@ -112,16 +118,17 @@ export const layer = Layer.effect(IntentServer)(
         const handler = yield* HttpRouter.toHttpEffect(registration).pipe(
           Effect.mapError(() => processError('Native MCP session could not be started')),
         )
-        sessions.set(
-          id,
-          handler.pipe(
-            Effect.catchCause(() => Effect.succeed(HttpServerResponse.empty({ status: 500 }))),
+        yield* Effect.acquireRelease(
+          Ref.update(
+            sessions,
+            HashMap.set(
+              id,
+              handler.pipe(
+                Effect.catchCause(() => Effect.succeed(HttpServerResponse.empty({ status: 500 }))),
+              ),
+            ),
           ),
-        )
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            sessions.delete(id)
-          }),
+          () => Ref.update(sessions, HashMap.remove(id)),
         )
         return { url: `http://127.0.0.1:${port}${path}`, aliases }
       }),

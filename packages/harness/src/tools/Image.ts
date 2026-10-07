@@ -9,31 +9,30 @@ export interface ByteSource<E, R> {
   readonly size: number
   readonly read: (offset: number, length: number) => Effect.Effect<Uint8Array, E, R>
 }
-export const detectSupportedImageMimeTypeOf = <E, R>(
+export const detectSupportedImageMimeTypeOf = Effect.fnUntraced(function* <E, R>(
   source: ByteSource<E, R>,
-): Effect.Effect<string | undefined, E, R> =>
-  Effect.gen(function* () {
-    const header = yield* source.read(0, HEADER_BYTES)
-    if (!startsWith(header, PNG_SIGNATURE)) return detectSupportedImageMimeType(header)
-    if (!isPng(header)) return undefined
-    let block: Uint8Array = new Uint8Array(0)
-    let blockStart = 0
-    let offset = PNG_SIGNATURE.length
-    while (offset + 8 <= source.size) {
-      if (offset < blockStart || offset + 8 > blockStart + block.length) {
-        blockStart = offset
-        block = yield* source.read(offset, BLOCK_BYTES)
-      }
-      const chunkHeader = block.subarray(offset - blockStart, offset - blockStart + 8)
-      const length = readUint32BE(chunkHeader, 0)
-      if (startsWithAscii(chunkHeader, 4, 'acTL')) return undefined
-      if (startsWithAscii(chunkHeader, 4, 'IDAT')) return 'image/png'
-      const next = offset + 8 + length + 4
-      if (next <= offset || next > source.size) break
-      offset = next
+): Effect.fn.Return<string | undefined, E, R> {
+  const header = yield* source.read(0, HEADER_BYTES)
+  if (!startsWith(header, PNG_SIGNATURE)) return detectSupportedImageMimeType(header)
+  if (!isPng(header)) return undefined
+  let block: Uint8Array = new Uint8Array(0)
+  let blockStart = 0
+  let offset = PNG_SIGNATURE.length
+  while (offset + 8 <= source.size) {
+    if (offset < blockStart || offset + 8 > blockStart + block.length) {
+      blockStart = offset
+      block = yield* source.read(offset, BLOCK_BYTES)
     }
-    return 'image/png'
-  })
+    const chunkHeader = block.subarray(offset - blockStart, offset - blockStart + 8)
+    const length = readUint32BE(chunkHeader, 0)
+    if (startsWithAscii(chunkHeader, 4, 'acTL')) return undefined
+    if (startsWithAscii(chunkHeader, 4, 'IDAT')) return 'image/png'
+    const next = offset + 8 + length + 4
+    if (next <= offset || next > source.size) break
+    offset = next
+  }
+  return 'image/png'
+})
 
 export function detectSupportedImageMimeType(buffer: Uint8Array): string | undefined {
   if (startsWith(buffer, [0xff, 0xd8, 0xff])) return buffer[3] === 0xf7 ? undefined : 'image/jpeg'

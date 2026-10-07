@@ -28,11 +28,10 @@ export const createExpectAssertions = (expect: ExpectLike): ConformanceAssertion
   deepEqual: (actual, expected) => expect(actual).toEqual(expected),
   partialDeepEqual: (actual, expected) => expect(actual).toMatchObject(expected),
   greaterThan: (actual, expected) => expect(actual).toBeGreaterThan(expected),
-  rejects: (operation, messageIncludes) =>
-    Effect.gen(function* () {
-      const exit = yield* Effect.exit(operation)
-      expect(Exit.isFailure(exit)).toBe(true)
-      if (Exit.isFailure(exit))
-        expect(String(Cause.squash(exit.cause)).includes(messageIncludes)).toBe(true)
-    }),
+  rejects: Effect.fnUntraced(function* (operation, messageIncludes) {
+    const exit = yield* Effect.exit(operation)
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit))
+      expect(String(Cause.squash(exit.cause)).includes(messageIncludes)).toBe(true)
+  }),
 })

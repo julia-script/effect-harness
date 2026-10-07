@@ -84,7 +84,7 @@ const persisted = Effect.sync(() => {
         closes++
       }),
     )
-    return yield* Session.make().pipe(Effect.provideService(Store.Store, store))
+    return yield* Session.make.pipe(Effect.provideService(Store.Store, store))
   })
   return { open, state: Effect.sync(() => snapshot.state), closes: Effect.sync(() => closes) }
 })
@@ -374,8 +374,8 @@ describe('Session and native invocation lifecycle', () => {
             yield* Effect.gen(function* () {
               const sqlStorage = {
                 open: Effect.gen(function* () {
-                  const store = yield* SqlStore.make()
-                  return yield* Session.make().pipe(Effect.provideService(Store.Store, store))
+                  const store = yield* SqlStore.make
+                  return yield* Session.make.pipe(Effect.provideService(Store.Store, store))
                 }),
                 state: Effect.gen(function* () {
                   const rows = yield* readerSql<{
@@ -704,8 +704,8 @@ describe('Session and native invocation lifecycle', () => {
                 }),
               )
               const open = Effect.gen(function* () {
-                const store = yield* SqlStore.make()
-                return yield* Session.make().pipe(Effect.provideService(Store.Store, store))
+                const store = yield* SqlStore.make
+                return yield* Session.make.pipe(Effect.provideService(Store.Store, store))
               })
               const firstScope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
                 Scope.close(owned, exit),

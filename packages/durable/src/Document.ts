@@ -1,4 +1,8 @@
 import * as Serialization from './Serialization.ts'
+import * as Cache from 'effect/Cache'
+import * as Duration from 'effect/Duration'
+import * as Exit from 'effect/Exit'
+import * as Semaphore from 'effect/Semaphore'
 import * as Schema from 'effect/Schema'
 import * as Record from './Record.ts'
 import * as Effect from 'effect/Effect'
@@ -124,9 +128,12 @@ export const address = Effect.fnUntraced(function* <T extends object>(
 })
 
 export interface MigrationCache {
-  readonly values: WeakMap<object, Map<string, Record.JsonObject>>
+  readonly values: WeakMap<object, Cache.Cache<string, Record.JsonObject, StorageError>>
+  readonly permit: Semaphore.Semaphore
 }
-export const makeMigrationCache = (): MigrationCache => ({ values: new WeakMap() })
+export const makeMigrationCache: Effect.Effect<MigrationCache> = Effect.gen(function* () {
+  return { values: new WeakMap(), permit: yield* Semaphore.make(1) }
+})
 export type Draft<T> = T extends string | number | boolean | null | undefined
   ? T
   : T extends ReadonlyArray<infer A>
@@ -155,24 +162,41 @@ export const typed = Effect.fnUntraced(function* <T extends object>(
   let value = snapshot.value
   if (snapshot.version < definition.version && definition.migrate !== undefined) {
     const key = JSON.stringify([snapshot.record.id, snapshot.version, snapshot.value])
-    const previous = cache?.values.get(token)?.get(key)
-    if (previous !== undefined) value = yield* detachedEffect(previous)
-    else {
-      const input = yield* detachedEffect(snapshot.value)
+    const migrate = Effect.fnUntraced(function* (key: string) {
+      const [_id, version, storedValue] = yield* Schema.decodeEffect(
+        Schema.fromJsonString(Schema.Tuple([Record.DocumentId, Schema.Int, Schema.JsonObject])),
+      )(key).pipe(
+        Effect.mapError((cause) => rejected('Invalid migration cache snapshot', Invalid, cause)),
+      )
+      const input = yield* detachedEffect(storedValue)
       const migrated = yield* Effect.try({
-        try: () => definition.migrate?.(input, snapshot.version) ?? snapshot.value,
+        try: () => definition.migrate?.(input, version) ?? storedValue,
         catch: (cause) => rejected('Document migration failed', Invalid, cause),
       })
       const domain = yield* validate(
         Schema.toType(definition.schema),
         yield* detachedEffect(migrated),
       )
-      value = yield* encode(token, domain)
-      if (cache !== undefined) {
-        const values = cache.values.get(token) ?? new Map<string, Record.JsonObject>()
-        values.set(key, yield* detachedEffect(value))
-        cache.values.set(token, values)
-      }
+      return yield* detachedEffect(yield* encode(token, domain))
+    })
+    if (cache === undefined) value = yield* migrate(key)
+    else {
+      const memo = yield* cache.permit.withPermit(
+        Effect.gen(function* () {
+          const previous = cache.values.get(token)
+          if (previous !== undefined) return previous
+          // Native Cache shares concurrent lookup fibers and captures schema services at construction.
+          // Success survives indefinitely; failures expire immediately so later reads can retry.
+          const memo = yield* Cache.makeWith(migrate, {
+            capacity: Infinity,
+            timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
+            requireServicesAt: 'construction',
+          })
+          cache.values.set(token, memo)
+          return memo
+        }),
+      )
+      value = yield* detachedEffect(yield* Cache.get(memo, key))
     }
   }
   const decoded = yield* validate(definition.schema, value)

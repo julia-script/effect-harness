@@ -1,3 +1,4 @@
+import { MutationLocks } from '../MutationLocks.ts'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as AiTool from 'effect/ai/Tool'
@@ -24,28 +25,27 @@ const LegacyEdit = Schema.Struct({
   newText: Parameters.fields.edits.value.fields.newText,
 })
 const isLegacyEdit = Schema.is(LegacyEdit)
-export const repair = (input: unknown): Effect.Effect<unknown> =>
-  Effect.gen(function* () {
-    if (!isRepairObject(input)) return input
-    const args: Record<string, unknown> = { ...input }
-    if (isString(args['edits'])) {
-      const parsed = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(
-        args['edits'],
-      ).pipe(Effect.option)
-      if (parsed._tag === 'Some' && (isArray(parsed.value) || isEdit(parsed.value)))
-        args['edits'] = isArray(parsed.value) ? parsed.value : [parsed.value]
-    } else if (isEdit(args['edits'])) args['edits'] = [args['edits']]
-    const oldText = args['oldText']
-    const newText = args['newText']
-    if (isLegacyEdit({ oldText, newText })) {
-      const edits = isArray(args['edits']) ? [...args['edits']] : []
-      edits.push({ oldText, newText })
-      delete args['oldText']
-      delete args['newText']
-      args['edits'] = edits
-    }
-    return args
-  })
+export const repair = Effect.fnUntraced(function* (input: unknown): Effect.fn.Return<unknown> {
+  if (!isRepairObject(input)) return input
+  const args: Record<string, unknown> = { ...input }
+  if (isString(args['edits'])) {
+    const parsed = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(
+      args['edits'],
+    ).pipe(Effect.option)
+    if (parsed._tag === 'Some' && (isArray(parsed.value) || isEdit(parsed.value)))
+      args['edits'] = isArray(parsed.value) ? parsed.value : [parsed.value]
+  } else if (isEdit(args['edits'])) args['edits'] = [args['edits']]
+  const oldText = args['oldText']
+  const newText = args['newText']
+  if (isLegacyEdit({ oldText, newText })) {
+    const edits = isArray(args['edits']) ? [...args['edits']] : []
+    edits.push({ oldText, newText })
+    delete args['oldText']
+    delete args['newText']
+    args['edits'] = edits
+  }
+  return args
+})
 export const tool = AiTool.make('edit', {
   description:
     'Replace unique disjoint text targets in one file. Every oldText matches the original file; merge overlapping changes.',
@@ -54,6 +54,7 @@ export const tool = AiTool.make('edit', {
   failure: ToolError,
 })
   .addDependency(Env)
+  .addDependency(MutationLocks)
   .addDependency(Invocation)
   .annotate(Metadata.Metadata, {
     replay: 'unsafe',

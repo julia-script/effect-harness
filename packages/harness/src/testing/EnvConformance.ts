@@ -1,6 +1,7 @@
+import * as Duration from 'effect/Duration'
+import * as DateTime from 'effect/DateTime'
 // Environment conformance adapted from pi-durable (MIT), pinned 636703a0; see package NOTICE.
 import * as Cause from 'effect/Cause'
-import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -31,7 +32,7 @@ export interface Options {
 }
 export interface Case {
   readonly name: string
-  readonly timeoutMs?: number | undefined
+  readonly timeoutMs?: Duration.Input | undefined
   readonly run: Effect.Effect<void, FileError | ExecutionError, Env>
 }
 
@@ -85,38 +86,35 @@ interface Watching {
     change: Effect.Effect<void, FileError>,
   ) => Effect.Effect<void, FileError>
 }
-const watching = <E, R>(
+const watching = Effect.fnUntraced(function* <E, R>(
   targets: ReadonlyArray<WatchTarget>,
   run: (helpers: Watching) => Effect.Effect<void, E, R>,
-) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const env = yield* Env
-      const changes = yield* Ref.make<ReadonlyArray<WatchChange>>([])
-      const watcher = yield* env.watch(targets)
-      yield* watcher.changes.pipe(
-        Stream.runForEach((change) => Ref.update(changes, (old) => [...old, change])),
-        Effect.forkScoped,
-      )
-      const expectChange = Effect.fnUntraced(function* (
-        path: string,
-        change: Effect.Effect<void, FileError>,
-      ) {
-        const absolute = yield* env.absolutePath(path)
-        const from = (yield* Ref.get(changes)).length
-        yield* change
-        const deadline = (yield* Clock.currentTimeMillis) + 3000
-        while (!(yield* Ref.get(changes)).slice(from).some((value) => covers(value, absolute))) {
-          const error = (yield* Ref.get(changes)).find((value) => 'error' in value)
-          if (error !== undefined && 'error' in error) return yield* error.error
-          if ((yield* Clock.currentTimeMillis) >= deadline)
-            return yield* Effect.die(`No watch change reported ${absolute}`)
-          yield* Effect.sleep('20 millis')
-        }
-      })
-      yield* run({ changes, expectChange })
-    }),
+): Effect.fn.Return<void, E | FileError, R | Env | Scope.Scope> {
+  const env = yield* Env
+  const changes = yield* Ref.make<ReadonlyArray<WatchChange>>([])
+  const watcher = yield* env.watch(targets)
+  yield* watcher.changes.pipe(
+    Stream.runForEach((change) => Ref.update(changes, (old) => [...old, change])),
+    Effect.forkScoped,
   )
+  const expectChange = Effect.fnUntraced(function* (
+    path: string,
+    change: Effect.Effect<void, FileError>,
+  ) {
+    const absolute = yield* env.absolutePath(path)
+    const from = (yield* Ref.get(changes)).length
+    yield* change
+    const deadline = DateTime.addDuration(yield* DateTime.now, '3 seconds')
+    while (!(yield* Ref.get(changes)).slice(from).some((value) => covers(value, absolute))) {
+      const error = (yield* Ref.get(changes)).find((value) => 'error' in value)
+      if (error !== undefined && 'error' in error) return yield* error.error
+      if (DateTime.isGreaterThanOrEqualTo(yield* DateTime.now, deadline))
+        return yield* Effect.die(`No watch change reported ${absolute}`)
+      yield* Effect.sleep('20 millis')
+    }
+  })
+  yield* run({ changes, expectChange })
+}, Effect.scoped)
 
 /** Runner-independent native Effects. Supply a fresh empty Env Layer separately for every case. */
 export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
@@ -125,28 +123,24 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
   const test = (
     name: string,
     run: Effect.Effect<void, FileError | ExecutionError, Env | Scope.Scope>,
-    timeoutMs?: number,
+    timeoutMs?: Duration.Input,
   ): Case => ({ name, run: Effect.scoped(run), ...(timeoutMs === undefined ? {} : { timeoutMs }) })
   const watch = (
     name: string,
     run: Effect.Effect<void, FileError | ExecutionError, Env | Scope.Scope>,
-  ) => test(name, run, 30_000)
+  ) => test(name, run, '30 seconds')
   const collect = Effect.fnUntraced(function* (
     command: string | ReadonlyArray<string>,
     cwd?: string,
   ) {
     const env = yield* Env
-    let stdout = ''
-    let stderr = ''
+    const output = yield* Ref.make({ stdout: '', stderr: '' })
     const result = yield* env.exec(command, {
       ...(cwd === undefined ? {} : { cwd }),
       onOutput: (text, info) =>
-        Effect.sync(() => {
-          if (info.stream === 'stdout') stdout += text
-          else stderr += text
-        }),
+        Ref.update(output, (value) => ({ ...value, [info.stream]: value[info.stream] + text })),
     })
-    return { result, stdout, stderr }
+    return { result, ...(yield* Ref.get(output)) }
   })
   const cases: Case[] = [
     test(
@@ -305,8 +299,9 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
       "watch reports a missing file's creation, changes, replacement and removal",
       Effect.gen(function* () {
         const env = yield* Env
-        yield* watching([{ path: 'AGENTS.md' }], ({ expectChange }) =>
-          Effect.gen(function* () {
+        yield* watching(
+          [{ path: 'AGENTS.md' }],
+          Effect.fnUntraced(function* ({ expectChange }) {
             yield* expectChange('AGENTS.md', env.writeFile('AGENTS.md', 'one'))
             yield* expectChange('AGENTS.md', env.writeFile('AGENTS.md', 'two!'))
             yield* expectChange(
@@ -334,8 +329,9 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
       Effect.gen(function* () {
         const env = yield* Env
         yield* env.createDir('skills')
-        yield* watching([{ path: 'skills', recursive: true }], ({ expectChange }) =>
-          Effect.gen(function* () {
+        yield* watching(
+          [{ path: 'skills', recursive: true }],
+          Effect.fnUntraced(function* ({ expectChange }) {
             yield* expectChange('skills/a/b/SKILL.md', env.writeFile('skills/a/b/SKILL.md', 'one'))
             yield* expectChange('skills/a/b/SKILL.md', env.writeFile('skills/a/b/SKILL.md', 'two!'))
             yield* expectChange(
@@ -351,8 +347,9 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
       Effect.gen(function* () {
         const env = yield* Env
         yield* env.writeFile('proj/.pi/skills/x.md', 'x')
-        yield* watching([{ path: 'proj/.pi/skills', recursive: true }], ({ expectChange }) =>
-          Effect.gen(function* () {
+        yield* watching(
+          [{ path: 'proj/.pi/skills', recursive: true }],
+          Effect.fnUntraced(function* ({ expectChange }) {
             yield* expectChange('proj/.pi/skills', env.renameFile('proj/.pi', 'proj/old'))
             yield* expectChange('proj/.pi/skills/y.md', env.writeFile('proj/.pi/skills/y.md', 'y'))
             yield* expectChange('proj/.pi/skills/y.md', env.writeFile('proj/.pi/skills/y.md', 'yy'))
@@ -367,25 +364,24 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
         yield* env.createDir('skills')
         yield* watching(
           [{ path: 'skills', recursive: true, exclude: { hidden: true, names: ['node_modules'] } }],
-          ({ changes, expectChange }) =>
-            Effect.gen(function* () {
-              yield* env.writeFile('skills/node_modules/dep/SKILL.md', 'dep')
-              yield* env.writeFile('skills/.SKILL.tmp', 'draft')
-              yield* expectChange(
-                'skills/SKILL.md',
-                env.renameFile('skills/.SKILL.tmp', 'skills/SKILL.md'),
-              )
-              const excluded = yield* Effect.forEach(
-                ['skills/node_modules', 'skills/.SKILL.tmp'],
-                (path) => env.absolutePath(path),
-              )
-              for (const change of yield* Ref.get(changes))
-                if ('paths' in change)
-                  for (const path of change.paths)
-                    assert.ok(
-                      !excluded.some((target) => path === target || path.startsWith(`${target}/`)),
-                    )
-            }),
+          Effect.fnUntraced(function* ({ changes, expectChange }) {
+            yield* env.writeFile('skills/node_modules/dep/SKILL.md', 'dep')
+            yield* env.writeFile('skills/.SKILL.tmp', 'draft')
+            yield* expectChange(
+              'skills/SKILL.md',
+              env.renameFile('skills/.SKILL.tmp', 'skills/SKILL.md'),
+            )
+            const excluded = yield* Effect.forEach(
+              ['skills/node_modules', 'skills/.SKILL.tmp'],
+              (path) => env.absolutePath(path),
+            )
+            for (const change of yield* Ref.get(changes))
+              if ('paths' in change)
+                for (const path of change.paths)
+                  assert.ok(
+                    !excluded.some((target) => path === target || path.startsWith(`${target}/`)),
+                  )
+          }),
         )
       }),
     ),
@@ -406,8 +402,9 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
       Effect.gen(function* () {
         const env = yield* Env
         yield* env.writeFile('skills/a/x.md', 'x')
-        yield* watching([{ path: 'skills', recursive: true }], ({ expectChange }) =>
-          Effect.gen(function* () {
+        yield* watching(
+          [{ path: 'skills', recursive: true }],
+          Effect.fnUntraced(function* ({ expectChange }) {
             yield* expectChange(
               'skills/a',
               env
@@ -490,9 +487,7 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
       'windowed exec keeps the exact tail and counts what it skips',
       Effect.gen(function* () {
         const env = yield* Env
-        let bytes = 0
-        let newlines = 0
-        let tail = ''
+        const counted = yield* Ref.make({ bytes: 0, newlines: 0, tail: '' })
         const window = {
           maxBytes: 200,
           maxLines: 5,
@@ -504,24 +499,27 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
           {
             window,
             onOutput: (text, info) =>
-              Effect.sync(() => {
-                if (info.skipped !== undefined) {
-                  bytes += info.skipped.bytes
-                  newlines += info.skipped.newlines
+              Ref.update(counted, (value) => {
+                if (info.skipped !== undefined)
                   assert.ok(
                     new TextEncoder().encode(text).length > window.maxBytes ||
                       text.split('\n').length - 1 > window.maxLines,
                   )
-                  tail = ''
+                return {
+                  bytes:
+                    value.bytes +
+                    (info.skipped?.bytes ?? 0) +
+                    new TextEncoder().encode(text).length,
+                  newlines:
+                    value.newlines + (info.skipped?.newlines ?? 0) + text.split('\n').length - 1,
+                  tail: (info.skipped === undefined ? value.tail : '') + text,
                 }
-                bytes += new TextEncoder().encode(text).length
-                newlines += text.split('\n').length - 1
-                tail += text
               }),
           },
         )
         const expected = Array.from({ length: 2000 }, (_, index) => `line-${index}\n`)
         assert.strictEqual(result.exitCode, 0)
+        const { bytes, newlines, tail } = yield* Ref.get(counted)
         assert.strictEqual(bytes, expected.join('').length)
         assert.strictEqual(newlines, 2000)
         assert.ok(tail.endsWith(expected.slice(-5).join('')))
@@ -532,7 +530,7 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
       Effect.gen(function* () {
         const env = yield* Env
         assert.strictEqual(
-          (yield* failure(env.exec([...shell, 'sleep 2'], { timeout: 0.1 }))).code,
+          (yield* failure(env.exec([...shell, 'sleep 2'], { timeout: '100 millis' }))).code,
           'timeout',
         )
         const fiber = yield* env.exec([...shell, 'sleep 2']).pipe(Effect.forkScoped)

@@ -1,3 +1,6 @@
+import * as Time from '@effect-harness/harness/Time'
+import * as Schedule from 'effect/Schedule'
+import { ModelRetry, policy as retryPolicy } from './ModelRetry.ts'
 import * as Identity from '../Identity.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import type * as Layer from 'effect/Layer'
@@ -5,13 +8,12 @@ import * as Agent from '@effect-harness/harness/Agent'
 import * as Harness from '@effect-harness/harness/Executor'
 import * as Invocation from '@effect-harness/harness/Invocation'
 import * as Totals from '@effect-harness/harness/Usage'
-import * as Clock from 'effect/Clock'
+import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Prompt from 'effect/ai/Prompt'
 import * as ClusterSchema from 'effect/cluster/ClusterSchema'
 import * as Activity from 'effect/workflow/Activity'
-import * as DurableClock from 'effect/workflow/DurableClock'
 import * as Conversation from '../Conversation.ts'
 import * as Document from '../Document.ts'
 import * as Inbox from '../Inbox.ts'
@@ -302,7 +304,8 @@ export const layer: Layer.Layer<
       if (prepared.type === 'summary')
         return yield* complete({ firstKept: prepared.firstKept, text: prepared.summary })
       const pinned = prepared.request
-      for (let attempt = 1; ; attempt++) {
+      const attemptModel = Effect.fnUntraced(function* () {
+        const attempt = (yield* Schedule.CurrentMetadata).attempt + 1
         const response = yield* Activity.make({
           name: `summary/${attempt}`,
           success: Attempt,
@@ -359,7 +362,7 @@ export const layer: Layer.Layer<
         })
         const decision = yield* Activity.make({
           name: `usage/${attempt}`,
-          success: Schema.Struct({ at: Schema.Finite, retry: Schema.Boolean }),
+          success: Schema.Struct({ at: Time.EpochMillis, retry: Schema.Boolean }),
           error: ExecutionErrorCodec,
           execute: session
             .transaction(
@@ -382,17 +385,26 @@ export const layer: Layer.Layer<
                 const retry =
                   response.type === 'failure' &&
                   Agent.shouldRetry(config.settings.retry, attempt, response.retryable)
-                const at =
-                  (yield* Clock.currentTimeMillis) +
-                  Agent.retryDelay(config.settings.retry, attempt)
+                const at = DateTime.addDuration(
+                  yield* DateTime.now,
+                  Agent.retryDelay(config.settings.retry, attempt),
+                )
                 const status = live.compactions?.find((status) => status.taskId === payload.taskId)
                 if (status !== undefined && retry && response.type === 'failure')
-                  status.retry = { at, error: response.message }
-                return { at, retry }
+                  status.retry = { at: DateTime.toEpochMillis(at), error: response.message }
+                return { at: DateTime.toEpochMillis(at), retry }
               }),
               { key: `workflow/compaction/usage/${executionId}/${attempt}` },
             )
-            .pipe(Effect.mapError(domainError)),
+            .pipe(
+              Effect.mapError(domainError),
+              Effect.flatMap(
+                Schema.decodeEffect(Schema.Struct({ at: Time.EpochMillis, retry: Schema.Boolean })),
+              ),
+              Effect.mapError((cause) =>
+                cause instanceof ExecutionError ? cause : invalid(cause),
+              ),
+            ),
         }).annotate(ClusterSchema.WithTransaction, true)
         if (response.type === 'summary')
           return yield* complete({
@@ -405,12 +417,12 @@ export const layer: Layer.Layer<
           return yield* new ExecutionError({
             reason: new ModelError({ message: response.message, cause: response }),
           })
-        yield* DurableClock.sleep({
-          name: `retry/${attempt}`,
-          duration: Math.max(0, decision.at - (yield* Clock.currentTimeMillis)),
-          inMemoryThreshold: 0,
-        })
-      }
+        return yield* new ModelRetry({ name: `retry/${attempt}`, at: decision.at })
+      })
+      return yield* attemptModel().pipe(
+        Effect.retry(retryPolicy),
+        Effect.catchTag('ModelRetry', (cause) => Effect.fail(invalid(cause))),
+      )
     })
     return yield* Cancellation.run(payload, session, run).pipe(
       Effect.mapError(domainError),

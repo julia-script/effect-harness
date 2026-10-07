@@ -121,7 +121,10 @@ describe('native process boundaries and complete spill output', () => {
         Effect.gen(function* () {
           const env = yield* Env
           const failure = yield* Effect.flip(
-            env.exec('sleep 10', { timeout: 0.03, spill: { afterBytes: 2, afterLines: 100 } }),
+            env.exec('sleep 10', {
+              timeout: '30 millis',
+              spill: { afterBytes: 2, afterLines: 100 },
+            }),
           )
           assert.strictEqual(failure.code, 'timeout')
           assert.strictEqual(failure.spillPath, undefined)
@@ -172,7 +175,7 @@ describe('native process boundaries and complete spill output', () => {
           const settled = yield* Ref.make(false)
           const running = yield* custom
             .exec('printf prefix; sleep 10', {
-              timeout: 0.03,
+              timeout: '30 millis',
               spill: { afterBytes: 2, afterLines: 100 },
               onSpill: (file) => Deferred.succeed(published, file).pipe(Effect.asVoid),
             })

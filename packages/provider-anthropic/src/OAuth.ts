@@ -1,3 +1,4 @@
+import * as AuthDuration from '@effect-harness/auth/Duration'
 import * as Config from 'effect/Config'
 import {
   AuthError,
@@ -11,7 +12,8 @@ import * as Pkce from '@effect-harness/auth/Pkce'
 import type { Fields as TokenFields } from '@effect-harness/auth/Token'
 import * as HashMap from 'effect/HashMap'
 import * as Equal from 'effect/Equal'
-import * as Clock from 'effect/Clock'
+import * as DateTime from 'effect/DateTime'
+import * as Duration from 'effect/Duration'
 import * as Context from 'effect/Context'
 import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
@@ -48,7 +50,7 @@ export interface Authorization {
   /** Pi uses the PKCE verifier as state, so this value is a secret too. */
   readonly state: Redacted.Redacted<string>
   readonly redirectUri: string
-  readonly expiresAt: number
+  readonly expiresAt: DateTime.Utc
 }
 export interface Service {
   readonly begin: (options: {
@@ -105,27 +107,29 @@ const matches = (value: OpaqueOAuth) =>
 
 /** Portable explicit consent service. It never opens a browser or reads another application's credentials. */
 export const layer = (options?: {
-  readonly authorizationLifetimeMs?: number
-  readonly refreshSkewMs?: number
+  readonly authorizationLifetimeMs?: Duration.Input
+  readonly refreshSkewMs?: Duration.Input
 }) =>
   Layer.effect(OAuth)(
     Effect.gen(function* () {
-      const lifetime = options?.authorizationLifetimeMs ?? 600_000
-      const skew = options?.refreshSkewMs ?? 300_000
-      if (!Number.isFinite(lifetime) || lifetime <= 0 || !Number.isFinite(skew) || skew < 0)
-        return yield* failure(
-          'configuration',
-          'Authorization and refresh durations must be finite valid durations',
-        )
+      const message = 'Authorization and refresh durations must be finite valid durations'
+      const lifetime = yield* AuthDuration.fromInput(
+        options?.authorizationLifetimeMs ?? '10 minutes',
+        message,
+      )
+      const skew = yield* AuthDuration.fromInput(options?.refreshSkewMs ?? '5 minutes', message)
+      if (
+        !Number.isFinite(Duration.toMillis(lifetime)) ||
+        Duration.toMillis(lifetime) <= 0 ||
+        !Number.isFinite(Duration.toMillis(skew)) ||
+        Duration.toMillis(skew) < 0
+      )
+        return yield* failure('configuration', message)
       const store = yield* CredentialStore
       const http = yield* HttpClient.HttpClient
       const crypto = yield* Effect.context<Crypto.Crypto>()
-      let pending = HashMap.empty<Redacted.Redacted<string>, Pending>()
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          pending = HashMap.empty()
-        }),
-      )
+      const pending = yield* Ref.make(HashMap.empty<Redacted.Redacted<string>, Pending>())
+      yield* Effect.addFinalizer(() => Ref.set(pending, HashMap.empty()))
       const request = Effect.fnUntraced(
         function* (fields: TokenFields) {
           const response = yield* http
@@ -185,8 +189,11 @@ export const layer = (options?: {
       ) {
         const granted = token.scope === undefined ? previousScopes : splitScopes(token.scope)
         yield* permission(granted)
-        const expiresAt = (yield* Clock.currentTimeMillis) + token.expires_in * 1000
-        if (!Number.isSafeInteger(expiresAt))
+        const expiresAt = DateTime.addDuration(
+          yield* DateTime.now,
+          Duration.seconds(token.expires_in),
+        )
+        if (!Number.isSafeInteger(DateTime.toEpochMillis(expiresAt)))
           return yield* failure('protocol', 'Invalid Anthropic token lifetime')
         return {
           kind: 'opaqueOAuth',
@@ -214,7 +221,10 @@ export const layer = (options?: {
             yield* permission(previous.scopes)
             if (
               !refreshOptions?.force &&
-              previous.expiresAt > (yield* Clock.currentTimeMillis) + skew
+              DateTime.isGreaterThan(
+                previous.expiresAt,
+                DateTime.addDuration(yield* DateTime.now, skew),
+              )
             )
               return previous
             const token = yield* request({
@@ -239,11 +249,12 @@ export const layer = (options?: {
             return yield* failure('configuration', 'Unsupported Anthropic consent method')
           if (beginOptions.account.length === 0)
             return yield* failure('configuration', 'Supply a nonempty account storage key')
-          const challenge = yield* Pkce.make().pipe(Effect.provideContext(crypto))
+          const challenge = yield* Pkce.make.pipe(Effect.provideContext(crypto))
           const state = challenge.verifier
           const redirectUri =
             beginOptions.method === 'copyCode' ? copyCodeRedirectUri : browserRedirectUri
-          const expiresAt = (yield* Clock.currentTimeMillis) + lifetime
+          const now = yield* DateTime.now
+          const expiresAt = DateTime.addDuration(now, lifetime)
           const params = new URLSearchParams({
             code: 'true',
             client_id: clientId,
@@ -260,23 +271,28 @@ export const layer = (options?: {
             redirectUri,
             expiresAt,
           }
-          for (const [key, value] of pending)
-            if (value.authorization.expiresAt <= (yield* Clock.currentTimeMillis))
-              pending = HashMap.remove(pending, key)
-          pending = HashMap.set(pending, state, {
-            account: beginOptions.account,
-            authorization,
-            challenge,
-          })
+          yield* Ref.update(pending, (attempts) =>
+            HashMap.set(
+              HashMap.filter(attempts, (attempt) =>
+                DateTime.isGreaterThan(attempt.authorization.expiresAt, now),
+              ),
+              state,
+              { account: beginOptions.account, authorization, challenge },
+            ),
+          )
           return authorization
         }),
         complete: Effect.fnUntraced(function* (secretState, input) {
           const state = secretState
-          const attempt = Option.getOrUndefined(HashMap.get(pending, state))
+          const attempt = Option.getOrUndefined(HashMap.get(yield* Ref.get(pending), state))
           if (attempt === undefined)
             return yield* failure('callback', 'Unknown or consumed Anthropic authorization')
-          if (attempt.authorization.expiresAt <= (yield* Clock.currentTimeMillis)) {
-            pending = HashMap.remove(pending, state)
+          if (DateTime.isLessThanOrEqualTo(attempt.authorization.expiresAt, yield* DateTime.now)) {
+            yield* Ref.update(pending, (attempts) =>
+              Option.getOrUndefined(HashMap.get(attempts, state)) === attempt
+                ? HashMap.remove(attempts, state)
+                : attempts,
+            )
             return yield* failure('expired', 'Anthropic authorization expired')
           }
           const value = input.trim()
@@ -323,9 +339,13 @@ export const layer = (options?: {
           if (code.length === 0)
             return yield* failure('callback', 'Missing Anthropic authorization code')
           // Consume before yielding: an attempt cannot exchange twice, even concurrently or after failure.
-          if (Option.getOrUndefined(HashMap.get(pending, state)) !== attempt)
+          const consumed = yield* Ref.modify(pending, (attempts) =>
+            Option.getOrUndefined(HashMap.get(attempts, state)) === attempt
+              ? ([true, HashMap.remove(attempts, state)] as const)
+              : ([false, attempts] as const),
+          )
+          if (!consumed)
             return yield* failure('callback', 'Consumed or cancelled Anthropic authorization')
-          pending = HashMap.remove(pending, state)
           const token = yield* request({
             grant_type: 'authorization_code',
             client_id: clientId,
@@ -339,12 +359,12 @@ export const layer = (options?: {
           return saved
         }),
         refresh,
-        accessToken: (account) => refresh(account).pipe(Effect.map((value) => value.accessToken)),
+        accessToken: Effect.fnUntraced(function* (account) {
+          const credential = yield* refresh(account)
+          return credential.accessToken
+        }),
         signOut: (account) => store.remove(account),
-        cancel: (state) =>
-          Effect.sync(() => {
-            pending = HashMap.remove(pending, state)
-          }),
+        cancel: (state) => Ref.update(pending, HashMap.remove(state)),
       })
     }),
   )
@@ -428,7 +448,10 @@ export const layerCallback = (options: { readonly account: string }) =>
       return Callback.of({
         authorization,
         await: Effect.gen(function* () {
-          const remaining = Math.max(0, authorization.expiresAt - (yield* Clock.currentTimeMillis))
+          const now = yield* DateTime.now
+          const remaining = DateTime.isGreaterThan(authorization.expiresAt, now)
+            ? DateTime.distance(now, authorization.expiresAt)
+            : Duration.zero
           return yield* Deferred.await(result).pipe(
             Effect.timeoutOrElse({
               duration: remaining,

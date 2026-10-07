@@ -6,6 +6,7 @@ import * as Exit from 'effect/Exit'
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import * as Context from 'effect/Context'
 import * as Layer from 'effect/Layer'
+import * as Ref from 'effect/Ref'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
@@ -204,12 +205,12 @@ export const join = Effect.fnUntraced(function* (
       })
     }),
   )
-  let marked = false
+  const marked = yield* Ref.make(false)
   const failFast = Effect.gen(function* () {
-    if (marked || policy !== 'failFast') return
+    if ((yield* Ref.get(marked)) || policy !== 'failFast') return
     const latest = yield* session.committed
     if (!ids.some((id) => heldFailure(latest.tasks.find((task) => task.id === id)))) return
-    marked = true
+    if (yield* Ref.getAndSet(marked, true)) return
     const current = yield* Effect.serviceOption(Ownership.Current)
     if (Option.isNone(current)) return yield* invalid('Fail-fast requires a scoped owner identity')
     for (const id of ids) {
@@ -229,6 +230,8 @@ export const join = Effect.fnUntraced(function* (
           : undefined
       yield* failFast
       const awaiting = Effect.forEach(tasks, (task) => execute(session, task), {
+        // P5-explicit-concurrency-option: native frontier members may await a later
+        // member; all joins must start together to avoid stranding that dependency.
         concurrency: 'unbounded',
         discard: true,
       })
@@ -302,7 +305,12 @@ export const drain = Effect.fnUntraced(function* (
         pending,
         ({ conversation, submissions }) =>
           callback.value.drain(session, task, conversation, submissions, identity),
-        { concurrency: 'unbounded', discard: true },
+        {
+          // P5-explicit-concurrency-option: native frontier members may await a later
+          // member; all joins must start together to avoid stranding that dependency.
+          concurrency: 'unbounded',
+          discard: true,
+        },
       )
       const refreshed = yield* session.committed
       const dispatched = new Set(
@@ -332,16 +340,17 @@ export const drain = Effect.fnUntraced(function* (
       }
       yield* Effect.forEach(
         children,
-        (child) =>
-          Effect.gen(function* () {
-            yield* execute(session, child, sessionId)
-            const settled = (yield* session.committed).tasks.find((task) => task.id === child.id)
-            if (settled?.state.status !== 'terminal')
-              return yield* invalid(
-                `Native execution ${child.id} ended before its domain projection settled`,
-              )
-          }),
+        Effect.fnUntraced(function* (child) {
+          yield* execute(session, child, sessionId)
+          const settled = (yield* session.committed).tasks.find((task) => task.id === child.id)
+          if (settled?.state.status !== 'terminal')
+            return yield* invalid(
+              `Native execution ${child.id} ended before its domain projection settled`,
+            )
+        }),
         {
+          // P5-explicit-concurrency-option: native frontier members may await a later
+          // member; all joins must start together to avoid stranding that dependency.
           concurrency: 'unbounded',
           discard: true,
         },
@@ -446,36 +455,42 @@ export const child = Effect.fnUntraced(function* <
  * Native suspension/abandonment remains interruption so the engine can replay;
  * completed bodies, typed failures and defects acquire an owned completing hold.
  */
-export const evaluate = <E, R>(
+export const evaluate = Effect.fnUntraced(function* <E, R>(
   identity: Ownership.Identity,
   session: Session.Service,
   body: Effect.Effect<Record.Json, E, R>,
-) =>
-  Effect.gen(function* () {
-    const exit = yield* Cancellation.run(identity, session, body).pipe(Effect.exit)
-    const instance = yield* Effect.serviceOption(WorkflowEngine.WorkflowInstance)
-    if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
-      if (Option.isSome(instance) && (instance.value.suspended || instance.value.abandoned))
-        return yield* Effect.failCause(exit.cause)
-      const task = (yield* session.committed).tasks.find((task) => task.id === identity.taskId)
-      if (!task?.abortRequested) return yield* Effect.failCause(exit.cause)
-    }
-    let outcome: Record.Json
-    if (Exit.isSuccess(exit))
-      outcome = yield* Schema.decodeEffect(Outcome.Completed)({
-        status: 'completed',
-        result: exit.value,
-      }).pipe(Effect.mapError((cause) => invalid('Invalid structured outcome', cause)))
-    else {
-      const error = Cause.squash(exit.cause)
-      let status: (typeof Outcome.Failed.Type)['status'] = Cause.hasDies(exit.cause)
-        ? 'faulted'
-        : 'failed'
-      if (error instanceof ExecutionError && error.reason._tag === 'Aborted') status = 'aborted'
-      outcome = Outcome.Failed.make({
-        status,
-        error: { message: error instanceof Error ? error.message : String(error) },
-      })
-    }
-    return yield* complete(session, identity.taskId, outcome, identity.sessionId)
-  })
+): Effect.fn.Return<
+  Record.Json,
+  E | ExecutionError | StorageError,
+  | Exclude<R, Ownership.Current>
+  | Ownership.Declarations
+  | Cancellation.Cancellation
+  | WorkflowEngine.WorkflowEngine
+> {
+  const exit = yield* Cancellation.run(identity, session, body).pipe(Effect.exit)
+  const instance = yield* Effect.serviceOption(WorkflowEngine.WorkflowInstance)
+  if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
+    if (Option.isSome(instance) && (instance.value.suspended || instance.value.abandoned))
+      return yield* Effect.failCause(exit.cause)
+    const task = (yield* session.committed).tasks.find((task) => task.id === identity.taskId)
+    if (!task?.abortRequested) return yield* Effect.failCause(exit.cause)
+  }
+  let outcome: Record.Json
+  if (Exit.isSuccess(exit))
+    outcome = yield* Schema.decodeEffect(Outcome.Completed)({
+      status: 'completed',
+      result: exit.value,
+    }).pipe(Effect.mapError((cause) => invalid('Invalid structured outcome', cause)))
+  else {
+    const error = Cause.squash(exit.cause)
+    let status: (typeof Outcome.Failed.Type)['status'] = Cause.hasDies(exit.cause)
+      ? 'faulted'
+      : 'failed'
+    if (error instanceof ExecutionError && error.reason._tag === 'Aborted') status = 'aborted'
+    outcome = Outcome.Failed.make({
+      status,
+      error: { message: error instanceof Error ? error.message : String(error) },
+    })
+  }
+  return yield* complete(session, identity.taskId, outcome, identity.sessionId)
+})

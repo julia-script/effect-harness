@@ -83,12 +83,11 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
       assert.deepStrictEqual((yield* store.read).conversations, [])
       assert.strictEqual(yield* mintId(Record.EntryId), 2)
       let calls = 0
-      const initialize = (tx: Session.Transaction) =>
-        Effect.gen(function* () {
-          calls++
-          const draft = yield* tx.doc(counter)
-          draft.count = 7
-        })
+      const initialize = Effect.fnUntraced(function* (tx: Session.Transaction) {
+        calls++
+        const draft = yield* tx.doc(counter)
+        draft.count = 7
+      })
       assert.deepStrictEqual(yield* session.root(initialize), { id: root })
       yield* session.root(initialize)
       assert.strictEqual(calls, 1)
@@ -735,19 +734,18 @@ export const createStorageConformance = (assert: Assertions): ReadonlyArray<Case
       const session = yield* Session.Session
       yield* session.root()
       let calls = 0
-      const execute = () =>
-        session.transaction(
-          Effect.fnUntraced(function* (tx) {
-            calls++
-            const entry = yield* tx.appendEntry(root, { kind: 'receipt' })
-            const value = yield* tx.doc(counter)
-            value.count++
-            return { id: entry.id, count: value.count }
-          }),
-          { key: 'stable\ud800', fingerprint: 'input' },
-        )
-      const result = yield* execute()
-      assert.deepStrictEqual(yield* execute(), result)
+      const execute = session.transaction(
+        Effect.fnUntraced(function* (tx) {
+          calls++
+          const entry = yield* tx.appendEntry(root, { kind: 'receipt' })
+          const value = yield* tx.doc(counter)
+          value.count++
+          return { id: entry.id, count: value.count }
+        }),
+        { key: 'stable\ud800', fingerprint: 'input' },
+      )
+      const result = yield* execute
+      assert.deepStrictEqual(yield* execute, result)
       assert.strictEqual(calls, 1)
       assert.strictEqual((yield* store.read).receipts.length, 1)
       assert.strictEqual(

@@ -36,6 +36,8 @@ export interface Journal {
 }
 export interface Service {
   readonly read: Effect.Effect<Record.State, StorageError>
+  /** Actual ambient read lease; absent custom drivers are isolated by their complete caller Context. */
+  readonly readContext?: Effect.Effect<object>
   /** Reads outside an inherited SQL transaction, waiting for physical settlement. */
   readonly committed: Effect.Effect<Record.State, StorageError>
   readonly transact: Transact

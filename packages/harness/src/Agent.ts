@@ -1,3 +1,6 @@
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Time from './Time.ts'
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
 
@@ -30,8 +33,8 @@ export type ProgressPolicy = typeof ProgressPolicy.Type
 export const defaultRetry: RetryPolicy = {
   enabled: true,
   maxRetries: 3,
-  baseDelayMs: 2000,
-  maxAgentDelayMs: 60000,
+  baseDelayMs: Duration.seconds(2),
+  maxAgentDelayMs: Duration.minutes(1),
 }
 export const defaultCompaction: CompactionPolicy = {
   enabled: true,
@@ -39,11 +42,20 @@ export const defaultCompaction: CompactionPolicy = {
   keepRecentTokens: 20000,
   backgroundTokens: 32768,
 }
-export const defaultProgress: ProgressPolicy = { partialIntervalMs: 100, outputIntervalMs: 100 }
+export const defaultProgress: ProgressPolicy = {
+  partialIntervalMs: Duration.millis(100),
+  outputIntervalMs: Duration.millis(100),
+}
 export type Settings = typeof Settings.Type
 export type SettingsInput = {
   readonly [K in keyof Settings]?: K extends 'retry' | 'compaction' | 'progress'
-    ? { readonly [P in keyof Settings[K]]?: Settings[K][P] | undefined } | undefined
+    ?
+        | {
+            readonly [P in keyof Settings[K]]?:
+              | (Settings[K][P] extends Duration.Duration ? Duration.Input : Settings[K][P])
+              | undefined
+          }
+        | undefined
     : Settings[K] | undefined
 }
 /** Configuration fields replace wholesale; null clears and undefined preserves. */
@@ -61,21 +73,52 @@ export function configure(state: State, change: Change): State {
   }
   return next
 }
-export function settings(input: SettingsInput = {}): Settings {
-  return {
+const defaults = (): Settings => ({
+  stream: {},
+  retry: defaultRetry,
+  compaction: defaultCompaction,
+  progress: defaultProgress,
+  toolExecution: 'parallel',
+  steeringMode: 'one-at-a-time',
+  followUpMode: 'one-at-a-time',
+})
+/** Validated default domain settings; options are normalized lazily for each construction. */
+export const defaultSettings: Settings = defaults()
+export const settings = Effect.fnUntraced(function* (
+  input: SettingsInput = {},
+): Effect.fn.Return<Settings, Schema.SchemaError> {
+  const progress = { ...defaultProgress, ...input.progress }
+  return yield* Schema.decodeEffect(Schema.toType(Settings))({
+    ...defaultSettings,
     ...(input.extensions === undefined ? {} : { extensions: input.extensions }),
     stream: { ...input.stream },
-    retry: Object.assign({}, defaultRetry, input.retry),
-    compaction: Object.assign({}, defaultCompaction, input.compaction),
-    progress: {
-      partialIntervalMs: input.progress?.partialIntervalMs ?? 100,
-      outputIntervalMs: input.progress?.outputIntervalMs ?? 100,
+    retry: {
+      enabled: input.retry?.enabled ?? defaultRetry.enabled,
+      maxRetries: input.retry?.maxRetries ?? defaultRetry.maxRetries,
+      baseDelayMs: yield* Time.duration(input.retry?.baseDelayMs ?? defaultRetry.baseDelayMs),
+      maxAgentDelayMs: yield* Time.duration(
+        input.retry?.maxAgentDelayMs ?? defaultRetry.maxAgentDelayMs,
+      ),
     },
-    toolExecution: input.toolExecution ?? 'parallel',
-    steeringMode: input.steeringMode ?? 'one-at-a-time',
-    followUpMode: input.followUpMode ?? 'one-at-a-time',
-  }
-}
+    compaction: {
+      enabled: input.compaction?.enabled ?? defaultCompaction.enabled,
+      reserveTokens: input.compaction?.reserveTokens ?? defaultCompaction.reserveTokens,
+      keepRecentTokens: input.compaction?.keepRecentTokens ?? defaultCompaction.keepRecentTokens,
+      backgroundTokens: input.compaction?.backgroundTokens ?? defaultCompaction.backgroundTokens,
+    },
+    progress: {
+      partialIntervalMs: yield* Time.duration(
+        progress.partialIntervalMs ?? defaultProgress.partialIntervalMs,
+      ),
+      outputIntervalMs: yield* Time.duration(
+        progress.outputIntervalMs ?? defaultProgress.outputIntervalMs,
+      ),
+    },
+    toolExecution: input.toolExecution ?? defaultSettings.toolExecution,
+    steeringMode: input.steeringMode ?? defaultSettings.steeringMode,
+    followUpMode: input.followUpMode ?? defaultSettings.followUpMode,
+  })
+})
 /** Selection edits apply to host defaults, with remove winning and first occurrence order. */
 export function select(
   selection: Selection | undefined,
@@ -88,8 +131,11 @@ export function select(
   const removed = new Set(edit.remove)
   return [...new Set([...defaults, ...(edit.add ?? [])])].filter((name) => !removed.has(name))
 }
-export function retryDelay(policy: RetryPolicy, attempt: number): number {
-  return Math.min(policy.baseDelayMs * 2 ** (Math.max(1, attempt) - 1), policy.maxAgentDelayMs)
+export function retryDelay(policy: RetryPolicy, attempt: number): Duration.Duration {
+  return Duration.min(
+    Duration.times(policy.baseDelayMs, 2 ** (Math.max(1, attempt) - 1)),
+    policy.maxAgentDelayMs,
+  )
 }
 export function shouldRetry(policy: RetryPolicy, attempt: number, retryable: boolean): boolean {
   return retryable && policy.enabled && attempt <= policy.maxRetries
@@ -110,8 +156,8 @@ const nonnegative = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 export const RetryPolicy = Schema.Struct({
   enabled: Schema.Boolean,
   maxRetries: nonnegative,
-  baseDelayMs: nonnegative,
-  maxAgentDelayMs: nonnegative,
+  baseDelayMs: Time.NonnegativeMillis,
+  maxAgentDelayMs: Time.NonnegativeMillis,
 })
 export const CompactionPolicy = Schema.Struct({
   enabled: Schema.Boolean,
@@ -120,8 +166,8 @@ export const CompactionPolicy = Schema.Struct({
   backgroundTokens: nonnegative,
 })
 export const ProgressPolicy = Schema.Struct({
-  partialIntervalMs: nonnegative,
-  outputIntervalMs: nonnegative,
+  partialIntervalMs: Time.NonnegativeMillis,
+  outputIntervalMs: Time.NonnegativeMillis,
 })
 export const Settings = Schema.Struct({
   extensions: SchemaField.optional(Schema.Array(Schema.String)),

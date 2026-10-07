@@ -77,21 +77,20 @@ const delta = (session: Service, id: Record.DocumentId, count: number) =>
       })
       .pipe(Effect.as(null)),
   )
-const creation = (
+const creation = Effect.fnUntraced(function* (
   tx: Transaction,
   kind: string,
   scope: Record.Scope,
   extra: Partial<Record.DocumentCreate> = {},
-) =>
-  Effect.gen(function* () {
-    const id = yield* tx.mint(Record.DocumentId)
-    yield* tx.write({
-      type: 'document.create',
-      record: { id, kind, scope, ...extra },
-      content: { kind: 'base', version: 1, value: { count: 0 } },
-    })
-    return id
+) {
+  const id = yield* tx.mint(Record.DocumentId)
+  yield* tx.write({
+    type: 'document.create',
+    record: { id, kind, scope, ...extra },
+    content: { kind: 'base', version: 1, value: { count: 0 } },
   })
+  return id
+})
 /** Seeds exact lookups, filtered scans, long replay tails, old bases and deep fork ancestry. */
 export const seedStorageBenchmark = Effect.fnUntraced(function* (
   scale: Scale = TIMING_SCALE,

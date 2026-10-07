@@ -11,11 +11,7 @@ export interface Challenge {
 }
 export const base64Url = (bytes: Uint8Array): string =>
   Base64.encode(bytes).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
-export const make = Effect.fnUntraced(function* (): Effect.fn.Return<
-  Challenge,
-  AuthError,
-  Crypto.Crypto
-> {
+export const make: Effect.Effect<Challenge, AuthError, Crypto.Crypto> = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto
   const random = (size: number) =>
     crypto.randomBytes(size).pipe(

@@ -1,3 +1,4 @@
+import * as DateTime from 'effect/DateTime'
 import * as Serialization from '../../src/Serialization.ts'
 import * as Entry from '../../src/Entry.ts'
 import { assert, describe, it } from '@effect/vitest'
@@ -217,8 +218,8 @@ describe('conversation and inbox domain integration', () => {
           )
           const boundary = yield* session.transaction(
             Effect.fnUntraced(function* (tx) {
-              const prepared = yield* Inbox.prepare(tx, root.id, Agent.settings())
-              return yield* Inbox.apply(tx, prepared, 'postTools', 123)
+              const prepared = yield* Inbox.prepare(tx, root.id, yield* Agent.settings())
+              return yield* Inbox.apply(tx, prepared, 'postTools', DateTime.fromEpochSeconds(0.123))
             }),
           )
           assert.deepStrictEqual(boundary, {
@@ -282,8 +283,8 @@ describe('conversation and inbox domain integration', () => {
           )
           yield* session.transaction(
             Effect.fnUntraced(function* (tx) {
-              const prepared = yield* Inbox.prepare(tx, root.id, Agent.settings())
-              return yield* Inbox.apply(tx, prepared, 'postTools', 0)
+              const prepared = yield* Inbox.prepare(tx, root.id, yield* Agent.settings())
+              return yield* Inbox.apply(tx, prepared, 'postTools', DateTime.fromEpochSeconds(0))
             }),
           )
           assert.strictEqual((yield* session.submission(ids.stale))?.reason, 'stale')

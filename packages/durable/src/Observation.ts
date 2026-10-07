@@ -2,6 +2,7 @@ import { cursor as journalCursor } from './storage/State.ts'
 import * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
+import * as Ref from 'effect/Ref'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as Document from './Document.ts'
@@ -42,20 +43,19 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
   if (snapshot === undefined) return undefined
   const initial = yield* Document.typed(token, snapshot, migrationCache)
   const terminal = yield* Deferred.make<End>()
-  let ended = false
-  let started = false
-  let value: Readonly<T> | null = initial.value
+  const ended = yield* Ref.make(false)
+  const started = yield* Ref.make(false)
+  const value = yield* Ref.make<Readonly<T> | null>(initial.value)
   let version = initial.version
   const stop = Effect.fnUntraced(function* (reason: End) {
-    if (ended) return
-    ended = true
+    if (yield* Ref.getAndSet(ended, true)) return
     yield* Deferred.succeed(terminal, reason)
   })
   yield* Effect.addFinalizer(() => stop('cancelled'))
   yield* Effect.forkScoped(
     Effect.gen(function* () {
       let after = yield* journalCursor(baseline.nextSeq)
-      while (!ended) {
+      while (!(yield* Ref.get(ended))) {
         const journal = yield* store.journal(after)
         if (journal.state.nextSeq - 1 > after) {
           after = yield* journalCursor(journal.state.nextSeq)
@@ -75,13 +75,13 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
   }
   const stream = Stream.unwrap(
     Effect.gen(function* () {
-      if (started) return yield* rejected('Watch may only be consumed once')
-      if (ended) return yield* rejected('Watch is stopped')
-      started = true
+      if (yield* Ref.getAndSet(started, true))
+        return yield* rejected('Watch may only be consumed once')
+      if (yield* Ref.get(ended)) return yield* rejected('Watch is stopped')
       return Stream.unfold<Cursor, Change<T>, StorageError, never>(
         { after: yield* journalCursor(baseline.nextSeq), pending: [], retire: false },
         Effect.fnUntraced(function* (cursor) {
-          if (ended) return undefined
+          if (yield* Ref.get(ended)) return undefined
           if (cursor.retire) {
             yield* stop('retired')
             return undefined
@@ -89,7 +89,7 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
           let after = cursor.after
           const pending = [...cursor.pending]
           let refresh = true
-          while ((refresh || pending.length === 0) && !ended) {
+          while ((refresh || pending.length === 0) && !(yield* Ref.get(ended))) {
             refresh = false
             const journal = yield* store.journal(after).pipe(
               Effect.catchIf(
@@ -157,10 +157,10 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
               }
             if (pending.length === 0) yield* Effect.sleep('20 millis')
           }
-          if (ended) return undefined
+          if (yield* Ref.get(ended)) return undefined
           const next = pending.shift()
           if (next === undefined) return undefined
-          value = next.value
+          yield* Ref.set(value, next.value)
           if (next.value === null) yield* stop('retired')
           return [next, { after, pending, retire: next.value === null }] as const
         }),
@@ -169,7 +169,7 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
   )
   return {
     get value() {
-      return value
+      return Ref.getUnsafe(value)
     },
     record: initial.record,
     changes: stream,
@@ -231,13 +231,9 @@ export const state = Effect.fnUntraced(function* <T extends object>(
 ): Effect.fn.Return<State<T> | undefined, StorageError, Scope.Scope> {
   const subscription = yield* watch(store, token, target, migrationCache)
   if (subscription === undefined) return undefined
-  let cursor = 0
+  const cursor = yield* Ref.make(0)
   yield* subscription
-    .listen(() =>
-      Effect.sync(() => {
-        cursor++
-      }),
-    )
+    .listen(() => Ref.update(cursor, (value) => value + 1))
     .pipe(Effect.ignore, Effect.forkScoped)
   return {
     get value() {
@@ -245,7 +241,7 @@ export const state = Effect.fnUntraced(function* <T extends object>(
     },
     record: subscription.record,
     get cursor() {
-      return cursor
+      return Ref.getUnsafe(cursor)
     },
     closed: subscription.closed,
   }

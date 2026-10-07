@@ -1,4 +1,5 @@
 import * as Effect from 'effect/Effect'
+import * as Ref from 'effect/Ref'
 import * as Config from 'effect/Config'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
@@ -31,7 +32,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
   const exists = yield* fs
     .exists(file)
     .pipe(Effect.mapError((cause) => rejected('Cannot inspect JSONL file', Io, cause)))
-  let snapshot: Backend.Snapshot = { state: Record.emptyState(), frames: [] }
+  let recovered: Backend.Snapshot = { state: Record.emptyState(), frames: [] }
   if (exists) {
     const bytes = yield* fs
       .readFile(file)
@@ -57,10 +58,11 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       if (seq <= previous || !Number.isSafeInteger(seq))
         return yield* rejected('JSONL commit sequences do not strictly increase', Corrupt)
       previous = seq
-      snapshot = { ...parsed, state: yield* validateState(parsed.state) }
+      recovered = { ...parsed, state: yield* validateState(parsed.state) }
       start = end + 1
     }
   }
+  const snapshot = yield* Ref.make(recovered)
   yield* fs.remove(temporary, { force: true }).pipe(Effect.ignore)
   const flush = Effect.fnUntraced(function* (target: string) {
     return yield* Effect.scoped(
@@ -82,7 +84,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       yield* flush(file).pipe(
         Effect.mapError((cause) => uncertain('JSONL flush settlement is uncertain', cause)),
       )
-    snapshot = yield* detachedEffect(next)
+    yield* Ref.set(snapshot, yield* detachedEffect(next))
     // Publication has succeeded. Reclamation can fail safely and is retried on a later commit.
     yield* Effect.gen(function* () {
       yield* fs.writeFileString(temporary, encoded)
@@ -91,8 +93,8 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     }).pipe(Effect.ignore)
   })
   return yield* Backend.make({
-    load: Effect.suspend(() => detachedEffect(snapshot)),
-    committed: Effect.suspend(() => detachedEffect(snapshot)),
+    load: Ref.get(snapshot).pipe(Effect.flatMap(detachedEffect)),
+    committed: Ref.get(snapshot).pipe(Effect.flatMap(detachedEffect)),
     save,
     atomic: (effect) => effect,
   })

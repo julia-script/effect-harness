@@ -1,3 +1,5 @@
+import * as Time from '@effect-harness/harness/Time'
+import * as DateTime from 'effect/DateTime'
 // Queue boundary rules adapted from pi-durable (MIT), pinned 636703a0.
 import * as Agent from '@effect-harness/harness/Agent'
 import * as Invocation from '@effect-harness/harness/Invocation'
@@ -70,6 +72,61 @@ export const LiveState = Schema.Struct({
     ),
   ),
 })
+/** Decoded deadlines for read/event adapters; LiveDoc and its Proxy drafts retain numeric JSON. */
+export const LiveDomain = LiveState.mapFields((fields) => ({
+  ...fields,
+  generation: Schema.optionalKey(
+    Schema.Struct({
+      ...fields.generation.schema.fields,
+      retry: Schema.optionalKey(Schema.Struct({ at: Time.EpochMillis, error: Schema.String })),
+      deferred: Schema.optionalKey(Schema.Struct({ pollAt: Time.EpochMillis })),
+    }),
+  ),
+  compactions: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        ...fields.compactions.schema.value.fields,
+        retry: Schema.optionalKey(Schema.Struct({ at: Time.EpochMillis, error: Schema.String })),
+      }),
+    ),
+  ),
+}))
+/** Preserve opaque mounted references while adapting only the known numeric time leaves. */
+export const domain = (value: LiveState): typeof LiveDomain.Type => {
+  const { generation, compactions, ...rest } = value
+  const generationDomain =
+    generation === undefined
+      ? undefined
+      : (() => {
+          const { retry, deferred, ...rest } = generation
+          return {
+            ...rest,
+            ...(retry === undefined
+              ? {}
+              : { retry: { ...retry, at: Time.fromEpochMillis(retry.at) } }),
+            ...(deferred === undefined
+              ? {}
+              : { deferred: { pollAt: Time.fromEpochMillis(deferred.pollAt) } }),
+          }
+        })()
+  return {
+    ...rest,
+    ...(generationDomain === undefined ? {} : { generation: generationDomain }),
+    ...(compactions === undefined
+      ? {}
+      : {
+          compactions: compactions.map((item) => {
+            const { retry, ...rest } = item
+            return {
+              ...rest,
+              ...(retry === undefined
+                ? {}
+                : { retry: { ...retry, at: Time.fromEpochMillis(retry.at) } }),
+            }
+          }),
+        }),
+  }
+}
 export type LiveState = typeof LiveState.Type
 export const LiveDoc = Document.defineUnsafe({
   kind: 'harness.live',
@@ -107,7 +164,7 @@ export const apply = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   boundary: Boundary,
   at: 'postTools' | 'final',
-  now: number,
+  now: DateTime.Utc,
 ) {
   const items = boundary.inbox.items
   const reset = items.some((item) => item.mode === 'write' && item.entry.head === 'self')
@@ -146,7 +203,7 @@ export const apply = Effect.fnUntraced(function* (
     const entry = yield* tx.appendEntry(boundary.conversationId, {
       kind: 'harness.user',
       model: [item.message],
-      data: { timestamp: now },
+      data: { timestamp: DateTime.toEpochMillis(now) },
     })
     yield* tx.placeSubmission(item.id, entry.id)
     placed.push(item.id)

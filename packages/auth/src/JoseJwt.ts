@@ -1,4 +1,5 @@
-import * as Clock from 'effect/Clock'
+import * as Time from './Time.ts'
+import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Redacted from 'effect/Redacted'
@@ -36,6 +37,9 @@ export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClien
     const client = yield* HttpClient.HttpClient
     return Jwt.of({
       verify: Effect.fnUntraced(function* (token, options) {
+        // P5-request-resolver-batching: each verification independently samples this rotating
+        // issuer key set. There is no bulk endpoint; sharing/deduplicating equal URLs could hide
+        // a rotation between tokens or retain a failed lookup. No HTTP response or result cache.
         const response = yield* client.get(options.jwksUrl).pipe(
           Effect.mapError(
             (cause) =>
@@ -89,7 +93,7 @@ export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClien
               reason: new AuthIdentityError({ cause, message: 'Invalid verification keys' }),
             }),
         })
-        const now = yield* Clock.currentTimeMillis
+        const now = yield* DateTime.now
         const verified = yield* Effect.tryPromise({
           try: () =>
             jwtVerify(Redacted.value(token), keyResolver, {
@@ -97,7 +101,7 @@ export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClien
               audience: options.audience,
               algorithms: [...(options.algorithms ?? ['RS256', 'ES256'])],
               requiredClaims: ['sub', 'iss', 'aud', 'exp'],
-              currentDate: new Date(now),
+              currentDate: DateTime.toDateUtc(now),
             }),
           catch: (cause) =>
             new AuthError({
@@ -121,7 +125,15 @@ export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClien
               message: 'ID token nonce does not match the authorization attempt',
             }),
           })
-        return claims
+        const exp = yield* Schema.decodeEffect(Time.EpochMillis)(claims.exp * 1000).pipe(
+          Effect.mapError(
+            (cause) =>
+              new AuthError({
+                reason: new AuthIdentityError({ cause, message: 'ID token expiry is invalid' }),
+              }),
+          ),
+        )
+        return { ...claims, exp }
       }),
     })
   },

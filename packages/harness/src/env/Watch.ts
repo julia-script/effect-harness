@@ -1,3 +1,9 @@
+import * as Ref from 'effect/Ref'
+import * as HashMap from 'effect/HashMap'
+import * as HashSet from 'effect/HashSet'
+import * as DateTime from 'effect/DateTime'
+import * as Duration from 'effect/Duration'
+import * as Time from '../Time.ts'
 import * as Serialization from '../Serialization.ts'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
@@ -22,9 +28,9 @@ import {
 } from '../Env.ts'
 
 interface Scan {
-  readonly values: Map<string, string>
-  readonly directories: Map<string, string>
-  readonly nestedSymlinks: Set<string>
+  readonly values: HashMap.HashMap<string, string>
+  readonly directories: HashMap.HashMap<string, string>
+  readonly nestedSymlinks: HashSet.HashSet<string>
 }
 export const make = Effect.fnUntraced(function* (
   fs: FileSystem.FileSystem,
@@ -33,10 +39,20 @@ export const make = Effect.fnUntraced(function* (
   targets: ReadonlyArray<WatchTarget>,
   options: WatchOptions = {},
 ) {
-  const interval = options.pollIntervalMs ?? 2000
+  const interval = yield* Time.duration(options.pollIntervalMs ?? '2 seconds').pipe(
+    Effect.mapError(
+      (cause) =>
+        new FileError({ reason: new FileInvalid({ message: 'Invalid watch options', cause }) }),
+    ),
+  )
   const budget = options.directoryBudget ?? 10000
-  let mode: 'native' | 'polling' = options.mode ?? 'native'
-  if (!Number.isFinite(interval) || interval <= 0 || !Number.isSafeInteger(budget) || budget <= 0)
+  const mode = yield* Ref.make<'native' | 'polling'>(options.mode ?? 'native')
+  if (
+    !Duration.isFinite(interval) ||
+    Duration.toMillis(interval) <= 0 ||
+    !Number.isSafeInteger(budget) ||
+    budget <= 0
+  )
     return yield* new FileError({ reason: new FileInvalid({ message: 'Invalid watch options' }) })
   const output = yield* Queue.unbounded<WatchChange, Cause.Done>()
   const events = yield* Queue.unbounded<{
@@ -45,12 +61,12 @@ export const make = Effect.fnUntraced(function* (
     readonly owner?: string | undefined
     readonly settle?: boolean | undefined
   }>()
-  let closed = false
+  const closed = yield* Ref.make(false)
   const release = (scope: Scope.Closeable) =>
     Effect.uninterruptible(
       Effect.gen(function* () {
-        if (closed) return
-        closed = true
+        if (yield* Ref.get(closed)) return
+        yield* Ref.set(closed, true)
         yield* Scope.close(scope, Exit.void).pipe(
           Effect.ensuring(Queue.shutdown(events).pipe(Effect.andThen(Queue.shutdown(output)))),
         )
@@ -81,11 +97,12 @@ export const make = Effect.fnUntraced(function* (
     targets.some((target) => value === target.path || value.startsWith(target.path + path.sep))
       ? value
       : (targets.find((target) => target.path.startsWith(value + path.sep))?.path ?? value)
-  const scan = Effect.fnUntraced(function* (): Effect.fn.Return<Scan, FileError> {
+  const scan: Effect.Effect<Scan, FileError> = Effect.gen(function* () {
     const values = new Map<string, string>()
     const directories = new Map<string, string>()
     const nestedSymlinks = new Set<string>()
     const counted = new Set<string>()
+    // Fresh no-follow samples distinguish replacements/links across each scan and installation pass; no deduplication.
     const stat = (value: string) =>
       native.lstat(value).pipe(
         Effect.catchIf(
@@ -94,6 +111,7 @@ export const make = Effect.fnUntraced(function* (
         ),
       )
     const addDirectory = Effect.fnUntraced(function* (value: string, count = false) {
+      // Directory inode identity is sampled separately from lstat; native APIs provide no atomic bulk snapshot.
       const metadata = yield* fs.stat(value).pipe(Effect.option)
       if (Option.isNone(metadata)) return
       directories.set(
@@ -144,6 +162,7 @@ export const make = Effect.fnUntraced(function* (
         let mtime = metadata.mtimeMs
         let identity = metadata.identity ?? ''
         if (root && kind === 'symlink') {
+          // Explicit roots deliberately follow links; keep this sample separate from the no-follow recursive traversal.
           const followed = yield* fs.stat(value).pipe(
             Effect.mapError((error) => fromPlatform(error, value)),
             Effect.catchIf(
@@ -154,13 +173,17 @@ export const make = Effect.fnUntraced(function* (
           if (followed === undefined) return
           kind = followed.type === 'Directory' ? 'directory' : 'file'
           size = Number(followed.size)
-          mtime = Option.isSome(followed.mtime) ? followed.mtime.value.getTime() : 0
+          mtime = Time.fromEpochMillis(
+            Option.isSome(followed.mtime) ? followed.mtime.value.getTime() : 0,
+          )
+          // Resolve the current root alias on every scan so retargeting can reinstall the correct parent watcher.
           const real = yield* fs
             .realPath(value)
             .pipe(Effect.mapError((error) => fromPlatform(error, value)))
           yield* addDirectory(path.dirname(real))
         }
         if (kind !== 'symlink') {
+          // Following inode metadata supplies identity independently of the no-follow sample, without stale request caching.
           const platform = yield* fs.stat(value).pipe(Effect.option)
           if (Option.isSome(platform))
             identity = JSON.stringify([
@@ -170,6 +193,7 @@ export const make = Effect.fnUntraced(function* (
         }
         let hash = ''
         if (kind === 'file' && size <= 256 * 1024) {
+          // Read current bytes even when timestamps/size are unchanged; caching would lose same-size content changes.
           const bytes = yield* fs.readFile(value).pipe(Effect.option)
           if (Option.isSome(bytes)) hash = Base64.encode(bytes.value)
         }
@@ -180,7 +204,7 @@ export const make = Effect.fnUntraced(function* (
               metadata.kind,
               kind,
               kind === 'directory' ? 0 : size,
-              kind === 'directory' ? 0 : mtime,
+              kind === 'directory' ? 0 : DateTime.toEpochMillis(mtime),
               identity,
               hash,
             ]),
@@ -188,6 +212,7 @@ export const make = Effect.fnUntraced(function* (
         if (kind === 'directory') {
           if (root || target.recursive === true) {
             yield* addDirectory(value, true)
+            // Enumerate current children each scan; mutations between passes must remain visible, and no bulk API exists.
             const names = yield* fs.readDirectory(value).pipe(
               Effect.mapError((error) => fromPlatform(error, value)),
               Effect.catchIf(
@@ -204,30 +229,38 @@ export const make = Effect.fnUntraced(function* (
       })
       yield* visit(target.path, true)
     }
-    return { values, directories, nestedSymlinks }
+    return {
+      values: HashMap.fromIterable(values),
+      directories: HashMap.fromIterable(directories),
+      nestedSymlinks: HashSet.fromIterable(nestedSymlinks),
+    }
   })
-  const watchers = new Map<string, { readonly scope: Scope.Closeable; readonly identity: string }>()
-  const closeWatchers = Effect.fnUntraced(function* () {
-    for (const installed of watchers.values()) yield* Scope.close(installed.scope, Exit.void)
-    watchers.clear()
+  const watchers = yield* Ref.make(
+    HashMap.empty<string, { readonly scope: Scope.Closeable; readonly identity: string }>(),
+  )
+  const closeWatchers = Effect.gen(function* () {
+    const current = yield* Ref.getAndSet(watchers, HashMap.empty())
+    for (const installed of HashMap.values(current)) yield* Scope.close(installed.scope, Exit.void)
   })
-  const syncWatchers = Effect.fnUntraced(function* (wanted: Map<string, string>) {
-    if (mode === 'polling') return false
-    for (const [value, installed] of watchers)
-      if (wanted.get(value) !== installed.identity) {
+  const syncWatchers = Effect.fnUntraced(function* (wanted: HashMap.HashMap<string, string>) {
+    if ((yield* Ref.get(mode)) === 'polling') return false
+    for (const [value, installed] of yield* Ref.get(watchers))
+      if (Option.getOrUndefined(HashMap.get(wanted, value)) !== installed.identity) {
         yield* Scope.close(installed.scope, Exit.void)
-        watchers.delete(value)
+        yield* Ref.update(watchers, HashMap.remove(value))
       }
     let added = false
     for (const [value, identity] of wanted)
-      if (!watchers.has(value)) {
+      if (!HashMap.has(yield* Ref.get(watchers), value)) {
         const child = yield* Scope.fork(scope)
         const installed = yield* Effect.gen(function* () {
           const notifications = yield* native.watchDirectory(value)
           const consumer = yield* notifications.changes.pipe(
             Stream.runForEach((changed) =>
               Effect.suspend(() =>
-                closed ? Effect.void : Queue.offer(events, { path: changed, owner: value }),
+                Ref.getUnsafe(closed)
+                  ? Effect.void
+                  : Queue.offer(events, { path: changed, owner: value }),
               ),
             ),
             Effect.andThen(
@@ -254,7 +287,7 @@ export const make = Effect.fnUntraced(function* (
                       }),
                     })
               return Effect.suspend(() =>
-                closed
+                Ref.getUnsafe(closed)
                   ? Effect.fail(error)
                   : Queue.offer(events, { error, owner: value }).pipe(
                       Effect.andThen(Effect.fail(error)),
@@ -274,55 +307,66 @@ export const make = Effect.fnUntraced(function* (
           ),
         )
         if (installed) {
-          watchers.set(value, { scope: child, identity })
+          yield* Ref.update(watchers, HashMap.set(value, { scope: child, identity }))
           added = true
         } else yield* Scope.close(child, Exit.void)
       }
     if (added)
       yield* Effect.sleep(500).pipe(
         Effect.andThen(
-          Effect.sync(() => {
-            if (!closed) Queue.offerUnsafe(events, { settle: true })
-          }),
+          Effect.suspend(() =>
+            Ref.getUnsafe(closed)
+              ? Effect.void
+              : Queue.offer(events, { settle: true }).pipe(Effect.asVoid),
+          ),
         ),
         Effect.forkScoped,
         Effect.provideService(Scope.Scope, scope),
       )
     return added
   })
-  const establish = (directories: Map<string, string>) =>
+  const establish = (directories: HashMap.HashMap<string, string>) =>
     syncWatchers(directories).pipe(
       Effect.catchIf(
         () => true,
         () =>
           Effect.gen(function* () {
-            mode = 'polling'
-            yield* closeWatchers()
+            yield* Ref.set(mode, 'polling')
+            yield* closeWatchers
             yield* Queue.offer(output, { overflow: true })
             return false
           }),
       ),
     )
-  let previous = yield* scan().pipe(Effect.onError(() => close))
-  yield* establish(previous.directories).pipe(Effect.onError(() => close))
-  const established = yield* scan().pipe(Effect.onError(() => close))
+  const previous = yield* Ref.make(yield* scan.pipe(Effect.onError(() => close)))
+  yield* establish((yield* Ref.get(previous)).directories).pipe(Effect.onError(() => close))
+  const established = yield* scan.pipe(Effect.onError(() => close))
   yield* establish(established.directories).pipe(Effect.onError(() => close))
-  const initial = [...new Set([...previous.values.keys(), ...established.values.keys()])].filter(
-    (value) => previous.values.get(value) !== established.values.get(value),
+  const initial = [
+    ...new Set([
+      ...HashMap.keys((yield* Ref.get(previous)).values),
+      ...HashMap.keys(established.values),
+    ]),
+  ].filter(
+    (value) =>
+      Option.getOrUndefined(HashMap.get(Ref.getUnsafe(previous).values, value)) !==
+      Option.getOrUndefined(HashMap.get(established.values, value)),
   )
-  previous = established
+  yield* Ref.set(previous, established)
   if (initial.length > 0)
     yield* Queue.offer(output, { paths: [...new Set(initial.map(reported))].sort() })
   const worker = Effect.forever(
     Effect.gen(function* () {
       const raw: string[] = []
-      if (mode === 'polling') yield* Effect.sleep(interval)
+      if ((yield* Ref.get(mode)) === 'polling') yield* Effect.sleep(interval)
       else {
         const event = yield* Queue.take(events)
         if (event.error !== undefined && event.owner !== undefined) {
-          const installed = watchers.get(event.owner)
+          const installed = Option.getOrUndefined(
+            HashMap.get(yield* Ref.get(watchers), event.owner),
+          )
           if (installed !== undefined) yield* Scope.close(installed.scope, Exit.void)
-          watchers.delete(event.owner)
+          yield* Ref.update(watchers, HashMap.remove(event.owner))
         }
         if (event.path !== undefined) raw.push(event.path)
         else if (event.settle !== true && event.error === undefined)
@@ -332,16 +376,29 @@ export const make = Effect.fnUntraced(function* (
       // Native backends can emit a nested link when its external target changes.
       // Such links are not followed; only a snapshot change reports their own mutation.
       const changes = new Set(
-        raw.filter((value) => covered(value) && !previous.nestedSymlinks.has(value)).map(reported),
+        raw
+          .filter(
+            (value) =>
+              covered(value) && !HashSet.has(Ref.getUnsafe(previous).nestedSymlinks, value),
+          )
+          .map(reported),
       )
-      for (let round = 0; round < 10 && !closed; round++) {
-        const next = yield* scan()
-        for (const value of new Set([...previous.values.keys(), ...next.values.keys()]))
-          if (previous.values.get(value) !== next.values.get(value)) changes.add(reported(value))
-        previous = next
+      for (let round = 0; round < 10 && !Ref.getUnsafe(closed); round++) {
+        const next = yield* scan
+        for (const value of new Set([
+          ...HashMap.keys((yield* Ref.get(previous)).values),
+          ...HashMap.keys(next.values),
+        ]))
+          if (
+            Option.getOrUndefined(HashMap.get(Ref.getUnsafe(previous).values, value)) !==
+            Option.getOrUndefined(HashMap.get(next.values, value))
+          )
+            changes.add(reported(value))
+        yield* Ref.set(previous, next)
         if (!(yield* establish(next.directories))) break
       }
-      if (changes.size > 0 && !closed) yield* Queue.offer(output, { paths: [...changes].sort() })
+      if (changes.size > 0 && !Ref.getUnsafe(closed))
+        yield* Queue.offer(output, { paths: [...changes].sort() })
     }),
   ).pipe(
     Effect.catchCause((cause) => {
@@ -351,7 +408,7 @@ export const make = Effect.fnUntraced(function* (
         )
       return Effect.gen(function* () {
         const error = Cause.squash(cause)
-        yield* closeWatchers()
+        yield* closeWatchers
         yield* Queue.shutdown(events)
         yield* Queue.offer(output, {
           error:
@@ -368,7 +425,7 @@ export const make = Effect.fnUntraced(function* (
   yield* worker.pipe(Effect.forkScoped, Effect.provideService(Scope.Scope, scope))
   return {
     get mode() {
-      return mode
+      return Ref.getUnsafe(mode)
     },
     changes: Stream.fromQueue(output),
   }

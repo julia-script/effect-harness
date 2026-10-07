@@ -412,7 +412,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       if (options.recovering === true)
         yield* invocation.progress({ clear: true, output: '', details: null, diagnostics: [] })
       const limits = Tool.outputLimits(registration.metadata)
-      let buffer = Output.make(limits)
+      const buffer = yield* Output.makeWindow(limits)
       const preview = yield* Ref.make<ToolResult | undefined>(undefined)
       const details = yield* Ref.make<Schema.Json | undefined>(undefined)
       const diagnostics = yield* Ref.make<ReadonlyArray<Diagnostic>>([])
@@ -423,7 +423,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         diagnostics: number
       } = { output: '', details: undefined, hasDetails: false, diagnostics: 0 }
       const write: Effect.Effect<number, ToolError> = Effect.gen(function* () {
-        const retained = Output.snapshot(buffer)
+        const retained = yield* buffer.snapshot
         const currentDetails = yield* Ref.get(details)
         const currentDiagnostics = yield* Ref.get(diagnostics)
         const encodedDetails = JSON.stringify(currentDetails ?? null)
@@ -456,11 +456,18 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       const progress = yield* Progress.make(
         write,
         (options.settings ?? agent.settings).progress.outputIntervalMs,
+      ).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ToolError({
+              reason: new ToolInvalidResult({ name: intent.name, message: cause.message, cause }),
+            }),
+        ),
       )
-      let ended = false
+      const ended = yield* Ref.make(false)
       const live = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E | ToolError> =>
         Effect.suspend<A, E | ToolError, never>(() =>
-          ended
+          Ref.getUnsafe(ended)
             ? Effect.fail(
                 new ToolError({
                   reason: new ToolExecution({
@@ -487,27 +494,28 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
                     }),
                   }),
               ),
-              Effect.flatMap((checked) =>
-                Effect.gen(function* () {
+              Effect.flatMap(
+                Effect.fnUntraced(function* (checked) {
                   yield* Ref.set(preview, checked)
-                  buffer = Output.make(limits)
-                  yield* Output.push(
-                    buffer,
-                    checked.content
-                      ?.flatMap((part) => (part.type === 'text' ? [part.text] : []))
-                      .join('') ?? '',
-                  ).pipe(
-                    Effect.mapError(
-                      (cause) =>
-                        new ToolError({
-                          reason: new ToolExecution({
-                            name: intent.name,
-                            message: cause.message,
-                            cause: cause,
+                  yield* buffer.reset
+                  yield* buffer
+                    .push(
+                      checked.content
+                        ?.flatMap((part) => (part.type === 'text' ? [part.text] : []))
+                        .join('') ?? '',
+                    )
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ToolError({
+                            reason: new ToolExecution({
+                              name: intent.name,
+                              message: cause.message,
+                              cause: cause,
+                            }),
                           }),
-                        }),
-                    ),
-                  )
+                      ),
+                    )
                   if (checked.details !== undefined) yield* Ref.set(details, checked.details)
                   if (checked.diagnostics !== undefined)
                     yield* Ref.set(diagnostics, checked.diagnostics)
@@ -528,7 +536,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           : {}),
         output: (chunk, skipped) =>
           live(
-            Output.push(buffer, chunk, skipped).pipe(
+            buffer.push(chunk, skipped).pipe(
               Effect.mapError(
                 (error) =>
                   new ToolError({
@@ -569,9 +577,9 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       const outcome = yield* Effect.exit(
         registration.execute(intent.args, intent.id).pipe(Effect.provideService(ToolCall, api)),
       )
-      ended = true
-      Output.end(buffer)
-      const buffered = Output.snapshot(buffer)
+      yield* Ref.set(ended, true)
+      yield* buffer.end
+      const buffered = yield* buffer.snapshot
       const recordedDetails = yield* Ref.get(details)
       const recordedDiagnostics = yield* Ref.get(diagnostics)
       const preliminaryResult = yield* Ref.get(preview)
@@ -634,7 +642,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         Exit.map(final, () => undefined),
       )
       return yield* final
-    })
+    }, Effect.scoped)
     const prepareCompaction = Effect.fnUntraced(function* (
       input: CompactInput,
     ): Effect.fn.Return<CompactionPreparation, ModelError | Schema.SchemaError, Invocation> {
@@ -741,7 +749,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         return descriptor.classify?.(error) ?? Model.classify(error, request.model.provider)
       }),
       prepareTool,
-      tool: (...args) => Effect.scoped(tool(...args)),
+      tool,
       prepareCompaction,
       compact,
     })

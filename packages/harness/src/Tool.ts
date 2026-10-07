@@ -72,143 +72,143 @@ type Captured<Tools extends Record<string, AiTool.Any>, RequestServices = never>
       | AiTool.ParametersEncodingServices<Tools[keyof Tools]>,
       Invocation | ToolCall | RequestServices
     >
-export const bind = <Tools extends Record<string, AiTool.Any>, RequestServices = never>(
+export const bind = Effect.fnUntraced(function* <
+  Tools extends Record<string, AiTool.Any>,
+  RequestServices = never,
+>(
   toolkit: Toolkit.Toolkit<Tools>,
   metadata: Readonly<Record<string, Metadata>> = {},
   requestServices: ReadonlyArray<Context.Key<RequestServices, unknown>> = [],
-): Effect.Effect<ReadonlyArray<Registration>, never, Captured<Tools, RequestServices>> =>
-  Effect.gen(function* () {
-    const captured = yield* Effect.context<Captured<Tools, RequestServices>>()
-    const registrations: Registration[] = []
-    for (const tool of Object.values(toolkit.tools)) {
-      // Native Toolkit uses tool.id as its handler Context key. The Handler interface intentionally erases schemas.
-      type Services = Captured<Tools, RequestServices> | Invocation | ToolCall | RequestServices
-      type Parameters = AiTool.Parameters<Tools[keyof Tools]>
-      type Failure =
-        | AiTool.Failure<Tools[keyof Tools]>
-        | AiError.AiError
-        | AiError.AiErrorReason
-        | ToolError
-      type Success = AiTool.Success<Tools[keyof Tools]>
-      const nativeHandler = Context.getOption(
-        captured,
-        Context.Service<{
-          readonly context: Context.Context<never>
-          readonly handler: (
-            params: Parameters,
-            context: Toolkit.HandlerContext<Tools[keyof Tools]>,
-          ) => Effect.Effect<Success, Failure, Services>
-        }>(tool.id),
-      )
-      const handler = Option.getOrElse(nativeHandler, () => ({
-        context: Context.empty(),
-        handler: () =>
-          Effect.fail(
-            new ToolError({
-              reason: new ToolUnavailable({
-                name: tool.name,
-                message: 'Provider-defined tool has no local handler',
-              }),
+): Effect.fn.Return<ReadonlyArray<Registration>, never, Captured<Tools, RequestServices>> {
+  const captured = yield* Effect.context<Captured<Tools, RequestServices>>()
+  const registrations: Registration[] = []
+  for (const tool of Object.values(toolkit.tools)) {
+    // Native Toolkit uses tool.id as its handler Context key. The Handler interface intentionally erases schemas.
+    type Services = Captured<Tools, RequestServices> | Invocation | ToolCall | RequestServices
+    type Parameters = AiTool.Parameters<Tools[keyof Tools]>
+    type Failure =
+      | AiTool.Failure<Tools[keyof Tools]>
+      | AiError.AiError
+      | AiError.AiErrorReason
+      | ToolError
+    type Success = AiTool.Success<Tools[keyof Tools]>
+    const nativeHandler = Context.getOption(
+      captured,
+      Context.Service<{
+        readonly context: Context.Context<never>
+        readonly handler: (
+          params: Parameters,
+          context: Toolkit.HandlerContext<Tools[keyof Tools]>,
+        ) => Effect.Effect<Success, Failure, Services>
+      }>(tool.id),
+    )
+    const handler = Option.getOrElse(nativeHandler, () => ({
+      context: Context.empty(),
+      handler: () =>
+        Effect.fail(
+          new ToolError({
+            reason: new ToolUnavailable({
+              name: tool.name,
+              message: 'Provider-defined tool has no local handler',
             }),
-          ),
-      }))
-      // The dynamic registry erases heterogeneous schema types, but bind's requirements capture every codec service.
-      const parameters = tool.parametersSchema as Schema.Codec<
-        Parameters,
-        unknown,
-        Services,
-        Services
-      >
-      const success = tool.successSchema as Schema.Codec<unknown, unknown, Services, Services>
-      const failure = tool.failureSchema as Schema.Codec<unknown, unknown, Services, Services>
-      const info = Object.assign(
-        {},
-        Context.get(tool.annotations, Metadata),
-        Object.hasOwn(metadata, tool.name) ? metadata[tool.name] : undefined,
-      )
-      const provide = <A, E, R>(
-        effect: Effect.Effect<A, E, R>,
-      ): Effect.Effect<A, E | ToolError, Invocation | ToolCall> =>
-        Effect.flatMap(
-          Effect.context<Invocation | ToolCall>(),
-          (current): Effect.Effect<A, E | ToolError> => {
-            for (const service of requestServices)
-              if (!current.mapUnsafe.has(service.key))
-                return Effect.fail(
-                  new ToolError({
-                    reason: new ToolUnavailable({
-                      name: tool.name,
-                      message: `Request service ${service.key} is absent`,
-                    }),
+          }),
+        ),
+    }))
+    // The dynamic registry erases heterogeneous schema types, but bind's requirements capture every codec service.
+    const parameters = tool.parametersSchema as Schema.Codec<
+      Parameters,
+      unknown,
+      Services,
+      Services
+    >
+    const success = tool.successSchema as Schema.Codec<unknown, unknown, Services, Services>
+    const failure = tool.failureSchema as Schema.Codec<unknown, unknown, Services, Services>
+    const info = Object.assign(
+      {},
+      Context.get(tool.annotations, Metadata),
+      Object.hasOwn(metadata, tool.name) ? metadata[tool.name] : undefined,
+    )
+    const provide = <A, E, R>(
+      effect: Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E | ToolError, Invocation | ToolCall> =>
+      Effect.flatMap(
+        Effect.context<Invocation | ToolCall>(),
+        (current): Effect.Effect<A, E | ToolError> => {
+          for (const service of requestServices)
+            if (!current.mapUnsafe.has(service.key))
+              return Effect.fail(
+                new ToolError({
+                  reason: new ToolUnavailable({
+                    name: tool.name,
+                    message: `Request service ${service.key} is absent`,
                   }),
-                )
-            // R was erased by Tool.Any. bind's Captured requirements plus native handler context satisfy codec services;
-            // request-local Invocation/ToolCall override captured implementations. Context reconstruction confines erasure here.
-            return Effect.provideContext(
-              effect,
-              Context.makeUnsafe<R>(
-                Context.merge(Context.merge(handler.context, captured), current).mapUnsafe,
-              ),
-            )
-          },
-        )
-      const decode = (args: unknown) =>
-        provide(Schema.decodeUnknownEffect(parameters)(args)).pipe(
-          Effect.mapError((cause) => error(tool, ToolInvalidParameters, cause)),
-        )
-      const encodeArgs = (args: unknown) =>
-        provide(Schema.encodeEffect(parameters)(args as Parameters)).pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Json)),
-          Effect.mapError((cause) => error(tool, ToolInvalidParameters, cause)),
-        )
-      const execute = Effect.fnUntraced(function* (args: unknown, id: string) {
-        const invocation = yield* Invocation
-        const api = yield* ToolCall
-        const preliminary = (result: unknown): Effect.Effect<void> =>
-          provide(Schema.encodeEffect(success)(result)).pipe(
-            Effect.mapError((cause) => error(tool, ToolInvalidResult, cause)),
-            Effect.flatMap((encoded) =>
-              project({ tool, metadata: info }, { result, encoded, isFailure: false }),
+                }),
+              )
+          // R was erased by Tool.Any. bind's Captured requirements plus native handler context satisfy codec services;
+          // request-local Invocation/ToolCall override captured implementations. Context reconstruction confines erasure here.
+          return Effect.provideContext(
+            effect,
+            Context.makeUnsafe<R>(
+              Context.merge(Context.merge(handler.context, captured), current).mapUnsafe,
             ),
-            Effect.flatMap((value) =>
-              api.preliminary === undefined
-                ? invocation.progress({
-                    output: value.content
-                      ?.flatMap((part) => (part.type === 'text' ? [part.text] : []))
-                      .join(''),
-                    details: value.details,
-                    ...(value.diagnostics === undefined ? {} : { diagnostics: value.diagnostics }),
-                  })
-                : api.preliminary(value),
-            ),
-            Effect.provideService(ToolCall, api),
-            Hook.recover,
-            Effect.asVoid,
-            Effect.provideService(Invocation, invocation),
           )
-
-        const native = yield* provide(
-          Effect.suspend(() =>
-            handler.handler(args as Parameters, { toolCallId: id, preliminary }),
-          ),
-        ).pipe(
-          Effect.map((result): NativeResult => ({ result, encoded: undefined, isFailure: false })),
-          Effect.catch((cause) =>
-            tool.failureMode === 'return'
-              ? Effect.succeed({ result: cause, encoded: undefined, isFailure: true })
-              : Effect.fail(error(tool, ToolExecution, cause)),
-          ),
-        )
-        const schema = native.isFailure ? failure : success
-        const encoded = yield* provide(Schema.encodeEffect(schema)(native.result)).pipe(
+        },
+      )
+    const decode = (args: unknown) =>
+      provide(Schema.decodeUnknownEffect(parameters)(args)).pipe(
+        Effect.mapError((cause) => error(tool, ToolInvalidParameters, cause)),
+      )
+    const encodeArgs = (args: unknown) =>
+      provide(Schema.encodeEffect(parameters)(args as Parameters)).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Json)),
+        Effect.mapError((cause) => error(tool, ToolInvalidParameters, cause)),
+      )
+    const execute = Effect.fnUntraced(function* (args: unknown, id: string) {
+      const invocation = yield* Invocation
+      const api = yield* ToolCall
+      const preliminary = (result: unknown): Effect.Effect<void> =>
+        provide(Schema.encodeEffect(success)(result)).pipe(
           Effect.mapError((cause) => error(tool, ToolInvalidResult, cause)),
+          Effect.flatMap((encoded) =>
+            project({ tool, metadata: info }, { result, encoded, isFailure: false }),
+          ),
+          Effect.flatMap((value) =>
+            api.preliminary === undefined
+              ? invocation.progress({
+                  output: value.content
+                    ?.flatMap((part) => (part.type === 'text' ? [part.text] : []))
+                    .join(''),
+                  details: value.details,
+                  ...(value.diagnostics === undefined ? {} : { diagnostics: value.diagnostics }),
+                })
+              : api.preliminary(value),
+          ),
+          Effect.provideService(ToolCall, api),
+          Hook.recover,
+          Effect.asVoid,
+          Effect.provideService(Invocation, invocation),
         )
-        return { ...native, encoded }
-      })
-      registrations.push({ tool, metadata: info, decode, encodeArgs, execute })
-    }
-    return registrations
-  })
+
+      const native = yield* provide(
+        Effect.suspend(() => handler.handler(args as Parameters, { toolCallId: id, preliminary })),
+      ).pipe(
+        Effect.map((result): NativeResult => ({ result, encoded: undefined, isFailure: false })),
+        Effect.catch((cause) =>
+          tool.failureMode === 'return'
+            ? Effect.succeed({ result: cause, encoded: undefined, isFailure: true })
+            : Effect.fail(error(tool, ToolExecution, cause)),
+        ),
+      )
+      const schema = native.isFailure ? failure : success
+      const encoded = yield* provide(Schema.encodeEffect(schema)(native.result)).pipe(
+        Effect.mapError((cause) => error(tool, ToolInvalidResult, cause)),
+      )
+      return { ...native, encoded }
+    })
+    registrations.push({ tool, metadata: info, decode, encodeArgs, execute })
+  }
+  return registrations
+})
 /** Validate owned tool projections without throwing inside Effect. */
 export const decodeResult = (name: string, value: unknown): Effect.Effect<ToolResult, ToolError> =>
   Schema.decodeUnknownEffect(Result)(value).pipe(

@@ -1,3 +1,4 @@
+import * as Duration from 'effect/Duration'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -119,20 +120,20 @@ describe('SchemaContracts', () => {
     () =>
       Effect.gen(function* () {
         const opaque = { callback: () => 'SDK owned', bytes: new Uint8Array([1, 2]) }
-        const settings = Agent.settings({
+        const settings = yield* Agent.settings({
           extensions: undefined,
           stream: opaque,
           retry: { enabled: false },
           compaction: { backgroundTokens: 0 },
           progress: { partialIntervalMs: undefined },
         })
-        const decoded = yield* Schema.decodeEffect(Agent.Settings)(settings)
+        const decoded = yield* Schema.decodeEffect(Schema.toType(Agent.Settings))(settings)
         assert.strictEqual(decoded.stream['callback'], opaque.callback)
         assert.strictEqual(decoded.stream['bytes'], opaque.bytes)
         assert.strictEqual(decoded.retry.enabled, false)
-        assert.strictEqual(decoded.retry.baseDelayMs, 2000)
+        assert.strictEqual(Duration.toMillis(decoded.retry.baseDelayMs), 2000)
         assert.strictEqual(decoded.compaction.backgroundTokens, 0)
-        assert.strictEqual(decoded.progress.partialIntervalMs, 100)
+        assert.strictEqual(Duration.toMillis(decoded.progress.partialIntervalMs), 100)
         const policy: Agent.RetryPolicy = Agent.defaultRetry
         const settingsType: Agent.Settings = decoded
         void policy

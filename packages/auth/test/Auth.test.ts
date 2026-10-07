@@ -1,3 +1,7 @@
+import * as AuthDuration from '../src/Duration.ts'
+import * as Duration from 'effect/Duration'
+import * as DateTime from 'effect/DateTime'
+import * as Time from '../src/Time.ts'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 import * as BunPath from '@effect/platform-bun/BunPath'
@@ -24,6 +28,176 @@ import * as Pkce from '../src/Pkce.ts'
 import * as Token from '../src/Token.ts'
 
 describe('auth', () => {
+  it.effect(
+    'duration normalization retains exact bigint nanos and detaches foreign native values',
+    () =>
+      Effect.gen(function* () {
+        const nanos = 9007199254740993123456789n
+        const input = {
+          '~effect/Duration': '~effect/Duration',
+          value: { _tag: 'Nanos', nanos },
+        } as const
+        const normalized = yield* AuthDuration.fromInput(
+          input as unknown as Duration.Input,
+          'Invalid duration',
+        )
+        assert.isFalse(Object.is(normalized, input))
+        assert.deepEqual(normalized.value, { _tag: 'Nanos', nanos })
+        assert.deepEqual(
+          (yield* AuthDuration.fromInput(Duration.nanos(nanos), 'Invalid duration')).value,
+          { _tag: 'Nanos', nanos },
+        )
+        assert.strictEqual(
+          Duration.toMillis(
+            yield* AuthDuration.fromInput({ milliseconds: 0.25 }, 'Invalid duration'),
+          ),
+          0.25,
+        )
+      }),
+  )
+
+  it.effect(
+    'memory transactions serialize effectful updates and instances keep separate snapshots',
+    () =>
+      Effect.gen(function* () {
+        const first = Context.get(yield* Layer.build(Store.layerMemory), Store.CredentialStore)
+        const second = Context.get(yield* Layer.build(Store.layerMemory), Store.CredentialStore)
+        const value = {
+          kind: 'apiKey' as const,
+          provider: 'openai',
+          apiKey: Redacted.make('token'),
+        }
+        const held = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const owner = yield* Effect.forkChild(
+          first.modify('first', () =>
+            Deferred.succeed(held, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.as(value),
+            ),
+          ),
+        )
+        yield* Deferred.await(held)
+        const attempting = yield* Deferred.make<void>()
+        const writer = yield* Effect.forkChild(
+          Deferred.succeed(attempting, undefined).pipe(Effect.andThen(first.set('second', value))),
+        )
+        yield* Deferred.await(attempting)
+        yield* Effect.yieldNow
+        assert.isUndefined(writer.pollUnsafe())
+        yield* Deferred.succeed(release, undefined)
+        assert.strictEqual(yield* Fiber.join(owner), value)
+        yield* Fiber.join(writer)
+        assert.deepEqual(
+          (yield* first.list).map(([key]) => key),
+          ['first', 'second'],
+        )
+        assert.deepEqual(yield* second.list, [])
+      }).pipe(Effect.provide(BunCrypto.layer)),
+  )
+
+  it.effect(
+    'fractional domain instants retain exact numeric credential bytes across fresh stores',
+    () =>
+      Effect.gen(function* () {
+        for (const millis of [0.25, -0.5, 1700000000000.125]) {
+          const instant = yield* Schema.decodeEffect(Time.EpochMillis)(millis)
+          assert.isTrue(DateTime.isUtc(instant))
+          assert.strictEqual(DateTime.toEpochMillis(instant), millis)
+          assert.strictEqual(yield* Schema.encodeEffect(Time.EpochMillis)(instant), millis)
+        }
+        for (const millis of [NaN, Infinity, -Infinity])
+          assert.isTrue(Option.isNone(Schema.decodeOption(Time.EpochMillis)(millis)))
+        const fs = yield* FileSystem.FileSystem
+        const directory = yield* fs.makeTempDirectoryScoped()
+        const path = `${directory}/private/credentials.json`
+        const wire = {
+          kind: 'opaqueOAuth' as const,
+          provider: 'anthropic',
+          authorizationServer: 'https://issuer.test',
+          clientId: 'client',
+          accessToken: 'sensitive',
+          refreshToken: 'refresh',
+          scopes: [],
+          expiresAt: 1700000000000.125,
+        }
+        const credential = yield* Schema.decodeEffect(Credential)(wire)
+        const first = Context.get(
+          yield* Layer.build(Store.layerProtectedFile({ path })),
+          Store.CredentialStore,
+        )
+        yield* first.set('account', credential)
+        const bytes = yield* fs.readFileString(path)
+        assert.include(bytes, '1700000000000.125')
+        const second = Context.get(
+          yield* Layer.build(Store.layerProtectedFile({ path })),
+          Store.CredentialStore,
+        )
+        const value = yield* second.get('account')
+        assert.isTrue(Option.isSome(value))
+        if (Option.isSome(value) && value.value.kind === 'opaqueOAuth') {
+          assert.isTrue(DateTime.isUtc(value.value.expiresAt))
+          assert.strictEqual(DateTime.toEpochMillis(value.value.expiresAt), wire.expiresAt)
+          assert.deepEqual(yield* Schema.encodeEffect(Credential)(value.value), wire)
+        }
+      }).pipe(Effect.provide(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer))),
+  )
+
+  it.effect('JWKS reads observe key rotation and recover after a failed observation', () =>
+    Effect.gen(function* () {
+      const first = yield* Effect.tryPromise(() => generateKeyPair('RS256', { extractable: true }))
+      const second = yield* Effect.tryPromise(() => generateKeyPair('RS256', { extractable: true }))
+      const keys = yield* Effect.tryPromise(() =>
+        Promise.all([exportJWK(first.publicKey), exportJWK(second.publicKey)]),
+      )
+      const expiry = (yield* Clock.currentTimeMillis) / 1000 + 3600.00025
+      const sign = (privateKey: typeof first.privateKey, kid: string) =>
+        Effect.tryPromise(() =>
+          new SignJWT({ sub: kid })
+            .setProtectedHeader({ alg: 'RS256', kid })
+            .setIssuer('https://issuer.test')
+            .setAudience('client')
+            .setExpirationTime(expiry)
+            .sign(privateKey),
+        )
+      const tokens = [
+        Redacted.make(yield* sign(first.privateKey, 'first')),
+        Redacted.make(yield* sign(second.privateKey, 'second')),
+      ]
+      let reads = 0
+      const http = HttpClient.make((request) => {
+        const index = reads++
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            Response.json(
+              index === 1
+                ? { keys: [] }
+                : {
+                    keys: [{ ...keys[index === 0 ? 0 : 1], kid: index === 0 ? 'first' : 'second' }],
+                  },
+            ),
+          ),
+        )
+      })
+      const verifier = yield* JoseJwt.make.pipe(Effect.provideService(HttpClient.HttpClient, http))
+      const options = {
+        issuer: 'https://issuer.test',
+        audience: 'client',
+        jwksUrl: 'https://issuer.test/jwks',
+      }
+      const identity = yield* verifier.verify(tokens[0]!, options)
+      assert.strictEqual(identity.sub, 'first')
+      assert.strictEqual(DateTime.toEpochMillis(identity.exp), expiry * 1000)
+      assert.strictEqual(
+        (yield* verifier.verify(tokens[1]!, options).pipe(Effect.flip)).code,
+        'identity',
+      )
+      assert.strictEqual((yield* verifier.verify(tokens[1]!, options)).sub, 'second')
+      assert.strictEqual(reads, 3)
+    }),
+  )
+
   it.effect('redacts credentials while the explicit persistence codec roundtrips them', () =>
     Effect.gen(function* () {
       const credential = yield* Schema.decodeEffect(Credential)({
@@ -43,8 +217,8 @@ describe('auth', () => {
 
   it.effect('PKCE uses secure fresh state/nonce and a 43-character S256 verifier', () =>
     Effect.gen(function* () {
-      const first = yield* Pkce.make()
-      const second = yield* Pkce.make()
+      const first = yield* Pkce.make
+      const second = yield* Pkce.make
       assert.match(Redacted.value(first.verifier), /^[a-zA-Z0-9_-]{43}$/)
       assert.match(first.challenge, /^[a-zA-Z0-9_-]{43}$/)
       assert.notStrictEqual(first.state, second.state)

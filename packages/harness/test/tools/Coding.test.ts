@@ -376,7 +376,7 @@ describe('native coding tools', () => {
           )
           const agent = yield* executor.resolve(
             {},
-            Agent.settings({ progress: { outputIntervalMs: 0 } }),
+            yield* Agent.settings({ progress: { outputIntervalMs: 0 } }),
           )
           const intent = yield* executor.prepareTool(agent, {
             id: 'spill',

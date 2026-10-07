@@ -1,3 +1,4 @@
+import * as Ref from 'effect/Ref'
 import * as Config from 'effect/Config'
 import * as Context from 'effect/Context'
 import * as Crypto from 'effect/Crypto'
@@ -79,7 +80,10 @@ const makeService = (
       list: read.pipe(
         Effect.map((snapshot) => snapshot.entries.map(({ key, value }) => [key, value] as const)),
       ),
-      set: (key, value) => modify(key, () => Effect.succeed(value)).pipe(Effect.asVoid),
+      set: Effect.fnUntraced(function* (key, value) {
+        const snapshot = yield* read
+        yield* write(replace(snapshot, key, value))
+      }, lock),
       remove: (key) =>
         lock(Effect.flatMap(read, (snapshot) => write(replace(snapshot, key, undefined)))),
       modify,
@@ -98,13 +102,10 @@ export const layerMemory = Layer.effect(CredentialStore)(
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto
     const mutex = yield* Semaphore.make(1)
-    let snapshot = empty
+    const snapshot = yield* Ref.make(empty)
     return yield* makeService(
-      Effect.sync(() => snapshot),
-      (next) =>
-        Effect.sync(() => {
-          snapshot = next
-        }),
+      Ref.get(snapshot),
+      (next) => Ref.set(snapshot, next),
       (effect) => mutex.withPermit(effect),
       crypto.randomUUIDv4.pipe(Effect.mapError(storageError)),
     )
@@ -156,28 +157,24 @@ export const layerProtectedFile = (options: {
           }),
         })
       const lockDirectory = `${file}.lock`
-      const acquire = Effect.fnUntraced(
-        function* () {
-          yield* fs.makeDirectory(lockDirectory, { mode: 0o700 }).pipe(
-            Effect.catch((cause) =>
-              fs.exists(lockDirectory).pipe(
-                Effect.mapError(storageError),
-                Effect.flatMap((exists) =>
-                  Effect.fail(
-                    exists
-                      ? new AuthError({
-                          reason: new AuthBusyError({
-                            message: 'Credential store is locked by another process',
-                            cause,
-                          }),
-                        })
-                      : storageError(cause),
-                  ),
-                ),
+      const acquire = fs.makeDirectory(lockDirectory, { mode: 0o700 }).pipe(
+        Effect.catch((cause) =>
+          fs.exists(lockDirectory).pipe(
+            Effect.mapError(storageError),
+            Effect.flatMap((exists) =>
+              Effect.fail(
+                exists
+                  ? new AuthError({
+                      reason: new AuthBusyError({
+                        message: 'Credential store is locked by another process',
+                        cause,
+                      }),
+                    })
+                  : storageError(cause),
               ),
             ),
-          )
-        },
+          ),
+        ),
         Effect.retry({
           times: options.lockRetries ?? 100,
           schedule: Schedule.spaced('20 millis'),
@@ -189,7 +186,7 @@ export const layerProtectedFile = (options: {
       ): Effect.Effect<A, E | AuthError, R> =>
         mutex.withPermit(
           Effect.acquireUseRelease(
-            acquire(),
+            acquire,
             () => effect,
             () => fs.remove(lockDirectory, { recursive: true }).pipe(Effect.orDie),
           ),

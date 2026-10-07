@@ -156,8 +156,8 @@ describe('independent parity regressions', () => {
           const config = Conversation.layerConfiguration({
             settings: { compaction: { enabled: false } },
           })
-          const underlying = yield* Memory.make()
-          const original = yield* Session.make().pipe(
+          const underlying = yield* Memory.make
+          const original = yield* Session.make.pipe(
             Effect.provideService(Store.Store, underlying),
             Effect.provide(
               Conversation.layerCreation.pipe(
@@ -610,6 +610,116 @@ describe('independent parity regressions', () => {
         }),
       ),
   )
+  for (const mode of ['parallel', 'sequential'] as const)
+    it.live(`configured finite tool admission preserves result order (${mode})`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const names = Array.from({ length: 6 }, (_, index) => `tool${index}`)
+          const active = yield* Ref.make(0)
+          const peak = yield* Ref.make(0)
+          const calls = yield* Ref.make(0)
+          const seen = yield* Ref.make<ReadonlyArray<string>>([])
+          const toolkit = Toolkit.make(
+            ...names.map((name) =>
+              AiTool.make(name, {
+                parameters: Schema.Struct({}),
+                success: Invocation.Result,
+                failure: ToolError,
+              }),
+            ),
+          )
+          const bound = yield* Tool.bind(
+            toolkit,
+            Object.fromEntries(
+              names.map((name) => [
+                name,
+                { project: (value: unknown) => Tool.decodeResult(name, value) },
+              ]),
+            ),
+          ).pipe(
+            Effect.provide(
+              toolkit.toLayer(
+                Object.fromEntries(
+                  names.map((name) => [
+                    name,
+                    Effect.fnUntraced(
+                      function* () {
+                        const running = yield* Ref.updateAndGet(active, (count) => count + 1)
+                        yield* Ref.update(peak, (count) => Math.max(count, running))
+                        yield* Effect.sleep('50 millis')
+                        return { content: [Prompt.textPart({ text: name })] }
+                      },
+                      Effect.ensuring(Ref.update(active, (count) => count - 1)),
+                    ),
+                  ]),
+                ),
+              ),
+            ),
+          )
+          const hooks = yield* Hook.bind({
+            afterTools: (results) =>
+              Ref.set(
+                seen,
+                results.map((result) => result.id),
+              ),
+          })
+          const native = yield* NativeModel.make({
+            generateText: () => Effect.succeed([]),
+            streamText: () =>
+              Stream.unwrap(
+                Ref.updateAndGet(calls, (count) => count + 1).pipe(
+                  Effect.map((count) =>
+                    count === 1
+                      ? Stream.fromIterable<Response.StreamPartEncoded>([
+                          ...names.map((name) => ({
+                            type: 'tool-call' as const,
+                            id: name,
+                            name,
+                            params: {},
+                            providerExecuted: false,
+                          })),
+                          finish('tool-calls'),
+                        ])
+                      : Stream.fromIterable(answer),
+                  ),
+                ),
+              ),
+          })
+          yield* Effect.gen(function* () {
+            const session = yield* Session.Session
+            yield* session.root()
+            yield* selectModel(session)
+            const receipt = yield* Submission.execute(input(`finite-${mode}`))
+            assert.strictEqual(receipt.status, 'done', JSON.stringify(receipt))
+            assert.strictEqual(yield* Ref.get(peak), mode === 'sequential' ? 1 : 2)
+            assert.strictEqual(yield* Ref.get(active), 0)
+            assert.deepStrictEqual(yield* Ref.get(seen), names)
+          }).pipe(
+            Effect.provide(
+              runtime(
+                descriptor(native),
+                Registry.layer([
+                  {
+                    name: 'tools',
+                    tools: bound,
+                    hooks: [{ operation: 'generation', handlers: hooks }],
+                  },
+                ]),
+                Conversation.layerConfiguration({
+                  toolConcurrency: 2,
+                  settings: {
+                    toolExecution: mode,
+                    compaction: { enabled: false },
+                    retry: { enabled: false },
+                  },
+                }),
+              ),
+            ),
+          )
+        }),
+      ),
+    )
+
   it.live(
     'safe tool replay resolves actual relative files against the current conversation cwd',
     () =>

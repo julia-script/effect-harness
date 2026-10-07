@@ -18,6 +18,7 @@ export interface Snapshot {
 }
 export interface Backend {
   readonly load: Effect.Effect<Snapshot, StorageError>
+  readonly readContext?: Effect.Effect<object>
   readonly committed: Effect.Effect<Snapshot, StorageError>
   readonly save: (snapshot: Snapshot) => Effect.Effect<void, StorageError>
   readonly atomic: <A, E, R>(
@@ -106,17 +107,19 @@ export const make = Effect.fnUntraced(function* (
   const handle = yield* FiberHandle.make<boolean, never>().pipe(Scope.provide(cleanupScope))
   const started = yield* Ref.make(false)
   const terminal = yield* Deferred.make<void, StorageError>()
-  let closed = false
-  let readers = 0
-  let poison: StorageError | undefined
+  const lifecycle = yield* Ref.make<{
+    readonly closed: boolean
+    readonly readers: number
+    readonly poison: StorageError | undefined
+  }>({ closed: false, readers: 0, poison: undefined })
   const shutdown = Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
       if (!(yield* Ref.getAndSet(started, true))) {
-        closed = true
+        yield* Ref.update(lifecycle, (state) => ({ ...state, closed: true }))
         yield* FiberHandle.run(
           handle,
           Effect.gen(function* () {
-            while (readers > 0) yield* Effect.sleep('1 millis')
+            while ((yield* Ref.get(lifecycle)).readers > 0) yield* Effect.sleep('1 millis')
             yield* release
           }).pipe(Effect.uninterruptible, Deferred.into(terminal)),
         )
@@ -125,24 +128,31 @@ export const make = Effect.fnUntraced(function* (
     }),
   )
   yield* Effect.addFinalizer(() => shutdown.pipe(Effect.orDie))
-  const usable = Effect.suspend(() => {
-    if (closed) return Effect.fail(rejected('Store is closed', Closed))
-    if (poison !== undefined)
-      return Effect.fail(rejected('Store is poisoned; reopen it', Poisoned, poison))
-    return Effect.void
-  })
+  const failure = (state: {
+    readonly closed: boolean
+    readonly poison: StorageError | undefined
+  }) => {
+    if (state.closed) return rejected('Store is closed', Closed)
+    if (state.poison !== undefined)
+      return rejected('Store is poisoned; reopen it', Poisoned, state.poison)
+    return undefined
+  }
+  const usable = Ref.get(lifecycle).pipe(
+    Effect.flatMap((state) => {
+      const error = failure(state)
+      return error === undefined ? Effect.void : Effect.fail(error)
+    }),
+  )
+  const admit = Ref.modify(lifecycle, (state) => {
+    const error = failure(state)
+    return [error, error === undefined ? { ...state, readers: state.readers + 1 } : state] as const
+  }).pipe(Effect.flatMap((error) => (error === undefined ? Effect.void : Effect.fail(error))))
+  const settled = Ref.update(lifecycle, (state) => ({ ...state, readers: state.readers - 1 }))
   const snapshot = (load: Effect.Effect<Snapshot, StorageError>) =>
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
-        yield* usable
-        readers++
-        return yield* restore(load).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              readers--
-            }),
-          ),
-        )
+        yield* admit
+        return yield* restore(load).pipe(Effect.ensuring(settled))
       }),
     )
   const read = (load: Effect.Effect<Snapshot, StorageError>) =>
@@ -153,8 +163,7 @@ export const make = Effect.fnUntraced(function* (
   ): Effect.Effect<A, StorageError | E, R> =>
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
-        yield* usable
-        readers++
+        yield* admit
         // Match native SQL Activity ordering: acquire the database transaction
         // before the domain semaphore. Otherwise concurrent host transactions
         // can hold the semaphore while waiting for an Activity's SQL lease.
@@ -259,10 +268,9 @@ export const make = Effect.fnUntraced(function* (
                     .save({ state, frames: retainFrames([...snapshot.frames, frame]) })
                     .pipe(
                       Effect.tapError((error) =>
-                        Effect.sync(() => {
-                          if (error instanceof StorageError && error.certainty === 'uncertain')
-                            poison = error
-                        }),
+                        error instanceof StorageError && error.certainty === 'uncertain'
+                          ? Ref.update(lifecycle, (state) => ({ ...state, poison: error }))
+                          : Effect.void,
                       ),
                     )
                   return candidate.result
@@ -272,15 +280,11 @@ export const make = Effect.fnUntraced(function* (
           ),
         ).pipe(
           Effect.tapError((error) =>
-            Effect.sync(() => {
-              if (error instanceof StorageError && error.certainty === 'uncertain') poison = error
-            }),
+            error instanceof StorageError && error.certainty === 'uncertain'
+              ? Ref.update(lifecycle, (state) => ({ ...state, poison: error }))
+              : Effect.void,
           ),
-          Effect.ensuring(
-            Effect.sync(() => {
-              readers--
-            }),
-          ),
+          Effect.ensuring(settled),
         )
       }),
     )
@@ -295,12 +299,11 @@ export const make = Effect.fnUntraced(function* (
   })
   return Store.of({
     read: read(backend.load),
+    ...(backend.readContext === undefined ? {} : { readContext: backend.readContext }),
     committed: read(backend.committed),
     transact,
     commit,
-    seal: Effect.sync(() => {
-      closed = true
-    }),
+    seal: Ref.update(lifecycle, (state) => ({ ...state, closed: true })),
     journal: Effect.fnUntraced(function* (after) {
       const loaded = yield* snapshot(backend.committed)
       const frames = loaded.frames.filter((frame) => frame.seq > after)

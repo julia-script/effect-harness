@@ -83,14 +83,13 @@ const decode = (value: unknown) =>
   )
 const session = Schema.String.check(Schema.isUUID(7))
 const positive = (value: number) => Number.isSafeInteger(value) && value > 0
-const validate = (entry: Entry) =>
-  Effect.gen(function* () {
-    const defaults = yield* decode(entry.config ?? {})
-    yield* Schema.decodeEffect(Entry)({ ...entry, config: defaults }).pipe(
-      Effect.mapError((cause) => fail('Invalid OpenAI catalogue entry or defaults', cause)),
-    )
-    return defaults
-  })
+const validate = Effect.fnUntraced(function* (entry: Entry) {
+  const defaults = yield* decode(entry.config ?? {})
+  yield* Schema.decodeEffect(Entry)({ ...entry, config: defaults }).pipe(
+    Effect.mapError((cause) => fail('Invalid OpenAI catalogue entry or defaults', cause)),
+  )
+  return defaults
+})
 const priced = (value: Response.Usage, prices?: Prices): Usage.Usage => {
   const result = Usage.fromResponse(value)
   if (prices === undefined) return result
@@ -129,94 +128,93 @@ const priced = (value: Response.Usage, prices?: Prices): Usage.Usage => {
 }
 
 /** Captures the native client now; configuration pins each request to this exact model ID. */
-export const descriptor = (
+export const descriptor = Effect.fnUntraced(function* (
   entry: Entry,
   options?: { readonly provider?: string | undefined; readonly account?: boolean | undefined },
-) =>
-  Effect.gen(function* () {
-    const defaults = yield* validate(entry)
-    const account = options?.account === true
-    if (account && defaults.store === true)
-      return yield* fail('ChatGPT account Responses require store:false')
-    const model = yield* Provider.make({
-      model: entry.modelId,
-      config: {
-        ...defaults,
-        max_output_tokens: defaults.max_output_tokens ?? entry.maxOutputTokens,
-        ...(account ? { store: false, useItemReferences: false } : {}),
-      },
-    })
-    const configure = Effect.fnUntraced(function* (request: Model.RequestOptions) {
-      if (request.sessionId !== undefined)
-        yield* Schema.decodeEffect(session)(request.sessionId).pipe(
-          Effect.mapError((cause) => fail('Conversation sessionId must be UUID7', cause)),
-        )
-      const supplied = yield* decode(request.options)
-      const merged = { ...defaults, ...supplied }
-      const max = request.maxTokens ?? merged.max_output_tokens ?? entry.maxOutputTokens
-      if (!positive(max) || max > entry.maxOutputTokens)
-        return yield* fail(
-          'maxTokens must be a positive integer within the declared model output limit',
-        )
-      if (
-        request.maxTokens !== undefined &&
-        supplied.max_output_tokens !== undefined &&
-        request.maxTokens !== supplied.max_output_tokens
-      )
-        return yield* fail('Conflicting OpenAI output token limits')
-      let effort: string | undefined = request.thinking
-      if (request.thinking === 'off') {
-        effort = undefined
-        if (entry.reasoningEfforts?.includes('none')) effort = 'none'
-      }
-      if (effort !== undefined && !entry.reasoningEfforts?.some((value) => value === effort))
-        return yield* fail('Requested reasoning effort is not declared supported by this model')
-      if (supplied.reasoning?.effort !== undefined && supplied.reasoning.effort !== effort)
-        return yield* fail('Use the pinned thinking field for reasoning effort')
-      if (effort === undefined && supplied.reasoning !== undefined)
-        return yield* fail('Reasoning options require a declared reasoning capability')
-      if (request.cache !== undefined && entry.cache !== 'prompt-cache-options')
-        return yield* fail('This model does not declare native prompt-cache-options support')
-      if (merged.prompt_cache_options !== undefined && entry.cache !== 'prompt-cache-options')
-        return yield* fail('Native cache options are not declared supported')
-      let cacheOptions = merged.prompt_cache_options
-      if (request.cache === 'none') cacheOptions = { mode: 'explicit' }
-      else if (request.cache === 'long') cacheOptions = { mode: 'implicit', ttl: '30m' }
-      else if (request.cache === 'short') cacheOptions = { mode: 'implicit' }
-      if (request.cache !== undefined && supplied.prompt_cache_options !== undefined)
-        return yield* fail('Specify either cache or native prompt_cache_options')
-      if (
-        request.sessionId !== undefined &&
-        supplied.prompt_cache_key !== undefined &&
-        supplied.prompt_cache_key !== request.sessionId
-      )
-        return yield* fail('prompt_cache_key must match the pinned conversation sessionId')
-      if (account && merged.store === true)
-        return yield* fail('ChatGPT account Responses require store:false')
-      const config = yield* decode({
-        ...merged,
-        max_output_tokens: max,
-        reasoning: effort === undefined ? undefined : { ...merged.reasoning, effort },
-        prompt_cache_options: cacheOptions,
-        prompt_cache_key:
-          request.cache === 'none' ? undefined : (request.sessionId ?? merged.prompt_cache_key),
-        ...(account ? { store: false, useItemReferences: false } : {}),
-      })
-      return Context.make(OpenAiLanguageModel.Config, { ...config, model: entry.modelId })
-    })
-    return {
-      ref: {
-        provider: options?.provider ?? (account ? 'openai-chatgpt' : 'openai'),
-        modelId: entry.modelId,
-      },
-      model,
-      contextWindow: entry.contextWindow,
-      maxOutputTokens: entry.maxOutputTokens,
-      configure,
-      usage: (value, _metadata) => priced(value, entry.prices),
-      classify: (error) => Model.classify(error, 'openai'),
-    } satisfies Model.Descriptor
+) {
+  const defaults = yield* validate(entry)
+  const account = options?.account === true
+  if (account && defaults.store === true)
+    return yield* fail('ChatGPT account Responses require store:false')
+  const model = yield* Provider.make({
+    model: entry.modelId,
+    config: {
+      ...defaults,
+      max_output_tokens: defaults.max_output_tokens ?? entry.maxOutputTokens,
+      ...(account ? { store: false, useItemReferences: false } : {}),
+    },
   })
+  const configure = Effect.fnUntraced(function* (request: Model.RequestOptions) {
+    if (request.sessionId !== undefined)
+      yield* Schema.decodeEffect(session)(request.sessionId).pipe(
+        Effect.mapError((cause) => fail('Conversation sessionId must be UUID7', cause)),
+      )
+    const supplied = yield* decode(request.options)
+    const merged = { ...defaults, ...supplied }
+    const max = request.maxTokens ?? merged.max_output_tokens ?? entry.maxOutputTokens
+    if (!positive(max) || max > entry.maxOutputTokens)
+      return yield* fail(
+        'maxTokens must be a positive integer within the declared model output limit',
+      )
+    if (
+      request.maxTokens !== undefined &&
+      supplied.max_output_tokens !== undefined &&
+      request.maxTokens !== supplied.max_output_tokens
+    )
+      return yield* fail('Conflicting OpenAI output token limits')
+    let effort: string | undefined = request.thinking
+    if (request.thinking === 'off') {
+      effort = undefined
+      if (entry.reasoningEfforts?.includes('none')) effort = 'none'
+    }
+    if (effort !== undefined && !entry.reasoningEfforts?.some((value) => value === effort))
+      return yield* fail('Requested reasoning effort is not declared supported by this model')
+    if (supplied.reasoning?.effort !== undefined && supplied.reasoning.effort !== effort)
+      return yield* fail('Use the pinned thinking field for reasoning effort')
+    if (effort === undefined && supplied.reasoning !== undefined)
+      return yield* fail('Reasoning options require a declared reasoning capability')
+    if (request.cache !== undefined && entry.cache !== 'prompt-cache-options')
+      return yield* fail('This model does not declare native prompt-cache-options support')
+    if (merged.prompt_cache_options !== undefined && entry.cache !== 'prompt-cache-options')
+      return yield* fail('Native cache options are not declared supported')
+    let cacheOptions = merged.prompt_cache_options
+    if (request.cache === 'none') cacheOptions = { mode: 'explicit' }
+    else if (request.cache === 'long') cacheOptions = { mode: 'implicit', ttl: '30m' }
+    else if (request.cache === 'short') cacheOptions = { mode: 'implicit' }
+    if (request.cache !== undefined && supplied.prompt_cache_options !== undefined)
+      return yield* fail('Specify either cache or native prompt_cache_options')
+    if (
+      request.sessionId !== undefined &&
+      supplied.prompt_cache_key !== undefined &&
+      supplied.prompt_cache_key !== request.sessionId
+    )
+      return yield* fail('prompt_cache_key must match the pinned conversation sessionId')
+    if (account && merged.store === true)
+      return yield* fail('ChatGPT account Responses require store:false')
+    const config = yield* decode({
+      ...merged,
+      max_output_tokens: max,
+      reasoning: effort === undefined ? undefined : { ...merged.reasoning, effort },
+      prompt_cache_options: cacheOptions,
+      prompt_cache_key:
+        request.cache === 'none' ? undefined : (request.sessionId ?? merged.prompt_cache_key),
+      ...(account ? { store: false, useItemReferences: false } : {}),
+    })
+    return Context.make(OpenAiLanguageModel.Config, { ...config, model: entry.modelId })
+  })
+  return {
+    ref: {
+      provider: options?.provider ?? (account ? 'openai-chatgpt' : 'openai'),
+      modelId: entry.modelId,
+    },
+    model,
+    contextWindow: entry.contextWindow,
+    maxOutputTokens: entry.maxOutputTokens,
+    configure,
+    usage: (value, _metadata) => priced(value, entry.prices),
+    classify: (error) => Model.classify(error, 'openai'),
+  } satisfies Model.Descriptor
+})
 
 /** Normal Catalog Layer requiring an already-selected standard OpenAiClient. */
 export const layer = (options: {

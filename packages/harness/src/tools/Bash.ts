@@ -1,3 +1,6 @@
+import * as Time from '../Time.ts'
+import * as Ref from 'effect/Ref'
+import * as HashSet from 'effect/HashSet'
 import * as SchemaField from '../SchemaField.ts'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -9,9 +12,7 @@ import * as Metadata from '../Tool.ts'
 import * as Truncate from './Truncate.ts'
 export const Parameters = Schema.Struct({
   command: Schema.String,
-  timeout: SchemaField.optional(
-    Schema.Finite.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(2147483.647)),
-  ),
+  timeout: SchemaField.optional(Time.CommandTimeout),
 })
 export type Input = typeof Parameters.Type
 export interface Execution {
@@ -63,13 +64,15 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
     const env = yield* Env
     const invocation = yield* Invocation
     const api = yield* ToolCall
-    if (
-      input.timeout !== undefined &&
-      (!Number.isFinite(input.timeout) || input.timeout <= 0 || input.timeout > 2147483.647)
-    )
-      return yield* new ToolError({
-        reason: new ToolInvalidParameters({ name, message: 'Invalid timeout' }),
-      })
+    if (input.timeout !== undefined)
+      yield* Schema.decodeEffect(Schema.toType(Time.CommandTimeout))(input.timeout).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ToolError({
+              reason: new ToolInvalidParameters({ name, message: 'Invalid timeout', cause }),
+            }),
+        ),
+      )
     const execution: Execution = {
       command: options.commandPrefix ? `${options.commandPrefix}\n${input.command}` : input.command,
       cwd: invocation.cwd,
@@ -91,34 +94,31 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
           ])
     let result: import('../Env.ts').ShellExecResult | undefined
     let last: ExecutionError | undefined
-    const reported = new Set<string>()
-    const diagnostic = (path: string): Effect.Effect<void, ExecutionError> =>
-      Effect.suspend(() => {
-        if (reported.has(path)) return Effect.void
-        return api
-          .diagnostic({
-            kind: 'full_output',
-            message: `Full output: ${path}`,
-            detail: { path, severity: 'info' },
-          })
-          .pipe(
-            Effect.tap(() =>
-              Effect.sync(() => {
-                reported.add(path)
-              }),
-            ),
-            Effect.mapError(
-              (cause) =>
-                new ExecutionError({
-                  reason: new ExecutionCallbackError({
-                    message: cause.message,
-                    spillPath: path,
-                    cause: cause,
-                  }),
+    const reported = yield* Ref.make(HashSet.empty<string>())
+    const diagnostic = Effect.fnUntraced(function* (
+      path: string,
+    ): Effect.fn.Return<void, ExecutionError> {
+      if (HashSet.has(yield* Ref.get(reported), path)) return
+      return yield* api
+        .diagnostic({
+          kind: 'full_output',
+          message: `Full output: ${path}`,
+          detail: { path, severity: 'info' },
+        })
+        .pipe(
+          Effect.tap(() => Ref.update(reported, HashSet.add(path))),
+          Effect.mapError(
+            (cause) =>
+              new ExecutionError({
+                reason: new ExecutionCallbackError({
+                  message: cause.message,
+                  spillPath: path,
+                  cause: cause,
                 }),
-            ),
-          )
-      })
+              }),
+          ),
+        )
+    })
     for (const command of commands) {
       const outcome = yield* env
         .exec(command, {

@@ -1,3 +1,6 @@
+import * as DateTime from 'effect/DateTime'
+import * as Ref from 'effect/Ref'
+import type * as Duration from 'effect/Duration'
 import * as NativeError from './env/NativeError.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -23,7 +26,7 @@ export interface FileInfo {
   readonly path: string
   readonly kind: 'file' | 'directory' | 'symlink'
   readonly size: number
-  readonly mtimeMs: number
+  readonly mtimeMs: DateTime.Utc
   /** Native identity used by watch snapshots; adapters without stable identities may omit it. */
   readonly identity?: string | undefined
 }
@@ -76,7 +79,7 @@ export interface Watcher {
 }
 export interface WatchOptions {
   readonly mode?: 'native' | 'polling' | undefined
-  readonly pollIntervalMs?: number | undefined
+  readonly pollIntervalMs?: Duration.Input | undefined
   readonly directoryBudget?: number | undefined
 }
 /** A single-consumer directory stream; started settles when its native installation succeeds or fails. */
@@ -106,14 +109,14 @@ export interface ShellOutputInfo {
 export interface ShellOutputWindow {
   readonly maxBytes: number
   readonly maxLines: number
-  readonly minIntervalMs: number
+  readonly minIntervalMs: Duration.Input
   readonly bytesPerSecond: number
 }
 export interface ShellExecOptions {
   readonly cwd?: string | undefined
   readonly env?: Readonly<Record<string, string>> | undefined
   readonly inheritEnv?: boolean | undefined
-  readonly timeout?: number | undefined
+  readonly timeout?: Duration.Input | undefined
   readonly onSpill?: ((path: string) => Effect.Effect<void, ExecutionError>) | undefined
   readonly onOutput?:
     | ((text: string, info: ShellOutputInfo) => Effect.Effect<void, ExecutionError>)
@@ -260,7 +263,11 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     at(value, (resolved) =>
       operation(resolved).pipe(Effect.mapError((error) => fromPlatform(error, resolved))),
     )
+  // P5-request-resolver-batching: each content read is a new observation (including reads before/after a write).
+  // The platform has no bulk snapshot API; deduplication would suppress the caller's required fresh sample.
   const readBinaryFile = (value: string) => io(value, fs.readFile)
+  // P5-request-resolver-batching: opening returns a scope-owned cursor/handle, never a reusable keyed value.
+  // Sharing a resolver result would merge unrelated reader lifetimes and independent metadata samples.
   const openBinaryReader = (
     value: string,
     readerOptions?: { readonly noFollow?: boolean | undefined },
@@ -270,43 +277,42 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     const reader = yield* openBinaryReader(value)
     const lock = yield* Semaphore.make(1)
     const decoder = Decode.make()
-    let position = 0
-    let pending = ''
-    let eof = false
-    let closed = false
+    const state = yield* Ref.make({ position: 0, pending: '', eof: false, closed: false })
     const readLine = lock.withPermit(
       Effect.gen(function* () {
-        if (closed)
+        if ((yield* Ref.get(state)).closed)
           return yield* new FileError({
             reason: new FileInvalid({ message: 'Reader is closed', path: value }),
           })
         while (true) {
-          const index = pending.indexOf('\n')
+          const current = yield* Ref.get(state)
+          const index = current.pending.indexOf('\n')
           if (index >= 0) {
-            const text = pending.slice(0, index)
-            pending = pending.slice(index + 1)
+            const text = current.pending.slice(0, index)
+            yield* Ref.update(state, (value) => ({
+              ...value,
+              pending: current.pending.slice(index + 1),
+            }))
             return { text, terminated: true }
           }
-          if (eof) {
-            if (pending === '') return undefined
-            const text = pending
-            pending = ''
-            return { text, terminated: false }
+          if (current.eof) {
+            if (current.pending === '') return undefined
+            yield* Ref.update(state, (value) => ({ ...value, pending: '' }))
+            return { text: current.pending, terminated: false }
           }
-          const bytes = yield* reader.read(position, 65536)
-          position += bytes.length
-          if (bytes.length === 0) {
-            eof = true
-            pending += Decode.decode(decoder)
-          } else pending += Decode.decode(decoder, bytes)
+          const bytes = yield* reader.read(current.position, 65536)
+          const decoded =
+            bytes.length === 0 ? Decode.decode(decoder) : Decode.decode(decoder, bytes)
+          yield* Ref.update(state, (value) => ({
+            ...value,
+            position: current.position + bytes.length,
+            eof: bytes.length === 0,
+            pending: current.pending + decoded,
+          }))
         }
       }),
     )
-    const close = lock.withPermit(
-      Effect.sync(() => {
-        closed = true
-      }),
-    )
+    const close = lock.withPermit(Ref.update(state, (value) => ({ ...value, closed: true })))
     yield* Effect.addFinalizer(() => close)
     return { readLine }
   })
@@ -338,24 +344,21 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     openBinaryReader,
     openDirReader,
     openTextLineReader,
-    readTextLines: (value, lineOptions) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const max = lineOptions?.maxLines ?? Infinity
-          if (max !== Infinity && (!Number.isSafeInteger(max) || max < 0))
-            return yield* new FileError({
-              reason: new FileInvalid({ message: 'Invalid maxLines', path: value }),
-            })
-          const reader = yield* openTextLineReader(value)
-          const lines: string[] = []
-          while (lines.length < max) {
-            const line = yield* reader.readLine
-            if (line === undefined) break
-            lines.push(line.text)
-          }
-          return lines
-        }),
-      ),
+    readTextLines: Effect.fnUntraced(function* (value, lineOptions) {
+      const max = lineOptions?.maxLines ?? Infinity
+      if (max !== Infinity && (!Number.isSafeInteger(max) || max < 0))
+        return yield* new FileError({
+          reason: new FileInvalid({ message: 'Invalid maxLines', path: value }),
+        })
+      const reader = yield* openTextLineReader(value)
+      const lines: string[] = []
+      while (lines.length < max) {
+        const line = yield* reader.readLine
+        if (line === undefined) break
+        lines.push(line.text)
+      }
+      return lines
+    }, Effect.scoped),
     writeFile: (value, content) =>
       at(value, (resolved) =>
         Effect.uninterruptible(AtomicWrite.write(fs, path, native, resolved, content)),
@@ -379,30 +382,30 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       io(value, (resolved) =>
         Effect.scoped(fs.open(resolved, { flag: 'r' }).pipe(Effect.flatMap((file) => file.sync))),
       ),
-    renameFile: (source, destination) =>
-      Effect.gen(function* () {
-        const target = yield* absolutePath(destination)
-        yield* io(source, (resolved) => fs.rename(resolved, target))
-      }),
+    renameFile: Effect.fnUntraced(function* (source, destination) {
+      const target = yield* absolutePath(destination)
+      yield* io(source, (resolved) => fs.rename(resolved, target))
+    }),
+    // P5-request-resolver-batching: lstat is a fresh no-follow observation; following platform stat is a
+    // separate sample with different link semantics, so before/after callers must never be deduplicated.
     fileInfo: (value) => at(value, native.lstat),
-    listDir: (value) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const reader = yield* openDirReader(value)
-          const entries: FileInfo[] = []
-          while (true) {
-            const page = yield* reader.next(256)
-            entries.push(...page.entries)
-            if (page.done) return entries
-          }
-        }),
-      ),
+    // P5-request-resolver-batching: directory pages consume a specific acquired cursor; no bulk atomic
+    // metadata snapshot exists, and deduplication would mix cursor positions or conceal newly added files.
+    listDir: Effect.fnUntraced(function* (value) {
+      const reader = yield* openDirReader(value)
+      const entries: FileInfo[] = []
+      while (true) {
+        const page = yield* reader.next(256)
+        entries.push(...page.entries)
+        if (page.done) return entries
+      }
+    }, Effect.scoped),
     watch: (targets, watchOptions) =>
       Effect.forEach(targets, (target) =>
         absolutePath(target.path).pipe(Effect.map((resolved) => ({ ...target, path: resolved }))),
       ).pipe(
-        Effect.flatMap((resolved) =>
-          Effect.gen(function* () {
+        Effect.flatMap(
+          Effect.fnUntraced(function* (resolved) {
             const settings = { ...options.watch, ...watchOptions }
             const mode =
               settings.mode ??
@@ -413,7 +416,10 @@ export const make = Effect.fnUntraced(function* (options: Options) {
           }),
         ),
       ),
+    // P5-request-resolver-batching: mutation admission resolves current aliases after previous replacements.
+    // A cached/deduplicated realPath could lock a stale destination; the platform offers no atomic bulk resolve.
     canonicalPath: (value) => io(value, fs.realPath),
+    // Existence is sampled at this operation; sharing a keyed request across mutations would conceal creation/removal.
     exists: (value) => io(value, fs.exists),
     createDir: (value, dirOptions) =>
       io(value, (resolved) => fs.makeDirectory(resolved, dirOptions)),
@@ -422,21 +428,17 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       fs
         .makeTempDirectory({ prefix: prefix ?? 'tmp-' })
         .pipe(Effect.mapError((error) => fromPlatform(error))),
-    createTempFile: (tempOptions) =>
-      Effect.gen(function* () {
-        const original = yield* fs
-          .makeTempFile({ prefix: 'tmp-', suffix: tempOptions?.suffix })
-          .pipe(Effect.mapError((error) => fromPlatform(error)))
-        if (tempOptions?.prefix === undefined || tempOptions.prefix === '') return original
-        const target = path.join(
-          path.dirname(original),
-          tempOptions.prefix + path.basename(original),
-        )
-        yield* fs
-          .rename(original, target)
-          .pipe(Effect.mapError((error) => fromPlatform(error, target)))
-        return target
-      }),
+    createTempFile: Effect.fnUntraced(function* (tempOptions) {
+      const original = yield* fs
+        .makeTempFile({ prefix: 'tmp-', suffix: tempOptions?.suffix })
+        .pipe(Effect.mapError((error) => fromPlatform(error)))
+      if (tempOptions?.prefix === undefined || tempOptions.prefix === '') return original
+      const target = path.join(path.dirname(original), tempOptions.prefix + path.basename(original))
+      yield* fs
+        .rename(original, target)
+        .pipe(Effect.mapError((error) => fromPlatform(error, target)))
+      return target
+    }),
     exec: shell.exec,
   })
 })

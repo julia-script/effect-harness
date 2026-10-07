@@ -1,3 +1,4 @@
+import * as Time from './Time.ts'
 import * as Schema from 'effect/Schema'
 
 const AuthReasonFields = {
@@ -356,8 +357,8 @@ export const OAuth = Schema.Struct({
   refreshToken: Secret,
   idToken: Secret,
   scopes: Schema.Array(Schema.NonEmptyString),
-  expiresAt: Schema.Finite,
-  earliestRefreshAt: Schema.optional(Schema.Finite),
+  expiresAt: Time.EpochMillis,
+  earliestRefreshAt: Schema.optional(Time.EpochMillis),
 })
 export type OAuth = typeof OAuth.Type
 /** Opaque OAuth grants carry no verified OIDC subject or identity token. The caller owns the storage key. */
@@ -369,7 +370,7 @@ export const OpaqueOAuth = Schema.Struct({
   accessToken: Secret,
   refreshToken: Secret,
   scopes: Schema.Array(Schema.NonEmptyString),
-  expiresAt: Schema.Finite,
+  expiresAt: Time.EpochMillis,
   redirectUri: Schema.optional(Schema.String),
 })
 export type OpaqueOAuth = typeof OpaqueOAuth.Type

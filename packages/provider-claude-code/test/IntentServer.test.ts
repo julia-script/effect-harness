@@ -1,3 +1,5 @@
+import * as Exit from 'effect/Exit'
+import * as Scope from 'effect/Scope'
 import * as NodeHttpServer from '@effect/platform-node/NodeHttpServer'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
@@ -55,6 +57,36 @@ const post = (
   })
 
 describe('native intent-only MCP bridge', () => {
+  it.effect('closing one registered MCP scope preserves another active session', () =>
+    Effect.gen(function* () {
+      const server = yield* IntentServer.IntentServer
+      const firstScope = yield* Scope.make()
+      const secondScope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(firstScope, Exit.void))
+      yield* Effect.addFinalizer(() => Scope.close(secondScope, Exit.void))
+      const first = yield* server.open([tool]).pipe(Effect.provideService(Scope.Scope, firstScope))
+      const second = yield* server
+        .open([tool])
+        .pipe(Effect.provideService(Scope.Scope, secondScope))
+      const initialize = (url: string) =>
+        post(url, 1, 'initialize', {
+          protocolVersion: '2025-03-26',
+          capabilities: {},
+          clientInfo: { name: 'test', version: '1' },
+        })
+      assert.strictEqual((yield* initialize(first.url)).status, 200)
+      const initialized = yield* initialize(second.url)
+      yield* Scope.close(firstScope, Exit.void)
+      assert.strictEqual((yield* (yield* HttpClient.HttpClient).get(first.url)).status, 404)
+      assert.strictEqual(
+        (yield* post(second.url, 2, 'tools/list', {}, initialized.sessionId)).status,
+        200,
+      )
+      yield* Scope.close(secondScope, Exit.void)
+      assert.strictEqual((yield* (yield* HttpClient.HttpClient).get(second.url)).status, 404)
+    }).pipe(Effect.provide(layer)),
+  )
+
   it.effect('lists real tool schemas, blocks tools/call, and removes sessions at scope close', () =>
     Effect.gen(function* () {
       const server = yield* IntentServer.IntentServer

@@ -1,3 +1,4 @@
+import * as Duration from 'effect/Duration'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -29,13 +30,15 @@ describe('agent stored configuration and accounting', () => {
     assert.deepStrictEqual(Agent.select(['z', 'a', 'z'], ['b']), ['z', 'a'])
   })
   it('preserves explicit default progress and all policy fields', () => {
-    const settings = Agent.settings({
-      progress: { partialIntervalMs: undefined, outputIntervalMs: 25 },
-      retry: { maxRetries: 0 },
-    })
-    assert.strictEqual(settings.progress.partialIntervalMs, 100)
-    assert.strictEqual(settings.progress.outputIntervalMs, 25)
-    assert.strictEqual(settings.retry.baseDelayMs, 2000)
+    const settings = Effect.runSync(
+      Agent.settings({
+        progress: { partialIntervalMs: undefined, outputIntervalMs: 25 },
+        retry: { maxRetries: 0 },
+      }),
+    )
+    assert.strictEqual(Duration.toMillis(settings.progress.partialIntervalMs), 100)
+    assert.strictEqual(Duration.toMillis(settings.progress.outputIntervalMs), 25)
+    assert.strictEqual(Duration.toMillis(settings.retry.baseDelayMs), 2000)
     assert.strictEqual(settings.compaction.reserveTokens, 16384)
   })
   it('three retries means three additional attempts, exponential capped backoff', () => {
@@ -44,7 +47,9 @@ describe('agent stored configuration and accounting', () => {
       [true, true, true, false],
     )
     assert.deepStrictEqual(
-      [1, 2, 3, 20].map((attempt) => Agent.retryDelay(Agent.defaultRetry, attempt)),
+      [1, 2, 3, 20].map((attempt) =>
+        Duration.toMillis(Agent.retryDelay(Agent.defaultRetry, attempt)),
+      ),
       [2000, 4000, 8000, 60000],
     )
     assert.strictEqual(Agent.shouldRetry(Agent.defaultRetry, 1, false), false)

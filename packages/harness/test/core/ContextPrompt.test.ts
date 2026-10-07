@@ -80,7 +80,7 @@ describe('canonical context, prompt protocol and cuts', () => {
             const view = Context.derive([original, { id: entryId(2), edits }])
             const prepared = yield* executor.prepare({
               state: { model },
-              settings: Agent.settings(),
+              settings: yield* Agent.settings(),
               view,
             })
             const systems = prepared.request.prompt.content
@@ -98,7 +98,7 @@ describe('canonical context, prompt protocol and cuts', () => {
           ])
           const prepared = yield* executor.prepare({
             state: { model },
-            settings: Agent.settings(),
+            settings: yield* Agent.settings(),
             view: deleted,
           })
           assert.deepStrictEqual(prepared.request.prompt.content, [])

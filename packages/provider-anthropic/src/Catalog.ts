@@ -172,122 +172,117 @@ const usage = (
 }
 
 /** Captures the standard native client; public user metadata correlates UUID7 requests without private affinity headers. */
-export const descriptor = (entry: Entry, provider = 'anthropic') =>
-  Effect.gen(function* () {
-    const defaults = yield* decode(entry.config ?? {})
-    yield* Schema.decodeEffect(Entry)({ ...entry, config: defaults }).pipe(
-      Effect.mapError((cause) =>
-        fail('Invalid Anthropic catalogue entry, defaults or thinking budget', cause),
-      ),
-    )
-    const model = yield* Prompt.make({
-      model: entry.modelId,
-      config: { ...defaults, max_tokens: defaults.max_tokens ?? entry.maxOutputTokens },
-    })
-    const configure = Effect.fnUntraced(function* (request: Model.RequestOptions) {
-      if (request.sessionId !== undefined)
-        yield* Schema.decodeEffect(session)(request.sessionId).pipe(
-          Effect.mapError((cause) => fail('Conversation sessionId must be UUID7', cause)),
-        )
-      const supplied = yield* decode(request.options)
-      const merged = { ...defaults, ...supplied }
-      const max = request.maxTokens ?? merged.max_tokens ?? entry.maxOutputTokens
-      if (!positive(max) || max > entry.maxOutputTokens)
-        return yield* fail(
-          'maxTokens must be a positive integer within the declared model output limit',
-        )
-      if (
-        request.maxTokens !== undefined &&
-        supplied.max_tokens !== undefined &&
-        request.maxTokens !== supplied.max_tokens
-      )
-        return yield* fail('Conflicting Anthropic output token limits')
-      let thinking: typeof Generated.BetaThinkingConfigParam.Encoded = { type: 'disabled' }
-      let effort = merged.output_config?.effort
-      if (request.thinking !== 'off') {
-        if (entry.thinking?.mode === 'adaptive') {
-          if (!entry.efforts?.some((value) => value === request.thinking))
-            return yield* fail('Requested adaptive effort is not declared supported')
-          thinking = { type: 'adaptive' }
-          const decoded = yield* Schema.decodeUnknownEffect(
-            Schema.Literals(['low', 'medium', 'high']),
-          )(request.thinking).pipe(
-            Effect.mapError((cause) =>
-              fail('Adaptive effort is unsupported by the installed native provider', cause),
-            ),
-          )
-          if (
-            supplied.output_config?.effort !== undefined &&
-            supplied.output_config.effort !== decoded
-          )
-            return yield* fail('Conflicting adaptive effort and pinned thinking')
-          effort = decoded
-        } else if (entry.thinking?.mode === 'budget') {
-          const budget = Object.hasOwn(entry.thinking.budgets, request.thinking)
-            ? entry.thinking.budgets[request.thinking]
-            : undefined
-          if (budget === undefined || budget >= max)
-            return yield* fail('No declared thinking budget fits this output limit')
-          thinking = { type: 'enabled', budget_tokens: budget }
-        } else return yield* fail('This model does not declare thinking support')
-      }
-      if (effort !== undefined && effort !== null && !entry.efforts?.includes(effort))
-        return yield* fail('Native effort option is not declared supported by this model')
-      if (
-        supplied.thinking !== undefined &&
-        (supplied.thinking.type !== thinking.type ||
-          (supplied.thinking.type === 'enabled' &&
-            thinking.type === 'enabled' &&
-            supplied.thinking.budget_tokens !== thinking.budget_tokens))
-      )
-        return yield* fail('Use the pinned thinking field and declared budgets')
-      if (request.cache !== undefined && request.cache !== 'none' && entry.cache !== true)
-        return yield* fail('This model does not declare prompt caching')
-      if (
-        merged.cache_control !== undefined &&
-        merged.cache_control !== null &&
-        entry.cache !== true
-      )
-        return yield* fail('Native caching is not declared supported')
-      if (request.cache !== undefined && supplied.cache_control !== undefined)
-        return yield* fail('Specify either cache or native cache_control')
-      if (
-        request.sessionId !== undefined &&
-        supplied.metadata?.user_id !== undefined &&
-        supplied.metadata.user_id !== request.sessionId
-      )
-        return yield* fail('metadata.user_id must match the pinned conversation sessionId')
-      let cacheControl = merged.cache_control
-      if (request.cache === 'none') cacheControl = null
-      else if (request.cache === 'short') cacheControl = { type: 'ephemeral', ttl: '5m' }
-      else if (request.cache === 'long') cacheControl = { type: 'ephemeral', ttl: '1h' }
-      const config = yield* decode({
-        ...merged,
-        max_tokens: max,
-        thinking,
-        output_config: effort === undefined ? undefined : { effort },
-        cache_control: cacheControl,
-        metadata:
-          request.sessionId === undefined
-            ? merged.metadata
-            : { ...merged.metadata, user_id: request.sessionId },
-      })
-      return Context.make(AnthropicLanguageModel.Config, {
-        ...config,
-        model: entry.modelId,
-        max_tokens: max,
-      })
-    })
-    return {
-      ref: { provider, modelId: entry.modelId },
-      model,
-      contextWindow: entry.contextWindow,
-      maxOutputTokens: entry.maxOutputTokens,
-      configure,
-      usage: (value, metadata) => usage(value, metadata, entry.prices),
-      classify: (error) => Model.classify(error, 'anthropic'),
-    } satisfies Model.Descriptor
+export const descriptor = Effect.fnUntraced(function* (entry: Entry, provider = 'anthropic') {
+  const defaults = yield* decode(entry.config ?? {})
+  yield* Schema.decodeEffect(Entry)({ ...entry, config: defaults }).pipe(
+    Effect.mapError((cause) =>
+      fail('Invalid Anthropic catalogue entry, defaults or thinking budget', cause),
+    ),
+  )
+  const model = yield* Prompt.make({
+    model: entry.modelId,
+    config: { ...defaults, max_tokens: defaults.max_tokens ?? entry.maxOutputTokens },
   })
+  const configure = Effect.fnUntraced(function* (request: Model.RequestOptions) {
+    if (request.sessionId !== undefined)
+      yield* Schema.decodeEffect(session)(request.sessionId).pipe(
+        Effect.mapError((cause) => fail('Conversation sessionId must be UUID7', cause)),
+      )
+    const supplied = yield* decode(request.options)
+    const merged = { ...defaults, ...supplied }
+    const max = request.maxTokens ?? merged.max_tokens ?? entry.maxOutputTokens
+    if (!positive(max) || max > entry.maxOutputTokens)
+      return yield* fail(
+        'maxTokens must be a positive integer within the declared model output limit',
+      )
+    if (
+      request.maxTokens !== undefined &&
+      supplied.max_tokens !== undefined &&
+      request.maxTokens !== supplied.max_tokens
+    )
+      return yield* fail('Conflicting Anthropic output token limits')
+    let thinking: typeof Generated.BetaThinkingConfigParam.Encoded = { type: 'disabled' }
+    let effort = merged.output_config?.effort
+    if (request.thinking !== 'off') {
+      if (entry.thinking?.mode === 'adaptive') {
+        if (!entry.efforts?.some((value) => value === request.thinking))
+          return yield* fail('Requested adaptive effort is not declared supported')
+        thinking = { type: 'adaptive' }
+        const decoded = yield* Schema.decodeUnknownEffect(
+          Schema.Literals(['low', 'medium', 'high']),
+        )(request.thinking).pipe(
+          Effect.mapError((cause) =>
+            fail('Adaptive effort is unsupported by the installed native provider', cause),
+          ),
+        )
+        if (
+          supplied.output_config?.effort !== undefined &&
+          supplied.output_config.effort !== decoded
+        )
+          return yield* fail('Conflicting adaptive effort and pinned thinking')
+        effort = decoded
+      } else if (entry.thinking?.mode === 'budget') {
+        const budget = Object.hasOwn(entry.thinking.budgets, request.thinking)
+          ? entry.thinking.budgets[request.thinking]
+          : undefined
+        if (budget === undefined || budget >= max)
+          return yield* fail('No declared thinking budget fits this output limit')
+        thinking = { type: 'enabled', budget_tokens: budget }
+      } else return yield* fail('This model does not declare thinking support')
+    }
+    if (effort !== undefined && effort !== null && !entry.efforts?.includes(effort))
+      return yield* fail('Native effort option is not declared supported by this model')
+    if (
+      supplied.thinking !== undefined &&
+      (supplied.thinking.type !== thinking.type ||
+        (supplied.thinking.type === 'enabled' &&
+          thinking.type === 'enabled' &&
+          supplied.thinking.budget_tokens !== thinking.budget_tokens))
+    )
+      return yield* fail('Use the pinned thinking field and declared budgets')
+    if (request.cache !== undefined && request.cache !== 'none' && entry.cache !== true)
+      return yield* fail('This model does not declare prompt caching')
+    if (merged.cache_control !== undefined && merged.cache_control !== null && entry.cache !== true)
+      return yield* fail('Native caching is not declared supported')
+    if (request.cache !== undefined && supplied.cache_control !== undefined)
+      return yield* fail('Specify either cache or native cache_control')
+    if (
+      request.sessionId !== undefined &&
+      supplied.metadata?.user_id !== undefined &&
+      supplied.metadata.user_id !== request.sessionId
+    )
+      return yield* fail('metadata.user_id must match the pinned conversation sessionId')
+    let cacheControl = merged.cache_control
+    if (request.cache === 'none') cacheControl = null
+    else if (request.cache === 'short') cacheControl = { type: 'ephemeral', ttl: '5m' }
+    else if (request.cache === 'long') cacheControl = { type: 'ephemeral', ttl: '1h' }
+    const config = yield* decode({
+      ...merged,
+      max_tokens: max,
+      thinking,
+      output_config: effort === undefined ? undefined : { effort },
+      cache_control: cacheControl,
+      metadata:
+        request.sessionId === undefined
+          ? merged.metadata
+          : { ...merged.metadata, user_id: request.sessionId },
+    })
+    return Context.make(AnthropicLanguageModel.Config, {
+      ...config,
+      model: entry.modelId,
+      max_tokens: max,
+    })
+  })
+  return {
+    ref: { provider, modelId: entry.modelId },
+    model,
+    contextWindow: entry.contextWindow,
+    maxOutputTokens: entry.maxOutputTokens,
+    configure,
+    usage: (value, metadata) => usage(value, metadata, entry.prices),
+    classify: (error) => Model.classify(error, 'anthropic'),
+  } satisfies Model.Descriptor
+})
 export const layer = (options: {
   readonly models: ReadonlyArray<Entry>
   readonly provider?: string | undefined

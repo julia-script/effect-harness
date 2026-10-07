@@ -1,3 +1,4 @@
+import { MutationLocks } from '../MutationLocks.ts'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as AiTool from 'effect/ai/Tool'
@@ -18,6 +19,7 @@ export const tool = AiTool.make('write', {
   failure: ToolError,
 })
   .addDependency(Env)
+  .addDependency(MutationLocks)
   .addDependency(Invocation)
   .annotate(Metadata.Metadata, {
     replay: 'unsafe',

@@ -1,3 +1,4 @@
+import type * as Duration from 'effect/Duration'
 import * as SchemaField from './SchemaField.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -62,7 +63,7 @@ export class ToolCall extends Context.Service<
       | {
           readonly maxBytes: number
           readonly maxLines: number
-          readonly minIntervalMs: number
+          readonly minIntervalMs: Duration.Input
           readonly bytesPerSecond: number
         }
       | undefined

@@ -1,4 +1,5 @@
 // Output slicing adapted from pi-durable (MIT), pinned 636703a0.
+import * as SynchronizedRef from 'effect/SynchronizedRef'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { OutputError, OutputFailure } from './Error.ts'
@@ -287,3 +288,54 @@ export function delta(previous: string, current: string, maxScan = 65536): Delta
       return { type: 'append', trimStart: previous.length - overlap, text: current.slice(overlap) }
   return { type: 'set', text: current }
 }
+
+/** Shared invocation retention state is immutable; TextDecoder is private native streaming state. */
+type WindowState = Readonly<Omit<Buffer, 'decoder' | 'chunks'>> & {
+  readonly chunks: ReadonlyArray<{
+    readonly text: string
+    readonly bytes: number
+    readonly newlines: number
+  }>
+}
+export const makeWindow = Effect.fnUntraced(function* (limits: OutputLimits = defaults) {
+  const nativeDecoder = new TextDecoder('utf-8', { ignoreBOM: true })
+  const initial = (): WindowState => {
+    const { decoder: _decoder, ...state } = make(limits)
+    return state
+  }
+  const state = yield* SynchronizedRef.make(initial())
+  const local = (value: WindowState): Buffer => ({
+    ...value,
+    chunks: [...value.chunks],
+    decoder: nativeDecoder,
+  })
+  const stored = (value: Buffer): WindowState => {
+    const { decoder: _decoder, ...next } = value
+    return next
+  }
+  return {
+    push: Effect.fnUntraced(function* (chunk: string | Uint8Array, skipped?: Skip) {
+      return yield* SynchronizedRef.modifyEffect(
+        state,
+        Effect.fnUntraced(function* (current) {
+          const working = local(current)
+          const changed = yield* push(working, chunk, skipped)
+          return [changed, stored(working)] as const
+        }),
+      )
+    }),
+    reset: SynchronizedRef.modify(state, () => {
+      nativeDecoder.decode()
+      return [undefined, initial()] as const
+    }),
+    end: SynchronizedRef.modify(state, (current) => {
+      const working = local(current)
+      end(working)
+      return [undefined, stored(working)] as const
+    }),
+    snapshot: SynchronizedRef.modify(state, (current) => {
+      const working = local(current)
+      return [snapshot(working), stored(working)] as const
+    }),
+  }
+})

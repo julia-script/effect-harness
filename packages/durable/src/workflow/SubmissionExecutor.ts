@@ -1,7 +1,7 @@
 import * as Identity from '../Identity.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import type * as Layer from 'effect/Layer'
-import * as Clock from 'effect/Clock'
+import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as ClusterSchema from 'effect/cluster/ClusterSchema'
@@ -98,13 +98,26 @@ export const notify = Effect.fnUntraced(function* (
   session: Session.Service,
   ids: ReadonlyArray<Record.SubmissionId>,
 ) {
-  for (const id of ids) {
-    const receipt = yield* session.submission(id).pipe(Effect.mapError(storageError))
+  const receipts = yield* Effect.forEach(
+    ids,
+    (id) => session.submission(id).pipe(Effect.mapError(storageError)),
+    { concurrency: 16 },
+  )
+  const settled = receipts.filter(
+    (receipt) =>
+      receipt !== undefined && (receipt.status === 'done' || receipt.status === 'unanswered'),
+  )
+  const linksByReceipt = yield* Effect.forEach(
+    settled,
+    (receipt) =>
+      session.snapshot(Links, { key: String(receipt.id) }).pipe(Effect.mapError(storageError)),
+    { concurrency: 16 },
+  )
+  // Sampling batches are independent; deferred completions retain original input order.
+  for (const [index, receipt] of settled.entries()) {
     if (receipt === undefined || (receipt.status !== 'done' && receipt.status !== 'unanswered'))
       continue
-    const links = yield* session
-      .snapshot(Links, { key: String(id) })
-      .pipe(Effect.mapError(storageError))
+    const links = linksByReceipt[index]
     const value = yield* Schema.decodeEffect(Result)(receipt).pipe(
       Effect.mapError(
         (cause) =>
@@ -189,7 +202,7 @@ export const admitInTransaction = Effect.fnUntraced(function* (
     })
   }
   if (live.run !== undefined) return { id: submission.id, notify: [] }
-  const selected = yield* Inbox.apply(tx, boundary, 'final', yield* Clock.currentTimeMillis)
+  const selected = yield* Inbox.apply(tx, boundary, 'final', yield* DateTime.now)
   const generation =
     selected.users.length === 0
       ? undefined

@@ -1,3 +1,4 @@
+import type * as Duration from 'effect/Duration'
 import type * as Effect from 'effect/Effect'
 import type * as Layer from 'effect/Layer'
 import type { Env, ExecutionError, FileError } from '../Env.ts'
@@ -8,7 +9,7 @@ export interface Runner<E, R> {
   readonly test: (
     name: string,
     run: () => Effect.Effect<void, E | FileError | ExecutionError, R>,
-    timeoutMs?: number,
+    timeoutMs?: Duration.Input,
   ) => unknown
 }
 /** Each test builds an independent scoped adapter Layer; runner timing metadata is preserved. */

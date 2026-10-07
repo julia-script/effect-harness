@@ -37,7 +37,7 @@ describe('scoped Session and Store cleanup', () => {
               releases++
             }),
           ).pipe(Scope.provide(scope))
-          const session = yield* Session.make().pipe(
+          const session = yield* Session.make.pipe(
             Effect.provideService(Store.Store, store),
             Scope.provide(scope),
           )
@@ -108,7 +108,7 @@ describe('scoped Session and Store cleanup', () => {
               releases++
             }).pipe(Effect.andThen(Effect.fail(failure))),
           ).pipe(Scope.provide(scope))
-          const session = yield* Session.make().pipe(
+          const session = yield* Session.make.pipe(
             Effect.provideService(Store.Store, store),
             Scope.provide(scope),
           )
@@ -151,7 +151,7 @@ describe('scoped Session and Store cleanup', () => {
               calls.push('backend')
             }),
           ).pipe(Scope.provide(scope))
-          const session = yield* Session.make().pipe(
+          const session = yield* Session.make.pipe(
             Effect.provideService(Store.Store, store),
             Scope.provide(scope),
           )
@@ -212,7 +212,7 @@ describe('scoped Session and Store cleanup', () => {
             }),
           atomic: (effect) => effect,
         }).pipe(Scope.provide(scope))
-        const session = yield* Session.make().pipe(
+        const session = yield* Session.make.pipe(
           Effect.provideService(Store.Store, store),
           Scope.provide(scope),
         )
@@ -269,7 +269,7 @@ describe('scoped Session and Store cleanup', () => {
             calls.push('backend')
           }),
         ).pipe(Scope.provide(scope))
-        const session = yield* Session.make().pipe(
+        const session = yield* Session.make.pipe(
           Effect.provideService(Store.Store, store),
           Scope.provide(scope),
         )
@@ -311,7 +311,7 @@ describe('scoped Session and Store cleanup', () => {
               backendReleased = true
             }),
           ).pipe(Scope.provide(scope))
-          const session = yield* Session.make().pipe(
+          const session = yield* Session.make.pipe(
             Effect.provideService(Store.Store, store),
             Scope.provide(scope),
           )
@@ -365,7 +365,7 @@ describe('scoped Session and Store cleanup', () => {
               backendReleased = true
             }),
           ).pipe(Scope.provide(scope))
-          const session = yield* Session.make().pipe(
+          const session = yield* Session.make.pipe(
             Effect.provideService(Store.Store, store),
             Scope.provide(scope),
           )
