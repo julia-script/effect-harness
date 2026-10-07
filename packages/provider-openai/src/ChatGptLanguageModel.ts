@@ -49,9 +49,4 @@ export const layerConfig = (
   LanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
   Config.ConfigError,
   ChatGpt | HttpClient.HttpClient
-> =>
-  Layer.unwrap(
-    Effect.gen(function* () {
-      return layer(yield* Config.unwrap(config))
-    }),
-  )
+> => Layer.unwrap(Effect.map(Config.unwrap(config), layer))
