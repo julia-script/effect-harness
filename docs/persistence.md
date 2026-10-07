@@ -7,9 +7,11 @@ A recoverable application needs persistent storage for **both** the domain Store
 ## 1. Install the SQLite adapter
 
 ```sh
-bun add @effect-harness/durable effect@4.0.1 @effect/platform-bun@4.0.1 @effect/sql-sqlite-bun@4.0.1
+npm install @effect-harness/durable effect @effect/platform-node @effect/sql-sqlite-node
 mkdir -p data
 ```
+
+This recipe uses the Node SQLite adapter, which requires a Node.js runtime with `node:sqlite`. For another runtime, choose its native SQLite and platform Layers.
 
 Keep `data/` on a volume that survives process replacement. Review [Effect compatibility](reference/compatibility.md) when using transaction-annotated Activities.
 
@@ -18,7 +20,7 @@ Keep `data/` on a volume that survives process replacement. Review [Effect compa
 Create a module with one database Layer value shared by the domain primitives and native engine:
 
 ```ts
-import { SqliteClient } from '@effect/sql-sqlite-bun'
+import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as SnapshotStore from '@effect-harness/durable/storage/SnapshotStore'
 import * as Layer from 'effect/Layer'
 import * as KeyValueStore from 'effect/persistence/KeyValueStore'
@@ -45,7 +47,7 @@ export const Infrastructure = Layer.mergeAll(StoreLive, EngineLive)
 
 ## 3. Replace the in-memory Layers
 
-Provide `StoreLive` when constructing `Session.layer`. Provide `EngineLive` to the executor registration graph in place of `WorkflowEngine.layerMemory`. Supply the Bun platform services at the outer application boundary. Build those resources within the application's Scope.
+Provide `StoreLive` when constructing `Session.layer`. Provide `EngineLive` to the executor registration graph in place of `WorkflowEngine.layerMemory`. Supply the Node platform services at the outer application boundary. Build those resources within the application's Scope.
 
 Keep `Conversation.layerCreation` in Session construction. It creates the built-in documents and retains the recovery initializer. Register the same Workflow declarations and handlers before resuming their saved executions.
 

@@ -5,7 +5,7 @@ Use this guide when your application lets a user authorize an account for infere
 ## Install the authorization packages
 
 ```sh
-bun add @effect-harness/auth @effect-harness/provider-openai @effect-harness/provider-anthropic effect@4.0.1 @effect/platform-bun@4.0.1
+npm install @effect-harness/auth @effect-harness/provider-openai @effect-harness/provider-anthropic effect @effect/platform-node
 ```
 
 Choose the transport the application actually needs: direct ChatGPT authorization, direct Anthropic authorization, or the separately installed Claude Code CLI. A successful protocol exchange still depends on the provider granting the required inference permissions.
@@ -15,13 +15,13 @@ Choose the transport the application actually needs: direct ChatGPT authorizatio
 Use a dedicated credential directory. Provide native FileSystem, Path and Crypto at the application boundary:
 
 ```ts
-import * as BunServices from '@effect/platform-bun/BunServices'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as CredentialStore from '@effect-harness/auth/CredentialStore'
 import * as Layer from 'effect/Layer'
 
 export const Credentials = CredentialStore.layerProtectedFile({
   path: './private-credentials/accounts.json',
-}).pipe(Layer.provide(BunServices.layer))
+}).pipe(Layer.provide(NodeServices.layer))
 ```
 
 The file contains secrets protected by owner-only permissions, not encryption. Keep it outside committed source and served files. `modify` serializes refresh-token rotation. Stale locks are reported as busy; recover one only after establishing that its owning process is gone.
@@ -31,7 +31,7 @@ The file contains secrets protected by owner-only permissions, not encryption. K
 Build `ChatGpt.layer({ appName })` with Credentials, Jwt, HttpClient and Crypto. `JoseJwt.layer` supplies the JWT verifier; a native fetch client supplies HTTP. Reuse these Layer values when constructing the authorization and inference services:
 
 ```ts
-import * as BunServices from '@effect/platform-bun/BunServices'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as CredentialStore from '@effect-harness/auth/CredentialStore'
 import * as JoseJwt from '@effect-harness/auth/JoseJwt'
 import * as ChatGpt from '@effect-harness/provider-openai/ChatGpt'
@@ -45,7 +45,7 @@ const Jwt = JoseJwt.layer.pipe(Layer.provide(FetchHttpClient.layer))
 
 export const Accounts = ChatGpt.layer({ appName: 'my-application' }).pipe(
   Layer.provide(Layer.mergeAll(Credentials, Jwt, FetchHttpClient.layer)),
-  Layer.provide(BunServices.layer),
+  Layer.provide(NodeServices.layer),
 )
 ```
 
@@ -103,7 +103,7 @@ For browser mode, supply the scoped HttpServer required by `OAuth.layerCallback(
 
 ## Use an installed Claude Code CLI
 
-For this path, install and sign in to the CLI independently, then install `@effect-harness/provider-claude-code` and `@effect/platform-node@4.0.1` in the application.
+For this path, install and sign in to the CLI independently, then install `@effect-harness/provider-claude-code` and `@effect/platform-node` in the application.
 
 Build `Cli.layer({ policyTrust: 'trusted-installed-cli' })` with ChildProcessSpawner after auditing the installed executable and its managed policy. Supply `IntentServer.layer` with a scoped loopback HttpServer when exposing harness tools, or `IntentServer.layerDisabled` without tools. Provide those services to `ClaudeCodeLanguageModel.layer` or the provider catalogue.
 

@@ -1,14 +1,12 @@
 # Native Workflow example
 
-For Effect v4 library developers and application integrators. Start with [src/main.ts](src/main.ts): it selects the agent's model, executes a custom Workflow, submits a conversation input through the native Submission Workflow, and prints the committed answer. The services are supplied once at the application boundary.
+An offline application combining a native Effect Workflow, a model/tool conversation and SQLite-backed recovery.
 
-The other modules each show one part of that composition:
+Start with [src/main.ts](src/main.ts). It selects the model, executes a custom greeting Workflow, submits a conversation input through the native Submission Workflow, and prints the committed answer. The application supplies its services once through Layers.
 
-- [Greeting.ts](src/Greeting.ts) declares a custom Workflow with `Workflow.make` and registers its ordinary `toLayer` handler.
-- [Uppercase.ts](src/Uppercase.ts) declares a native AI Tool, implements its Toolkit handler and binds its replay policy into the harness registry.
-- [DemoModel.ts](src/DemoModel.ts) supplies an offline native LanguageModel and its catalogue entry. It responds to tool results in the prompt; it has no mutable turn counter.
-- [Application.ts](src/Application.ts) composes the Session, native SQL Workflow engine and durable executor Layers. Its `layerNoDeps` accepts a caller-supplied catalogue and registry.
-- [Database.ts](src/Database.ts) reads configuration and scopes the SQLite client and optional temporary directory.
+For a fresh application installed from npm, follow [your first durable conversation](../../docs/tutorials/first-conversation.md). This directory is a repository integration example: it uses the monorepo's Bun tooling and Bun SQLite adapter.
+
+## Run it
 
 From the repository root:
 
@@ -19,23 +17,44 @@ bun run --cwd apps/example build
 bun run --cwd apps/example test
 ```
 
-Success prints `Hello, Effect`, `HELLO` and `native-workflow-example-ok`. Typecheck and build first compile the two library dependencies, so the example checks their public declaration files rather than test-only source aliases. Tests run under Bun, import the compiled application and use actual package exports without source aliases. The test command also runs the compiled entrypoint. No account, network inference or model download is required.
+The application prints:
 
-`bun install` applies the required [Effect patch](../../README.md) for native Cluster Activity recovery and AI unknown-call handling.
+```text
+Hello, Effect
+HELLO
+native-workflow-example-ok
+```
 
-The model requests one `uppercase` tool call and then emits `HELLO`. The handler uses `Invocation.ToolCall` to publish progress; its replay policy is `safe` because uppercasing a string has no external side effect. All five built-in Workflow executor Layers are registered, although this example exercises submission, generation and tool execution directly.
+No account, remote inference or model download is needed. Typecheck and build compile the library dependencies first, checking their public declarations. Tests import the compiled application through package exports, then run its compiled entrypoint. Repository installation applies the [Effect compatibility patch](../../docs/reference/compatibility.md).
 
-Persistence is real: a native `SqliteClient`, `SingleRunner` and `ClusterWorkflowEngine` store native messages and workflow activity results alongside the domain Store in one database. The domain Store uses `SnapshotStore.layer`, supplied with Effect's SQL KeyValueStore and EventJournal Layers; Effect owns their tables, CRUD and coordination. Built-in Activities use replay receipts without shared transactions. `runnerStorage: 'memory'` controls runner membership; it does not make the SQL messages ephemeral. The default database lives in an automatically removed scoped temporary directory.
+## Follow the composition
 
-To retain the database, create a writable parent directory and choose an absolute filename:
+| Module                               | What it demonstrates                                                                                          |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| [main.ts](src/main.ts)               | Application operations with services supplied at the boundary                                                 |
+| [Greeting.ts](src/Greeting.ts)       | `Workflow.make`, an Activity and an ordinary `toLayer` handler                                                |
+| [Uppercase.ts](src/Uppercase.ts)     | A native AI Tool, Toolkit handler and explicit recovery policy                                                |
+| [DemoModel.ts](src/DemoModel.ts)     | An offline LanguageModel that responds to tool results in its prompt                                          |
+| [Application.ts](src/Application.ts) | Session, native engine and durable executor Layers; `layerNoDeps` accepts the caller's catalogue and registry |
+| [Database.ts](src/Database.ts)       | Configured SQLite resources and a scoped temporary directory                                                  |
+
+The model requests `uppercase`, receives `HELLO` from the tool and emits the answer. The handler reports progress through `Invocation.ToolCall`. Its replay policy is safe because uppercasing a string has no external side effect. All built-in Workflow executor Layers are registered; this path exercises submission, generation and tool execution.
+
+## Verify recovery across processes
+
+The default database lives in a scoped temporary directory and is removed on shutdown. To retain it, create a writable parent directory and choose an absolute filename:
 
 ```sh
 EXAMPLE_DB=/tmp/effect-harness-example.sqlite bun run --cwd apps/example test
 EXAMPLE_DB=/tmp/effect-harness-example.sqlite bun run --cwd apps/example test
 ```
 
-The second process replays the fixed request `uppercase-v1` without calling the fake model or tool. Choose a fresh database to execute the model/tool path again. The database also contains native cluster tables. This example now uses the Effect key/value snapshot format; choose a fresh database when upgrading from the old example, whose retired domain format requires an explicit migration using the previous checkout. See [storage formats](../../docs/persistence.md) before switching adapters.
+The second process replays request `uppercase-v1` without calling the local model or tool. Use a fresh database to run that path again.
 
-Layer composition retains the actual requirements. The executor Layer consumes a SessionDirectory, conversation Configuration, model Catalogue, generic harness Executor and native WorkflowEngine. The domain Store consumes KeyValueStore and EventJournal. The application builds their native SQL Layers from the same database client. Bun services satisfy filesystem, path and crypto requirements at the application boundary. The program closes the session, engine and temporary directory through Effect scopes.
+A shared native SQLite client supplies both the ClusterWorkflowEngine and Effect's SQL KeyValueStore/EventJournal Layers. SnapshotStore receives the latter services for domain state; Effect owns the SQL tables and coordination. `runnerStorage: 'memory'` controls runner membership, while native messages and Activity results still persist in SQLite. Built-in Activities use domain receipts and ordinary native replay.
 
-Configuration construction validates settings and has a typed `SchemaError` channel. Session construction captures the creation Layer, including native Crypto for legacy provider-affinity repair before requests. Session closure pauses recoverable work and joins finalizers before physical backend cleanup; it does not create an abort outcome.
+Session construction retains `Conversation.layerCreation` for initialization and recovery. Platform Layers supply filesystem, path and crypto services. Scope closure pauses recoverable work, joins finalizers and releases the engine and database. It does not produce an Abort receipt.
+
+## Continue
+
+[Persist conversations](../../docs/persistence.md) adapts this storage composition to a Node application. [Compose native Workflows](../../docs/workflows.md) adds custom jobs, and [replay and recovery](../../docs/explanation/recovery.md) explains the commit boundaries exercised here.

@@ -15,16 +15,20 @@ The generic Executor opts into unknown-call preservation to commit unavailable-t
 
 The Cluster fix changes recovery ordering for transaction-annotated Activities. Those bodies and replies remain natively transactional. Built-in harness Activities use ordinary native replay and domain receipts, without transaction annotations.
 
-## Applying the patch with Bun
+## Applying the patch
 
-Save the linked patch as `effect.patch` in the consuming application's root, then use Bun's package patching:
+Dependency patching is owned by the consuming application. Use your package manager's patch support, or `patch-package` if your package manager has no native patch command. Save the linked patch as `effect.patch` in the application root before applying it.
+
+For npm with `patch-package`:
 
 ```sh
-bun patch effect@4.0.1
+npm install --save-dev patch-package
 git apply --directory=node_modules/effect effect.patch
-bun patch --commit node_modules/effect
+npx patch-package effect
 ```
 
-Bun records patchedDependencies and a generated patch file for subsequent installs. Those application files belong with the application's lockfile. The source repository already records this patch, so its `bun install` applies it.
+Run `patch-package` in the application's `postinstall` script so clean installs restore the patch. If there is already a postinstall command, retain it and append the patch step. Commit the generated file in `patches/`, the package manifest and the lockfile.
+
+With pnpm, Yarn or Bun's native dependency patching, edit Effect inside the temporary directory or installed package prepared by that tool, apply the same patch there, and finalize it with the package manager's patch commit command. Retain its generated patch and manifest/lockfile entry. The source monorepo already records its patch for repository installs.
 
 The patch targets 4.0.1. Applying it to another version is not a supported compatibility claim. A later dependency version needs verification of both behaviors before removing the patch.

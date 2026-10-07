@@ -2,16 +2,19 @@
 
 We will save a counter in a typed Session document, stop the process and reopen it. Repeating the same transaction key will leave the counter at `1`; a new key will increment it to `2`.
 
-Start in an empty directory with Bun 1.4.2 and basic Effect knowledge. This lesson uses a single-writer JSONL Store and does not run a model or WorkflowEngine.
+Start in an empty directory with Node.js and a package manager of your choice. This lesson assumes Effect knowledge. This lesson uses a single-writer JSONL Store and does not run a model or WorkflowEngine.
+
+The shell commands use npm syntax. You can use the equivalent commands from your preferred package manager; execution uses Node.js and `tsx`.
 
 ## 1. Install the packages
 
 ```sh
 mkdir persistent-state
 cd persistent-state
-bun init -y
-bun add effect@4.0.1 @effect/platform-bun@4.0.1 @effect-harness/durable
-bun add --dev typescript@7.0.2 @types/bun@1.4.2
+npm init -y
+npm pkg set type=module
+npm install effect @effect/platform-node @effect-harness/durable
+npm install --save-dev typescript tsx @types/node
 ```
 
 Create `tsconfig.json`:
@@ -26,7 +29,7 @@ Create `tsconfig.json`:
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
-    "types": ["bun"]
+    "types": ["node"]
   },
   "include": ["*.ts"]
 }
@@ -37,7 +40,7 @@ Create `tsconfig.json`:
 Create `counter.ts`:
 
 ```ts
-import * as BunServices from '@effect/platform-bun/BunServices'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as Document from '@effect-harness/durable/Document'
 import * as Session from '@effect-harness/durable/Session'
 import * as JsonlStore from '@effect-harness/durable/storage/JsonlStore'
@@ -58,7 +61,7 @@ const Counter = Document.defineUnsafe({
 
 const SessionLive = Session.layer.pipe(
   Layer.provide(JsonlStore.layer({ directory: './data', fsync: true })),
-  Layer.provide(BunServices.layer),
+  Layer.provide(NodeServices.layer),
 )
 
 const program = Effect.gen(function* () {
@@ -86,9 +89,9 @@ The document token fixes its schema and session address. `tx.doc` acquires a mut
 ## 3. Reopen the saved state
 
 ```sh
-bunx tsc
-bun counter.ts
-bun counter.ts
+npm exec tsc
+node --import tsx counter.ts
+node --import tsx counter.ts
 ```
 
 Both processes should print:
@@ -103,7 +106,7 @@ The second process loads `data/commits.jsonl`. Its transaction key is still `inc
 ## 4. Make a new change
 
 ```sh
-COUNTER_REQUEST=increment-v2 bun counter.ts
+COUNTER_REQUEST=increment-v2 node --import tsx counter.ts
 ```
 
 You should see:

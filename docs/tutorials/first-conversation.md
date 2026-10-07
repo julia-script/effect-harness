@@ -2,19 +2,22 @@
 
 We will build a small application whose local model asks an `uppercase` tool to transform `hello`. We will submit the same request twice and see that the second submission returns the original answer receipt.
 
-Start in an empty directory with Bun 1.4.2. This lesson assumes Effect knowledge. The model is local and deterministic; it makes no HTTP requests. Storage and the WorkflowEngine will be in memory for this lesson.
+Start in an empty directory with Node.js and a package manager of your choice. This lesson assumes Effect knowledge. The model is local and deterministic; it makes no HTTP requests. Storage and the WorkflowEngine will be in memory for this lesson.
+
+The shell commands use npm syntax. You can use the equivalent commands from your preferred package manager; execution uses Node.js and `tsx`.
 
 ## 1. Install the packages
 
 ```sh
 mkdir first-conversation
 cd first-conversation
-bun init -y
-bun add effect@4.0.1 @effect/platform-bun@4.0.1 @effect-harness/harness @effect-harness/durable
-bun add --dev typescript@7.0.2 @types/bun@1.4.2
+npm init -y
+npm pkg set type=module
+npm install effect @effect/platform-node @effect-harness/harness @effect-harness/durable
+npm install --save-dev typescript tsx @types/node
 ```
 
-Replace `tsconfig.json` with:
+Create `tsconfig.json`:
 
 ```json
 {
@@ -26,7 +29,7 @@ Replace `tsconfig.json` with:
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
-    "types": ["bun"]
+    "types": ["node"]
   },
   "include": ["*.ts"]
 }
@@ -146,7 +149,7 @@ The local model requests one tool call. Once its prompt contains that tool's res
 Create `Runtime.ts`:
 
 ```ts
-import * as BunServices from '@effect/platform-bun/BunServices'
+import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as Conversation from '@effect-harness/durable/Conversation'
 import * as DurableExecutor from '@effect-harness/durable/Executor'
 import * as Identity from '@effect-harness/durable/Identity'
@@ -180,7 +183,7 @@ export const layer = DurableExecutor.layer.pipe(
   Layer.provide(Configuration),
   Layer.provideMerge(WorkflowEngine.layerMemory),
   Layer.provide(Layer.mergeAll(Model.layer, Tools.layer)),
-  Layer.provide(BunServices.layer),
+  Layer.provide(NodeServices.layer),
 )
 ```
 
@@ -233,8 +236,8 @@ await Effect.runPromise(program.pipe(Effect.provide(Runtime.layer)))
 Run the typechecker and application:
 
 ```sh
-bunx tsc
-bun main.ts
+npm exec tsc
+node --import tsx main.ts
 ```
 
 You should see:

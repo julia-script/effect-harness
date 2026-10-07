@@ -4,6 +4,12 @@ Build AI applications with ordinary Effect services, native AI models and tools,
 
 The generic harness prepares prompts and executes models and tools. The durable package adds committed conversation state and executor Layers. Your application supplies the provider, persistence services and WorkflowEngine.
 
+## Install and run examples
+
+Use your preferred package manager. Shell recipes below use npm syntax; the equivalent `pnpm add`, `yarn add` and `bun add` commands install the same packages. Choose only the adapters you need.
+
+The tutorials run TypeScript with Node.js and `tsx`. Platform services are explicit Layers; use your runtime's adapter when integrating the library into an existing application. Installation commands leave dependency versions to your package manager. The [compatibility reference](reference/compatibility.md) records the specific dependency behavior required by the library.
+
 ## Start with a working application
 
 [Run your first durable conversation](tutorials/first-conversation.md) builds a local model, binds a tool, submits a message and replays its receipt. It needs no API key. Then [save application state across restarts](tutorials/persistent-state.md) introduces schema-backed documents and persistent transactions.

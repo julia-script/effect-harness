@@ -1,13 +1,45 @@
 # @effect-harness/auth
 
-Application-owned credentials and authorization building blocks for Effect v4. Secrets use Redacted values, and protocol/storage failures use structured AuthError reasons.
+Authorization primitives and application-owned credential storage for Effect.
+
+Compose PKCE, token handling, JWT verification and credential persistence into provider account flows. Secrets use Redacted values; protocol and storage failures carry structured AuthError reasons.
+
+## Install
 
 ```sh
-bun add @effect-harness/auth effect@4.0.1
+npm install @effect-harness/auth effect
 ```
 
-Public subpaths include `Credential`, `CredentialStore`, `Pkce`, `Token`, `Jwt` and `JoseJwt`. Root imports expose concept namespaces.
+Use the equivalent `pnpm add`, `yarn add` or `bun add` command if you prefer.
 
-CredentialStore.layerMemory requires Crypto. Its protected-file Layer requires FileSystem, Path and Crypto, with atomic replacement and serialized credential updates. Files contain plaintext secrets protected by owner-only permissions; they are not encrypted. JoseJwt.layer supplies signature and claim verification using HttpClient.
+## Choose a credential store
 
-Follow [account sign-in](../../docs/how-to/account-sign-in.md) to compose these services with a provider's authorization flow. [Authorization reference](../../docs/reference/packages.md#authorization) describes account identities, service dependencies and storage constraints.
+For an application that retains authorized accounts, compose the protected-file Layer with platform services:
+
+```ts
+import * as CredentialStore from '@effect-harness/auth/CredentialStore'
+
+export const Credentials = CredentialStore.layerProtectedFile({
+  path: './private-credentials/accounts.json',
+})
+```
+
+Provide FileSystem, Path and Crypto at the application boundary. The store serializes credential updates and replaces the file atomically. Its file contains plaintext secrets protected by owner-only permissions; keep it outside committed source and served files.
+
+Use `CredentialStore.layerMemory` for an ephemeral store; it requires Crypto. Use `JoseJwt.layer` with HttpClient when a provider flow needs signature and claim verification.
+
+## Find the right API
+
+| Module            | Purpose                                          |
+| ----------------- | ------------------------------------------------ |
+| `Credential`      | Credential variants and stable account keys      |
+| `CredentialStore` | Credential lookup, updates and persistence       |
+| `Pkce`            | Proof-key generation for authorization exchanges |
+| `Token`           | Token protocol handling                          |
+| `Jwt`, `JoseJwt`  | JWT verification contract and implementation     |
+
+The application owns consent, browser navigation and callback delivery. Provider packages supply the authorization protocol and inference transport. Keeping these services separate lets the same credential store serve multiple provider flows.
+
+## Continue
+
+[Add account sign-in](../../docs/how-to/account-sign-in.md) walks through credential storage, ChatGPT consent, Anthropic authorization and installed Claude Code login. The [authorization reference](../../docs/reference/packages.md#authorization) records account identity, service dependencies and storage constraints.

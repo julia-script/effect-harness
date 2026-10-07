@@ -7,13 +7,13 @@ Use this guide to replace a local model with OpenAI or Anthropic while keeping t
 For OpenAI:
 
 ```sh
-bun add @effect-harness/provider-openai effect@4.0.1
+npm install @effect-harness/provider-openai effect
 ```
 
 For Anthropic:
 
 ```sh
-bun add @effect-harness/provider-anthropic effect@4.0.1
+npm install @effect-harness/provider-anthropic effect
 ```
 
 Each adapter builds native Effect AI LanguageModels. A harness application uses its `Catalog` Layer to select those models by provider/model reference. An application making direct native LanguageModel calls can use the LanguageModel Layer instead; see [provider services](reference/packages.md#providers).

@@ -1,39 +1,61 @@
 # Effect Harness
 
-Durable AI conversations for TypeScript applications built with Effect v4. Use native Effect AI models and Toolkits, keep conversation facts in typed Session documents, and run execution through ordinary Effect Workflows.
+Durable AI conversations, built with Effect.
 
-Your application chooses its providers, platform services and persistence Layers. The generic harness handles model/tool execution; the durable package supplies committed state and executor registration.
+Compose native Effect AI models and Toolkits, keep conversation state in typed documents, and recover execution with ordinary Effect Workflows. Your application owns the Layer graph: providers, tools, storage and the WorkflowEngine all remain explicit dependencies.
 
-## Get started
+## Why Effect Harness?
+
+- **Native AI primitives.** Use Effect's LanguageModel, Prompt, Tool and Toolkit APIs, with provider adapters for OpenAI and Anthropic.
+- **Native Workflows.** Declare your own Workflows with `Workflow.make` and register them alongside the harness executor Layers. Use the engine's normal execute, poll and resume APIs.
+- **Committed conversation state.** Sessions hold history, inboxes, agent settings and application documents. Keyed transactions return saved receipts when the same request is retried.
+- **Tools with explicit recovery policy.** Bind handlers through Layers, retain invocation context, report progress and decide whether a tool body may run again after interruption.
+- **Storage through Effect services.** Compose domain persistence from KeyValueStore and EventJournal, or use a single-writer JSONL Store. Persist the native engine too when execution must survive a restart.
+
+## Start here
+
+[Run your first durable conversation](docs/tutorials/first-conversation.md): build a local model, bind a tool, submit a message and replay its receipt. No API key or account is needed.
+
+Install the core packages with your preferred package manager:
 
 ```sh
-bun add @effect-harness/harness @effect-harness/durable effect@4.0.1
+npm install @effect-harness/harness @effect-harness/durable effect
+pnpm add @effect-harness/harness @effect-harness/durable effect
+yarn add @effect-harness/harness @effect-harness/durable effect
+bun add @effect-harness/harness @effect-harness/durable effect
 ```
 
-[Run your first durable conversation](docs/tutorials/first-conversation.md) with a local model and a tool, then replay the same request. No account or API key is required. [Save application state across restarts](docs/tutorials/persistent-state.md) introduces documents and persisted transaction results.
+Run one of these commands. Add a provider adapter when you are ready to use a remote model. The docs assume you already know Effect; the [documentation index](docs/README.md) offers tutorials, task guides, reference and design explanations.
 
-The docs assume familiarity with Effect. [Browse the documentation](docs/README.md) for tutorials, integration guides, reference and architecture explanations.
+## Choose your packages
 
-## Packages
+| Package                                                                         | Use it for                                                                                               |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| [@effect-harness/harness](packages/harness/README.md)                           | Model selection, prompt preparation, extensions, hooks and native Toolkit execution                      |
+| [@effect-harness/durable](packages/durable/README.md)                           | Sessions, typed documents, conversation state, committed observations and Workflow executor registration |
+| [@effect-harness/auth](packages/auth/README.md)                                 | Credential storage, PKCE, token handling and JWT verification for application-owned account flows        |
+| [@effect-harness/provider-openai](packages/provider-openai/README.md)           | OpenAI API keys and explicit ChatGPT account authorization                                               |
+| [@effect-harness/provider-anthropic](packages/provider-anthropic/README.md)     | Anthropic API keys and explicit account authorization                                                    |
+| [@effect-harness/provider-claude-code](packages/provider-claude-code/README.md) | An installed Claude Code CLI using its own login                                                         |
 
-| Package                                                                         | Responsibility                                                                                      |
-| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| [@effect-harness/harness](packages/harness/README.md)                           | Model catalogue, extensions, prompt preparation, hooks, Toolkit execution and coding tools          |
-| [@effect-harness/durable](packages/durable/README.md)                           | Sessions, documents, conversation/inbox state, committed observations and native Workflow executors |
-| [@effect-harness/auth](packages/auth/README.md)                                 | Application-owned credentials, PKCE, JWT verification and protected credential storage              |
-| [@effect-harness/provider-openai](packages/provider-openai/README.md)           | OpenAI API-key and ChatGPT account transports                                                       |
-| [@effect-harness/provider-anthropic](packages/provider-anthropic/README.md)     | Anthropic API-key and account transports                                                            |
-| [@effect-harness/provider-claude-code](packages/provider-claude-code/README.md) | Installed Claude Code CLI model boundary                                                            |
+The generic harness handles model and tool execution. The durable package adds domain state and native Workflow registration. Provider and authorization packages are separate so you can compose only the services your application needs.
 
-## Integration guides
+## Build your application
 
-[Connect a provider](docs/providers.md), [register tools](docs/tools.md), [compose custom Workflows](docs/workflows.md), [persist conversations](docs/persistence.md), [observe committed progress](docs/observations.md), or [add account sign-in](docs/how-to/account-sign-in.md).
+| Next step                               | Read                                                  |
+| --------------------------------------- | ----------------------------------------------------- |
+| Replace the local model                 | [Connect a provider](docs/providers.md)               |
+| Give the model application capabilities | [Register tools](docs/tools.md)                       |
+| Run your own durable jobs               | [Compose native Workflows](docs/workflows.md)         |
+| Save state and recover execution        | [Persist conversations](docs/persistence.md)          |
+| Show conversation progress in a UI      | [Observe committed changes](docs/observations.md)     |
+| Let users authorize their accounts      | [Add account sign-in](docs/how-to/account-sign-in.md) |
 
-The [service reference](docs/reference/packages.md) lists Layer dependencies. [Replay and recovery](docs/explanation/recovery.md) explains the guarantees around committed results and external side effects. The full contract on Effect 4.0.1 uses a [compatibility patch](docs/reference/compatibility.md); consumer installations must apply it explicitly.
+Read [replay and recovery](docs/explanation/recovery.md) before enabling tools with external side effects. Saved receipts protect committed domain changes; recovery of an external action depends on that tool's policy. [Effect compatibility](docs/reference/compatibility.md) describes the current patch requirements and how consumers apply them.
 
-## Develop from source
+## Work on the repository
 
-Use Bun in this monorepo:
+This monorepo uses Bun for development:
 
 ```sh
 bun install
@@ -41,6 +63,8 @@ bun run check
 bun run test
 ```
 
-`check` covers formatting, strict lint, source/test types and public type assertions. The [offline integration example](apps/example/README.md) combines a real SQLite-backed native engine, domain persistence, a local model and a Toolkit.
+`check` verifies formatting, strict lint, source and test types, and public type assertions. The [repository example](apps/example/README.md) exercises an offline model, a Toolkit, a custom Workflow and a real SQLite-backed engine. Consumer tutorials use Node.js; runtime services are supplied through Layers.
+
+## Thanks
 
 Thanks to [Pi](https://github.com/earendil-works/pi) and the Earendil team for their work on durable agents, which helped shape this project.

@@ -7,7 +7,7 @@ Use this guide to expose application functions to a harness conversation. Tools 
 Install the generic harness:
 
 ```sh
-bun add @effect-harness/harness effect@4.0.1
+npm install @effect-harness/harness effect
 ```
 
 Define the schemas, supply the handlers and bind them when constructing the Registry:
@@ -67,7 +67,7 @@ export const CodingRegistry = Layer.unwrap(
 ).pipe(Layer.provide(Layer.mergeAll(Environment, Locks)), Layer.provide(NodeServices.layer))
 ```
 
-Install `@effect/platform-node@4.0.1` for this adapter. Replace `/srv/project` with the application's working directory. Share `Locks` across every runtime that writes files in the same environment namespace.
+Install `@effect/platform-node` for this adapter. Replace `/srv/project` with the application's working directory. Share `Locks` across every runtime that writes files in the same environment namespace.
 
 The environment is a capability boundary, not a filesystem sandbox. The host chooses access policy and which tools a conversation can select. For a remote or restricted environment, supply your own Env capabilities instead of the Node adapter.
 
