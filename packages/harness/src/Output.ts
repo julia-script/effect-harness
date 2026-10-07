@@ -1,28 +1,71 @@
+/**
+ * Incremental output retention with exact UTF-8 limits and UTF-16 deltas.
+ *
+ * @since 0.0.0
+ */
+import * as Pipeable from 'effect/Pipeable'
+import * as Inspectable from 'effect/Inspectable'
+import { dual } from 'effect/Function'
+import * as Data from 'effect/Data'
 import * as Predicate from 'effect/Predicate'
 // Output slicing adapted from pi-durable (MIT), pinned 636703a0.
 import * as SynchronizedRef from 'effect/SynchronizedRef'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import { OutputError, OutputFailure } from './Error.ts'
+import { OutputError, OutputFailure } from './OutputError.ts'
 
-/** Retention limits of one tool's output. */
+/**
+ * Retention limits of one tool's output.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Limits = Schema.Struct({
-  maxBytes: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  maxLines: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  maxBytes: Schema.Natural,
+  maxLines: Schema.Natural,
   retain: Schema.Literals(['head', 'tail']),
 })
-export type OutputLimits = typeof Limits.Type
+/**
+ * Output limits contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Limits = typeof Limits.Type
+/**
+ * Output output limits contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type OutputLimits = Limits
+/**
+ * Default head-retention limits of 50 KiB and 2000 lines.
+ *
+ * @category constants
+ * @since 0.0.0
+ */
 export const defaults: OutputLimits = { maxBytes: 50 * 1024, maxLines: 2000, retain: 'head' }
 
-/** Retained output and what the limits dropped. */
-export type BoundedOutput = {
+/**
+ * Retained output and what the limits dropped.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export interface BoundedOutput {
   readonly text: string
   readonly droppedBytes: number
   readonly droppedLines: number
 }
 
-/** An exact slice of the input within the limits, and what it left out. */
-export type OutputSlice = {
+/**
+ * An exact slice of the input within the limits, and what it left out.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export interface OutputSlice {
   readonly text: string
   readonly bytes: number
   readonly droppedBytes: number
@@ -35,9 +78,14 @@ const encoder = new TextEncoder()
 /** Slices decode exactly: a U+FEFF at a slice's start is text, not a byte-order mark. */
 const decoder = new TextDecoder('utf-8', { ignoreBOM: true })
 
-/** Remove control characters that break display and transcripts; tabs and newlines stay. */
-export function sanitizeOutput(text: string): string {
-  return Array.from(text)
+/**
+ * Removes control characters that break display and transcripts; tabs and newlines stay.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export function sanitizeOutput(self: string): string {
+  return Array.from(self)
     .filter((character) => {
       const code = character.codePointAt(0) ?? 0
       return !(code <= 8 || (code >= 11 && code <= 31) || (code >= 0xfff9 && code <= 0xfffb))
@@ -50,17 +98,27 @@ export function sanitizeOutput(text: string): string {
  * exact slice, trailing newline included. A single line longer than `maxBytes` is cut at the byte limit on a character
  * boundary.
  */
-export function boundOutput(text: string, limits: OutputLimits): OutputSlice {
-  const bytes = encoder.encode(text)
+function boundOutputImpl(self: string, limits: OutputLimits): OutputSlice {
+  const bytes = encoder.encode(self)
   const [from, to] = limits.retain === 'head' ? headRange(bytes, limits) : tailRange(bytes, limits)
   const kept = bytes.subarray(from, to)
   return {
-    text: kept.length === bytes.length ? text : decoder.decode(kept),
+    text: kept.length === bytes.length ? self : decoder.decode(kept),
     bytes: kept.length,
     droppedBytes: bytes.length - kept.length,
     droppedLines: lineCount(bytes) - lineCount(kept),
   }
 }
+/**
+ * Returns an exact whole-line slice within UTF-8 byte and line limits.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const boundOutput: {
+  (limits: OutputLimits): (self: string) => OutputSlice
+  (self: string, limits: OutputLimits): OutputSlice
+} = dual(2, boundOutputImpl)
 
 function headRange(bytes: Uint8Array, limits: OutputLimits): [number, number] {
   if (limits.maxLines === 0 || limits.maxBytes === 0) return [0, 0]
@@ -107,11 +165,21 @@ function tailRange(bytes: Uint8Array, limits: OutputLimits): [number, number] {
 }
 
 /** The last character boundary at or before `index`. */
-export function characterEnd(bytes: Uint8Array, index: number): number {
+function characterEndImpl(bytes: Uint8Array, index: number): number {
   let end = index
   while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--
   return end
 }
+/**
+ * Finds a UTF-8 character boundary at or before a byte offset.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const characterEnd: {
+  (index: number): (self: Uint8Array) => number
+  (self: Uint8Array, index: number): number
+} = dual(2, characterEndImpl)
 
 /** The first character boundary at or after `index`. */
 function characterStart(bytes: Uint8Array, index: number): number {
@@ -130,7 +198,13 @@ function lineCount(bytes: Uint8Array): number {
 
 /** Data owned by one invocation; sibling functions manage its incremental decoder and retention window. */
 const TypeId = '~@effect-harness/harness/Output'
-export interface Buffer {
+/**
+ * Output buffer contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export interface Buffer extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [TypeId]: typeof TypeId
   readonly limits: OutputLimits
   readonly decoder: TextDecoder
@@ -143,22 +217,64 @@ export interface Buffer {
   totalNewlines: number
   endsWithNewline: boolean
 }
+/**
+ * Output skip contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Skip {
   readonly bytes: number
   readonly newlines: number
   readonly endsWithNewline: boolean
 }
-export const isBuffer = (input: unknown): input is Buffer => Predicate.hasProperty(input, TypeId)
-export const makeBuffer = (input: Omit<Buffer, typeof TypeId>): Buffer => {
-  const handle: Buffer = { ...input, chunks: [...input.chunks], [TypeId]: TypeId }
-  // Buffer counters are owned mutable data even when its configuration is
-  // frozen. Keep the chunk array as fresh owned data; preserve other accessors.
-  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(input)))
-    if (key !== 'chunks' && (descriptor.get !== undefined || descriptor.set !== undefined))
-      Object.defineProperty(handle, key, descriptor)
-  Object.defineProperty(handle, TypeId, { enumerable: false })
+/**
+ * Checks whether an unknown value satisfies the Buffer contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isBuffer = (u: unknown): u is Buffer => Predicate.hasProperty(u, TypeId)
+/**
+ * Creates a fresh mutable buffer, cloning chunk storage and preserving other capability accessors.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
+export const makeBuffer = (
+  input: Omit<Buffer, typeof TypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable>,
+): Buffer => {
+  const handle: Buffer = Object.create(BufferProto)
+  // Reading chunks once establishes owned storage. Other accessors remain live,
+  // while data fields become writable even when the source configuration is frozen.
+  const descriptors = Object.getOwnPropertyDescriptors(input)
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (key === 'chunks' || key === TypeId) continue
+    const descriptor = Object.getOwnPropertyDescriptor(input, key)
+    if (descriptor === undefined) continue
+    Object.defineProperty(
+      handle,
+      key,
+      descriptor.get !== undefined || descriptor.set !== undefined
+        ? descriptor
+        : { ...descriptor, writable: true, configurable: true },
+    )
+  }
+  Object.defineProperty(handle, 'chunks', {
+    value: [...input.chunks],
+    writable: true,
+    configurable: true,
+    enumerable: true,
+  })
+  Object.defineProperty(handle, TypeId, { value: TypeId, enumerable: false })
   return handle
 }
+/**
+ * Creates an empty mutable UTF-8 output buffer with the supplied retention limits.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export function make(limits: OutputLimits = defaults): Buffer {
   return makeBuffer({
     limits,
@@ -173,92 +289,123 @@ export function make(limits: OutputLimits = defaults): Buffer {
     endsWithNewline: true,
   })
 }
-/** String/skip boundaries flush incomplete byte sequences. Only a BOM at the stream's very start is removed. */
-export const push = Effect.fnUntraced(function* (
-  buffer: Buffer,
+/**
+ * String/skip boundaries flush incomplete byte sequences.
+ *
+ * **Details**
+ *
+ * Only a BOM at the stream's very start is removed.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const push = (
+  self: Buffer,
   chunk: string | Uint8Array,
   skipped?: Skip,
-): Effect.fn.Return<boolean, OutputError> {
-  if (skipped !== undefined && buffer.limits.retain !== 'tail')
-    return yield* new OutputError({
+): Effect.Effect<boolean, OutputError> =>
+  Effect.try({
+    try: () => pushUnsafe(self, chunk, skipped),
+    catch: (cause) =>
+      cause instanceof OutputError
+        ? cause
+        : new OutputError({
+            reason: new OutputFailure({ message: 'Unable to retain output', cause }),
+          }),
+  })
+
+// Native decoder/accessor and mutable buffer operations run only through the public Effect.try boundary.
+const pushUnsafe = (self: Buffer, chunk: string | Uint8Array, skipped?: Skip): boolean => {
+  if (skipped !== undefined && self.limits.retain !== 'tail')
+    throw new OutputError({
       reason: new OutputFailure({ message: 'Skipped output requires tail retention' }),
     })
-  const pending = typeof chunk === 'string' || skipped !== undefined ? buffer.decoder.decode() : ''
-  let text = typeof chunk === 'string' ? chunk : buffer.decoder.decode(chunk, { stream: true })
-  const first = !buffer.started && pending === '' && skipped === undefined
-  if (pending !== '' || text !== '' || skipped !== undefined) buffer.started = true
+  const pending = typeof chunk === 'string' || skipped !== undefined ? self.decoder.decode() : ''
+  let text = typeof chunk === 'string' ? chunk : self.decoder.decode(chunk, { stream: true })
+  const first = !self.started && pending === '' && skipped === undefined
+  if (pending !== '' || text !== '' || skipped !== undefined) self.started = true
   if (first && typeof chunk !== 'string' && text.startsWith('\ufeff')) text = text.slice(1)
-  if (skipped === undefined) return accept(buffer, pending + text)
-  accept(buffer, pending)
+  if (skipped === undefined) return accept(self, pending + text)
+  accept(self, pending)
   if (skipped.bytes > 0) {
-    buffer.totalBytes += skipped.bytes
-    buffer.totalNewlines += skipped.newlines
-    buffer.endsWithNewline = skipped.endsWithNewline
-    buffer.chunks = []
-    buffer.storedBytes = 0
-    buffer.storedNewlines = 0
+    self.totalBytes += skipped.bytes
+    self.totalNewlines += skipped.newlines
+    self.endsWithNewline = skipped.endsWithNewline
+    self.chunks = []
+    self.storedBytes = 0
+    self.storedNewlines = 0
   }
-  accept(buffer, text)
+  accept(self, text)
   return true
-})
-export function end(buffer: Buffer): void {
-  accept(buffer, buffer.decoder.decode())
 }
-const byteLength = (text: string): number => encoder.encode(text).length
-function accept(buffer: Buffer, text: string): boolean {
+/**
+ * Flushes incremental decoding synchronously; native decoder and accessor faults can throw.
+ *
+ * @category unsafe
+ * @since 0.0.0
+ */
+export function endUnsafe(self: Buffer): void {
+  accept(self, self.decoder.decode())
+}
+const byteLength = (self: string): number => encoder.encode(self).length
+function accept(self: Buffer, text: string): boolean {
   if (text.length === 0) return false
   const bytes = byteLength(text)
   const newlines = countNewlines(text)
-  buffer.totalBytes += bytes
-  buffer.totalNewlines += newlines
-  buffer.endsWithNewline = text.endsWith('\n')
-  if (buffer.full) return true
-  buffer.chunks.push({ text, bytes, newlines })
-  buffer.storedBytes += bytes
-  buffer.storedNewlines += newlines
-  if (buffer.limits.retain === 'head') {
-    buffer.full =
-      buffer.storedBytes > buffer.limits.maxBytes || buffer.storedNewlines >= buffer.limits.maxLines
+  self.totalBytes += bytes
+  self.totalNewlines += newlines
+  self.endsWithNewline = text.endsWith('\n')
+  if (self.full) return true
+  self.chunks.push({ text, bytes, newlines })
+  self.storedBytes += bytes
+  self.storedNewlines += newlines
+  if (self.limits.retain === 'head') {
+    self.full =
+      self.storedBytes > self.limits.maxBytes || self.storedNewlines >= self.limits.maxLines
     return true
   }
-  while (buffer.chunks.length > 1) {
-    const first = buffer.chunks[0]
+  while (self.chunks.length > 1) {
+    const first = self.chunks[0]
     if (first === undefined) break
-    const bytesAfter = buffer.storedBytes - first.bytes
-    const newlinesAfter = buffer.storedNewlines - first.newlines
-    if (bytesAfter <= buffer.limits.maxBytes + 1 && newlinesAfter <= buffer.limits.maxLines + 1)
-      break
-    buffer.chunks.shift()
-    buffer.storedBytes = bytesAfter
-    buffer.storedNewlines = newlinesAfter
+    const bytesAfter = self.storedBytes - first.bytes
+    const newlinesAfter = self.storedNewlines - first.newlines
+    if (bytesAfter <= self.limits.maxBytes + 1 && newlinesAfter <= self.limits.maxLines + 1) break
+    self.chunks.shift()
+    self.storedBytes = bytesAfter
+    self.storedNewlines = newlinesAfter
   }
   return true
 }
-/** Snapshot cadence never changes the retained tail; raw byte counts include later-sanitized controls. */
-export function snapshot(buffer: Buffer): BoundedOutput {
-  const stored = buffer.chunks.map((chunk) => chunk.text).join('')
-  const kept = boundOutput(stored, buffer.limits)
-  const storedLines = lines(buffer.storedNewlines, stored === '' || stored.endsWith('\n'))
+/**
+ * Snapshot cadence never changes the retained tail; raw byte counts include later-sanitized controls.
+ *
+ * @category unsafe
+ * @since 0.0.0
+ */
+export function snapshotUnsafe(self: Buffer): BoundedOutput {
+  const stored = self.chunks.map((chunk) => chunk.text).join('')
+  const kept = boundOutput(stored, self.limits)
+  const storedLines = lines(self.storedNewlines, stored === '' || stored.endsWith('\n'))
   const keptLines = storedLines - kept.droppedLines
-  if (buffer.limits.retain === 'tail' || buffer.chunks.length > 1) {
-    const text = buffer.limits.retain === 'tail' ? tailMargin(stored, buffer.limits) : stored
-    buffer.storedBytes = byteLength(text)
-    buffer.storedNewlines = countNewlines(text)
-    buffer.chunks =
-      text === '' ? [] : [{ text, bytes: buffer.storedBytes, newlines: buffer.storedNewlines }]
+  if (self.limits.retain === 'tail' || self.chunks.length > 1) {
+    const text = self.limits.retain === 'tail' ? tailMargin(stored, self.limits) : stored
+    self.storedBytes = byteLength(text)
+    self.storedNewlines = countNewlines(text)
+    self.chunks =
+      text === '' ? [] : [{ text, bytes: self.storedBytes, newlines: self.storedNewlines }]
   }
   return {
     text: sanitizeOutput(kept.text),
-    droppedBytes: buffer.totalBytes - kept.bytes,
-    droppedLines: lines(buffer.totalNewlines, buffer.endsWithNewline) - keptLines,
+    droppedBytes: self.totalBytes - kept.bytes,
+    droppedLines: lines(self.totalNewlines, self.endsWithNewline) - keptLines,
   }
 }
 /**
  * The shortest suffix of `text` with more than `maxBytes` bytes or more than `maxLines` newlines, or all of it. The
  * tail window of any text that ends with this suffix, followed by anything, is the same as of `text` followed by it.
  */
-function tailMargin(text: string, limits: OutputLimits): string {
-  const bytes = encoder.encode(text)
+function tailMargin(self: string, limits: OutputLimits): string {
+  const bytes = encoder.encode(self)
   const byteStart =
     bytes.length > limits.maxBytes ? characterEnd(bytes, bytes.length - limits.maxBytes - 1) : 0
   let lineStart = 0
@@ -275,33 +422,56 @@ function tailMargin(text: string, limits: OutputLimits): string {
     if (index === 0) break
   }
   const start = Math.max(byteStart, lineStart)
-  return start === 0 ? text : decoder.decode(bytes.subarray(start))
+  return start === 0 ? self : decoder.decode(bytes.subarray(start))
 }
 
 /** Lines of text with `newlines` newlines; a final unterminated line counts. */
-function lines(newlines: number, terminated: boolean): number {
-  return newlines + (terminated ? 0 : 1)
+function lines(self: number, terminated: boolean): number {
+  return self + (terminated ? 0 : 1)
 }
 
-function countNewlines(text: string): number {
+function countNewlines(self: string): number {
   let count = 0
-  for (let index = text.indexOf('\n'); index !== -1; index = text.indexOf('\n', index + 1)) count++
+  for (let index = self.indexOf('\n'); index !== -1; index = self.indexOf('\n', index + 1)) count++
   return count
 }
 
-export type Delta =
-  | { readonly type: 'append'; readonly trimStart: number; readonly text: string }
-  | { readonly type: 'set'; readonly text: string }
+/**
+ * Output delta contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Delta = Data.TaggedEnum<{
+  append: { readonly trimStart: number; readonly text: string }
+  set: { readonly text: string }
+}>
+/**
+ * Constructors and matchers for incremental UTF-16 output changes.
+ *
+ * @category constants
+ * @since 0.0.0
+ */
+export const Delta = Data.taggedEnum<Delta>()
 /** Longest suffix/prefix overlap, with bounded work and a whole-value fallback. UTF-16 offsets suit JS text clients. */
-export function delta(previous: string, current: string, maxScan = 65536): Delta {
-  if (current.startsWith(previous))
-    return { type: 'append', trimStart: 0, text: current.slice(previous.length) }
-  if (Math.min(previous.length, current.length) > maxScan) return { type: 'set', text: current }
-  for (let overlap = Math.min(previous.length, current.length); overlap > 0; overlap--)
-    if (previous.endsWith(current.slice(0, overlap)))
-      return { type: 'append', trimStart: previous.length - overlap, text: current.slice(overlap) }
-  return { type: 'set', text: current }
+function deltaImpl(self: string, that: string, maxScan = 65536): Delta {
+  if (that.startsWith(self)) return Delta.append({ trimStart: 0, text: that.slice(self.length) })
+  if (Math.min(self.length, that.length) > maxScan) return Delta.set({ text: that })
+  for (let overlap = Math.min(self.length, that.length); overlap > 0; overlap--)
+    if (self.endsWith(that.slice(0, overlap)))
+      return Delta.append({ trimStart: self.length - overlap, text: that.slice(overlap) })
+  return Delta.set({ text: that })
 }
+/**
+ * Returns incremental changes between the previous and current values.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const delta: {
+  (that: string, maxScan?: number): (self: string) => Delta
+  (self: string, that: string, maxScan?: number): Delta
+} = dual((args) => typeof args[1] === 'string', deltaImpl)
 
 /** Shared invocation retention state is immutable; TextDecoder is private native streaming state. */
 type WindowState = Readonly<Omit<Buffer, 'decoder' | 'chunks' | typeof TypeId>> & {
@@ -311,12 +481,24 @@ type WindowState = Readonly<Omit<Buffer, 'decoder' | 'chunks' | typeof TypeId>> 
     readonly newlines: number
   }>
 }
+/**
+ * Output window contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Window {
   readonly push: (chunk: string | Uint8Array, skipped?: Skip) => Effect.Effect<boolean, OutputError>
   readonly reset: Effect.Effect<void>
-  readonly end: Effect.Effect<void>
-  readonly snapshot: Effect.Effect<BoundedOutput>
+  readonly end: Effect.Effect<void, OutputError>
+  readonly snapshot: Effect.Effect<BoundedOutput, OutputError>
 }
+/**
+ * Creates a serialized output window whose commands share one decoder and retention state.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const makeWindow = Effect.fnUntraced(function* (
   limits: OutputLimits = defaults,
 ): Effect.fn.Return<Window> {
@@ -326,14 +508,14 @@ export const makeWindow = Effect.fnUntraced(function* (
     return state
   }
   const state = yield* SynchronizedRef.make(initial())
-  const local = (value: WindowState): Buffer =>
+  const local = (self: WindowState): Buffer =>
     makeBuffer({
-      ...value,
-      chunks: [...value.chunks],
+      ...self,
+      chunks: [...self.chunks],
       decoder: nativeDecoder,
     })
-  const stored = (value: Buffer): WindowState => {
-    const { decoder: _decoder, [TypeId]: _brand, ...next } = value
+  const stored = (self: Buffer): WindowState => {
+    const { decoder: _decoder, [TypeId]: _brand, ...next } = self
     return next
   }
   return {
@@ -351,16 +533,58 @@ export const makeWindow = Effect.fnUntraced(function* (
       nativeDecoder.decode()
       return [undefined, initial()] as const
     }),
-    end: SynchronizedRef.modify(state, (current) => {
+    end: SynchronizedRef.modifyEffect(state, (current) => {
       const working = local(current)
-      end(working)
-      return [undefined, stored(working)] as const
+      return Effect.map(end(working), () => [undefined, stored(working)] as const)
     }),
-    snapshot: SynchronizedRef.modify(state, (current) => {
+    snapshot: SynchronizedRef.modifyEffect(state, (current) => {
       const working = local(current)
-      return [snapshot(working), stored(working)] as const
+      return Effect.map(snapshot(working), (value) => [value, stored(working)] as const)
     }),
   }
 })
 
-export const isOutputLimits: (input: unknown) => input is typeof Limits.Type = Schema.is(Limits)
+/**
+ * Checks whether an unknown value satisfies the OutputLimits contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isOutputLimits: (u: unknown) => u is Limits = Schema.is(Limits)
+
+/**
+ * Flushes incremental decoding through the typed output error boundary.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const end = (self: Buffer): Effect.Effect<void, OutputError> =>
+  Effect.try({
+    try: () => endUnsafe(self),
+    catch: (cause) =>
+      new OutputError({
+        reason: new OutputFailure({ message: 'Unable to finish output decoding', cause }),
+      }),
+  })
+/**
+ * Returns a typed snapshot of retained output and its dropped counts.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const snapshot = (self: Buffer): Effect.Effect<BoundedOutput, OutputError> =>
+  Effect.try({
+    try: () => snapshotUnsafe(self),
+    catch: (cause) =>
+      new OutputError({
+        reason: new OutputFailure({ message: 'Unable to snapshot output', cause }),
+      }),
+  })
+
+const BufferProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  toJSON(): unknown {
+    return { _id: '@effect-harness/harness/Output/Buffer' }
+  },
+}

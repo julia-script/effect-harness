@@ -1,6 +1,12 @@
+/**
+ * Native Workflow executor Layer composition.
+ *
+ * @since 0.0.0
+ */
+import * as Arr from 'effect/Array'
 import type * as Record from './Record.ts'
 import type * as Model from '@effect-harness/harness/Model'
-import type * as Harness from '@effect-harness/harness/Executor'
+import type * as Executor from '@effect-harness/harness/Executor'
 import type { SessionDirectory } from './SessionDirectory.ts'
 import * as Option from 'effect/Option'
 import * as Identity from './Identity.ts'
@@ -26,10 +32,20 @@ import * as SubmissionExecutor from './workflow/SubmissionExecutor.ts'
 import { ToolCall } from './workflow/ToolCall.ts'
 import * as ToolExecutor from './workflow/ToolExecutor.ts'
 
-/** Built-in native declarations; applications may extend Declarations with their own ordinary Workflows. */
+/**
+ * Built-in native declarations; applications may extend Declarations with their own ordinary Workflows.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const workflows = [Submission, Generation, ToolCall, Compaction, Abort] as const
 
-/** Pending work in owned conversations is dispatched and joined using native Workflow executions. */
+/**
+ * Pending work in owned conversations is dispatched and joined using native Workflow executions.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerConversationDrain: Layer.Layer<
   Structured.DrainConversations,
   never,
@@ -41,11 +57,11 @@ export const layerConversationDrain: Layer.Layer<
     const engine = yield* WorkflowEngine.WorkflowEngine
     return Structured.DrainConversations.of({
       drain: Effect.fnUntraced(function* (session, owner, conversation, _submissions, sessionId) {
-        if (Structured.failed(owner.state.outcome))
+        if (Structured.isFailed(owner.state.outcome))
           yield* Abort.execute({
             sessionId,
             requestId: Identity.RequestId.make(`owned-drain:${owner.id}:${conversation.id}`),
-            target: { type: 'conversation', id: conversation.id },
+            target: { _tag: 'conversation', type: 'conversation', id: conversation.id },
             background: false,
           }).pipe(Effect.provideService(WorkflowEngine.WorkflowEngine, engine))
         const boundary = yield* session.transaction(
@@ -60,15 +76,14 @@ export const layerConversationDrain: Layer.Layer<
             if (Option.isSome(task) && task.value.state.status !== 'terminal')
               return { binding: task.value.input, notify: [] }
             const selected = yield* Inbox.apply(tx, prepared, 'final', yield* DateTime.now)
-            const generation =
-              selected.users.length > 0
-                ? yield* SubmissionExecutor.createGeneration(
-                    tx,
-                    sessionId,
-                    conversation.id,
-                    selected.users,
-                  )
-                : undefined
+            const generation = Arr.isReadonlyArrayNonEmpty(selected.users)
+              ? yield* SubmissionExecutor.makeGeneration(
+                  tx,
+                  sessionId,
+                  conversation.id,
+                  selected.users,
+                )
+              : undefined
             return { ...(generation === undefined ? {} : { generation }), notify: selected.settled }
           }),
         )
@@ -115,16 +130,21 @@ export const layerConversationDrain: Layer.Layer<
 )
 
 /**
- * Register harness executors with the application's standard WorkflowEngine.
- * Provide SessionDirectory, Conversation.Configuration and the generic harness/provider Layers.
- * For custom owned work, provide an extended Ownership.Declarations instead of the built-in declarations Layer.
+ * Registers harness executors with the application's standard WorkflowEngine.
+ *
+ * **Details**
+ *
+ * Provide SessionDirectory, Conversation.Configuration and the generic harness/provider Layers. For custom owned work, provide an extended Ownership.Declarations instead of the built-in declarations Layer.
+ *
+ * @category layers
+ * @since 0.0.0
  */
 export const layerExecutors: Layer.Layer<
   Structured.DrainConversations | Cancellation.Cancellation,
   never,
   | Model.Catalog
   | Conversation.Configuration
-  | Harness.Executor
+  | Executor.Executor
   | SessionDirectory
   | WorkflowEngine.WorkflowEngine
   | Ownership.Declarations
@@ -136,12 +156,18 @@ export const layerExecutors: Layer.Layer<
   AbortExecutor.layer,
 ).pipe(Layer.provideMerge(layerConversationDrain), Layer.provideMerge(Cancellation.layer))
 
+/**
+ * layer service Layer.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer: Layer.Layer<
   Structured.DrainConversations | Cancellation.Cancellation | Ownership.Declarations,
   never,
   | Model.Catalog
   | Conversation.Configuration
-  | Harness.Executor
+  | Executor.Executor
   | SessionDirectory
   | WorkflowEngine.WorkflowEngine
 > = layerExecutors.pipe(Layer.provideMerge(Ownership.layerDeclarations(workflows)))

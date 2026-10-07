@@ -1,3 +1,9 @@
+/**
+ * Native generation, deferred polling and tool-round orchestration.
+ *
+ * @since 0.0.0
+ */
+import { tagged } from '../internal/legacyTag.ts'
 import * as Arr from 'effect/Array'
 import type { StorageError } from '../StorageError.ts'
 import * as Time from '@effect-harness/harness/Time'
@@ -10,9 +16,10 @@ import * as Entry from '../Entry.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import type * as Layer from 'effect/Layer'
 import * as Agent from '@effect-harness/harness/Agent'
-import * as ContextDomain from '@effect-harness/harness/Context'
-import * as CompactionDomain from '@effect-harness/harness/Compaction'
-import * as Harness from '@effect-harness/harness/Executor'
+import * as Context from '@effect-harness/harness/Context'
+import * as compaction from '@effect-harness/harness/Compaction'
+import * as Executor from '@effect-harness/harness/Executor'
+// effect-review-allow P9-namespace-alias-equals-module: the imported native Compaction Workflow binding collides with harness/Compaction; this lowercase namespace distinguishes the pure policy concept.
 import * as Hook from '@effect-harness/harness/Hook'
 import * as Invocation from '@effect-harness/harness/Invocation'
 import * as Model from '@effect-harness/harness/Model'
@@ -20,14 +27,14 @@ import * as Progress from '@effect-harness/harness/Progress'
 import * as Registry from '@effect-harness/harness/Registry'
 import * as Response from '@effect-harness/harness/Response'
 import * as Tool from '@effect-harness/harness/Tool'
-import * as Totals from '@effect-harness/harness/Usage'
+import * as Usage from '@effect-harness/harness/Usage'
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as Prompt from 'effect/ai/Prompt'
-import * as AiResponse from 'effect/ai/Response'
+import { ToolCallPart, AllParts, type FinishReason, type AnyPart } from 'effect/ai/Response'
 import * as Toolkit from 'effect/ai/Toolkit'
 import * as ClusterSchema from 'effect/cluster/ClusterSchema'
 import * as Activity from 'effect/workflow/Activity'
@@ -39,7 +46,7 @@ import * as Ownership from '../Ownership.ts'
 import * as Record from '../Record.ts'
 import type * as Session from '../Session.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
-import * as Usage from '../Usage.ts'
+import { record as recordUsage } from '../Usage.ts'
 import {
   ExecutionError,
   InvalidState,
@@ -59,22 +66,22 @@ import * as Cancellation from './Cancellation.ts'
 import * as Structured from './Structured.ts'
 
 const Pinned = Schema.Struct({
-  request: Harness.Request,
+  request: Executor.Request,
   state: Agent.State,
   settings: Agent.Settings,
 })
 const Preparation = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal('request'),
+  tagged('request', {
+    type: Schema.tag('request'),
     ...Pinned.fields,
     background: Schema.optionalKey(Compaction.payloadSchema),
   }),
-  Schema.Struct({ type: Schema.Literal('compaction'), compaction: Compaction.payloadSchema }),
+  tagged('compaction', { type: Schema.tag('compaction'), compaction: Compaction.payloadSchema }),
 ])
-const ToolPart = AiResponse.ToolCallPart('', Schema.Json)
+const ToolPart = ToolCallPart('', Schema.Json)
 const ResponseParts = Schema.Array(
   Schema.Union([
-    AiResponse.AllParts(Toolkit.make()),
+    AllParts(Toolkit.make()),
     Schema.Struct({ ...ToolPart.fields, name: Schema.String }),
     Schema.Struct({
       '~effect/ai/Response/Part': ToolPart.fields['~effect/ai/Response/Part'],
@@ -90,7 +97,7 @@ const ResponseParts = Schema.Array(
     }),
   ]),
 )
-const ResponseStep = Schema.Struct({ disposition: Harness.Disposition, parts: ResponseParts })
+const ResponseStep = Schema.Struct({ disposition: Executor.Disposition, parts: ResponseParts })
 const Settlement = Schema.Struct({
   result: Result,
   notify: Schema.Array(Record.SubmissionId),
@@ -117,6 +124,12 @@ const codecError = (cause?: unknown) =>
 const domainError = (error: import('../StorageError.ts').StorageError | ExecutionError) =>
   error._tag === 'StorageError' ? SubmissionExecutor.storageError(error) : error
 
+/**
+ * convertPartial schema.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const convertPartial = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   live: Document.Draft<Inbox.LiveState>,
@@ -135,7 +148,7 @@ export const convertPartial = Effect.fnUntraced(function* (
     }).pipe(Effect.mapError(codecError)),
   })
   if (generation.model !== undefined && generation.usage !== undefined)
-    yield* Usage.record(
+    yield* recordUsage(
       tx,
       conversationId,
       'models',
@@ -148,9 +161,9 @@ export const convertPartial = Effect.fnUntraced(function* (
 const appendAssistant = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   payload: typeof Generation.payloadSchema.Type,
-  request: Harness.Request,
-  disposition: Exclude<Harness.Disposition, { readonly type: 'deferred' }>,
-  finishReason?: AiResponse.FinishReason,
+  request: Executor.Request,
+  disposition: Exclude<Executor.Disposition, { readonly _tag: 'deferred' }>,
+  finishReason?: FinishReason,
 ) {
   const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(Schema.Array(Prompt.Message)))(
     disposition.prompt.content,
@@ -158,7 +171,7 @@ const appendAssistant = Effect.fnUntraced(function* (
   const messages = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Json))(encoded).pipe(
     Effect.mapError(codecError),
   )
-  yield* Usage.record(
+  yield* recordUsage(
     tx,
     payload.conversationId,
     'models',
@@ -166,8 +179,8 @@ const appendAssistant = Effect.fnUntraced(function* (
     disposition.usage,
   )
   let status: Conversation.Metadata['status'] = 'stop'
-  if (disposition.type === 'failure') status = 'error'
-  else if (disposition.type === 'tools') status = 'tool-calls'
+  if (disposition._tag === 'failure') status = 'error'
+  else if (disposition._tag === 'tools') status = 'tool-calls'
   else if (finishReason === 'length') status = 'length'
   return yield* tx.appendEntry(payload.conversationId, {
     kind: 'harness.assistant',
@@ -180,7 +193,12 @@ const appendAssistant = Effect.fnUntraced(function* (
   })
 })
 
-/** Ordinary native Workflow orchestration; named Activities own request replay and domain commits. */
+/**
+ * Ordinary native Workflow orchestration; named Activities own request replay and domain commits.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer: Layer.Layer<
   never,
   never,
@@ -188,7 +206,7 @@ export const layer: Layer.Layer<
   | Model.Catalog
   | Conversation.Configuration
   | Ownership.Declarations
-  | Harness.Executor
+  | Executor.Executor
   | SessionDirectory
   | WorkflowEngine.WorkflowEngine
 > = Generation.toLayer(
@@ -196,7 +214,7 @@ export const layer: Layer.Layer<
     const session = yield* (yield* SessionDirectory)
       .resolve(payload.sessionId)
       .pipe(Effect.mapError(domainError))
-    const executor = yield* Harness.Executor
+    const executor = yield* Executor.Executor
     const catalog = yield* Model.Catalog
     const config = yield* Conversation.Configuration
     let invocation = Invocation.Invocation.of({
@@ -246,7 +264,7 @@ export const layer: Layer.Layer<
                 }
               const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
               yield* convertPartial(tx, live, payload.conversationId)
-              const result: typeof Result.Type = {
+              const result: Result = {
                 status: reason === 'aborted' ? 'aborted' : 'failed',
                 detail,
               }
@@ -305,25 +323,28 @@ export const layer: Layer.Layer<
                   const receipts = (yield* session.committed.pipe(
                     Effect.mapError(SubmissionExecutor.storageError),
                   )).receipts
-                  const preparedReceipt = receipts.find(
+                  const preparedReceipt = Arr.findFirst(
+                    receipts,
                     (receipt) =>
                       receipt.key ===
                       `workflow/generation/prepare/${executionId}/${cycle}/${preparation}`,
                   )
-                  if (preparedReceipt !== undefined)
+                  if (Option.isSome(preparedReceipt))
                     return yield* Schema.decodeEffect(Schema.toCodecJson(Preparation))(
-                      preparedReceipt.result,
+                      preparedReceipt.value.result,
                     ).pipe(Effect.mapError(codecError))
-                  const compactionReceipt = receipts.find(
+                  const compactionReceipt = Arr.findFirst(
+                    receipts,
                     (receipt) =>
                       receipt.key ===
                       `workflow/generation/compact/${executionId}/${cycle}/${preparation}`,
                   )
-                  if (compactionReceipt !== undefined)
+                  if (Option.isSome(compactionReceipt))
                     return {
+                      _tag: 'compaction' as const,
                       type: 'compaction' as const,
                       compaction: yield* Schema.decodeUnknownEffect(Compaction.payloadSchema)(
-                        compactionReceipt.result,
+                        compactionReceipt.value.result,
                       ).pipe(Effect.mapError(codecError)),
                     }
                   const state: Agent.State = yield* session
@@ -391,7 +412,7 @@ export const layer: Layer.Layer<
                     ),
                   )
                   const hasCut = Option.isSome(
-                    CompactionDomain.selectCut(
+                    compaction.selectCut(
                       view,
                       config.settings.compaction.keepRecentTokens,
                       descriptor.estimate,
@@ -400,10 +421,10 @@ export const layer: Layer.Layer<
                   const threshold =
                     (yield* Ref.get(compacted)) || !hasCut
                       ? Option.none()
-                      : CompactionDomain.threshold(
-                          ContextDomain.estimate(
+                      : compaction.threshold(
+                          Context.estimate(
                             view,
-                            prepared.plan.patches.flatMap(ContextDomain.systemMessages),
+                            Arr.flatMap(prepared.plan.patches, Context.systemMessages),
                             descriptor.estimate,
                           ),
                           descriptor.contextWindow,
@@ -419,7 +440,7 @@ export const layer: Layer.Layer<
                               reason: new Aborted({ message: 'Generation aborted' }),
                             })
                           const task = taskOption.value
-                          const child = yield* CompactionExecutor.create(
+                          const child = yield* CompactionExecutor.make(
                             tx,
                             payload.sessionId,
                             payload.conversationId,
@@ -427,6 +448,7 @@ export const layer: Layer.Layer<
                             payload.taskId,
                           )
                           yield* tx.write({
+                            _tag: 'task',
                             type: 'task',
                             value: {
                               ...task,
@@ -444,7 +466,11 @@ export const layer: Layer.Layer<
                         },
                       )
                       .pipe(Effect.mapError(domainError))
-                    return { type: 'compaction' as const, compaction: child }
+                    return {
+                      _tag: 'compaction' as const,
+                      type: 'compaction' as const,
+                      compaction: child,
+                    }
                   }
                   const encodedRequest = yield* session
                     .transaction(
@@ -461,7 +487,7 @@ export const layer: Layer.Layer<
                           Option.isSome(threshold) &&
                           threshold.value === 'background' &&
                           (live.compactions?.length ?? 0) === 0
-                            ? yield* CompactionExecutor.create(
+                            ? yield* CompactionExecutor.make(
                                 tx,
                                 payload.sessionId,
                                 payload.conversationId,
@@ -479,7 +505,7 @@ export const layer: Layer.Layer<
                           const entry = yield* tx.appendEntry(payload.conversationId, {
                             kind: 'harness.system',
                             data: { harness: { system } },
-                            ...(index === 0 && edits.length > 0 ? { edits } : {}),
+                            ...(index === 0 && Arr.isReadonlyArrayNonEmpty(edits) ? { edits } : {}),
                           })
                           tail = entry.id
                         }
@@ -488,7 +514,7 @@ export const layer: Layer.Layer<
                           model: yield* Document.copyEffect(prepared.request.model),
                         }
                         const encoded = yield* Schema.encodeEffect(
-                          Schema.toCodecJson(Harness.Request),
+                          Schema.toCodecJson(Executor.Request),
                         )({ ...prepared.request, ...(tail === undefined ? {} : { tail }) }).pipe(
                           Effect.mapError(codecError),
                         )
@@ -499,10 +525,12 @@ export const layer: Layer.Layer<
                         requestDoc.request = yield* Document.copyEffect(encoded)
                         delete requestDoc.handle
                         yield* tx.write({
+                          _tag: 'task',
                           type: 'task',
                           value: { ...task, state: { status: 'running' } },
                         })
                         return yield* Schema.encodeEffect(Schema.toCodecJson(Preparation))({
+                          _tag: 'request',
                           type: 'request',
                           request: { ...prepared.request, ...(tail === undefined ? {} : { tail }) },
                           state,
@@ -534,8 +562,8 @@ export const layer: Layer.Layer<
             .resolve(pinned.state, pinned.settings)
             .pipe(Effect.provideService(Invocation.Invocation, invocation))
           let poll: { handle: Schema.Json; at: DateTime.Utc } | undefined
-          let disposition: Harness.Disposition
-          let parts: ReadonlyArray<AiResponse.AnyPart> = []
+          let disposition: Executor.Disposition
+          let parts: ReadonlyArray<AnyPart> = []
           for (let fetch = 0; ; fetch++) {
             if (poll !== undefined)
               yield* DurableClock.sleep({
@@ -576,7 +604,7 @@ export const layer: Layer.Layer<
                       const encoded = yield* Schema.encodeEffect(
                         Schema.toCodecJson(Prompt.AssistantMessage),
                       )(message.value)
-                      const finish = response.parts.findLast((part) => part.type === 'finish')
+                      const finish = Arr.findLast(response.parts, (part) => part.type === 'finish')
                       const descriptor = yield* catalog.resolve(pinned.request.model).pipe(
                         Effect.mapError(
                           (error) =>
@@ -587,11 +615,10 @@ export const layer: Layer.Layer<
                             }),
                         ),
                       )
-                      const usage =
-                        finish === undefined
-                          ? undefined
-                          : (descriptor.usage?.(finish.usage, finish.metadata) ??
-                            Totals.fromResponse(finish.usage))
+                      const usage = Option.isNone(finish)
+                        ? undefined
+                        : (descriptor.usage?.(finish.value.usage, finish.value.metadata) ??
+                          Usage.fromResponse(finish.value.usage))
                       yield* session.transaction(
                         Effect.fnUntraced(function* (tx) {
                           const task = yield* tx.task(payload.taskId)
@@ -617,10 +644,9 @@ export const layer: Layer.Layer<
                       )
                       return new TextEncoder().encode(JSON.stringify(encoded)).length
                     }).pipe(Effect.orDie)
-                    const progress = yield* Progress.make(
-                      write,
-                      pinned.settings.progress.partialIntervalMs,
-                    ).pipe(Effect.mapError(codecError))
+                    const progress = yield* Progress.make(write, {
+                      minIntervalMs: pinned.settings.progress.partialIntervalMs,
+                    }).pipe(Effect.mapError(codecError))
                     const source =
                       handle === undefined
                         ? executor.generate(pinned.request, agent)
@@ -652,7 +678,7 @@ export const layer: Layer.Layer<
                         streamed._tag === 'Failure'
                           ? Model.errorText(streamed.failure)
                           : 'Stream ended before a terminal response event'
-                      const finish = response.parts.findLast((part) => part.type === 'finish')
+                      const finish = Arr.findLast(response.parts, (part) => part.type === 'finish')
                       const partial = Response.partial(response)
                       const descriptor = yield* catalog.resolve(pinned.request.model).pipe(
                         Effect.mapError(
@@ -667,28 +693,28 @@ export const layer: Layer.Layer<
                       return {
                         parts,
                         disposition: {
+                          _tag: 'failure' as const,
                           type: 'failure' as const,
                           prompt: Option.match(partial, {
                             onNone: () => Response.message(response),
                             onSome: (message) => Prompt.fromMessages([message]),
                           }),
-                          usage:
-                            finish === undefined
-                              ? Totals.fromResponse({
-                                  inputTokens: {
-                                    uncached: undefined,
-                                    total: undefined,
-                                    cacheRead: undefined,
-                                    cacheWrite: undefined,
-                                  },
-                                  outputTokens: {
-                                    total: undefined,
-                                    text: undefined,
-                                    reasoning: undefined,
-                                  },
-                                })
-                              : (descriptor.usage?.(finish.usage, finish.metadata) ??
-                                Totals.fromResponse(finish.usage)),
+                          usage: Option.isNone(finish)
+                            ? Usage.fromResponse({
+                                inputTokens: {
+                                  uncached: undefined,
+                                  total: undefined,
+                                  cacheRead: undefined,
+                                  cacheWrite: undefined,
+                                },
+                                outputTokens: {
+                                  total: undefined,
+                                  text: undefined,
+                                  reasoning: undefined,
+                                },
+                              })
+                            : (descriptor.usage?.(finish.value.usage, finish.value.metadata) ??
+                              Usage.fromResponse(finish.value.usage)),
                           message: text,
                           ...(descriptor.classify?.(
                             streamed._tag === 'Failure' ? streamed.failure : text,
@@ -720,7 +746,7 @@ export const layer: Layer.Layer<
             })
             disposition = step.disposition
             parts = step.parts
-            if (disposition.type !== 'deferred') break
+            if (disposition._tag !== 'deferred') break
             const previousAt = poll?.at
             poll = yield* Activity.make({
               name: `deferred/${cycle}/${fetch}`,
@@ -730,9 +756,9 @@ export const layer: Layer.Layer<
                 const at = Model.pollAt(
                   yield* DateTime.now,
                   previousAt,
-                  disposition.type === 'deferred' ? disposition.decision.pollAfterMs : undefined,
+                  disposition._tag === 'deferred' ? disposition.decision.pollAfterMs : undefined,
                 )
-                const handle = disposition.type === 'deferred' ? disposition.decision.handle : null
+                const handle = disposition._tag === 'deferred' ? disposition.decision.handle : null
                 yield* session
                   .transaction(
                     Effect.fnUntraced(function* (tx) {
@@ -751,7 +777,7 @@ export const layer: Layer.Layer<
               }),
             }).annotate(ClusterSchema.WithTransaction, true)
           }
-          if (disposition.type === 'failure') {
+          if (disposition._tag === 'failure') {
             const failure = disposition
             const failed = yield* Activity.make({
               name: `failure-attempt/${cycle}`,
@@ -788,7 +814,7 @@ export const layer: Layer.Layer<
                     ),
                   )
                   shouldCompact = Option.isSome(
-                    CompactionDomain.selectCut(
+                    compaction.selectCut(
                       view,
                       config.settings.compaction.keepRecentTokens,
                       descriptor.estimate,
@@ -806,7 +832,7 @@ export const layer: Layer.Layer<
                       const task = taskOption.value
                       const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
                       const compaction = shouldCompact
-                        ? yield* CompactionExecutor.create(
+                        ? yield* CompactionExecutor.make(
                             tx,
                             payload.sessionId,
                             payload.conversationId,
@@ -817,7 +843,7 @@ export const layer: Layer.Layer<
                       yield* appendAssistant(tx, payload, pinned.request, failure)
                       const retry =
                         !failure.overflow &&
-                        Agent.shouldRetry(config.settings.retry, attempt, failure.retryable)
+                        Agent.isRetryAllowed(config.settings.retry, attempt, failure.retryable)
                       const at = DateTime.addDuration(
                         yield* DateTime.now,
                         Agent.retryDelay(config.settings.retry, attempt),
@@ -825,6 +851,7 @@ export const layer: Layer.Layer<
                       if (compaction !== undefined) {
                         delete live.generation
                         yield* tx.write({
+                          _tag: 'task',
                           type: 'task',
                           value: {
                             ...task,
@@ -876,7 +903,7 @@ export const layer: Layer.Layer<
             if (!failed.retry) return yield* fail('model_error', failure.message)
             return yield* new ModelRetry({ name: `retry/${cycle}`, at: failed.at })
           }
-          if (disposition.type === 'answer') {
+          if (disposition._tag === 'answer') {
             const answer = disposition
             const continuation = yield* Activity.make({
               name: 'on-yield',
@@ -916,14 +943,19 @@ export const layer: Layer.Layer<
                       payload,
                       pinned.request,
                       answer,
-                      parts.findLast((part) => part.type === 'finish')?.reason,
+                      Option.getOrUndefined(
+                        Option.map(
+                          Arr.findLast(parts, (part) => part.type === 'finish'),
+                          (part) => part.reason,
+                        ),
+                      ),
                     )
                     const selected = yield* Inbox.apply(tx, boundary, 'final', yield* DateTime.now)
                     let next: typeof Generation.payloadSchema.Type | undefined
                     let notify = [...selected.settled]
                     if (
                       Option.isSome(continuation) &&
-                      selected.users.length === 0 &&
+                      Arr.isReadonlyArrayEmpty(selected.users) &&
                       !selected.reset
                     ) {
                       const message = yield* Schema.encodeEffect(
@@ -933,7 +965,7 @@ export const layer: Layer.Layer<
                         kind: 'harness.user',
                         model: [message],
                       })
-                      next = yield* SubmissionExecutor.createGeneration(
+                      next = yield* SubmissionExecutor.makeGeneration(
                         tx,
                         payload.sessionId,
                         payload.conversationId,
@@ -947,15 +979,15 @@ export const layer: Layer.Layer<
                           answer: entry.id,
                         })),
                       )
-                      if (selected.users.length > 0)
-                        next = yield* SubmissionExecutor.createGeneration(
+                      if (Arr.isReadonlyArrayNonEmpty(selected.users))
+                        next = yield* SubmissionExecutor.makeGeneration(
                           tx,
                           payload.sessionId,
                           payload.conversationId,
                           selected.users,
                         )
                     }
-                    const result: typeof Result.Type = { status: 'answered', answer: entry.id }
+                    const result: Result = { status: 'answered', answer: entry.id }
                     yield* Structured.hold(tx, task, result, graph)
                     return { result, notify, ...(next === undefined ? {} : { next }) }
                   }),
@@ -1018,6 +1050,7 @@ export const layer: Layer.Layer<
                   }
                   delete live.generation
                   yield* tx.write({
+                    _tag: 'task',
                     type: 'task',
                     value: { ...task, state: { status: 'running' } },
                   })
@@ -1026,7 +1059,7 @@ export const layer: Layer.Layer<
                     calls,
                     sequential:
                       Tool.executionMode(
-                        agent.tools.filter((tool) =>
+                        Arr.filter(agent.tools, (tool) =>
                           calls.some((call) => call.name === tool.tool.name),
                         ),
                         config.settings.toolExecution,
@@ -1074,6 +1107,7 @@ export const layer: Layer.Layer<
                         payload: child,
                       }
                       yield* tx.write({
+                        _tag: 'task',
                         type: 'task',
                         value: {
                           id: taskId,
@@ -1088,9 +1122,13 @@ export const layer: Layer.Layer<
                         },
                       })
                       const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
-                      const slot = live.tools?.find((slot) => slot.callId === call.id)
-                      if (slot !== undefined) slot.taskId = taskId
+                      const slot = Arr.findFirst(
+                        live.tools ?? [],
+                        (slot) => slot.callId === call.id,
+                      )
+                      if (Option.isSome(slot)) slot.value.taskId = taskId
                       yield* tx.write({
+                        _tag: 'task',
                         type: 'task',
                         value: {
                           ...owner,
@@ -1128,7 +1166,7 @@ export const layer: Layer.Layer<
                 const live = yield* session
                   .snapshot(Inbox.LiveDoc, { owner: payload.conversationId })
                   .pipe(Effect.mapError(domainError))
-                const results: Hook.SettledTool[] = []
+                const results: Array<Hook.SettledTool> = []
                 for (const [index, call] of round.calls.entries()) {
                   const entryId = live.pipe(
                     Option.flatMap((snapshot) =>
@@ -1169,7 +1207,7 @@ export const layer: Layer.Layer<
                   const task = taskOption.value
                   const boundary = yield* Inbox.prepare(tx, payload.conversationId, config.settings)
                   const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
-                  if (controls.addTools.length > 0) {
+                  if (Arr.isReadonlyArrayNonEmpty(controls.addTools)) {
                     const agent = yield* tx.doc(Conversation.AgentDoc, {
                       owner: payload.conversationId,
                     })
@@ -1199,22 +1237,22 @@ export const layer: Layer.Layer<
                           : { status: 'done', answer: round.assistant },
                       )),
                     )
-                    if (selected.users.length > 0)
-                      next = yield* SubmissionExecutor.createGeneration(
+                    if (Arr.isReadonlyArrayNonEmpty(selected.users))
+                      next = yield* SubmissionExecutor.makeGeneration(
                         tx,
                         payload.sessionId,
                         payload.conversationId,
                         selected.users,
                       )
                   } else
-                    next = yield* SubmissionExecutor.createGeneration(
+                    next = yield* SubmissionExecutor.makeGeneration(
                       tx,
                       payload.sessionId,
                       payload.conversationId,
                       [...(live.run?.inputs ?? payload.inputs), ...selected.users],
                       payload.runId,
                     )
-                  const result: typeof Result.Type = { status: 'tools', answer: round.assistant }
+                  const result: Result = { status: 'tools', answer: round.assistant }
                   yield* Structured.hold(tx, task, result, graph)
                   return { result, notify, ...(next === undefined ? {} : { next }) }
                 }),

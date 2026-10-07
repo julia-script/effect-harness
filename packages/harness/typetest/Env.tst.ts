@@ -10,9 +10,11 @@ import type * as Option from 'effect/Option'
 import type { ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
 import * as Context from 'effect/Context'
 import * as Env from '@effect-harness/harness/Env'
-import * as NodeEnv from '@effect-harness/harness/env/Node'
-import * as Exec from '@effect-harness/harness/env/Exec'
-import * as Watch from '@effect-harness/harness/env/Watch'
+import * as NodeEnv from '@effect-harness/harness/NodeEnv'
+// effect-review-allow P8-tests-import-public-specifiers: Exec is private construction wiring; this declaration proof deliberately targets its internal contract.
+import * as Exec from '../src/env/internal/exec.ts'
+// effect-review-allow P8-tests-import-public-specifiers: Watch is private construction wiring; this declaration proof deliberately targets its internal contract.
+import * as Watch from '../src/env/internal/watch.ts'
 import * as Conformance from '@effect-harness/harness/testing/EnvConformance'
 import * as Runner from '@effect-harness/harness/testing/Runner'
 
@@ -52,10 +54,10 @@ test('construction keeps platform and scope requirements and reader EOF is Optio
       FileSystem.FileSystem | Path.Path | ChildProcessSpawner
     >
   >()
-  expect(Exec.make(fs, path, spawner, { id: 'test', cwd: '/' })).type.toBe<
-    Effect.Effect<Pick<Env.Env['Service'], 'exec'>, never, Scope.Scope>
-  >()
-  expect(Watch.make(fs, path, native, [])).type.toBe<
+  expect(
+    Exec.make({ fs: fs, path: path, spawner: spawner, defaults: { id: 'test', cwd: '/' } }),
+  ).type.toBe<Effect.Effect<Pick<Env.Env['Service'], 'exec'>, never, Scope.Scope>>()
+  expect(Watch.make({ fs: fs, path: path, native: native, targets: [] })).type.toBe<
     Effect.Effect<Env.Watcher, Env.FileError, Scope.Scope>
   >()
   expect(reader.readLine).type.toBe<Effect.Effect<Option.Option<Env.TextLine>, Env.FileError>>()

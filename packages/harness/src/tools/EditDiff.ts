@@ -1,53 +1,98 @@
-// Adapted from pi-durable (MIT), pinned 636703a0; see ../LICENSE.pi.txt.
+/**
+ * Exact and tolerant text matching with unchanged-line preservation.
+ *
+ * @since 0.0.0
+ */
+import * as Serialization from '../Serialization.ts'
+import { identity } from 'effect/Function'
+import * as SchemaField from '../SchemaField.ts'
+import * as Arr from 'effect/Array'
+import * as Order from 'effect/Order'
+import { dual } from 'effect/Function'
+import * as Result from 'effect/Result'
+// Adapted from pi-durable (MIT), pinned 636703a0; see package NOTICE.
 /**
  * Shared diff computation utilities for the edit and similar tools.
  */
 
-import * as Diff from 'diff'
+import * as diff from 'diff'
 import * as Option from 'effect/Option'
-import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 
-export class EditError extends Schema.TaggedError<EditError>()('EditError', {
+/**
+ * Semantic edit error with its retained cause.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
+export class EditError extends Schema.TaggedError<EditError>(
+  '@effect-harness/harness/tools/EditDiff/EditError',
+)('EditError', {
   code: Schema.Literals(['empty', 'not_found', 'duplicate', 'overlap', 'no_change', 'range']),
   message: Schema.String,
+  cause: SchemaField.optional(Schema.Defect()),
 }) {}
-const editError = (code: EditError['code'], message: string): EditError =>
-  new EditError({ code, message })
-function at<A>(values: ReadonlyArray<A>, index: number): A {
-  const value = values[index]
+const editError = (self: EditError['code'], message: string): EditError =>
+  new EditError({ code: self, message })
+function atUnsafe<A>(self: ReadonlyArray<A>, index: number): A {
+  const value = self[index]
   // Every caller bounds the index to a dense array constructed in this module.
   if (value === undefined)
     throw new Error('BUG: Invalid internal diff position; please report an issue')
   return value
 }
 
-export function detectLineEnding(content: string): '\r\n' | '\n' {
-  const crlfIdx = content.indexOf('\r\n')
-  const lfIdx = content.indexOf('\n')
+/**
+ * Detects the first newline convention in text.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export function detectLineEnding(self: string): '\r\n' | '\n' {
+  const crlfIdx = self.indexOf('\r\n')
+  const lfIdx = self.indexOf('\n')
   if (lfIdx === -1) return '\n'
   if (crlfIdx === -1) return '\n'
   return crlfIdx < lfIdx ? '\r\n' : '\n'
 }
 
-export function normalizeToLF(text: string): string {
-  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-}
-
-export function restoreLineEndings(text: string, ending: '\r\n' | '\n'): string {
-  return ending === '\r\n' ? text.replace(/\n/g, '\r\n') : text
+/**
+ * Normalizes CRLF and CR line endings to LF.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export function normalizeToLF(self: string): string {
+  return self.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 }
 
 /**
- * Normalize text for fuzzy matching. Applies progressive transformations:
+ * Restores the selected newline convention in LF text.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+function restoreLineEndingsImpl(self: string, ending: '\r\n' | '\n'): string {
+  return ending === '\r\n' ? self.replace(/\n/g, '\r\n') : self
+}
+
+/**
+ * Normalizes text for fuzzy matching.
+ *
+ * **Details**
+ *
+ * Applies progressive transformations:
  * - Strip trailing whitespace from each line
  * - Normalize smart quotes to ASCII equivalents
  * - Normalize Unicode dashes/hyphens to ASCII hyphen
  * - Normalize special Unicode spaces to regular space
+ *
+ * @category combinators
+ * @since 0.0.0
  */
-export function normalizeForFuzzyMatch(text: string): string {
+export function normalizeForFuzzyMatch(self: string): string {
   return (
-    text
+    self
       .normalize('NFKC')
       // Strip trailing whitespace per line
       .split('\n')
@@ -68,8 +113,8 @@ export function normalizeForFuzzyMatch(text: string): string {
   )
 }
 
-function splitLinesWithEndings(content: string): string[] {
-  return content.match(/[^\n]*\n|[^\n]+/g) ?? []
+function splitLinesWithEndings(self: string): Array<string> {
+  return self.match(/[^\n]*\n|[^\n]+/g) ?? []
 }
 
 interface LineSpan {
@@ -86,17 +131,17 @@ interface MatchedEdit {
 
 type TextReplacement = Pick<MatchedEdit, 'matchIndex' | 'matchLength' | 'newText'>
 
-function getLineSpans(content: string): LineSpan[] {
+function getLineSpans(self: string): Array<LineSpan> {
   let offset = 0
-  return splitLinesWithEndings(content).map((line) => {
+  return splitLinesWithEndings(self).map((line) => {
     const span = { start: offset, end: offset + line.length }
     offset = span.end
     return span
   })
 }
 
-function getReplacementLineRange(
-  lines: LineSpan[],
+function getReplacementLineRangeImpl(
+  self: ReadonlyArray<LineSpan>,
   replacement: TextReplacement,
 ): Result.Result<{ startLine: number; endLine: number }, EditError> {
   if (
@@ -110,8 +155,8 @@ function getReplacementLineRange(
   const replacementEnd = replacement.matchIndex + replacement.matchLength
 
   let startLine = -1
-  for (let i = 0; i < lines.length; i++) {
-    const line = at(lines, i)
+  for (let i = 0; i < self.length; i++) {
+    const line = atUnsafe(self, i)
     if (replacementStart >= line.start && replacementStart < line.end) {
       startLine = i
       break
@@ -122,20 +167,24 @@ function getReplacementLineRange(
   }
 
   let endLine = startLine
-  while (endLine < lines.length && at(lines, endLine).end < replacementEnd) {
+  while (endLine < self.length && atUnsafe(self, endLine).end < replacementEnd) {
     endLine++
   }
-  if (endLine >= lines.length) {
+  if (endLine >= self.length) {
     return Result.fail(editError('range', 'Replacement range is outside the base content.'))
   }
 
   return Result.succeed({ startLine, endLine: endLine + 1 })
 }
 
-function applyReplacements(content: string, replacements: TextReplacement[], offset = 0): string {
-  let result = content
+function applyReplacements(
+  self: string,
+  replacements: ReadonlyArray<TextReplacement>,
+  offset = 0,
+): string {
+  let result = self
   for (let i = replacements.length - 1; i >= 0; i--) {
-    const replacement = at(replacements, i)
+    const replacement = atUnsafe(replacements, i)
     const matchIndex = replacement.matchIndex - offset
     result =
       result.substring(0, matchIndex) +
@@ -155,13 +204,13 @@ function applyReplacements(content: string, replacements: TextReplacement[], off
  * from `originalContent`. The actual replacement ranges drive preservation so
  * duplicate normalized lines cannot be aligned to the wrong occurrence.
  */
-export function applyReplacementsPreservingUnchangedLines(
-  originalContent: string,
+function applyReplacementsPreservingUnchangedLinesImpl(
+  self: string,
   baseContent: string,
   replacements: ReadonlyArray<TextReplacement>,
 ): Result.Result<string, EditError> {
   return Result.gen(function* () {
-    const originalLines = splitLinesWithEndings(originalContent)
+    const originalLines = splitLinesWithEndings(self)
     const baseLines = getLineSpans(baseContent)
     if (originalLines.length !== baseLines.length) {
       return yield* Result.fail(
@@ -172,9 +221,12 @@ export function applyReplacementsPreservingUnchangedLines(
       )
     }
 
-    const groups: Array<{ startLine: number; endLine: number; replacements: TextReplacement[] }> =
-      []
-    const sortedReplacements = [...replacements].sort((a, b) => a.matchIndex - b.matchIndex)
+    const groups: Array<{
+      startLine: number
+      endLine: number
+      replacements: Array<TextReplacement>
+    }> = []
+    const sortedReplacements = Arr.sort(replacements, replacementOrder)
     let previousEnd = -1
     for (const replacement of sortedReplacements) {
       const range = yield* getReplacementLineRange(baseLines, replacement)
@@ -195,8 +247,8 @@ export function applyReplacementsPreservingUnchangedLines(
     for (const group of groups) {
       result += originalLines.slice(originalLineIndex, group.startLine).join('')
 
-      const groupStartOffset = at(baseLines, group.startLine).start
-      const groupEndOffset = at(baseLines, group.endLine - 1).end
+      const groupStartOffset = atUnsafe(baseLines, group.startLine).start
+      const groupEndOffset = atUnsafe(baseLines, group.endLine - 1).end
       result += applyReplacements(
         baseContent.slice(groupStartOffset, groupEndOffset),
         group.replacements,
@@ -209,52 +261,98 @@ export function applyReplacementsPreservingUnchangedLines(
     return result
   })
 }
+/**
+ * Applies normalized replacements while retaining unchanged original line bytes.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const applyReplacementsPreservingUnchangedLines: {
+  (
+    baseContent: string,
+    replacements: ReadonlyArray<TextReplacement>,
+  ): (self: string) => Result.Result<string, EditError>
+  (
+    self: string,
+    baseContent: string,
+    replacements: ReadonlyArray<TextReplacement>,
+  ): Result.Result<string, EditError>
+} = dual(3, (self: string, baseContent: string, replacements: ReadonlyArray<TextReplacement>) =>
+  Result.try({
+    try: () => applyReplacementsPreservingUnchangedLinesImpl(self, baseContent, replacements),
+    catch: diffFailure,
+  }).pipe(Result.flatMap(identity)),
+)
 
+/**
+ * EditDiff fuzzy match result contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface FuzzyMatchResult {
   /** The index where the match starts (in the content that should be used for replacement) */
-  index: number
+  readonly index: number
   /** Length of the matched text */
-  matchLength: number
+  readonly matchLength: number
   /** Whether fuzzy matching was used (false = exact match) */
-  usedFuzzyMatch: boolean
+  readonly usedFuzzyMatch: boolean
   /**
    * The content to use for replacement operations.
    * When exact match: original content. When fuzzy match: normalized content.
    */
-  contentForReplacement: string
+  readonly contentForReplacement: string
 }
 
+/**
+ * EditDiff edit contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Edit {
-  oldText: string
-  newText: string
+  readonly oldText: string
+  readonly newText: string
 }
 
+/**
+ * EditDiff applied edits result contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface AppliedEditsResult {
-  baseContent: string
-  newContent: string
+  readonly baseContent: string
+  readonly newContent: string
 }
 
 /**
  * Find oldText in content, trying exact match first, then fuzzy match.
+ *
+ * **Details**
+ *
  * When fuzzy matching is used, the returned contentForReplacement is the
  * fuzzy-normalized version of the content (trailing whitespace stripped,
  * Unicode quotes/dashes normalized to ASCII).
+ *
+ * @category combinators
+ * @since 0.0.0
  */
-export function fuzzyFindText(content: string, oldText: string): Option.Option<FuzzyMatchResult> {
+export function fuzzyFindText(self: string, oldText: string): Option.Option<FuzzyMatchResult> {
   if (normalizeForFuzzyMatch(oldText).length === 0) return Option.none()
   // Try exact match first
-  const exactIndex = content.indexOf(oldText)
+  const exactIndex = self.indexOf(oldText)
   if (exactIndex !== -1) {
     return Option.some({
       index: exactIndex,
       matchLength: oldText.length,
       usedFuzzyMatch: false,
-      contentForReplacement: content,
+      contentForReplacement: self,
     })
   }
 
   // Try fuzzy match - work entirely in normalized space
-  const fuzzyContent = normalizeForFuzzyMatch(content)
+  const fuzzyContent = normalizeForFuzzyMatch(self)
   const fuzzyOldText = normalizeForFuzzyMatch(oldText)
   const fuzzyIndex = fuzzyContent.indexOf(fuzzyOldText)
 
@@ -271,15 +369,20 @@ export function fuzzyFindText(content: string, oldText: string): Option.Option<F
   })
 }
 
-/** Strip UTF-8 BOM if present, return both the BOM (if any) and the text without it */
-export function stripBom(content: string): { bom: string; text: string } {
-  return content.startsWith('\uFEFF')
-    ? { bom: '\uFEFF', text: content.slice(1) }
-    : { bom: '', text: content }
+/**
+ * Strip UTF-8 BOM if present, return both the BOM (if any) and the text without it
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export function stripBom(self: string): StripBomResult {
+  return self.startsWith('\uFEFF')
+    ? { bom: '\uFEFF', text: self.slice(1) }
+    : { bom: '', text: self }
 }
 
-function countOccurrences(content: string, oldText: string): number {
-  const fuzzyContent = normalizeForFuzzyMatch(content)
+function countOccurrences(self: string, oldText: string): number {
+  const fuzzyContent = normalizeForFuzzyMatch(self)
   const fuzzyOldText = normalizeForFuzzyMatch(oldText)
   if (fuzzyOldText.length === 0) return 0
   let count = 0
@@ -352,8 +455,8 @@ function getNoChangeError(path: string, totalEdits: number): EditError {
  * overlays those line-level changes onto the original content so unchanged line
  * blocks keep their original bytes.
  */
-export function applyEditsToNormalizedContent(
-  normalizedContent: string,
+function applyEditsToNormalizedContentImpl(
+  self: string,
   edits: ReadonlyArray<Edit>,
   path: string,
 ): Result.Result<AppliedEditsResult, EditError> {
@@ -366,24 +469,20 @@ export function applyEditsToNormalizedContent(
     }))
 
     for (let i = 0; i < normalizedEdits.length; i++) {
-      if (normalizeForFuzzyMatch(at(normalizedEdits, i).oldText).length === 0) {
+      if (normalizeForFuzzyMatch(atUnsafe(normalizedEdits, i).oldText).length === 0) {
         return yield* Result.fail(getEmptyOldTextError(path, i, normalizedEdits.length))
       }
     }
 
-    const initialMatches = normalizedEdits.map((edit) =>
-      fuzzyFindText(normalizedContent, edit.oldText),
-    )
+    const initialMatches = normalizedEdits.map((edit) => fuzzyFindText(self, edit.oldText))
     const usedFuzzyMatch = initialMatches.some(
       (match) => Option.isSome(match) && match.value.usedFuzzyMatch,
     )
-    const replacementBaseContent = usedFuzzyMatch
-      ? normalizeForFuzzyMatch(normalizedContent)
-      : normalizedContent
+    const replacementBaseContent = usedFuzzyMatch ? normalizeForFuzzyMatch(self) : self
 
-    const matchedEdits: MatchedEdit[] = []
+    const matchedEdits: Array<MatchedEdit> = []
     for (let i = 0; i < normalizedEdits.length; i++) {
-      const edit = at(normalizedEdits, i)
+      const edit = atUnsafe(normalizedEdits, i)
       const matchResult = fuzzyFindText(replacementBaseContent, edit.oldText)
       if (Option.isNone(matchResult)) {
         return yield* Result.fail(getNotFoundError(path, i, normalizedEdits.length))
@@ -402,10 +501,11 @@ export function applyEditsToNormalizedContent(
       })
     }
 
-    matchedEdits.sort((a, b) => a.matchIndex - b.matchIndex)
+    // effect-review-allow P1-order-equivalence-params: matchedEdits is a locally owned buffer; in-place sorting retains ascending matchIndex and stable ties.
+    matchedEdits.sort(replacementOrder)
     for (let i = 1; i < matchedEdits.length; i++) {
-      const previous = at(matchedEdits, i - 1)
-      const current = at(matchedEdits, i)
+      const previous = atUnsafe(matchedEdits, i - 1)
+      const current = atUnsafe(matchedEdits, i)
       if (previous.matchIndex + previous.matchLength > current.matchIndex) {
         return yield* Result.fail(
           editError(
@@ -416,13 +516,9 @@ export function applyEditsToNormalizedContent(
       }
     }
 
-    const baseContent = normalizedContent
+    const baseContent = self
     const newContent = usedFuzzyMatch
-      ? yield* applyReplacementsPreservingUnchangedLines(
-          normalizedContent,
-          replacementBaseContent,
-          matchedEdits,
-        )
+      ? yield* applyReplacementsPreservingUnchangedLines(self, replacementBaseContent, matchedEdits)
       : applyReplacements(replacementBaseContent, matchedEdits)
 
     if (baseContent === newContent) {
@@ -432,17 +528,44 @@ export function applyEditsToNormalizedContent(
     return { baseContent, newContent }
   })
 }
+/**
+ * Validates disjoint original-content matches and applies replacements in reverse offset order.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const applyEditsToNormalizedContent: {
+  (
+    edits: ReadonlyArray<Edit>,
+    path: string,
+  ): (self: string) => Result.Result<AppliedEditsResult, EditError>
+  (
+    self: string,
+    edits: ReadonlyArray<Edit>,
+    path: string,
+  ): Result.Result<AppliedEditsResult, EditError>
+} = dual(3, (self: string, edits: ReadonlyArray<Edit>, path: string) =>
+  Result.try({
+    try: () => applyEditsToNormalizedContentImpl(self, edits, path),
+    catch: diffFailure,
+  }).pipe(Result.flatMap(identity)),
+)
 
-/** Generate a standard unified patch. */
+/**
+ * Generates a standard unified patch.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export function generateUnifiedPatch(
   path: string,
   oldContent: string,
   newContent: string,
   contextLines = 4,
 ): string {
-  return Diff.createTwoFilesPatch(path, path, oldContent, newContent, undefined, undefined, {
+  return diff.createTwoFilesPatch(path, path, oldContent, newContent, undefined, undefined, {
     context: contextLines,
-    headerOptions: Diff.FILE_HEADERS_ONLY,
+    headerOptions: diff.FILE_HEADERS_ONLY,
   })
 }
 
@@ -450,15 +573,15 @@ export function generateUnifiedPatch(
  * Generate a display-oriented diff string with line numbers and context.
  * Returns both the diff string and the first changed line number (in the new file).
  */
-export function generateDiffString(
-  oldContent: string,
+function generateDiffStringImpl(
+  self: string,
   newContent: string,
   contextLines = 4,
-): { diff: string; firstChangedLine: number | undefined } {
-  const parts = Diff.diffLines(oldContent, newContent)
-  const output: string[] = []
+): DiffStringResult {
+  const parts = diff.diffLines(self, newContent)
+  const output: Array<string> = []
 
-  const oldLines = oldContent.split('\n')
+  const oldLines = self.split('\n')
   const newLines = newContent.split('\n')
   const maxLineNum = Math.max(oldLines.length, newLines.length)
   const lineNumWidth = String(maxLineNum).length
@@ -469,7 +592,7 @@ export function generateDiffString(
   let firstChangedLine: number | undefined
 
   for (let i = 0; i < parts.length; i++) {
-    const part = at(parts, i)
+    const part = atUnsafe(parts, i)
     const raw = part.value.split('\n')
     if (raw[raw.length - 1] === '') {
       raw.pop()
@@ -498,7 +621,7 @@ export function generateDiffString(
     } else {
       // Context lines - only show a few before/after changes
       const nextPartIsChange =
-        i < parts.length - 1 && (at(parts, i + 1).added || at(parts, i + 1).removed)
+        i < parts.length - 1 && (atUnsafe(parts, i + 1).added || atUnsafe(parts, i + 1).removed)
       const hasLeadingChange = lastWasChange
       const hasTrailingChange = nextPartIsChange
 
@@ -574,4 +697,123 @@ export function generateDiffString(
   }
 
   return { diff: output.join('\n'), firstChangedLine }
+}
+/**
+ * Formats a display diff with line numbers and the first changed line.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const generateDiffString: {
+  (newContent: string, contextLines?: number): (self: string) => DiffStringResult
+  (self: string, newContent: string, contextLines?: number): DiffStringResult
+} = dual((args) => typeof args[1] === 'string', generateDiffStringImpl)
+
+/**
+ * Applies normalized replacements while retaining unchanged original line bytes. This synchronous operation can throw.
+ *
+ * @category unsafe
+ * @since 0.0.0
+ */
+export const applyReplacementsPreservingUnchangedLinesUnsafe: {
+  (baseContent: string, replacements: ReadonlyArray<TextReplacement>): (self: string) => string
+  (self: string, baseContent: string, replacements: ReadonlyArray<TextReplacement>): string
+} = dual(
+  3,
+  (self: string, baseContent: string, replacements: ReadonlyArray<TextReplacement>): string =>
+    Result.getOrThrow(applyReplacementsPreservingUnchangedLines(self, baseContent, replacements)),
+)
+/**
+ * Validates disjoint original-content matches and applies replacements in reverse offset order. This synchronous operation can throw.
+ *
+ * @category unsafe
+ * @since 0.0.0
+ */
+export const applyEditsToNormalizedContentUnsafe: {
+  (edits: ReadonlyArray<Edit>, path: string): (self: string) => AppliedEditsResult
+  (self: string, edits: ReadonlyArray<Edit>, path: string): AppliedEditsResult
+} = dual(3, (self: string, edits: ReadonlyArray<Edit>, path: string): AppliedEditsResult =>
+  Result.getOrThrow(applyEditsToNormalizedContent(self, edits, path)),
+)
+
+const replacementOrder = Order.mapInput(Order.Number, (self: TextReplacement) => self.matchIndex)
+
+const diffFailure = (cause: unknown): EditError =>
+  cause instanceof EditError
+    ? cause
+    : new EditError({ code: 'range', message: Serialization.errorText(cause), cause })
+function getReplacementLineRangeUnsafe(
+  self: ReadonlyArray<LineSpan>,
+  replacement: TextReplacement,
+): { readonly startLine: number; readonly endLine: number } {
+  return Result.getOrThrow(getReplacementLineRangeImpl(self, replacement))
+}
+const getReplacementLineRange = (
+  self: ReadonlyArray<LineSpan>,
+  replacement: TextReplacement,
+): Result.Result<{ readonly startLine: number; readonly endLine: number }, EditError> =>
+  Result.try({ try: () => getReplacementLineRangeUnsafe(self, replacement), catch: diffFailure })
+
+/**
+ * Initial byte-order mark and remaining text.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type StripBomResult = stripBom.Result
+/**
+ * Display diff and the first modified source line when present.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type DiffStringResult = generateDiffString.Result
+
+/**
+ * Restores LF text to the selected newline convention.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const restoreLineEndings: {
+  (ending: '\r\n' | '\n'): (self: string) => string
+  (self: string, ending: '\r\n' | '\n'): string
+} = dual(2, restoreLineEndingsImpl)
+
+/**
+ * Type contracts owned by stripBom.
+ *
+ * @category utility types
+ * @since 0.0.0
+ */
+export declare namespace stripBom {
+  /**
+   * Type contract for stripBom.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface Result {
+    readonly bom: string
+    readonly text: string
+  }
+}
+
+/**
+ * Type contracts owned by generateDiffString.
+ *
+ * @category utility types
+ * @since 0.0.0
+ */
+export declare namespace generateDiffString {
+  /**
+   * Type contract for generateDiffString.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface Result {
+    readonly diff: string
+    readonly firstChangedLine: number | undefined
+  }
 }

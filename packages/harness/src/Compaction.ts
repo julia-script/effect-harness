@@ -1,6 +1,13 @@
-import * as Array from 'effect/Array'
+/**
+ * Conversation cut selection and native summarization prompts.
+ *
+ * @since 0.0.0
+ */
+import { constant } from 'effect/Function'
+import { dual } from 'effect/Function'
+import * as Arr from 'effect/Array'
 // Cut selection/serialization adapted from pi-durable (MIT), pinned 636703a0.
-import * as AiPrompt from 'effect/ai/Prompt'
+import * as Prompt from 'effect/ai/Prompt'
 import * as Result from 'effect/Result'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
@@ -9,62 +16,87 @@ import type * as Agent from './Agent.ts'
 import * as Context from './Context.ts'
 import * as Serialization from './Serialization.ts'
 
-export function selectCut(
-  view: Context.View,
+function selectCutImpl(
+  self: Context.View,
   keepRecentTokens: number,
   tokenize = Context.estimateMessage,
 ): Option.Option<number> {
-  const start = view.head === undefined ? 0 : 1
-  const candidates: number[] = []
-  for (let index = start; index < view.contributions.length; index++)
-    if (candidate(view.contributions, index)) candidates.push(index)
+  const start = self.head === undefined ? 0 : 1
+  const candidates: Array<number> = []
+  for (let index = start; index < self.contributions.length; index++)
+    if (candidate(self.contributions, index)) candidates.push(index)
   let kept = 0
   let cut = Option.none<number>()
-  for (let index = view.contributions.length - 1; index >= start; index--) {
-    kept += Option.getOrElse(Array.get(view.contributions, index), () => []).reduce(
+  for (let index = self.contributions.length - 1; index >= start; index--) {
+    kept += Option.getOrElse(Arr.get(self.contributions, index), () => []).reduce(
       (sum, message) => sum + tokenize(message),
       0,
     )
     if (kept < keepRecentTokens) continue
-    cut = Array.findFirst(candidates, (value) => value >= index).pipe(
-      Option.orElse(() => Array.last(candidates)),
+    cut = Arr.findFirst(candidates, (value) => value >= index).pipe(
+      Option.orElse(() => Arr.last(candidates)),
     )
     break
   }
-  if (Option.isNone(cut)) return cut
-  for (let index = start; index < cut.value; index++)
-    if (
-      Option.getOrElse(
-        Option.map(Array.get(view.contributions, index), (value) => value.length),
-        () => 0,
-      ) > 0
-    )
-      return cut
-  return Option.none()
+  return Option.flatMap(cut, (value) => {
+    for (let index = start; index < value; index++)
+      if (
+        Option.getOrElse(
+          Option.map(Arr.get(self.contributions, index), (self) => self.length),
+          constant(0),
+        ) > 0
+      )
+        return cut
+    return Option.none()
+  })
 }
-function candidate(contributions: Context.View['contributions'], index: number): boolean {
-  const first = Array.get(contributions, index).pipe(Option.flatMap(Array.head))
-  if (Option.isSome(first) && first.value.role === 'assistant') return true
-  if (Option.isNone(first) || first.value.role !== 'user') return false
+/**
+ * Selects a safe conversation boundary while retaining the requested token budget.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const selectCut: {
+  (
+    keepRecentTokens: number,
+    tokenize?: (message: import('effect/ai/Prompt').Message) => number,
+  ): (self: Context.View) => Option.Option<number>
+  (
+    self: Context.View,
+    keepRecentTokens: number,
+    tokenize?: (message: import('effect/ai/Prompt').Message) => number,
+  ): Option.Option<number>
+} = dual(
+  (args) => args[0] != null && typeof args[0] === 'object' && 'contributions' in args[0],
+  selectCutImpl,
+)
+function candidate(self: Context.View['contributions'], index: number): boolean {
+  const first = Arr.get(self, index).pipe(Option.flatMap(Arr.head))
+  const role = Option.map(first, (self) => self.role)
+  if (Option.contains(role, 'assistant')) return true
+  if (!Option.contains(role, 'user')) return false
   let calls = new Set<string>()
   for (let before = index - 1; before >= 0; before--) {
-    const assistant = Array.get(contributions, before).pipe(
+    const assistant = Arr.get(self, before).pipe(
       Option.flatMap((messages) =>
-        Array.findLast(messages, (message) => message.role === 'assistant'),
+        Arr.findLast(messages, (message) => message.role === 'assistant'),
       ),
     )
-    if (Option.isNone(assistant) || assistant.value.role !== 'assistant') continue
-    calls = new Set(
-      assistant.value.content.flatMap((part) => (part.type === 'tool-call' ? [part.id] : [])),
-    )
+    if (Option.isNone(assistant)) continue
+    calls = Option.match(assistant, {
+      onNone: () => new Set<string>(),
+      onSome: (self) =>
+        new Set(
+          Arr.filterMap(self.content, (part) =>
+            part.type === 'tool-call' ? Result.succeed(part.id) : Result.failVoid,
+          ),
+        ),
+    })
     break
   }
   if (calls.size === 0) return true
-  for (let after = index; after < contributions.length; after++)
-    for (const [position, message] of Option.getOrElse(
-      Array.get(contributions, after),
-      () => [],
-    ).entries()) {
+  for (let after = index; after < self.length; after++)
+    for (const [position, message] of Option.getOrElse(Arr.get(self, after), () => []).entries()) {
       if (message.role === 'assistant' && (after > index || position > 0)) return true
       if (
         message.role === 'tool' &&
@@ -75,39 +107,73 @@ function candidate(contributions: Context.View['contributions'], index: number):
   return true
 }
 
-export const summarizedMessages = (
-  view: Context.View,
-  cut: number,
-): ReadonlyArray<AiPrompt.Message> =>
-  Context.orderToolResults(view.contributions.slice(0, cut).flat())
-export function threshold(
-  tokens: number,
+const summarizedMessagesImpl = (self: Context.View, cut: number): Array<Prompt.Message> =>
+  Context.orderToolResults(Arr.flatten(self.contributions.slice(0, cut)))
+/**
+ * Returns call-ordered native messages before the selected cut.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const summarizedMessages: {
+  (cut: number): (self: Context.View) => Array<Prompt.Message>
+  (self: Context.View, cut: number): Array<Prompt.Message>
+} = dual(2, summarizedMessagesImpl)
+function thresholdImpl(
+  self: number,
   contextWindow: number,
   policy: Agent.CompactionPolicy,
 ): Option.Option<'blocking' | 'background'> {
   if (!policy.enabled || contextWindow <= 0) return Option.none()
-  if (tokens > contextWindow - policy.reserveTokens) return Option.some('blocking')
+  if (self > contextWindow - policy.reserveTokens) return Option.some('blocking')
   return policy.backgroundTokens !== 0 &&
-    tokens > contextWindow - policy.reserveTokens - policy.backgroundTokens
+    self > contextWindow - policy.reserveTokens - policy.backgroundTokens
     ? Option.some('background')
     : Option.none()
 }
-export function serializeConversation(messages: ReadonlyArray<AiPrompt.Message>): string {
-  const lines: string[] = []
-  for (const message of messages) {
+/**
+ * Classifies a context estimate against blocking and background compaction thresholds.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const threshold: {
+  (
+    contextWindow: number,
+    policy: Agent.CompactionPolicy,
+  ): (self: number) => Option.Option<'blocking' | 'background'>
+  (
+    self: number,
+    contextWindow: number,
+    policy: Agent.CompactionPolicy,
+  ): Option.Option<'blocking' | 'background'>
+} = dual(3, thresholdImpl)
+/**
+ * Formats a native conversation for the summarization model.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export function serializeConversation(self: ReadonlyArray<Prompt.Message>): string {
+  const lines: Array<string> = []
+  for (const message of self) {
     if (message.role === 'system') continue
     if (message.role === 'user') {
-      const text = message.content
-        .flatMap((part) => (part.type === 'text' ? [part.text] : []))
-        .join('\n')
+      const text = Arr.filterMap(message.content, (part) =>
+        part.type === 'text' ? Result.succeed(part.text) : Result.failVoid,
+      ).join('\n')
       if (text !== '') lines.push(`[User]: ${text}`)
     } else if (message.role === 'assistant') {
-      const text = message.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
-      const reasoning = message.content.flatMap((part) =>
-        part.type === 'reasoning' ? [part.text] : [],
+      const text = Arr.filterMap(message.content, (part) =>
+        part.type === 'text' ? Result.succeed(part.text) : Result.failVoid,
       )
-      const calls = message.content.flatMap((part) =>
-        part.type === 'tool-call' ? [`${part.name}(${serializeArgs(part.params)})`] : [],
+      const reasoning = Arr.filterMap(message.content, (part) =>
+        part.type === 'reasoning' ? Result.succeed(part.text) : Result.failVoid,
+      )
+      const calls = Arr.filterMap(message.content, (part) =>
+        part.type === 'tool-call'
+          ? Result.succeed(`${part.name}(${serializeArgs(part.params)})`)
+          : Result.failVoid,
       )
       if (reasoning.length > 0) lines.push(`[Assistant thinking]: ${reasoning.join('\n')}`)
       if (text.length > 0) lines.push(`[Assistant]: ${text.join('\n')}`)
@@ -124,13 +190,12 @@ export function serializeConversation(messages: ReadonlyArray<AiPrompt.Message>)
   }
   return lines.join('\n\n')
 }
-const jsonText = (value: unknown): string =>
-  Result.getOrElse(Serialization.stringify(value), () => Serialization.unencodable)
-function serializeArgs(params: unknown): string {
+const jsonText = (self: unknown): string =>
+  Result.getOrElse(Serialization.stringify(self), () => Serialization.unencodable)
+function serializeArgs(self: unknown): string {
   return Serialization.textOrMarker(() => {
-    if (params === null || typeof params !== 'object' || Array.isArray(params))
-      return jsonText(params)
-    return Object.entries(params)
+    if (self === null || typeof self !== 'object' || Arr.isArray(self)) return jsonText(self)
+    return Object.entries(self)
       .map(([key, value]) => `${key}=${jsonText(value)}`)
       .join(', ')
   })
@@ -141,22 +206,26 @@ const content = Schema.decodeUnknownOption(Content)
 const textBlock = Schema.decodeUnknownOption(
   Schema.Struct({ type: Schema.Literal('text'), text: Schema.String }),
 )
-function toolText(result: unknown): string {
+function toolText(self: unknown): string {
   return Serialization.textOrMarker(() => {
-    if (typeof result === 'string') return result
-    const known = envelope(result)
-    if (Option.isSome(known))
-      return known.value.content
-        .flatMap((part) => (part.type === 'text' ? [part.text] : []))
-        .join('\n')
-    const generic = content(result)
-    if (Option.isNone(generic)) return Serialization.display(result)
-    return generic.value.content
-      .flatMap((part) => {
-        const text = textBlock(part)
-        return Option.isSome(text) ? [text.value.text] : []
-      })
-      .join('\n')
+    if (typeof self === 'string') return self
+    return Option.match(envelope(self), {
+      onSome: (known) =>
+        Arr.filterMap(known.content, (part) =>
+          part.type === 'text' ? Result.succeed(part.text) : Result.failVoid,
+        ).join('\n'),
+      onNone: () =>
+        Option.match(content(self), {
+          onNone: () => Serialization.display(self),
+          onSome: (generic) =>
+            Arr.filterMap(generic.content, (part) =>
+              Option.match(textBlock(part), {
+                onNone: () => Result.failVoid,
+                onSome: (text) => Result.succeed(text.text),
+              }),
+            ).join('\n'),
+        }),
+    })
   })
 }
 
@@ -164,23 +233,39 @@ const system =
   'You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.'
 const instructions =
   'The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work. If the conversation starts with an earlier summary, preserve its information and fold the newer messages into it.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or "(none)" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or "(none)" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.'
-export function prompt(messages: ReadonlyArray<AiPrompt.Message>, focus?: string): AiPrompt.Prompt {
-  return AiPrompt.fromMessages([
-    AiPrompt.systemMessage({ content: system }),
-    AiPrompt.userMessage({
+function promptImpl(self: ReadonlyArray<Prompt.Message>, focus?: string): Prompt.Prompt {
+  return Prompt.fromMessages([
+    Prompt.systemMessage({ content: system }),
+    Prompt.userMessage({
       content: [
-        AiPrompt.textPart({
-          text: `<conversation>\n${serializeConversation(messages)}\n</conversation>\n\n${instructions}${focus === undefined ? '' : `\n\nAdditional focus: ${focus}`}`,
+        Prompt.textPart({
+          text: `<conversation>\n${serializeConversation(self)}\n</conversation>\n\n${instructions}${focus === undefined ? '' : `\n\nAdditional focus: ${focus}`}`,
         }),
       ],
     }),
   ])
 }
-export const summaryMessage = (summary: string): AiPrompt.UserMessage =>
-  AiPrompt.userMessage({
+/**
+ * Creates the native summarization prompt with optional additional focus.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const prompt: {
+  (focus?: string): (self: ReadonlyArray<Prompt.Message>) => Prompt.Prompt
+  (self: ReadonlyArray<Prompt.Message>, focus?: string): Prompt.Prompt
+} = dual((args) => Array.isArray(args[0]), promptImpl)
+/**
+ * Creates a native user message containing a completed context summary.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const summaryMessage = (self: string): Prompt.UserMessage =>
+  Prompt.userMessage({
     content: [
-      AiPrompt.textPart({
-        text: `The conversation history before this point was compacted into the following summary:\n\n<summary>\n${summary}\n</summary>`,
+      Prompt.textPart({
+        text: `The conversation history before this point was compacted into the following summary:\n\n<summary>\n${self}\n</summary>`,
       }),
     ],
   })

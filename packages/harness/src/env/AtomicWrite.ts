@@ -1,3 +1,8 @@
+/**
+ * Atomic native file replacement with canonical destinations and settled writes.
+ *
+ * @since 0.0.0
+ */
 import * as Effect from 'effect/Effect'
 import type * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
@@ -7,7 +12,12 @@ import * as Random from 'effect/Random'
 import * as Serialization from '../Serialization.ts'
 import { FileError, fromPlatform, type NativeFiles, FileNotSupported, fileReason } from '../Env.ts'
 
-/** Replace a regular file after its sibling staging file has been written and synced. */
+/**
+ * Replaces a regular file after its sibling staging file has been written and synced.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const write = Effect.fnUntraced(function* (
   fs: FileSystem.FileSystem,
   path: Path.Path,

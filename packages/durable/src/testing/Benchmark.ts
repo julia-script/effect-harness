@@ -1,3 +1,9 @@
+/**
+ * Deterministic storage workloads and benchmark reports.
+ *
+ * @since 0.0.0
+ */
+import { constant } from 'effect/Function'
 import * as Option from 'effect/Option'
 import { validate } from '../storage/internal/state.ts'
 import * as Effect from 'effect/Effect'
@@ -7,16 +13,34 @@ import type { Service, Transaction } from '../Session.ts'
 import { Store } from '../Store.ts'
 import { rejected, type StorageError } from '../StorageError.ts'
 
+/**
+ * Scale contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Scale {
   readonly name: string
   readonly entryCount: number
   readonly taskCount: number
   readonly documentCount: number
 }
+/**
+ * In-memory benchmark workload sizes.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const STORAGE_MEMORY_SCALES: ReadonlyArray<Scale> = [
   { name: '1k', entryCount: 1000, taskCount: 200, documentCount: 200 },
   { name: '10k', entryCount: 10000, taskCount: 2000, documentCount: 2000 },
 ]
+/**
+ * Timing benchmark workload size.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const TIMING_SCALE: Scale = {
   name: 'timing',
   entryCount: 1000,
@@ -24,6 +48,12 @@ export const TIMING_SCALE: Scale = {
   documentCount: 300,
 }
 const TAILS = [0, 16, 128, 1024] as const
+/**
+ * Dataset contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Dataset {
   readonly firstEntryId: Record.EntryId
   readonly filteredTaskCount: number
@@ -36,6 +66,12 @@ export interface Dataset {
   readonly deepestConversationId: Record.ConversationId
   readonly ancestorHeadEntryId: Record.EntryId
 }
+/**
+ * Returns the number of primary records in a benchmark scale.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const storageBenchmarkPrimaryRecordCount = (scale: Scale): number =>
   1 + scale.entryCount + scale.taskCount + scale.documentCount + TAILS.length + 1 + 8 * 33
 const task = (id: Record.TaskId, index: number): Record.Task => {
@@ -72,9 +108,10 @@ const delta = (session: Service, id: Record.DocumentId, count: number) =>
   session.transaction((tx) =>
     tx
       .write({
+        _tag: 'document.change',
         type: 'document.change',
         id,
-        content: { kind: 'delta', version: 1, ops: [['set', ['count'], count]] },
+        content: { _tag: 'delta', kind: 'delta', version: 1, ops: [['set', ['count'], count]] },
       })
       .pipe(Effect.as(null)),
   )
@@ -86,13 +123,19 @@ const creation = Effect.fnUntraced(function* (
 ) {
   const id = yield* tx.mint(Record.DocumentId)
   yield* tx.write({
+    _tag: 'document.create',
     type: 'document.create',
     record: { id, kind, scope, ...extra },
-    content: { kind: 'base', version: 1, value: { count: 0 } },
+    content: { _tag: 'base', kind: 'base', version: 1, value: { count: 0 } },
   })
   return id
 })
-/** Seeds exact lookups, filtered scans, long replay tails, old bases and deep fork ancestry. */
+/**
+ * Seeds exact lookups, filtered scans, long replay tails, old bases and deep fork ancestry.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const seedStorageBenchmark = Effect.fnUntraced(function* (
   scale: Scale = TIMING_SCALE,
 ): Effect.fn.Return<Dataset, StorageError, Session | Store> {
@@ -117,7 +160,7 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
       Effect.fnUntraced(function* (tx) {
         for (let index = start; index < Math.min(start + 100, scale.taskCount); index++) {
           const id = yield* tx.mint(Record.TaskId)
-          yield* tx.write({ type: 'task', value: task(id, index) })
+          yield* tx.write({ _tag: 'task', type: 'task', value: task(id, index) })
         }
         return null
       }),
@@ -132,7 +175,7 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
             last = yield* creation(
               tx,
               'benchmark.family',
-              { kind: 'session' },
+              { _tag: 'session', kind: 'session' },
               { key: `key-${index}` },
             )
           return last ?? 0
@@ -147,7 +190,7 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
   const replayDocumentIds = new Map<number, Record.DocumentId>()
   for (const tail of TAILS) {
     const id = yield* session.transaction((tx) =>
-      creation(tx, `benchmark.replay.${tail}`, { kind: 'session' }),
+      creation(tx, `benchmark.replay.${tail}`, { _tag: 'session', kind: 'session' }),
     )
     replayDocumentIds.set(tail, id)
     for (let count = 1; count <= tail; count++) yield* delta(session, id, count)
@@ -156,7 +199,7 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
     creation(
       tx,
       'benchmark.history',
-      { kind: 'conversation', conversationId: Record.ROOT_CONVERSATION_ID },
+      { _tag: 'conversation', kind: 'conversation', conversationId: Record.ROOT_CONVERSATION_ID },
       { history: 'rewindable', fork: 'asOf' },
     ),
   )
@@ -165,9 +208,10 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
   yield* session.transaction((tx) =>
     tx
       .write({
+        _tag: 'document.change',
         type: 'document.change',
         id: historicalDocumentId,
-        content: { kind: 'base', version: 1, value: { count: 128 } },
+        content: { _tag: 'base', kind: 'base', version: 1, value: { count: 128 } },
       })
       .pipe(Effect.as(null)),
   )
@@ -182,6 +226,7 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
       Effect.fnUntraced(function* (tx) {
         const id = yield* tx.mint(Record.ConversationId)
         yield* tx.write({
+          _tag: 'conversation',
           type: 'conversation',
           value: { id, parent: { conversationId: parent, at: cutoff } },
         })
@@ -205,11 +250,23 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
     ancestorHeadEntryId: firstEntryId,
   }
 })
+/**
+ * ReadBenchmark contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface ReadBenchmark {
   readonly name: string
   readonly run: (dataset: Dataset) => Effect.Effect<number, StorageError, Session>
   readonly expected: (dataset: Dataset) => number
 }
+/**
+ * Committed storage read benchmark definitions.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
   {
     name: 'exact entry lookup',
@@ -234,7 +291,7 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
           .scanEntries({ conversationId: Record.ROOT_CONVERSATION_ID }, 100)
           .pipe(Effect.map((p) => p.items.length)),
       ),
-    expected: () => 100,
+    expected: constant(100),
   },
   {
     name: 'filtered task scan (50)',
@@ -254,7 +311,7 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
           .findDocument({
             kind: 'benchmark.family',
             key: d.exactDocumentKey,
-            scope: { kind: 'session' },
+            scope: { _tag: 'session', kind: 'session' },
           })
           .pipe(
             Effect.map((record) =>
@@ -285,7 +342,7 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
             ),
         })
       }),
-    expected: () => tail,
+    expected: constant(tail),
   })),
   {
     name: 'ancient historical read before newer base',
@@ -300,7 +357,7 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
           ),
         ),
       ),
-    expected: () => 128,
+    expected: constant(128),
   },
   {
     name: 'recent historical read after newer base',
@@ -315,7 +372,7 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
           ),
         ),
       ),
-    expected: () => 256,
+    expected: constant(256),
   },
   {
     name: 'fork-depth history scan (100)',
@@ -325,7 +382,7 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
           .scanEntries({ conversationId: d.deepestConversationId }, 100)
           .pipe(Effect.map((p) => p.items.length)),
       ),
-    expected: () => 100,
+    expected: constant(100),
   },
   {
     name: 'fork-depth head lookup',
@@ -345,11 +402,23 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
     expected: (d) => d.ancestorHeadEntryId,
   },
 ]
+/**
+ * WriteBenchmark contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface WriteBenchmark {
   readonly name: string
   readonly expected: number
   readonly run: Effect.Effect<number, StorageError, Session>
 }
+/**
+ * Seeds the controlled records required by a write benchmark.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const seedStorageWriteBenchmark = Session.use((session) =>
   session
     .root()
@@ -358,6 +427,12 @@ export const seedStorageWriteBenchmark = Session.use((session) =>
       Effect.asVoid,
     ),
 )
+/**
+ * Transactional storage write benchmark definitions.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const STORAGE_WRITE_BENCHMARKS: ReadonlyArray<WriteBenchmark> = [
   ...[1, 100].map((count) => ({
     name: `commit ${count} ${count === 1 ? 'entry' : 'entries'}`,
@@ -378,14 +453,20 @@ export const STORAGE_WRITE_BENCHMARKS: ReadonlyArray<WriteBenchmark> = [
             kind: 'benchmark.mixed',
           })
           const id = yield* tx.mint(Record.TaskId)
-          yield* tx.write({ type: 'task', value: task(id, id) })
+          yield* tx.write({ _tag: 'task', type: 'task', value: task(id, id) })
           yield* tx.createSubmission({
+            _tag: 'WriteDone' as const,
             conversationId: Record.ROOT_CONVERSATION_ID,
             type: 'write',
             status: 'done',
             entry: entry.id,
           })
-          yield* creation(tx, 'benchmark.mixed', { kind: 'session' }, { key: String(id) })
+          yield* creation(
+            tx,
+            'benchmark.mixed',
+            { _tag: 'session', kind: 'session' },
+            { key: String(id) },
+          )
           return 4
         }),
       ),

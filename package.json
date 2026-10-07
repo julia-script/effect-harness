@@ -21,7 +21,7 @@
     "check": "oxfmt --check . && oxlint --disable-nested-config . && bun run typecheck && bun run typetest",
     "check:write": "oxfmt --write . && oxlint --disable-nested-config --fix .",
     "prepare": "effect-tsgo patch --oxlint",
-    "test": "turbo run test"
+    "test": "turbo run test --concurrency=1"
   },
   "devDependencies": {
     "@effect/platform-bun": "4.0.1",

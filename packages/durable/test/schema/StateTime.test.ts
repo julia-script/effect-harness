@@ -14,18 +14,18 @@ import * as SchemaGetter from 'effect/SchemaGetter'
 import * as SqlClient from 'effect/sql/SqlClient'
 import * as Option from 'effect/Option'
 import * as Context from 'effect/Context'
-import * as Document from '../../src/Document.ts'
-import * as Entry from '../../src/Entry.ts'
-import * as Event from '../../src/Event.ts'
-import * as Inbox from '../../src/Inbox.ts'
-import * as Record from '../../src/Record.ts'
-import * as Session from '../../src/Session.ts'
-import * as Conversation from '../../src/Conversation.ts'
-import * as Store from '../../src/Store.ts'
-import * as Memory from '../../src/storage/Memory.ts'
-import * as Sqlite from '../../src/storage/Sqlite.ts'
+import * as Document from '@effect-harness/durable/Document'
+import * as Entry from '@effect-harness/durable/Entry'
+import * as Event from '@effect-harness/durable/Event'
+import * as Inbox from '@effect-harness/durable/Inbox'
+import * as Record from '@effect-harness/durable/Record'
+import * as Session from '@effect-harness/durable/Session'
+import * as Conversation from '@effect-harness/durable/Conversation'
+import * as Store from '@effect-harness/durable/Store'
+import * as Memory from '@effect-harness/durable/storage/Memory'
+import * as Sqlite from '@effect-harness/durable/storage/SqliteStore'
 import * as TestClock from 'effect/testing/TestClock'
-import { remaining } from '../../src/workflow/ModelRetry.ts'
+import { remaining } from '@effect-harness/durable/workflow/ModelRetry'
 
 const counter = Document.defineUnsafe({
   kind: 'counter',
@@ -39,7 +39,7 @@ const old = (id: number, count: number): Document.Snapshot =>
     record: {
       id: Record.DocumentId.make(id),
       kind: 'migrated',
-      scope: { kind: 'session' },
+      scope: { _tag: 'session' as const, kind: 'session' },
       createdAt: Record.Seq.make(1),
     },
     version: 1,
@@ -47,7 +47,7 @@ const old = (id: number, count: number): Document.Snapshot =>
     deltasSinceBase: 0,
   })
 
-describe('owned state, time and read boundaries', () => {
+describe('StateTime', () => {
   it.effect('waits only the remaining span of an unchanged fractional cached deadline', () =>
     Effect.gen(function* () {
       const deadline = Time.fromEpochMillis(1000.5)
@@ -150,7 +150,7 @@ describe('owned state, time and read boundaries', () => {
         )
         assert.strictEqual((yield* Document.typed(token, old(2, 1), cache)).value.count, 2)
         assert.strictEqual(calls, 2)
-        yield* Document.typed({ ...token }, old(2, 1), cache)
+        yield* Document.typed(Document.defineUnsafe({ ...token.definition }), old(2, 1), cache)
         assert.strictEqual(calls, 3)
       }),
   )
@@ -201,7 +201,7 @@ describe('owned state, time and read boundaries', () => {
           yield* tx.doc(counter)
         }),
       )
-      const incompatible = { ...counter, definition: { ...counter.definition, version: 2 } }
+      const incompatible = Document.defineUnsafe({ ...counter.definition, version: 2 })
       const results = yield* Effect.all(
         [
           session.snapshot(counter).pipe(Effect.map(Option.getOrUndefined), Effect.result),
@@ -302,7 +302,7 @@ describe('owned state, time and read boundaries', () => {
           yield* Deferred.make<
             Fiber.Fiber<
               Document.Snapshot<{ readonly count: number }> | undefined,
-              import('../../src/StorageError.ts').StorageError
+              import('@effect-harness/durable/StorageError').StorageError
             >
           >()
         yield* sql
@@ -390,10 +390,18 @@ describe('owned state, time and read boundaries', () => {
           const result = yield* Effect.all(
             [
               tx
-                .write({ type: 'task', value: { ...task, state: { status: 'terminal' } } })
+                .write({
+                  _tag: 'task' as const,
+                  type: 'task',
+                  value: { ...task, state: { status: 'terminal' } },
+                })
                 .pipe(Effect.result),
               tx
-                .write({ type: 'task', value: { ...task, state: { status: 'running' } } })
+                .write({
+                  _tag: 'task' as const,
+                  type: 'task',
+                  value: { ...task, state: { status: 'running' } },
+                })
                 .pipe(Effect.result),
             ],
             { concurrency: 2 },

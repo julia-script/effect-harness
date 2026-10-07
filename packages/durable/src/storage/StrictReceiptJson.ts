@@ -1,3 +1,8 @@
+/**
+ * Descriptor-based JSON validation for durable receipt values.
+ *
+ * @since 0.0.0
+ */
 import * as Effect from 'effect/Effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
@@ -65,11 +70,22 @@ const policy = Schema.makeFilter<unknown>((input) => {
   const result = inspect(input)
   return Result.isFailure(result) ? result.failure : undefined
 })
-/** Policy runs on Unknown before Json; Json sees only descriptor-copied data, never source getters. */
+/**
+ * Policy runs on Unknown before Json; Json sees only descriptor-copied data, never source getters.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const StrictReceiptJson = Schema.Unknown.check(policy).pipe(
   Schema.decodeTo(Schema.Json, {
     decode: SchemaGetter.transformEffect((input) => Effect.fromResult(inspect(input))),
     encode: SchemaGetter.transform((input) => input),
   }),
 )
+/**
+ * StrictReceiptJson contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type StrictReceiptJson = typeof StrictReceiptJson.Type

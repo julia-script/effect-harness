@@ -1,3 +1,8 @@
+/**
+ * Scoped Claude Code child-process transport and account admission policy.
+ *
+ * @since 0.0.0
+ */
 import * as Config from 'effect/Config'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -7,10 +12,16 @@ import * as Stream from 'effect/Stream'
 import type * as AiError from 'effect/ai/AiError'
 import * as ChildProcess from 'effect/process/ChildProcess'
 import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
-import { authentication, processError, protocol, unsupported } from './Error.ts'
+import { authentication, processError, protocol, unsupported } from './ClaudeCodeError.ts'
 import * as Protocol from './Protocol.ts'
 import * as Prompt from './Prompt.ts'
 
+/**
+ * Describes the Request contract.
+ *
+ * @category types
+ * @since 0.0.0
+ */
 export interface Request {
   readonly model: string
   readonly system: string
@@ -24,10 +35,22 @@ export interface Request {
   readonly effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined
   readonly mcp?: { readonly url: string; readonly aliases: ReadonlyArray<string> } | undefined
 }
+/**
+ * Describes the AccountStatus contract.
+ *
+ * @category types
+ * @since 0.0.0
+ */
 export interface AccountStatus {
   readonly loggedIn: boolean
   readonly account: boolean
 }
+/**
+ * Identifies the Cli service in the Effect context.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class Cli extends Context.Service<
   Cli,
   {
@@ -54,7 +77,12 @@ const clearedProviderEnvironment: Record<string, string | undefined> = {
   ENABLE_TOOL_SEARCH: 'false',
 }
 
-/** Portable process boundary; the application provides its native ChildProcessSpawner Layer. */
+/**
+ * Portable process boundary; the application provides its native ChildProcessSpawner Layer.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer = (options?: {
   readonly executable?: string | undefined
   readonly maxOutputBytes?: number | undefined
@@ -115,7 +143,7 @@ export const layer = (options?: {
             account: value.authMethod === 'claude.ai' && value.apiProvider === 'firstParty',
           }
         }),
-      )
+      ).pipe(Effect.withSpan('Cli.status'))
       return Cli.of({
         status,
         run: (request) =>
@@ -274,7 +302,12 @@ export const layer = (options?: {
     }),
   )
 
-/** Resolves all layer options through the caller's ConfigProvider. */
+/**
+ * Resolves all layer options through the caller's ConfigProvider.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
 ): Layer.Layer<

@@ -23,9 +23,14 @@
     "typetest": "cd ../.. && tstyche packages/provider-openai/typetest"
   },
   "dependencies": {
-    "@effect-harness/auth": "workspace:*",
-    "@effect-harness/harness": "workspace:*",
-    "@effect/ai-openai": "4.0.1",
+    "@effect-harness/auth": "workspace:^",
+    "@effect-harness/harness": "workspace:^",
+    "@effect/ai-openai": "4.0.1"
+  },
+  "devDependencies": {
     "effect": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "^4.0.1"
   }
 }

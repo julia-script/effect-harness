@@ -1,3 +1,8 @@
+/**
+ * Locked in-memory and protected-file credential transactions with scoped atomic persistence.
+ *
+ * @since 0.0.0
+ */
 import * as Arr from 'effect/Array'
 import * as Ref from 'effect/Ref'
 import * as Config from 'effect/Config'
@@ -21,20 +26,47 @@ import {
   Credential,
 } from './Credential.ts'
 
-export interface Service {
-  readonly get: (key: string) => Effect.Effect<Option.Option<Credential>, AuthError>
-  readonly list: Effect.Effect<ReadonlyArray<readonly [string, Credential]>, AuthError>
-  readonly set: (key: string, value: Credential) => Effect.Effect<void, AuthError>
-  readonly remove: (key: string) => Effect.Effect<void, AuthError>
-  readonly hostId: (provider: string) => Effect.Effect<string, AuthError>
-  /** Holds the per-store lock over read, callback and atomic replacement. Callback failure preserves credentials. */
-  readonly modify: <R>(
-    key: string,
-    update: (
-      current: Option.Option<Credential>,
-    ) => Effect.Effect<Credential | undefined, AuthError, R>,
-  ) => Effect.Effect<Credential | undefined, AuthError, R>
+/**
+ * Types owned by the CredentialStore concept.
+ *
+ * @category types
+ * @since 0.0.0
+ */
+export declare namespace CredentialStore {
+  /**
+   * Describes the Service contract.
+   *
+   * @category types
+   * @since 0.0.0
+   */
+  export interface Service {
+    readonly get: (key: string) => Effect.Effect<Option.Option<Credential>, AuthError>
+    readonly list: Effect.Effect<ReadonlyArray<readonly [string, Credential]>, AuthError>
+    readonly set: (key: string, value: Credential) => Effect.Effect<void, AuthError>
+    readonly remove: (key: string) => Effect.Effect<void, AuthError>
+    readonly hostId: (provider: string) => Effect.Effect<string, AuthError>
+    /** Holds the per-store lock over read, callback and atomic replacement. Callback failure preserves credentials. */
+    readonly modify: <R>(
+      key: string,
+      update: (
+        current: Option.Option<Credential>,
+      ) => Effect.Effect<Credential | undefined, AuthError, R>,
+    ) => Effect.Effect<Credential | undefined, AuthError, R>
+  }
 }
+/**
+ * Describes the Service contract.
+ *
+ * @category types
+ * @since 0.0.0
+ */
+export type Service = CredentialStore.Service
+/**
+ * Identifies the CredentialStore service in the Effect context.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class CredentialStore extends Context.Service<CredentialStore, Service>()(
   '@effect-harness/auth/CredentialStore',
 ) {}
@@ -82,6 +114,7 @@ const makeService = (
       get: (key) => read.pipe(Effect.map((snapshot) => find(snapshot, key))),
       list: read.pipe(
         Effect.map((snapshot) => snapshot.entries.map(({ key, value }) => [key, value] as const)),
+        Effect.withSpan('CredentialStore.list'),
       ),
       set: Effect.fnUntraced(function* (key, value) {
         const snapshot = yield* read
@@ -93,14 +126,25 @@ const makeService = (
       hostId: Effect.fnUntraced(function* (provider) {
         const snapshot = yield* read
         const existing = Arr.findFirst(snapshot.hosts, (host) => host.provider === provider)
-        if (Option.isSome(existing)) return existing.value.id
-        const id = `urn:uuid:${yield* uuid}`
-        yield* write({ ...snapshot, hosts: [...snapshot.hosts, { provider, id }] })
-        return id
+        return yield* Option.match(existing, {
+          onSome: (host) => Effect.succeed(host.id),
+          onNone: () =>
+            Effect.gen(function* () {
+              const id = `urn:uuid:${yield* uuid}`
+              yield* write({ ...snapshot, hosts: [...snapshot.hosts, { provider, id }] })
+              return id
+            }),
+        })
       }, lock),
     })
   })
 
+/**
+ * Provides CredentialStore services with the declared native dependencies.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerMemory: Layer.Layer<CredentialStore, never, Crypto.Crypto> = Layer.effect(
   CredentialStore,
 )(
@@ -117,7 +161,14 @@ export const layerMemory: Layer.Layer<CredentialStore, never, Crypto.Crypto> = L
   }),
 )
 
-/** A dedicated directory is required. A stale crash lock fails busy; it is never stolen from a live owner. */
+/**
+ * Creates a protected credential store in a dedicated private directory.
+ * **Details**
+ * A stale crash lock fails busy; it is never stolen from a live owner.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerProtectedFile = (options: {
   readonly path: string
   readonly lockRetries?: number | undefined
@@ -259,7 +310,12 @@ export const layerProtectedFile = (options: {
     }),
   )
 
-/** Resolves all layerProtectedFile options through the caller's ConfigProvider. */
+/**
+ * Resolves all layerProtectedFile options through the caller's ConfigProvider.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerProtectedFileConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layerProtectedFile>[0]>>,
 ): Layer.Layer<

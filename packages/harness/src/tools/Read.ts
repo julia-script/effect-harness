@@ -1,26 +1,51 @@
+/**
+ * Scoped text and image reading through portable Env capabilities.
+ *
+ * @since 0.0.0
+ */
 import * as Option from 'effect/Option'
 import * as DateTime from 'effect/DateTime'
-// Read selection/truncation adapted from pi-durable (MIT), pinned 636703a0; see ../LICENSE.pi.txt.
+// Read selection/truncation adapted from pi-durable (MIT), pinned 636703a0; see package NOTICE.
 import * as SchemaField from '../SchemaField.ts'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as AiTool from 'effect/ai/Tool'
+// effect-review-allow P9-namespace-alias-equals-module: effect/ai/Tool and ../Tool.ts both bind Tool; AiTool preserves the checked imported-name collision.
 import * as Prompt from 'effect/ai/Prompt'
 import { Env, type BinaryReader, type FileInfo } from '../Env.ts'
-import { ToolError, ToolExecution } from '../Error.ts'
+import { ToolError, ToolExecution } from '../ToolError.ts'
 import { Invocation, Result, type ToolResult, type Diagnostic } from '../Invocation.ts'
 import * as Metadata from '../Tool.ts'
+// effect-review-allow P9-namespace-alias-equals-module: ../Tool.ts and effect/ai/Tool both bind Tool; Metadata preserves the checked imported-name collision.
 import { characterEnd } from '../Output.ts'
-import { rangeDecoder, startsWithBom } from '../env/Decode.ts'
+import { rangeDecoder, hasBom } from '../env/Decode.ts'
 import * as Image from './Image.ts'
-import * as Path from './Path.ts'
+import * as path from './internal/path.ts'
 import * as Truncate from './Truncate.ts'
+/**
+ * Schema for parameters.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Parameters = Schema.Struct({
   path: Schema.String,
   offset: SchemaField.optional(Schema.Finite),
   limit: SchemaField.optional(Schema.Finite),
 })
-export type Input = typeof Parameters.Type
+/**
+ * Read input contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Input = Parameters
+/**
+ * Native read tool declaration with scoped text and image capabilities.
+ *
+ * @category constants
+ * @since 0.0.0
+ */
 export const tool = AiTool.make('read', {
   description:
     'Read text files; first 2000 lines or 50KB. Continue large files with offset/limit. Recognized images are unsupported.',
@@ -115,10 +140,10 @@ const readText = Effect.fnUntraced(function* (
     bytes: empty ? 0 : scan.selectedBytes,
   }
   const first = yield* reader.read(0, 3)
-  const head = empty ? '' : yield* readHead(reader, scan.start, scan.end, startsWithBom(first))
+  const head = empty ? '' : yield* readHead(reader, scan.start, scan.end, hasBom(first))
   const { content, ...truncation } = Truncate.truncateHeadOf(head, totals)
   let text = content
-  const diagnostics: Diagnostic[] = []
+  const diagnostics: Array<Diagnostic> = []
   let details: Schema.Json | undefined
   if (truncation.firstLineExceedsLimit) {
     const integral = Number.isInteger(startLine)
@@ -159,11 +184,17 @@ const readText = Effect.fnUntraced(function* (
 class FileChanged extends Schema.TaggedError<FileChanged>(
   '@effect-harness/harness/tools/Read/FileChanged',
 )('FileChanged', {}) {}
+/**
+ * Reads bounded text or image data and retries a changed inode once within the same reader scope.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const handler = Effect.fnUntraced(function* (
   input: Input,
 ): Effect.fn.Return<ToolResult, ToolError, Env | Invocation> {
   const env = yield* Env
-  const absolute = yield* Path.resolveRead(input.path).pipe(
+  const absolute = yield* path.resolveRead(input.path).pipe(
     Effect.mapError(
       (cause) =>
         new ToolError({
@@ -212,4 +243,18 @@ export const handler = Effect.fnUntraced(function* (
   )
 })
 
-export const isInput: (input: unknown) => input is typeof Parameters.Type = Schema.is(Parameters)
+/**
+ * Checks whether an unknown value satisfies the Input contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isInput: (u: unknown) => u is Parameters = Schema.is(Parameters)
+
+/**
+ * Read parameters contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Parameters = typeof Parameters.Type

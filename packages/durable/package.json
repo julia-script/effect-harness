@@ -23,6 +23,18 @@
     "./workflow/internal/*": null,
     "./testing/internal": null,
     "./testing/internal/*": null,
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "default": "./dist/storage/index.js"
+    },
+    "./workflow": {
+      "types": "./dist/workflow/index.d.ts",
+      "default": "./dist/workflow/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    },
     "./*": {
       "types": "./dist/*.d.ts",
       "default": "./dist/*.js"
@@ -36,12 +48,17 @@
     "typetest": "cd ../.. && tstyche packages/durable/typetest"
   },
   "dependencies": {
-    "@effect-harness/harness": "workspace:*",
+    "@effect-harness/harness": "workspace:^"
+  },
+  "devDependencies": {
+    "@effect/sql-sqlite-bun": "4.0.1",
+    "@effect/sql-sqlite-node": "4.0.1",
     "effect": "catalog:"
   },
   "peerDependencies": {
     "@effect/sql-sqlite-bun": "4.0.1",
-    "@effect/sql-sqlite-node": "4.0.1"
+    "@effect/sql-sqlite-node": "4.0.1",
+    "effect": "^4.0.1"
   },
   "peerDependenciesMeta": {
     "@effect/sql-sqlite-bun": {

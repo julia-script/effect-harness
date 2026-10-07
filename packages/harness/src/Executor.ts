@@ -1,4 +1,14 @@
-import * as Array from 'effect/Array'
+/**
+ * Native model and tool execution with admitted progress settlement.
+ *
+ * @since 0.0.0
+ */
+import * as Result from 'effect/Result'
+import * as Record from 'effect/Record'
+import { constUndefined } from 'effect/Function'
+import * as SchemaTransformation from 'effect/SchemaTransformation'
+import * as Data from 'effect/Data'
+import * as Arr from 'effect/Array'
 import * as Option from 'effect/Option'
 import * as SchemaField from './SchemaField.ts'
 import * as Serialization from './Serialization.ts'
@@ -11,26 +21,32 @@ import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import type * as AiError from 'effect/ai/AiError'
 import * as AiPrompt from 'effect/ai/Prompt'
-import * as AiResponse from 'effect/ai/Response'
+// effect-review-allow P9-namespace-alias-equals-module: effect/ai/Prompt and ./Prompt.ts both bind Prompt; AiPrompt preserves the checked imported-name collision.
+import * as Response from 'effect/ai/Response'
 import * as AiTool from 'effect/ai/Tool'
+// effect-review-allow P9-namespace-alias-equals-module: effect/ai/Tool and ./Tool.ts both bind Tool; AiTool preserves the checked imported-name collision.
 import type * as Toolkit from 'effect/ai/Toolkit'
 import * as Agent from './Agent.ts'
 import * as Compaction from './Compaction.ts'
 import * as ConversationContext from './Context.ts'
+// effect-review-allow P9-namespace-alias-equals-module: ./Context.ts and effect/Context both bind Context; ConversationContext preserves the checked imported-name collision.
+import { ModelError, ModelInvalidResponse, ModelNoModel, ModelUnsupported } from './ModelError.ts'
 import {
-  ModelError,
   ToolError,
-  ModelInvalidResponse,
-  ModelNoModel,
-  ModelUnsupported,
   ToolBlocked,
   ToolExecution,
   ToolInvalidParameters,
   ToolInvalidResult,
   ToolUnavailable,
-} from './Error.ts'
+} from './ToolError.ts'
 import * as Hook from './Hook.ts'
-import { Invocation, ToolCall, Result, type ToolResult, type Diagnostic } from './Invocation.ts'
+import {
+  Invocation,
+  ToolCall,
+  Result as ToolResultSchema,
+  type ToolResult,
+  type Diagnostic,
+} from './Invocation.ts'
 import * as Model from './Model.ts'
 import * as Output from './Output.ts'
 import * as Prompt from './Prompt.ts'
@@ -42,6 +58,12 @@ import * as Exit from 'effect/Exit'
 import * as Json from './Json.ts'
 import { EntryId } from './Identity.ts'
 
+/**
+ * Schema for request.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Request = Schema.Struct({
   model: Agent.ModelRef,
   prompt: AiPrompt.Prompt,
@@ -49,49 +71,105 @@ export const Request = Schema.Struct({
   tools: Schema.Array(ConversationContext.ToolDeclaration),
   tail: SchemaField.optional(EntryId),
 })
+/**
+ * Executor request contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type Request = typeof Request.Type
-export interface Preparation {
-  readonly request: Request
-  readonly agent: Registry.Resolved
-  readonly plan: ReturnType<typeof Prompt.plan>
-}
+/**
+ * Executor preparation contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Preparation = Executor.Preparation
+/**
+ * Schema for summary request.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const SummaryRequest = Schema.Struct({
   request: Request,
   firstKept: EntryId,
   tail: EntryId,
   attempt: Schema.Int,
 })
+/**
+ * Executor summary request contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type SummaryRequest = typeof SummaryRequest.Type
+/**
+ * Schema for summary.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Summary = Schema.Struct({ summary: Schema.String, usage: Usage.Usage })
+/**
+ * Executor summary contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type Summary = typeof Summary.Type
-export type CompactionPreparation =
-  | { readonly type: 'none' }
-  | { readonly type: 'summary'; readonly firstKept: EntryId; readonly summary: string }
-  | { readonly type: 'request'; readonly request: SummaryRequest }
-export type Part = AiResponse.StreamPart<Record<string, AiTool.Any>, 'encoded'>
-export interface PrepareInput {
-  readonly state: Agent.State
-  readonly settings: Agent.Settings
-  readonly view: ConversationContext.View
-  readonly sessionId?: string | undefined
-}
-export interface ToolOptions {
-  readonly recovering?: boolean | undefined
-  readonly previous?: ToolResult | undefined
-  readonly settings?: Agent.Settings | undefined
-  /** Persist the terminal result before detached progress acknowledgements settle. */
-  readonly commit?: ((execution: Tool.Execution) => Effect.Effect<void>) | undefined
-}
-export interface CompactInput extends PrepareInput {
-  readonly reason: Hook.CompactInput['reason']
-  readonly instructions?: string | undefined
-}
+/**
+ * Executor compaction preparation contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type CompactionPreparation = Data.TaggedEnum<{
+  none: {}
+  summary: { readonly firstKept: EntryId; readonly summary: string }
+  request: { readonly request: SummaryRequest }
+}>
+/**
+ * Constructors and matchers for declined, completed and requested compaction.
+ *
+ * @category constants
+ * @since 0.0.0
+ */
+export const CompactionPreparation = Data.taggedEnum<CompactionPreparation>()
+/**
+ * Executor part contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Part = Response.StreamPart<Record<string, AiTool.Any>, 'encoded'>
+/**
+ * Executor prepare input contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type PrepareInput = Executor.PrepareInput
+/**
+ * Executor tool options contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type ToolOptions = Executor.ToolOptions
+/**
+ * Executor compact input contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type CompactInput = Executor.CompactInput
 const Call = Schema.Struct({
-  ...AiResponse.ToolCallPart('', Schema.Unknown).fields,
+  ...Response.ToolCallPart('', Schema.Unknown).fields,
   name: Schema.String,
 })
-export const Disposition = Schema.Union([
-  Schema.Struct({ type: Schema.Literal('deferred'), decision: Model.DeferredDecision }),
+const DispositionWire = Schema.Union([
+  Schema.Struct({ type: Schema.tag('deferred'), decision: Model.DeferredDecision }),
   Schema.Struct({
     type: Schema.Literals(['answer', 'tools']),
     prompt: AiPrompt.Prompt,
@@ -99,7 +177,7 @@ export const Disposition = Schema.Union([
     calls: Schema.Array(Call),
   }),
   Schema.Struct({
-    type: Schema.Literal('failure'),
+    type: Schema.tag('failure'),
     prompt: AiPrompt.Prompt,
     usage: Usage.Usage,
     message: Schema.String,
@@ -107,8 +185,96 @@ export const Disposition = Schema.Union([
     overflow: Schema.Boolean,
   }),
 ])
+const DispositionDomain = Schema.Union([
+  Schema.TaggedStruct('deferred', { decision: Model.DeferredDecision }),
+  ...(['answer', 'tools'] as const).map((tag) =>
+    Schema.TaggedStruct(tag, {
+      prompt: AiPrompt.Prompt,
+      usage: Usage.Usage,
+      calls: Schema.Array(Call),
+    }),
+  ),
+  Schema.TaggedStruct('failure', {
+    prompt: AiPrompt.Prompt,
+    usage: Usage.Usage,
+    message: Schema.String,
+    retryable: Schema.Boolean,
+    overflow: Schema.Boolean,
+  }),
+])
+/**
+ * Codec for tagged execution dispositions with the legacy type discriminator on the wire.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
+export const Disposition = DispositionWire.pipe(
+  Schema.decodeTo(
+    Schema.toType(DispositionDomain),
+    SchemaTransformation.transform({
+      decode: (value): typeof DispositionDomain.Type => {
+        switch (value.type) {
+          case 'deferred':
+            return { _tag: 'deferred', decision: value.decision }
+          case 'answer':
+          case 'tools':
+            return {
+              _tag: value.type,
+              prompt: value.prompt,
+              usage: value.usage,
+              calls: value.calls,
+            }
+          case 'failure':
+            return {
+              _tag: 'failure',
+              prompt: value.prompt,
+              usage: value.usage,
+              message: value.message,
+              retryable: value.retryable,
+              overflow: value.overflow,
+            }
+        }
+      },
+      encode: (value) => {
+        switch (value._tag) {
+          case 'deferred':
+            return { type: 'deferred', decision: value.decision }
+          case 'answer':
+          case 'tools':
+            return {
+              type: value._tag,
+              prompt: value.prompt,
+              usage: value.usage,
+              calls: value.calls,
+            }
+          case 'failure':
+            return {
+              type: 'failure',
+              prompt: value.prompt,
+              usage: value.usage,
+              message: value.message,
+              retryable: value.retryable,
+              overflow: value.overflow,
+            }
+        }
+      },
+    }),
+  ),
+)
+/**
+ * Executor disposition contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type Disposition = typeof Disposition.Type
 
+/**
+ * Service for executor capabilities.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class Executor extends Context.Service<
   Executor,
   {
@@ -134,7 +300,7 @@ export class Executor extends Context.Service<
     readonly classifyResponse: (
       request: Request,
       agent: Registry.Resolved,
-      parts: ReadonlyArray<AiResponse.AnyPart>,
+      parts: ReadonlyArray<Response.AnyPart>,
     ) => Effect.Effect<Disposition, ModelError, Invocation>
     readonly classifyFailure: (
       request: Request,
@@ -185,20 +351,29 @@ function definitions(
   tools: Request['tools'],
 ): Toolkit.WithHandler<Record<string, ReturnType<typeof nativeDeclaration>>> {
   return {
-    tools: Object.fromEntries(
-      tools.map((declaration) => [declaration.name, nativeDeclaration(declaration)]),
-    ),
+    tools: Record.fromIterableWith(tools, (declaration) => [
+      declaration.name,
+      nativeDeclaration(declaration),
+    ]),
     handle: () => Effect.die('Tool resolution must be disabled at the model request boundary'),
   }
 }
+/**
+ * Layer for Executor capabilities.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catalog> = Layer.effect(
   Executor,
   Effect.gen(function* () {
     const registry = yield* Registry.Registry
     const catalog = yield* Model.Catalog
-    const resolve = Effect.fnUntraced(function* (state: Agent.State, settings: Agent.Settings) {
-      return yield* Registry.resolve(yield* registry.snapshot, state, settings)
-    })
+    const resolve = (
+      state: Agent.State,
+      settings: Agent.Settings,
+    ): Effect.Effect<Registry.Resolved, never, Invocation> =>
+      Effect.flatMap(registry.snapshot, (snapshot) => Registry.resolve(snapshot, state, settings))
     const prepare = Effect.fnUntraced(function* (input: PrepareInput) {
       const ref = yield* requireModel(input.state)
       yield* catalog.resolve(ref)
@@ -219,7 +394,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         }),
         options,
         tools: declarations,
-        ...(Option.isNone(Array.last(input.view.entries))
+        ...(Option.isNone(Arr.last(input.view.entries))
           ? {}
           : {
               tail: yield* Schema.decodeEffect(EntryId)(
@@ -281,65 +456,79 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
     const classifyResponse = Effect.fnUntraced(function* (
       request: Request,
       agent: Registry.Resolved,
-      parts: ReadonlyArray<AiResponse.AnyPart>,
+      parts: ReadonlyArray<Response.AnyPart>,
     ): Effect.fn.Return<Disposition, ModelError, Invocation> {
       const descriptor = yield* catalog.resolve(request.model)
       const deferred = Option.fromUndefinedOr(descriptor.deferred).pipe(
         Option.flatMap((capability) => capability.inspect(parts)),
       )
-      if (Option.isSome(deferred)) return { type: 'deferred', decision: deferred.value }
-      yield* Hook.afterResponse(Registry.handlers(agent, 'generation'), parts)
-      const finish = Array.findLast(parts, (part) => part.type === 'finish')
-      const usage = Option.isNone(finish)
-        ? Usage.zero()
-        : (descriptor.usage?.(finish.value.usage, finish.value.metadata) ??
-          Usage.fromResponse(finish.value.usage))
-      const prompt = AiPrompt.fromResponseParts(parts)
-      const calls = parts.filter(
-        (part): part is AiResponse.ToolCallPart<string, unknown> =>
-          part.type === 'tool-call' && !part.providerExecuted,
-      )
-      if (
-        Option.isSome(finish) &&
-        (finish.value.reason === 'stop' ||
-          finish.value.reason === 'length' ||
-          finish.value.reason === 'tool-calls')
-      )
-        return {
-          type: finish.value.reason === 'tool-calls' && calls.length > 0 ? 'tools' : 'answer',
-          prompt,
-          usage,
-          calls,
-        }
-      const errors = parts.flatMap((part) => (part.type === 'error' ? [part.error] : []))
-      const message =
-        errors.map(Model.errorText).join('\n') ||
-        `Model finished with ${Option.getOrElse(
-          Option.map(finish, (part) => part.reason),
-          () => 'no finish part',
-        )}`
-      const policies = errors.map(
-        (error) => descriptor.classify?.(error) ?? Model.classify(error, request.model.provider),
-      )
-      const policy = {
-        overflow: policies.some((value) => value.overflow),
-        retryable: policies.length > 0 && policies.every((value) => value.retryable),
-      }
-      return { type: 'failure', prompt, usage, message, ...policy }
+      return yield* Option.match(deferred, {
+        onSome: (decision) => Effect.succeed<Disposition>({ _tag: 'deferred', decision }),
+        onNone: () =>
+          Effect.gen(function* () {
+            yield* Hook.afterResponse(Registry.handlers(agent, 'generation'), parts)
+            const finish = Arr.findLast(parts, (part) => part.type === 'finish')
+            const usage = Option.match(finish, {
+              onNone: Usage.zero,
+              onSome: (self) =>
+                descriptor.usage?.(self.usage, self.metadata) ?? Usage.fromResponse(self.usage),
+            })
+            const prompt = AiPrompt.fromResponseParts(parts)
+            const calls = parts.filter(
+              (part): part is Response.ToolCallPart<string, unknown> =>
+                part.type === 'tool-call' && !part.providerExecuted,
+            )
+            const failure = (): Disposition => {
+              const errors = Arr.filterMap(parts, (part) =>
+                part.type === 'error' ? Result.succeed(part.error) : Result.failVoid,
+              )
+              const message =
+                errors.map(Model.errorText).join('\n') ||
+                `Model finished with ${Option.getOrElse(
+                  Option.map(finish, (part) => part.reason),
+                  () => 'no finish part',
+                )}`
+              const policies = errors.map(
+                (error) =>
+                  descriptor.classify?.(error) ?? Model.classify(error, request.model.provider),
+              )
+              const policy = {
+                overflow: policies.some((value) => value.overflow),
+                retryable: policies.length > 0 && policies.every((value) => value.retryable),
+              }
+              return { _tag: 'failure', prompt, usage, message, ...policy }
+            }
+            return Option.match(finish, {
+              onNone: failure,
+              onSome: (self): Disposition =>
+                self.reason === 'stop' || self.reason === 'length' || self.reason === 'tool-calls'
+                  ? {
+                      _tag: self.reason === 'tool-calls' && calls.length > 0 ? 'tools' : 'answer',
+                      prompt,
+                      usage,
+                      calls,
+                    }
+                  : failure(),
+            })
+          }),
+      })
     })
     const prepareTool = Effect.fnUntraced(function* (
       agent: Registry.Resolved,
       input: Hook.ToolInput,
     ) {
-      const found = Array.findFirst(agent.tools, (tool) => tool.tool.name === input.name)
-      if (Option.isNone(found))
-        return yield* new ToolError({
-          reason: new ToolUnavailable({
-            name: input.name,
-            message: `Tool ${input.name} is not available`,
-          }),
-        })
-      const registration = found.value
+      const found = Arr.findFirst(agent.tools, (tool) => tool.tool.name === input.name)
+      const registration = yield* Effect.fromOption(found).pipe(
+        Effect.mapError(
+          () =>
+            new ToolError({
+              reason: new ToolUnavailable({
+                name: input.name,
+                message: `Tool ${input.name} is not available`,
+              }),
+            }),
+        ),
+      )
       let args = input.args
       if (registration.metadata.repair !== undefined)
         args = yield* Effect.suspend(
@@ -381,7 +570,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
                 ),
           ),
         )
-        if (decision !== undefined && 'block' in decision)
+        if (decision !== undefined && Hook.ToolDecision.$is('Block')(decision))
           return yield* new ToolError({
             reason: new ToolBlocked({ name: input.name, message: decision.block }),
           })
@@ -390,7 +579,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       const encoded = yield* registration
         .encodeArgs(args)
         .pipe(Effect.provideService(ToolCall, noToolCall(input.id)))
-      return yield* Tool.makeIntent(registration, input.id, args, encoded)
+      return yield* Tool.makeIntent(registration, { id: input.id, decoded: args, encoded })
     })
     const tool = Effect.fnUntraced(function* (
       intent: Tool.Intent,
@@ -402,7 +591,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         options.recovering === true
           ? yield* resolve(snapshot.state, options.settings ?? snapshot.settings)
           : snapshot
-      const found = Array.findFirst(agent.tools, (value) => value.tool.name === intent.name)
+      const found = Arr.findFirst(agent.tools, (value) => value.tool.name === intent.name)
       if (
         options.recovering === true &&
         (intent.replay !== 'safe' ||
@@ -420,12 +609,16 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
             details: { reason: 'interrupted', previous: options.previous?.details ?? null },
           },
         }
-      if (Option.isNone(found))
+      const registration = Option.getOrElse(found, constUndefined)
+      if (registration === undefined)
         return { outcome: 'unavailable' as const, result: Tool.unavailable(intent.name) }
       if (options.recovering === true)
         yield* invocation.progress({ clear: true, output: '', details: null, diagnostics: [] })
-      const registration = found.value
       const limits = Tool.outputLimits(registration.metadata)
+      const outputFailure = (cause: import('./OutputError.ts').OutputError): ToolError =>
+        new ToolError({
+          reason: new ToolInvalidResult({ name: intent.name, message: cause.message, cause }),
+        })
       const buffer = yield* Output.makeWindow(limits)
       const preview = yield* Ref.make<ToolResult | undefined>(undefined)
       const details = yield* Ref.make<Schema.Json | undefined>(undefined)
@@ -437,13 +630,13 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         diagnostics: number
       } = { output: '', details: undefined, hasDetails: false, diagnostics: 0 }
       const write: Effect.Effect<number, ToolError> = Effect.gen(function* () {
-        const retained = yield* buffer.snapshot
+        const retained = yield* buffer.snapshot.pipe(Effect.mapError(outputFailure))
         const currentDetails = yield* Ref.get(details)
         const currentDiagnostics = yield* Ref.get(diagnostics)
         const encodedDetails = JSON.stringify(currentDetails ?? null)
         const change = Output.delta(written.output, retained.text)
         const detailsChanged =
-          !written.hasDetails || !Json.equal(currentDetails ?? null, written.details ?? null)
+          !written.hasDetails || !Json.equals(currentDetails ?? null, written.details ?? null)
         const added = currentDiagnostics.slice(written.diagnostics)
         if (retained.text === written.output && !detailsChanged && added.length === 0) return 0
         const outputChanged = retained.text !== written.output
@@ -467,10 +660,9 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         }
         return bytes
       })
-      const progress = yield* Progress.make(
-        write,
-        (options.settings ?? agent.settings).progress.outputIntervalMs,
-      ).pipe(
+      const progress = yield* Progress.make(write, {
+        minIntervalMs: (options.settings ?? agent.settings).progress.outputIntervalMs,
+      }).pipe(
         Effect.mapError(
           (cause) =>
             new ToolError({
@@ -496,8 +688,8 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         id: intent.id,
         preliminary: (value) =>
           live(
-            Schema.encodeEffect(Result)(value).pipe(
-              Effect.flatMap(Schema.decodeEffect(Result)),
+            Schema.encodeEffect(ToolResultSchema)(value).pipe(
+              Effect.flatMap(Schema.decodeEffect(ToolResultSchema)),
               Effect.mapError(
                 (cause) =>
                   new ToolError({
@@ -514,9 +706,9 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
                   yield* buffer.reset
                   yield* buffer
                     .push(
-                      checked.content
-                        ?.flatMap((part) => (part.type === 'text' ? [part.text] : []))
-                        .join('') ?? '',
+                      Arr.filterMap(checked.content ?? [], (part) =>
+                        part.type === 'text' ? Result.succeed(part.text) : Result.failVoid,
+                      ).join(''),
                     )
                     .pipe(
                       Effect.mapError(
@@ -592,27 +784,33 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         registration.execute(intent.args, intent.id).pipe(Effect.provideService(ToolCall, api)),
       )
       yield* Ref.set(ended, true)
-      yield* buffer.end
-      const buffered = yield* buffer.snapshot
-      const recordedDetails = yield* Ref.get(details)
-      const recordedDiagnostics = yield* Ref.get(diagnostics)
-      const preliminaryResult = yield* Ref.get(preview)
-      const partial: ToolResult = {
-        ...preliminaryResult,
-        content: [
-          ...(preliminaryResult?.content?.filter((part) => part.type !== 'text') ?? []),
-          ...(buffered.text === '' ? [] : [AiPrompt.textPart({ text: buffered.text })]),
-        ],
-        ...(recordedDetails === undefined ? {} : { details: recordedDetails }),
-        diagnostics: recordedDiagnostics,
-      }
+      const retention = yield* Effect.exit(
+        Effect.gen(function* () {
+          yield* buffer.end.pipe(Effect.mapError(outputFailure))
+          const buffered = yield* buffer.snapshot.pipe(Effect.mapError(outputFailure))
+          const recordedDetails = yield* Ref.get(details)
+          const recordedDiagnostics = yield* Ref.get(diagnostics)
+          const preliminaryResult = yield* Ref.get(preview)
+          const partial: ToolResult = {
+            ...preliminaryResult,
+            content: [
+              ...(preliminaryResult?.content?.filter((part) => part.type !== 'text') ?? []),
+              ...(buffered.text === '' ? [] : [AiPrompt.textPart({ text: buffered.text })]),
+            ],
+            ...(recordedDetails === undefined ? {} : { details: recordedDetails }),
+            diagnostics: recordedDiagnostics,
+          }
+          return { buffered, partial, recordedDetails, recordedDiagnostics }
+        }),
+      )
       const pending = yield* progress.stop
       const final = yield* Effect.exit(
         Effect.gen(function* () {
-          const projected =
-            outcome._tag === 'Failure'
-              ? yield* Tool.settleFailure(outcome.cause, partial)
-              : yield* Tool.project(registration, outcome.value)
+          const { buffered, partial, recordedDetails, recordedDiagnostics } = yield* retention
+          const projected = yield* Exit.match(outcome, {
+            onFailure: (cause) => Tool.settleFailure(cause, partial),
+            onSuccess: (native) => Tool.project(registration, native),
+          })
           const finalDetails = projected.details === undefined ? recordedDetails : projected.details
           const result: ToolResult = {
             ...projected,
@@ -651,10 +849,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           return execution
         }),
       )
-      yield* Progress.settle(
-        pending,
-        Exit.map(final, () => undefined),
-      )
+      yield* Progress.settle(pending, Exit.map(final, constUndefined))
       return yield* final
     }, Effect.scoped)
     const prepareCompaction = Effect.fnUntraced(function* (
@@ -667,53 +862,67 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         input.settings.compaction.keepRecentTokens,
         descriptor.estimate,
       )
-      const first = cut.pipe(Option.flatMap((index) => Array.get(input.view.entries, index)))
-      if (Option.isNone(cut) || Option.isNone(first)) return { type: 'none' }
-      const agent = yield* resolve(input.state, input.settings)
-      const decision = yield* Hook.beforeCompact(Registry.handlers(agent, 'compaction'), {
-        reason: input.reason,
-        view: input.view,
-        firstKept: first.value.id,
-        instructions: input.instructions,
+      const first = cut.pipe(Option.flatMap((index) => Arr.get(input.view.entries, index)))
+      const selected = Option.product(cut, first)
+      return yield* Option.match(selected, {
+        onNone: () => Effect.succeed(CompactionPreparation.none()),
+        onSome: ([cutIndex, firstKept]) =>
+          Effect.gen(function* () {
+            const agent = yield* resolve(input.state, input.settings)
+            const decision = yield* Hook.beforeCompact(Registry.handlers(agent, 'compaction'), {
+              reason: input.reason,
+              view: input.view,
+              firstKept: firstKept.id,
+              instructions: input.instructions,
+            })
+            return yield* Option.match(decision, {
+              onSome: (self) =>
+                Effect.succeed(
+                  Hook.CompactDecision.$match(self, {
+                    Decline: () => CompactionPreparation.none(),
+                    Summary: (value) =>
+                      CompactionPreparation.summary({
+                        firstKept: firstKept.id,
+                        summary: value.summary,
+                      }),
+                  }),
+                ),
+              onNone: () =>
+                Effect.gen(function* () {
+                  const options = yield* Schema.decodeUnknownEffect(Model.RequestOptions)({
+                    thinking: input.state.thinking ?? 'off',
+                    options: Record.filter(input.settings.stream, (_, key) => key !== 'deferred'),
+                    cache: 'none',
+                    maxTokens: Math.min(
+                      Math.floor(0.8 * input.settings.compaction.reserveTokens),
+                      descriptor.maxOutputTokens > 0 ? descriptor.maxOutputTokens : Infinity,
+                    ),
+                    ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+                  })
+                  const tail = yield* Schema.decodeEffect(EntryId)(
+                    Math.max(...input.view.entries.map((entry) => entry.id)),
+                  )
+                  return CompactionPreparation.request({
+                    request: {
+                      request: {
+                        model: ref,
+                        prompt: Compaction.prompt(
+                          Compaction.summarizedMessages(input.view, cutIndex),
+                          input.instructions,
+                        ),
+                        tools: [],
+                        options,
+                        tail,
+                      },
+                      firstKept: firstKept.id,
+                      tail,
+                      attempt: 1,
+                    },
+                  })
+                }),
+            })
+          }),
       })
-      if (Option.isSome(decision)) {
-        const value = decision.value
-        if ('decline' in value) return { type: 'none' }
-        return { type: 'summary', firstKept: first.value.id, summary: value.summary }
-      }
-      const options = yield* Schema.decodeUnknownEffect(Model.RequestOptions)({
-        thinking: input.state.thinking ?? 'off',
-        options: Object.fromEntries(
-          Object.entries(input.settings.stream).filter(([key]) => key !== 'deferred'),
-        ),
-        cache: 'none',
-        maxTokens: Math.min(
-          Math.floor(0.8 * input.settings.compaction.reserveTokens),
-          descriptor.maxOutputTokens > 0 ? descriptor.maxOutputTokens : Infinity,
-        ),
-        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
-      })
-      const tail = yield* Schema.decodeEffect(EntryId)(
-        Math.max(...input.view.entries.map((entry) => entry.id)),
-      )
-      return {
-        type: 'request',
-        request: {
-          request: {
-            model: ref,
-            prompt: Compaction.prompt(
-              Compaction.summarizedMessages(input.view, cut.value),
-              input.instructions,
-            ),
-            tools: [],
-            options,
-            tail,
-          },
-          firstKept: first.value.id,
-          tail,
-          attempt: 1,
-        },
-      }
     })
     const compact = Effect.fnUntraced(function* (pinned: SummaryRequest) {
       const descriptor = yield* catalog.resolve(pinned.request.model)
@@ -736,7 +945,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
                 response.usage,
                 Option.getOrElse(
                   Option.map(
-                    Array.findFirst(response.content, (part) => part.type === 'finish'),
+                    Arr.findFirst(response.content, (part) => part.type === 'finish'),
                     (part) => part.metadata,
                   ),
                   () => ({}),
@@ -748,10 +957,11 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
                 : 'Summarization did not produce a clean nonempty text response',
           }),
         })
-      const finish = Array.findFirst(response.content, (part) => part.type === 'finish')
+      const finish = Arr.findFirst(response.content, (part) => part.type === 'finish')
       return {
-        summary: response.content
-          .flatMap((part) => (part.type === 'text' ? [part.text] : []))
+        summary: Arr.filterMap(response.content, (part) =>
+          part.type === 'text' ? Result.succeed(part.text) : Result.failVoid,
+        )
           .join('\n')
           .trim(),
         usage:
@@ -791,11 +1001,89 @@ function noToolCall(id: string): ToolCall['Service'] {
   })
 }
 
-export const isRequest: (input: unknown) => input is Request = Schema.is(Request)
+/**
+ * Checks whether an unknown value satisfies the Request contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isRequest: (u: unknown) => u is Request = Schema.is(Request)
 
-export const isSummaryRequest: (input: unknown) => input is SummaryRequest =
-  Schema.is(SummaryRequest)
+/**
+ * Checks whether an unknown value satisfies the SummaryRequest contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isSummaryRequest: (u: unknown) => u is SummaryRequest = Schema.is(SummaryRequest)
 
-export const isSummary: (input: unknown) => input is Summary = Schema.is(Summary)
+/**
+ * Checks whether an unknown value satisfies the Summary contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isSummary: (u: unknown) => u is Summary = Schema.is(Summary)
 
-export const isDisposition: (input: unknown) => input is Disposition = Schema.is(Disposition)
+/**
+ * Checks whether an unknown value satisfies the Disposition contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isDisposition: (u: unknown) => u is Disposition = Schema.is(Disposition)
+
+/**
+ * Type contracts owned by `Executor`.
+ *
+ * @category utility types
+ * @since 0.0.0
+ */
+export declare namespace Executor {
+  /**
+   * Executor preparation type contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface Preparation {
+    readonly request: Request
+    readonly agent: Registry.Resolved
+    readonly plan: ReturnType<typeof Prompt.plan>
+  }
+  /**
+   * Executor prepare input type contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface PrepareInput {
+    readonly state: Agent.State
+    readonly settings: Agent.Settings
+    readonly view: ConversationContext.View
+    readonly sessionId?: string | undefined
+  }
+  /**
+   * Executor tool options type contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface ToolOptions {
+    readonly recovering?: boolean | undefined
+    readonly previous?: ToolResult | undefined
+    readonly settings?: Agent.Settings | undefined
+    /** Persist the terminal result before detached progress acknowledgements settle. */
+    readonly commit?: ((execution: Tool.Execution) => Effect.Effect<void>) | undefined
+  }
+  /**
+   * Executor compact input type contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface CompactInput extends PrepareInput {
+    readonly reason: Hook.CompactInput['reason']
+    readonly instructions?: string | undefined
+  }
+}

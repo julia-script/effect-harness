@@ -1,3 +1,4 @@
+// effect-review-allow P8-tests-import-public-specifiers: these adversarial tests exercise private storage validation seams that intentionally have no public package export; all public behavior uses package specifiers.
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Cause from 'effect/Cause'
@@ -25,7 +26,7 @@ const view: View.Value = {
   entries: [],
   docs: {},
 }
-describe('durable safe APIs', () => {
+describe('SafeApi', () => {
   it.effect(
     'preserves proxy clone fallback, primitive brands, cycles and owned prototype keys',
     () =>

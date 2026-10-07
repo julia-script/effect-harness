@@ -1,3 +1,8 @@
+/**
+ * Fractional epoch-time and duration codecs at numeric wire boundaries.
+ *
+ * @since 0.0.0
+ */
 import * as DateTime from 'effect/DateTime'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
@@ -7,10 +12,20 @@ import * as SchemaGetter from 'effect/SchemaGetter'
 import * as SchemaIssue from 'effect/SchemaIssue'
 
 const origin = DateTime.fromEpochSeconds(0)
-/** Native finite epoch milliseconds retain submillisecond precision. */
+/**
+ * Native finite epoch milliseconds retain submillisecond precision.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const fromEpochMillis = (millis: number): DateTime.Utc =>
   DateTime.mapEpochMillis(origin, () => millis)
-/** Domain UTC instant with its original finite numeric epoch-millisecond encoding. */
+/**
+ * Domain UTC instant with its original finite numeric epoch-millisecond encoding.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const EpochMillis = Schema.Finite.pipe(
   Schema.decodeTo(Schema.DateTimeUtc, {
     decode: SchemaGetter.transform(fromEpochMillis),
@@ -20,12 +35,24 @@ export const EpochMillis = Schema.Finite.pipe(
 const finiteSpan = Schema.Duration.check(
   Schema.makeFilter((value) => Duration.isFinite(value) || 'Expected a finite duration'),
 )
+/**
+ * Schema for duration millis.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const DurationMillis = Schema.Finite.pipe(
   Schema.decodeTo(finiteSpan, {
     decode: SchemaGetter.transform(Duration.millis),
     encode: SchemaGetter.transform(Duration.toMillis),
   }),
 )
+/**
+ * Schema for duration seconds.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const DurationSeconds = Schema.Finite.pipe(
   Schema.decodeTo(finiteSpan, {
     decode: SchemaGetter.transform(Duration.seconds),
@@ -41,7 +68,13 @@ const nonnegativeSpan = finiteSpan.check(
     )
   }),
 )
-export const NonnegativeMillis = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(
+/**
+ * Schema for nonnegative millis.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
+export const NonnegativeMillis = Schema.Natural.pipe(
   Schema.decodeTo(nonnegativeSpan, {
     decode: SchemaGetter.transform(Duration.millis),
     encode: SchemaGetter.transform(Duration.toMillis),
@@ -56,7 +89,12 @@ const commandSpan = finiteSpan.check(
     )
   }),
 )
-/** Model tool JSON keeps positive finite seconds while the domain uses Duration. */
+/**
+ * Model tool JSON keeps positive finite seconds while the domain uses Duration.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const CommandTimeout = Schema.Finite.check(
   Schema.isGreaterThan(0),
   Schema.isLessThanOrEqualTo(2147483.647),
@@ -66,7 +104,12 @@ export const CommandTimeout = Schema.Finite.check(
     encode: SchemaGetter.transform(Duration.toSeconds),
   }),
 )
-/** Runtime option boundary; native fromInput failures and nonfinite spans become SchemaError. */
+/**
+ * Runtime option boundary; native fromInput failures and nonfinite spans become SchemaError.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const DurationInput = Schema.Unknown.pipe(
   Schema.decodeTo(finiteSpan, {
     decode: SchemaGetter.transformEffect((input, options) =>
@@ -111,6 +154,12 @@ export const DurationInput = Schema.Unknown.pipe(
     encode: SchemaGetter.passthroughSubtype<unknown, Duration.Duration>(),
   }),
 )
+/**
+ * Validates and normalizes a native duration input without losing nanosecond precision.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const duration: (
   input: unknown,
   options?: import('effect/SchemaAST').ParseOptions,

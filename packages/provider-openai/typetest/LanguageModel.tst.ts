@@ -6,16 +6,17 @@ import * as LanguageModel from 'effect/ai/LanguageModel'
 import type * as AiError from 'effect/ai/AiError'
 import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
+// effect-review-allow P9-namespace-alias-equals-module: @effect-harness/provider-openai/LanguageModel and effect/ai/LanguageModel both bind LanguageModel; Provider distinguishes the concepts.
 import * as Provider from '@effect-harness/provider-openai/LanguageModel'
 import * as Catalog from '@effect-harness/provider-openai/Catalog'
 import * as ToolResult from '@effect-harness/provider-openai/ToolResult'
 import * as ChatGpt from '@effect-harness/provider-openai/ChatGpt'
 import * as OpenAiSchema from '@effect/ai-openai/OpenAiSchema'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
-import type * as NativePrompt from 'effect/ai/Prompt'
+import type * as Prompt from 'effect/ai/Prompt'
 import type * as Layer from 'effect/Layer'
 import type * as HttpClient from 'effect/http/HttpClient'
-import type { ModelError } from '@effect-harness/harness/Error'
+import type { ModelError } from '@effect-harness/harness/ModelError'
 import * as Redacted from 'effect/Redacted'
 class Audit extends Context.Service<
   Audit,
@@ -89,4 +90,27 @@ test('owned public construction exposes the exact captured native client', () =>
   if (ChatGpt.isModel(unknownModel)) expect(unknownModel).type.toBe<ChatGpt.Model>()
 })
 declare const unknownModel: unknown
-declare const parts: ReadonlyArray<NativePrompt.UserMessagePart>
+declare const parts: ReadonlyArray<Prompt.UserMessagePart>
+
+test('curried provider combinators retain channels and reject ambiguous empty options', () => {
+  const entry = { modelId: 'declared', contextWindow: 200000, maxOutputTokens: 32000 }
+  expect(Catalog.descriptor()(entry)).type.toBe<
+    Effect.Effect<Catalog.Descriptor, ModelError, OpenAiClient.OpenAiClient>
+  >()
+  expect(Catalog.descriptor({ provider: 'custom' })(entry)).type.toBe<
+    Effect.Effect<Catalog.Descriptor, ModelError, OpenAiClient.OpenAiClient>
+  >()
+  expect(Catalog.descriptor).type.not.toBeCallableWith({})
+  expect(ToolResult.content({ prefixes: [] })(parts)).type.toBe<
+    Effect.Effect<Array<typeof OpenAiSchema.InputContent.Encoded>, AiError.AiError>
+  >()
+  expect(ToolResult.content).type.not.toBeCallableWith(['file_'])
+})
+
+import * as ProviderOpenai from '@effect-harness/provider-openai'
+import * as OpenAiLanguageModel from '@effect-harness/provider-openai/OpenAiLanguageModel'
+
+test('root namespaces expose canonical constructors and the exact native client facade', () => {
+  expect(ProviderOpenai.OpenAiLanguageModel.layer).type.toBe<typeof OpenAiLanguageModel.layer>()
+  expect(ProviderOpenai.OpenAiClient.OpenAiClient).type.toBe<typeof OpenAiClient.OpenAiClient>()
+})

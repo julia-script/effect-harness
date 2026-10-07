@@ -1,3 +1,4 @@
+import * as Arr from 'effect/Array'
 import * as Option from 'effect/Option'
 import * as Outcome from '../../workflow/Outcome.ts'
 import * as Effect from 'effect/Effect'
@@ -13,13 +14,11 @@ import { rejected, StorageError, Invalid, Closed, Poisoned, Conflict } from '../
 import { makeCandidate, Store, type CommitOptions, type Candidate } from '../../Store.ts'
 import { applyWrites, detachedEffect, materialize, validate } from './state.ts'
 
-export interface Snapshot {
-  readonly state: Record.State
-  readonly frames: ReadonlyArray<Record.Frame>
-}
+/** Compatibility alias for Backend.Snapshot. */
+export type Snapshot = Backend.Snapshot
 export interface Backend {
   readonly load: Effect.Effect<Snapshot, StorageError>
-  readonly readContext?: Effect.Effect<object>
+  readonly readContext?: Effect.Effect<object> | undefined
   readonly committed: Effect.Effect<Snapshot, StorageError>
   readonly save: (snapshot: Snapshot) => Effect.Effect<void, StorageError>
   readonly atomic: <A, E, R>(
@@ -27,16 +26,16 @@ export interface Backend {
   ) => Effect.Effect<A, StorageError | E, R>
 }
 /** Keeps global, document and conversation tails for exact bounded observer backlogs. */
-export const retainFrames = (frames: ReadonlyArray<Record.Frame>): ReadonlyArray<Record.Frame> => {
+export const retainFrames = (self: ReadonlyArray<Record.Frame>): Array<Record.Frame> => {
   const counts = new Map<Record.DocumentId, number>()
   const paths = new Map<string, number>()
   const conversations = new Map<Record.ConversationId, number>()
   const categories = new Map<string, number>()
   const retained: Array<Record.Frame> = []
-  for (let index = frames.length - 1; index >= 0; index--) {
-    const frame = frames[index]
+  for (let index = self.length - 1; index >= 0; index--) {
+    const frame = self[index]
     if (frame === undefined) continue
-    let retain = index >= frames.length - 101
+    let retain = index >= self.length - 101
     for (const publication of frame.documents) {
       const count = (counts.get(publication.record.id) ?? 0) + 1
       counts.set(publication.record.id, count)
@@ -176,18 +175,21 @@ export const make = Effect.fnUntraced(function* (
                   yield* usable
                   const snapshot = yield* backend.load
                   if (options.key !== undefined) {
-                    const receipt = snapshot.state.receipts.find((item) => item.key === options.key)
-                    if (receipt !== undefined) {
-                      if (receipt.fingerprint !== (options.fingerprint ?? ''))
+                    const receipt = Arr.findFirst(
+                      snapshot.state.receipts,
+                      (item) => item.key === options.key,
+                    )
+                    if (Option.isSome(receipt)) {
+                      if (receipt.value.fingerprint !== (options.fingerprint ?? ''))
                         return yield* rejected(
                           'Idempotency key reused with different input',
                           Conflict,
                         )
                       // The generic result type is chosen by the same stable operation key, not a runtime decoder.
                       return (
-                        receipt.resultIsVoid === true
+                        receipt.value.resultIsVoid === true
                           ? undefined
-                          : yield* detachedEffect(receipt.result)
+                          : yield* detachedEffect(receipt.value.result)
                       ) as A
                     }
                   }
@@ -195,7 +197,7 @@ export const make = Effect.fnUntraced(function* (
                   if (options.key !== undefined && candidate.result !== undefined)
                     yield* receiptResult(candidate.result)
                   if (
-                    candidate.writes.length === 0 &&
+                    Arr.isReadonlyArrayEmpty(candidate.writes) &&
                     candidate.state.nextId === snapshot.state.nextId &&
                     options.key === undefined
                   )
@@ -228,7 +230,7 @@ export const make = Effect.fnUntraced(function* (
                   state = yield* validate(Record.State, state)
                   const publications: Array<Record.Publication> = []
                   const documentIds = new Set(
-                    candidate.writes.flatMap((write) => {
+                    Arr.flatMap(candidate.writes, (write) => {
                       if (write.type === 'document.create' || write.type === 'document.copy')
                         return [write.record.id]
                       if (write.type === 'document.change' || write.type === 'document.retire')
@@ -237,25 +239,26 @@ export const make = Effect.fnUntraced(function* (
                     }),
                   )
                   for (const id of documentIds) {
-                    const document = state.documents.find((item) => item.record.id === id)
-                    if (document === undefined) continue
-                    if (document.record.retiredAt !== undefined) {
-                      publications.push({ record: document.record, value: null, ops: [] })
+                    const document = Arr.findFirst(state.documents, (item) => item.record.id === id)
+                    if (Option.isNone(document)) continue
+                    if (document.value.record.retiredAt !== undefined) {
+                      publications.push({ record: document.value.record, value: null, ops: [] })
                       continue
                     }
-                    const snapshotOption = yield* materialize(document, 'current')
+                    const snapshotOption = yield* materialize(document.value, 'current')
                     if (Option.isNone(snapshotOption)) continue
                     const snapshotValue = snapshotOption.value
-                    const write = candidate.writes.find(
+                    const write = Arr.findFirst(
+                      candidate.writes,
                       (item) => item.type === 'document.change' && item.id === id,
                     )
                     let ops: ReadonlyArray<Record.Op> = [['replace', snapshotValue.value]]
-                    if (write?.type === 'document.change')
+                    if (Option.isSome(write) && write.value.type === 'document.change')
                       ops =
-                        write.publicationOps ??
-                        (write.content.kind === 'delta' ? write.content.ops : ops)
+                        write.value.publicationOps ??
+                        (write.value.content.kind === 'delta' ? write.value.content.ops : ops)
                     publications.push({
-                      record: document.record,
+                      record: document.value.record,
                       version: snapshotValue.version,
                       value: snapshotValue.value,
                       ops,
@@ -290,15 +293,11 @@ export const make = Effect.fnUntraced(function* (
         )
       }),
     )
-  const commit = Effect.fnUntraced(function* (
-    writes: ReadonlyArray<Record.Write>,
-    options?: CommitOptions,
-  ) {
-    return yield* transact(
+  const commit = (writes: ReadonlyArray<Record.Write>, options?: CommitOptions) =>
+    transact(
       (state) => Effect.succeed(makeCandidate({ state, writes, result: state.nextSeq })),
       options,
     ).pipe(Effect.flatMap((seq) => validate(Record.Seq, seq)))
-  })
   return Store.of({
     read: read(backend.load),
     ...(backend.readContext === undefined ? {} : { readContext: backend.readContext }),
@@ -308,7 +307,7 @@ export const make = Effect.fnUntraced(function* (
     seal: Ref.update(lifecycle, (state) => ({ ...state, closed: true })),
     journal: Effect.fnUntraced(function* (after) {
       const loaded = yield* snapshot(backend.committed)
-      const frames = loaded.frames.filter((frame) => frame.seq > after)
+      const frames = Arr.filter(loaded.frames, (frame) => frame.seq > after)
       const oldest = loaded.frames[0]
       return {
         state: yield* detachedEffect(loaded.state),
@@ -319,3 +318,10 @@ export const make = Effect.fnUntraced(function* (
     awaitClosed: Deferred.await(terminal),
   })
 })
+
+export declare namespace Backend {
+  export interface Snapshot {
+    readonly state: Record.State
+    readonly frames: ReadonlyArray<Record.Frame>
+  }
+}

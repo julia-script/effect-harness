@@ -1,5 +1,12 @@
+/**
+ * Typed authentication failures and redacted credential codecs with compatible persisted wire representations.
+ *
+ * @since 0.0.0
+ */
 import * as Time from './Time.ts'
 import * as Schema from 'effect/Schema'
+import * as SchemaGetter from 'effect/SchemaGetter'
+import * as Struct from 'effect/Struct'
 
 const AuthReasonFields = {
   message: Schema.String,
@@ -22,6 +29,12 @@ const diagnostic = (reason: {
   ...(reason.cause === undefined ? {} : { cause: '[REDACTED]' }),
 })
 
+/**
+ * Carries the AuthStorageError reason with its original failure provenance.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class AuthStorageError extends Schema.Error<AuthStorageError>(
   '@effect-harness/auth/Credential/AuthStorageError',
 )({
@@ -39,6 +52,12 @@ export class AuthStorageError extends Schema.Error<AuthStorageError>(
   }
 }
 
+/**
+ * Carries the AuthBusyError reason with its original failure provenance.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class AuthBusyError extends Schema.Error<AuthBusyError>(
   '@effect-harness/auth/Credential/AuthBusyError',
 )({
@@ -56,6 +75,12 @@ export class AuthBusyError extends Schema.Error<AuthBusyError>(
   }
 }
 
+/**
+ * Carries the AuthConfigurationError reason with its original failure provenance.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class AuthConfigurationError extends Schema.Error<AuthConfigurationError>(
   '@effect-harness/auth/Credential/AuthConfigurationError',
 )({
@@ -73,6 +98,12 @@ export class AuthConfigurationError extends Schema.Error<AuthConfigurationError>
   }
 }
 
+/**
+ * Carries the AuthMissingError reason with its original failure provenance.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class AuthMissingError extends Schema.Error<AuthMissingError>(
   '@effect-harness/auth/Credential/AuthMissingError',
 )({
@@ -90,6 +121,12 @@ export class AuthMissingError extends Schema.Error<AuthMissingError>(
   }
 }
 
+/**
+ * Carries the AuthCallbackError reason with its original failure provenance.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class AuthCallbackError extends Schema.Error<AuthCallbackError>(
   '@effect-harness/auth/Credential/AuthCallbackError',
 )({
@@ -107,6 +144,12 @@ export class AuthCallbackError extends Schema.Error<AuthCallbackError>(
   }
 }
 
+/**
+ * Carries the AuthDeniedError reason with its original failure provenance.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class AuthDeniedError extends Schema.Error<AuthDeniedError>(
   '@effect-harness/auth/Credential/AuthDeniedError',
 )({
@@ -124,6 +167,12 @@ export class AuthDeniedError extends Schema.Error<AuthDeniedError>(
   }
 }
 
+/**
+ * Carries the AuthTokenError reason with its original failure provenance.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class AuthTokenError extends Schema.Error<AuthTokenError>(
   '@effect-harness/auth/Credential/AuthTokenError',
 )({
@@ -143,6 +192,12 @@ export class AuthTokenError extends Schema.Error<AuthTokenError>(
   }
 }
 
+/**
+ * Carries the AuthNetworkError reason with its original failure provenance.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class AuthNetworkError extends Schema.Error<AuthNetworkError>(
   '@effect-harness/auth/Credential/AuthNetworkError',
 )({
@@ -160,6 +215,12 @@ export class AuthNetworkError extends Schema.Error<AuthNetworkError>(
   }
 }
 
+/**
+ * Carries the AuthIdentityError reason with its original failure provenance.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class AuthIdentityError extends Schema.Error<AuthIdentityError>(
   '@effect-harness/auth/Credential/AuthIdentityError',
 )({
@@ -177,6 +238,12 @@ export class AuthIdentityError extends Schema.Error<AuthIdentityError>(
   }
 }
 
+/**
+ * Carries the AuthPermissionError reason with its original failure provenance.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class AuthPermissionError extends Schema.Error<AuthPermissionError>(
   '@effect-harness/auth/Credential/AuthPermissionError',
 )({
@@ -194,6 +261,12 @@ export class AuthPermissionError extends Schema.Error<AuthPermissionError>(
   }
 }
 
+/**
+ * Carries the AuthExpiredError reason with its original failure provenance.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class AuthExpiredError extends Schema.Error<AuthExpiredError>(
   '@effect-harness/auth/Credential/AuthExpiredError',
 )({
@@ -211,6 +284,12 @@ export class AuthExpiredError extends Schema.Error<AuthExpiredError>(
   }
 }
 
+/**
+ * Carries the AuthProtocolError reason with its original failure provenance.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class AuthProtocolError extends Schema.Error<AuthProtocolError>(
   '@effect-harness/auth/Credential/AuthProtocolError',
 )({
@@ -228,6 +307,12 @@ export class AuthProtocolError extends Schema.Error<AuthProtocolError>(
   }
 }
 
+/**
+ * Defines AuthErrorReason for the Credential boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const AuthErrorReason = Schema.Union([
   AuthStorageError,
   AuthBusyError,
@@ -243,6 +328,12 @@ export const AuthErrorReason = Schema.Union([
   AuthProtocolError,
 ])
 export type AuthErrorReason = typeof AuthErrorReason.Type
+/**
+ * Defines AuthErrorCode for the Credential boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const AuthErrorCode = Schema.Literals([
   'storage',
   'busy',
@@ -258,6 +349,12 @@ export const AuthErrorCode = Schema.Literals([
   'protocol',
 ])
 export type AuthErrorCode = typeof AuthErrorCode.Type
+/**
+ * Describes the LegacyAuthErrorInput contract.
+ *
+ * @category types
+ * @since 0.0.0
+ */
 export interface LegacyAuthErrorInput {
   readonly reason: AuthErrorCode
   readonly message: string
@@ -265,7 +362,16 @@ export interface LegacyAuthErrorInput {
   readonly cause?: unknown
   readonly retryAfter?: import('effect/Duration').Duration | undefined
 }
-/** Explicit input adapter; the runtime reason is always a tagged leaf, never a literal code. */
+/**
+ * Constructs a tagged authentication reason from a legacy error input.
+ *
+ * **Details**
+ *
+ * Explicit input adapter; the runtime reason is always a tagged leaf, never a literal code.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const makeAuthErrorReason = ({
   reason,
   ...fields
@@ -298,6 +404,12 @@ export const makeAuthErrorReason = ({
   }
 }
 
+/**
+ * Carries the AuthError reason with its original failure provenance.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class AuthError extends Schema.Error<AuthError>('@effect-harness/auth/Credential/AuthError')(
   {
     _tag: Schema.tag('AuthError'),
@@ -330,14 +442,47 @@ export class AuthError extends Schema.Error<AuthError>('@effect-harness/auth/Cre
   }
 }
 
+/**
+ * Defines Secret for the Credential boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const Secret = Schema.RedactedFromValue(Schema.NonEmptyString)
-export const ApiKey = Schema.Struct({
-  kind: Schema.Literal('apiKey'),
-  provider: Schema.NonEmptyString,
-  apiKey: Secret,
-})
+export type Secret = typeof Secret.Type
+const ApiKeyFields = { provider: Schema.NonEmptyString, apiKey: Secret }
+/**
+ * Defines ApiKey for the Credential boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export const ApiKey = Schema.Struct({ kind: Schema.tag('apiKey'), ...ApiKeyFields }).pipe(
+  Schema.decodeTo(
+    Schema.TaggedStruct('apiKey', {
+      provider: Schema.NonEmptyString,
+      apiKey: Schema.toType(Secret),
+    }),
+    {
+      decode: SchemaGetter.transform((self) => ({
+        ...Struct.omit(self, ['kind']),
+        _tag: 'apiKey' as const,
+      })),
+      encode: SchemaGetter.transform((self) => ({
+        ...Struct.omit(self, ['_tag']),
+        kind: 'apiKey' as const,
+      })),
+    },
+  ),
+)
 export type ApiKey = typeof ApiKey.Type
-export const isApiKey: (value: unknown) => value is ApiKey = Schema.is(ApiKey)
+/**
+ * Tests whether an unknown value satisfies the decoded ApiKey schema.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isApiKey: (u: unknown) => u is ApiKey = Schema.is(ApiKey)
 const RegistrationFields = {
   provider: Schema.NonEmptyString,
   issuer: Schema.NonEmptyString,
@@ -347,14 +492,36 @@ const RegistrationFields = {
   email: Schema.optional(Schema.String),
   redirectUri: Schema.optional(Schema.String),
 }
+/**
+ * Defines Registration for the Credential boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const Registration = Schema.Struct({
-  kind: Schema.Literal('registration'),
+  kind: Schema.tag('registration'),
   ...RegistrationFields,
-})
+}).pipe(
+  Schema.decodeTo(Schema.TaggedStruct('registration', RegistrationFields), {
+    decode: SchemaGetter.transform((self) => ({
+      ...Struct.omit(self, ['kind']),
+      _tag: 'registration' as const,
+    })),
+    encode: SchemaGetter.transform((self) => ({
+      ...Struct.omit(self, ['_tag']),
+      kind: 'registration' as const,
+    })),
+  }),
+)
 export type Registration = typeof Registration.Type
-export const isRegistration: (value: unknown) => value is Registration = Schema.is(Registration)
-export const OAuth = Schema.Struct({
-  kind: Schema.Literal('oauth'),
+/**
+ * Tests whether an unknown value satisfies the decoded Registration schema.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isRegistration: (u: unknown) => u is Registration = Schema.is(Registration)
+const OAuthFields = {
   ...RegistrationFields,
   accessToken: Secret,
   refreshToken: Secret,
@@ -362,12 +529,46 @@ export const OAuth = Schema.Struct({
   scopes: Schema.Array(Schema.NonEmptyString),
   expiresAt: Time.EpochMillis,
   earliestRefreshAt: Schema.optional(Time.EpochMillis),
-})
+}
+/**
+ * Defines OAuth for the Credential boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export const OAuth = Schema.Struct({ kind: Schema.tag('oauth'), ...OAuthFields }).pipe(
+  Schema.decodeTo(
+    Schema.TaggedStruct('oauth', {
+      ...RegistrationFields,
+      accessToken: Schema.toType(Secret),
+      refreshToken: Schema.toType(Secret),
+      idToken: Schema.toType(Secret),
+      scopes: Schema.Array(Schema.NonEmptyString),
+      expiresAt: Schema.toType(Time.EpochMillis),
+      earliestRefreshAt: Schema.optional(Schema.toType(Time.EpochMillis)),
+    }),
+    {
+      decode: SchemaGetter.transform((self) => ({
+        ...Struct.omit(self, ['kind']),
+        _tag: 'oauth' as const,
+      })),
+      encode: SchemaGetter.transform((self) => ({
+        ...Struct.omit(self, ['_tag']),
+        kind: 'oauth' as const,
+      })),
+    },
+  ),
+)
 export type OAuth = typeof OAuth.Type
-export const isOAuth: (value: unknown) => value is OAuth = Schema.is(OAuth)
+/**
+ * Tests whether an unknown value satisfies the decoded OAuth schema.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isOAuth: (u: unknown) => u is OAuth = Schema.is(OAuth)
 /** Opaque OAuth grants carry no verified OIDC subject or identity token. The caller owns the storage key. */
-export const OpaqueOAuth = Schema.Struct({
-  kind: Schema.Literal('opaqueOAuth'),
+const OpaqueOAuthFields = {
   provider: Schema.NonEmptyString,
   authorizationServer: Schema.NonEmptyString,
   clientId: Schema.NonEmptyString,
@@ -376,14 +577,73 @@ export const OpaqueOAuth = Schema.Struct({
   scopes: Schema.Array(Schema.NonEmptyString),
   expiresAt: Time.EpochMillis,
   redirectUri: Schema.optional(Schema.String),
-})
+}
+/**
+ * Defines OpaqueOAuth for the Credential boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export const OpaqueOAuth = Schema.Struct({
+  kind: Schema.tag('opaqueOAuth'),
+  ...OpaqueOAuthFields,
+}).pipe(
+  Schema.decodeTo(
+    Schema.TaggedStruct('opaqueOAuth', {
+      provider: Schema.NonEmptyString,
+      authorizationServer: Schema.NonEmptyString,
+      clientId: Schema.NonEmptyString,
+      accessToken: Schema.toType(Secret),
+      refreshToken: Schema.toType(Secret),
+      scopes: Schema.Array(Schema.NonEmptyString),
+      expiresAt: Schema.toType(Time.EpochMillis),
+      redirectUri: Schema.optional(Schema.String),
+    }),
+    {
+      decode: SchemaGetter.transform((self) => ({
+        ...Struct.omit(self, ['kind']),
+        _tag: 'opaqueOAuth' as const,
+      })),
+      encode: SchemaGetter.transform((self) => ({
+        ...Struct.omit(self, ['_tag']),
+        kind: 'opaqueOAuth' as const,
+      })),
+    },
+  ),
+)
 export type OpaqueOAuth = typeof OpaqueOAuth.Type
-export const isOpaqueOAuth: (value: unknown) => value is OpaqueOAuth = Schema.is(OpaqueOAuth)
+/**
+ * Tests whether an unknown value satisfies the decoded OpaqueOAuth schema.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isOpaqueOAuth: (u: unknown) => u is OpaqueOAuth = Schema.is(OpaqueOAuth)
+/**
+ * Defines Credential for the Credential boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const Credential = Schema.Union([ApiKey, OAuth, Registration, OpaqueOAuth])
 export type Credential = typeof Credential.Type
-export const isCredential: (value: unknown) => value is Credential = Schema.is(Credential)
-/** Registration identity is provider, issued client and verified account, never email. */
+/**
+ * Tests whether an unknown value satisfies the decoded Credential schema.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isCredential: (u: unknown) => u is Credential = Schema.is(Credential)
+/**
+ * Returns the stable storage key for a verified account registration.
+ *
+ * **Details**
+ *
+ * Registration identity is provider, issued client and verified account, never email.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const accountKey = (
-  credential: Pick<OAuth, 'provider' | 'issuer' | 'clientId' | 'subject'>,
-): string =>
-  JSON.stringify([credential.provider, credential.issuer, credential.clientId, credential.subject])
+  self: Pick<OAuth, 'provider' | 'issuer' | 'clientId' | 'subject'>,
+): string => JSON.stringify([self.provider, self.issuer, self.clientId, self.subject])

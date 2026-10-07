@@ -1,24 +1,93 @@
+/**
+ * Incremental UTF-8 decoding with explicit byte-order-mark handling.
+ *
+ * @since 0.0.0
+ */
+import * as Pipeable from 'effect/Pipeable'
+import * as Inspectable from 'effect/Inspectable'
+import { FileError, FileUnknown } from '../Env.ts'
+import * as Effect from 'effect/Effect'
 import * as Predicate from 'effect/Predicate'
-// Adapted from pi-durable (MIT), pinned 636703a0; see ../LICENSE.pi.txt.
+// Adapted from pi-durable (MIT), pinned 636703a0; see package NOTICE.
+/**
+ * Creates a UTF-8 decoder that retains byte-order marks as range text.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const rangeDecoder = (): TextDecoder => new TextDecoder('utf-8', { ignoreBOM: true })
-export const startsWithBom = (bytes: Uint8Array): boolean =>
-  bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+/**
+ * Checks the initial UTF-8 byte-order-mark bytes.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const hasBom = (u: Uint8Array): boolean => u[0] === 0xef && u[1] === 0xbb && u[2] === 0xbf
 const TypeId = '~@effect-harness/harness/env/Decode'
-export interface Decoder {
+/**
+ * Decode decoder contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export interface Decoder extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [TypeId]: typeof TypeId
   readonly decoder: TextDecoder
   started: boolean
 }
-export const isDecoder = (input: unknown): input is Decoder => Predicate.hasProperty(input, TypeId)
+/**
+ * Checks whether an unknown value satisfies the Decoder contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isDecoder = (u: unknown): u is Decoder => Predicate.hasProperty(u, TypeId)
+/**
+ * Creates a fresh mutable incremental UTF-8 decoder with BOM state.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const make = (): Decoder => {
-  const handle: Decoder = { [TypeId]: TypeId, decoder: rangeDecoder(), started: false }
+  const handle: Decoder = Object.assign(Object.create(DecoderProto), {
+    [TypeId]: TypeId,
+    decoder: rangeDecoder(),
+    started: false,
+  })
   Object.defineProperty(handle, TypeId, { enumerable: false })
   return handle
 }
-export function decode(state: Decoder, bytes?: Uint8Array): string {
+/**
+ * Decodes and advances BOM state synchronously; native decoder or accessor faults can throw.
+ *
+ * @category unsafe
+ * @since 0.0.0
+ */
+export function decodeUnsafe(self: Decoder, bytes?: Uint8Array): string {
   const text =
-    bytes === undefined ? state.decoder.decode() : state.decoder.decode(bytes, { stream: true })
-  if (state.started || text === '') return text
-  state.started = true
+    bytes === undefined ? self.decoder.decode() : self.decoder.decode(bytes, { stream: true })
+  if (self.started || text === '') return text
+  self.started = true
   return text.startsWith('\ufeff') ? text.slice(1) : text
+}
+
+/**
+ * Decodes input through the typed boundary.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const decode = (self: Decoder, bytes?: Uint8Array): Effect.Effect<string, FileError> =>
+  Effect.try({
+    try: () => decodeUnsafe(self, bytes),
+    catch: (cause) =>
+      new FileError({ reason: new FileUnknown({ message: 'Unable to decode file bytes', cause }) }),
+  })
+
+const DecoderProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  toJSON(): unknown {
+    return { _id: '@effect-harness/harness/env/Decode/Decoder' }
+  },
 }

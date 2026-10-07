@@ -1,6 +1,12 @@
+/**
+ * Native abort execution and domain cancellation settlement.
+ *
+ * @since 0.0.0
+ */
+import * as Arr from 'effect/Array'
 import * as Option from 'effect/Option'
 import type * as Layer from 'effect/Layer'
-import * as Harness from '@effect-harness/harness/Executor'
+import * as Executor from '@effect-harness/harness/Executor'
 import * as Invocation from '@effect-harness/harness/Invocation'
 import * as Effect from 'effect/Effect'
 import * as Prompt from 'effect/ai/Prompt'
@@ -37,14 +43,19 @@ const Marked = Schema.Struct({
 const domainError = (error: import('../StorageError.ts').StorageError | ExecutionError) =>
   error._tag === 'StorageError' ? SubmissionExecutor.storageError(error) : error
 
-/** Durable intent precedes cancellation; bottom-up reconciliation also handles suspended or absent code. */
+/**
+ * Durable intent precedes cancellation; bottom-up reconciliation also handles suspended or absent code.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer: Layer.Layer<
   never,
   never,
   | Cancellation.Cancellation
   | Conversation.Configuration
   | Ownership.Declarations
-  | Harness.Executor
+  | Executor.Executor
   | SessionDirectory
   | WorkflowEngine.WorkflowEngine
 > = Abort.toLayer(
@@ -52,7 +63,7 @@ export const layer: Layer.Layer<
     const session = yield* (yield* SessionDirectory)
       .resolve(payload.sessionId)
       .pipe(Effect.mapError(SubmissionExecutor.storageError))
-    const executor = yield* Harness.Executor
+    const executor = yield* Executor.Executor
     const config = yield* Conversation.Configuration
     const declarations = yield* Ownership.Declarations
     const engine = yield* WorkflowEngine.WorkflowEngine
@@ -71,8 +82,8 @@ export const layer: Layer.Layer<
             const graph = yield* Ownership.readGraph(tx)
             const target: Ownership.Target =
               payload.target.type === 'conversation'
-                ? { kind: 'conversation', id: payload.target.id }
-                : { kind: 'task', id: payload.target.id }
+                ? { _tag: 'conversation', kind: 'conversation', id: payload.target.id }
+                : { _tag: 'task', kind: 'task', id: payload.target.id }
             const reachedOption = Ownership.reach(graph, target, payload.background)
             if (Option.isNone(reachedOption))
               return yield* new ExecutionError({
@@ -98,12 +109,16 @@ export const layer: Layer.Layer<
             // Acquire every inbox draft before the first table write in a multi-conversation commit.
             for (const conversation of reached.conversations)
               yield* tx.doc(Inbox.InboxDoc, { owner: conversation.id })
-            const notify: Record.SubmissionId[] = []
+            const notify: Array<Record.SubmissionId> = []
             for (const conversation of reached.conversations)
               notify.push(...(yield* Inbox.withdraw(tx, conversation.id)))
             for (const task of reached.tasks)
               if (!task.abortRequested)
-                yield* tx.write({ type: 'task', value: { ...task, abortRequested: true } })
+                yield* tx.write({
+                  _tag: 'task',
+                  type: 'task',
+                  value: { ...task, abortRequested: true },
+                })
             return { ...reached, deferred, notify }
           }),
           { key: `workflow/abort/mark/${executionId}` },
@@ -118,7 +133,7 @@ export const layer: Layer.Layer<
       yield* Activity.make({
         name: `provider-cancel/${request.taskId}`,
         execute: Effect.gen(function* () {
-          const pinned = yield* Schema.decodeEffect(Schema.toCodecJson(Harness.Request))(
+          const pinned = yield* Schema.decodeEffect(Schema.toCodecJson(Executor.Request))(
             request.request,
           )
           if (request.handle !== undefined) yield* executor.cancelDeferred(pinned, request.handle)
@@ -130,7 +145,7 @@ export const layer: Layer.Layer<
     }
     yield* Cancellation.cancel(payload.sessionId, marked)
 
-    const notify: Record.SubmissionId[] = [...marked.notify]
+    const notify: Array<Record.SubmissionId> = [...marked.notify]
     for (const previous of marked.tasks) {
       const settled = yield* Activity.make({
         name: `reconcile/${previous.id}`,
@@ -148,7 +163,7 @@ export const layer: Layer.Layer<
                 task.state.status === 'completing'
                   ? (task.state.outcome ?? null)
                   : { status: 'aborted' }
-              const ids: Record.SubmissionId[] = []
+              const ids: Array<Record.SubmissionId> = []
               if (task.kind === 'harness.tool' && task.state.status !== 'completing') {
                 const binding = yield* Schema.decodeUnknownEffect(Ownership.Binding)(
                   task.input,
@@ -173,16 +188,24 @@ export const layer: Layer.Layer<
                       }),
                   ),
                 )
-                const slot = live.tools?.find((slot) => slot.callId === input.callId)
+                const slot = Arr.findFirst(live.tools ?? [], (slot) => slot.callId === input.callId)
                 const execution = {
                   outcome: 'interrupted' as const,
                   result: {
                     isError: true,
                     content: [
-                      Prompt.textPart({ text: slot?.output ?? 'Tool execution interrupted' }),
+                      Prompt.textPart({
+                        text:
+                          Option.getOrUndefined(Option.map(slot, (found) => found.output)) ??
+                          'Tool execution interrupted',
+                      }),
                     ],
-                    ...(slot?.details === undefined ? {} : { details: slot.details }),
-                    ...(slot?.diagnostics === undefined ? {} : { diagnostics: slot.diagnostics }),
+                    ...(Option.isNone(slot) || slot.value.details === undefined
+                      ? {}
+                      : { details: slot.value.details }),
+                    ...(Option.isNone(slot) || slot.value.diagnostics === undefined
+                      ? {}
+                      : { diagnostics: slot.value.diagnostics }),
                   },
                 }
                 const entry = yield* ToolExecutor.appendResult(tx, input, execution)
@@ -207,8 +230,12 @@ export const layer: Layer.Layer<
                   })),
                 )
               } else if (task.kind === 'harness.compaction' && live.compactions !== undefined)
-                live.compactions = live.compactions.filter((status) => status.taskId !== task.id)
+                live.compactions = Arr.filter(
+                  live.compactions,
+                  (status) => status.taskId !== task.id,
+                )
               yield* tx.write({
+                _tag: 'task',
                 type: 'task',
                 value: { ...task, abortRequested: true, state: { status: 'terminal', outcome } },
               })
@@ -227,15 +254,14 @@ export const layer: Layer.Layer<
     const conversations = new Set(marked.conversations.map((conversation) => conversation.id))
     for (const task of marked.tasks) conversations.add(task.conversationId)
     notify.push(
-      ...finalState.submissions
-        .filter(
-          (submission) =>
-            conversations.has(submission.conversationId) &&
-            (submission.status === 'done' || submission.status === 'unanswered'),
-        )
-        .map((submission) => submission.id),
+      ...Arr.filter(
+        finalState.submissions,
+        (submission) =>
+          conversations.has(submission.conversationId) &&
+          (submission.status === 'done' || submission.status === 'unanswered'),
+      ).map((submission) => submission.id),
     )
-    yield* SubmissionExecutor.notify(session, [...new Set(notify)])
+    yield* SubmissionExecutor.notify(session, Arr.dedupe(notify))
     for (const task of marked.tasks) {
       const binding = yield* Schema.decodeUnknownEffect(Ownership.Binding)(task.input).pipe(
         Effect.result,

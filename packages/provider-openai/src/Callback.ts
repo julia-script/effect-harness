@@ -1,3 +1,9 @@
+/**
+ * Scoped OpenAI loopback authorization callback ownership.
+ *
+ * @since 0.0.0
+ */
+import * as Option from 'effect/Option'
 import * as Config from 'effect/Config'
 import {
   AuthCallbackError,
@@ -19,6 +25,12 @@ import * as HttpServerRequest from 'effect/http/HttpServerRequest'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
 import { ChatGpt, type Authorization } from './ChatGpt.ts'
 
+/**
+ * Identifies the Callback service in the Effect context.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class Callback extends Context.Service<
   Callback,
   {
@@ -27,7 +39,12 @@ export class Callback extends Context.Service<
   }
 >()('@effect-harness/provider-openai/Callback') {}
 
-/** Starts the listener before exposing the authorization URL; callers provide a scoped loopback HttpServer adapter. */
+/**
+ * Starts the listener before exposing the authorization URL; callers provide a scoped loopback HttpServer adapter.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer = (options?: {
   readonly account?: string | undefined
 }): Layer.Layer<Callback, AuthError, ChatGpt | HttpServer.HttpServer> =>
@@ -61,8 +78,11 @@ export const layer = (options?: {
                 reason: new AuthCallbackError({ cause, message: 'Invalid callback URL' }),
               }),
           }).pipe(Effect.option)
-          if (parsed._tag === 'None') return HttpServerResponse.empty({ status: 400 })
-          const url = parsed.value
+          const url = yield* Option.match(parsed, {
+            onNone: () => Effect.void,
+            onSome: Effect.succeed,
+          })
+          if (url === undefined) return HttpServerResponse.empty({ status: 400 })
           if (request.method !== 'GET' || url.pathname !== '/auth/callback')
             return HttpServerResponse.empty({ status: 404 })
           if (url.searchParams.get('state') !== authorization.state)
@@ -118,12 +138,17 @@ export const layer = (options?: {
                 ),
             }),
           )
-        }),
+        }).pipe(Effect.withSpan('Callback.await')),
       })
     }),
   )
 
-/** Resolves all layer options through the caller's ConfigProvider. */
+/**
+ * Resolves all layer options through the caller's ConfigProvider.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
 ): Layer.Layer<Callback, AuthError | Config.ConfigError, ChatGpt | HttpServer.HttpServer> =>

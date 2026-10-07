@@ -1,3 +1,8 @@
+/**
+ * Redacted OAuth token and revocation HTTP boundaries.
+ *
+ * @since 0.0.0
+ */
 import * as Redacted from 'effect/Redacted'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -10,6 +15,12 @@ import {
   AuthError,
   Secret,
 } from './Credential.ts'
+/**
+ * Defines TokenResponse for the Token boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const TokenResponse = Schema.Struct({
   access_token: Secret,
   refresh_token: Secret,
@@ -20,8 +31,19 @@ export const TokenResponse = Schema.Struct({
   earliest_refresh_at: Schema.optionalKey(Schema.Finite),
 })
 export type TokenResponse = typeof TokenResponse.Type
-export const isTokenResponse: (value: unknown) => value is TokenResponse = Schema.is(TokenResponse)
-/** Sensitive protocol fields stay wrapped until the final HTTP body serialization. */
+/**
+ * Tests whether an unknown value satisfies the decoded TokenResponse schema.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isTokenResponse: (u: unknown) => u is TokenResponse = Schema.is(TokenResponse)
+/**
+ * Sensitive protocol fields stay wrapped until the final HTTP body serialization.
+ *
+ * @category types
+ * @since 0.0.0
+ */
 export interface Fields {
   readonly [key: string]: string | Redacted.Redacted<string> | undefined
   readonly refresh_token?: Redacted.Redacted<string> | undefined
@@ -32,7 +54,16 @@ export interface Fields {
   readonly state?: Redacted.Redacted<string> | undefined
 }
 
-/** Failures omit raw requests and response bodies, which can contain credentials. */
+/**
+ * Requests an OAuth token using the protocol form-encoded endpoint.
+ *
+ * **Details**
+ *
+ * Failures omit raw requests and response bodies, which can contain credentials.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const request = Effect.fnUntraced(function* (
   endpoint: string,
   fields: Fields,
@@ -95,6 +126,12 @@ export const request = Effect.fnUntraced(function* (
     })
   return token
 })
+/**
+ * Revokes a token using the protocol form-encoded endpoint.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const revoke = Effect.fnUntraced(function* (
   endpoint: string,
   fields: Fields,

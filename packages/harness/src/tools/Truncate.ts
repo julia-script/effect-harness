@@ -1,63 +1,72 @@
-// Adapted from pi-durable (MIT), pinned 636703a0; see ../LICENSE.pi.txt.
+/**
+ * Whole-line text truncation with explicit byte and line counts.
+ *
+ * @since 0.0.0
+ */
+import { dual } from 'effect/Function'
+// Adapted from pi-durable (MIT), pinned 636703a0; see package NOTICE.
 /**
  * Shared truncation utilities for tool outputs.
+ *
+ * **Details**
  *
  * Truncation is based on two independent limits - whichever is hit first wins:
  * - Line limit (default: 2000 lines)
  * - Byte limit (default: 50KB)
  *
- * Never returns partial lines. Tool output streams are bounded by `src/harness/output.ts` instead.
+ * Never returns partial lines. Tool output streams are bounded by `Output` instead.
+ *
+ * @category constants
+ * @since 0.0.0
  */
-
 export const DEFAULT_MAX_LINES = 2000
+/**
+ * Default UTF-8 text truncation limit in bytes.
+ *
+ * @category constants
+ * @since 0.0.0
+ */
 export const DEFAULT_MAX_BYTES = 50 * 1024 // 50KB
 
-export interface TruncationResult {
-  /** The truncated content */
-  content: string
-  /** Whether truncation occurred */
-  truncated: boolean
-  /** Which limit was hit: "lines", "bytes", or null if not truncated */
-  truncatedBy: 'lines' | 'bytes' | null
-  /** Total number of lines in the original content */
-  totalLines: number
-  /** Total number of bytes in the original content */
-  totalBytes: number
-  /** Number of complete lines in the truncated output */
-  outputLines: number
-  /** Number of bytes in the truncated output */
-  outputBytes: number
-  /** Whether the last line was partially truncated (only for tail truncation edge case) */
-  lastLinePartial: boolean
-  /** Whether the first line exceeded the byte limit (for head truncation) */
-  firstLineExceedsLimit: boolean
-  /** The max lines limit that was applied */
-  maxLines: number
-  /** The max bytes limit that was applied */
-  maxBytes: number
-}
+/**
+ * Truncate truncation result contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type TruncationResult = truncateHead.Result
 
-export interface TruncationOptions {
-  /** Maximum number of lines (default: 2000) */
-  maxLines?: number
-  /** Maximum number of bytes (default: 50KB) */
-  maxBytes?: number
-}
+/**
+ * Truncate truncation options contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type TruncationOptions = truncateHead.Options
 
 const encoder = new TextEncoder()
-export function utf8ByteLength(content: string): number {
-  return encoder.encode(content).length
+/**
+ * Returns the UTF-8 byte length of text.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export function utf8ByteLength(self: string): number {
+  return encoder.encode(self).length
 }
 
-function splitLinesForCounting(content: string): string[] {
-  if (content.length === 0) return []
-  const lines = content.split('\n')
-  if (content.endsWith('\n')) lines.pop()
+function splitLinesForCounting(self: string): Array<string> {
+  if (self.length === 0) return []
+  const lines = self.split('\n')
+  if (self.endsWith('\n')) lines.pop()
   return lines
 }
 
 /**
- * Format bytes as human-readable size.
+ * Formats bytes as a readable size.
+ *
+ * @category combinators
+ * @since 0.0.0
  */
 export function formatSize(bytes: number): string {
   if (bytes < 1024) {
@@ -76,21 +85,38 @@ export function formatSize(bytes: number): string {
  * Never returns partial lines. If first line exceeds byte limit,
  * returns empty content with firstLineExceedsLimit=true.
  */
-export function truncateHead(content: string, options: TruncationOptions = {}): TruncationResult {
+function truncateHeadImpl(self: string, options: TruncationOptions = {}): TruncationResult {
   return truncateHeadOf(
-    content,
-    { lines: splitLinesForCounting(content).length, bytes: utf8ByteLength(content) },
+    self,
+    { lines: splitLinesForCounting(self).length, bytes: utf8ByteLength(self) },
     options,
   )
 }
+/**
+ * Returns complete leading lines within the requested text limits.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const truncateHead: {
+  (options?: TruncationOptions): (self: string) => TruncationResult
+  (self: string, options?: TruncationOptions): TruncationResult
+} = dual((args) => typeof args[0] === 'string', truncateHeadImpl)
 
 /**
  * `truncateHead` of a text known by a prefix and its totals (`lines` counted like `truncateHead`, ignoring a trailing
- * newline). The prefix must be the whole text, or longer than `maxBytes + 1` UTF-8 bytes, or hold at least `maxLines`
+ * newline).
+ *
+ * **Details**
+ *
+ * The prefix must be the whole text, or longer than `maxBytes + 1` UTF-8 bytes, or hold at least `maxLines`
  * newlines; then the result equals `truncateHead` of the whole text.
+ *
+ * @category combinators
+ * @since 0.0.0
  */
-export function truncateHeadOf(
-  prefix: string,
+function truncateHeadOfImpl(
+  self: string,
   totals: { readonly lines: number; readonly bytes: number },
   options: TruncationOptions = {},
 ): TruncationResult {
@@ -98,13 +124,13 @@ export function truncateHeadOf(
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES
 
   const totalBytes = totals.bytes
-  const lines = splitLinesForCounting(prefix)
+  const lines = splitLinesForCounting(self)
   const totalLines = totals.lines
 
   // Check if no truncation needed
   if (totalLines <= maxLines && totalBytes <= maxBytes) {
     return {
-      content: prefix,
+      content: self,
       truncated: false,
       truncatedBy: null,
       totalLines,
@@ -137,7 +163,7 @@ export function truncateHeadOf(
   }
 
   // Collect complete lines that fit
-  const outputLinesArr: string[] = []
+  const outputLinesArr: Array<string> = []
   let outputBytesCount = 0
   let truncatedBy: 'lines' | 'bytes' = 'lines'
 
@@ -174,3 +200,72 @@ export function truncateHeadOf(
     maxBytes,
   }
 }
+
+/**
+ * Type contracts owned by `truncateHead`.
+ *
+ * @category utility types
+ * @since 0.0.0
+ */
+export declare namespace truncateHead {
+  /**
+   * truncateHead result type contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface Result {
+    /** The truncated content */
+    readonly content: string
+    /** Whether truncation occurred */
+    readonly truncated: boolean
+    /** Which limit was hit: "lines", "bytes", or null if not truncated */
+    readonly truncatedBy: 'lines' | 'bytes' | null
+    /** Total number of lines in the original content */
+    readonly totalLines: number
+    /** Total number of bytes in the original content */
+    readonly totalBytes: number
+    /** Number of complete lines in the truncated output */
+    readonly outputLines: number
+    /** Number of bytes in the truncated output */
+    readonly outputBytes: number
+    /** Whether the last line was partially truncated (only for tail truncation edge case) */
+    readonly lastLinePartial: boolean
+    /** Whether the first line exceeded the byte limit (for head truncation) */
+    readonly firstLineExceedsLimit: boolean
+    /** The max lines limit that was applied */
+    readonly maxLines: number
+    /** The max bytes limit that was applied */
+    readonly maxBytes: number
+  }
+  /**
+   * Configuration accepted by truncateHead.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface Options {
+    /** Maximum number of lines (default: 2000) */
+    readonly maxLines?: number | undefined
+    /** Maximum number of bytes (default: 50KB) */
+    readonly maxBytes?: number | undefined
+  }
+}
+
+/**
+ * Truncates a known leading text window using complete original byte and line totals.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const truncateHeadOf: {
+  (
+    totals: { readonly lines: number; readonly bytes: number },
+    options?: TruncationOptions,
+  ): (self: string) => TruncationResult
+  (
+    self: string,
+    totals: { readonly lines: number; readonly bytes: number },
+    options?: TruncationOptions,
+  ): TruncationResult
+} = dual((args) => typeof args[0] === 'string', truncateHeadOfImpl)

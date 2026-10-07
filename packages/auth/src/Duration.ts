@@ -1,9 +1,19 @@
+/**
+ * Guarded normalization of native and external duration inputs.
+ *
+ * @since 0.0.0
+ */
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import { AuthConfigurationError, AuthError } from './Credential.ts'
 
-/** Parses a finite option span once and copies native representations into a trusted Duration. */
+/**
+ * Parses a finite option span once and copies native representations into a trusted Duration.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const fromInput = Effect.fnUntraced(function* (
   input: Duration.Input,
   message: string,
@@ -34,5 +44,5 @@ export const fromInput = Effect.fnUntraced(function* (
       ),
     catch: invalid,
   })
-  return Option.isSome(decoded) ? decoded.value : yield* invalid()
+  return yield* Effect.fromOption(decoded, invalid)
 })

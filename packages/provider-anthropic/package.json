@@ -24,9 +24,14 @@
     "typetest": "cd ../.. && tstyche packages/provider-anthropic/typetest"
   },
   "dependencies": {
-    "@effect-harness/auth": "workspace:*",
-    "@effect-harness/harness": "workspace:*",
-    "@effect/ai-anthropic": "4.0.1",
+    "@effect-harness/auth": "workspace:^",
+    "@effect-harness/harness": "workspace:^",
+    "@effect/ai-anthropic": "4.0.1"
+  },
+  "devDependencies": {
     "effect": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "^4.0.1"
   }
 }

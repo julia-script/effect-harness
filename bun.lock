@@ -37,20 +37,30 @@
       "name": "@effect-harness/auth",
       "version": "0.0.0",
       "dependencies": {
-        "effect": "catalog:",
         "jose": "6.2.12",
+      },
+      "devDependencies": {
+        "effect": "catalog:",
+      },
+      "peerDependencies": {
+        "effect": "^4.0.1",
       },
     },
     "packages/durable": {
       "name": "@effect-harness/durable",
       "version": "0.0.0",
       "dependencies": {
-        "@effect-harness/harness": "workspace:*",
+        "@effect-harness/harness": "workspace:^",
+      },
+      "devDependencies": {
+        "@effect/sql-sqlite-bun": "4.0.1",
+        "@effect/sql-sqlite-node": "4.0.1",
         "effect": "catalog:",
       },
       "peerDependencies": {
         "@effect/sql-sqlite-bun": "4.0.1",
         "@effect/sql-sqlite-node": "4.0.1",
+        "effect": "^4.0.1",
       },
       "optionalPeers": [
         "@effect/sql-sqlite-bun",
@@ -62,10 +72,14 @@
       "version": "0.0.0",
       "dependencies": {
         "diff": "^8.0.2",
+      },
+      "devDependencies": {
+        "@effect/platform-node": "4.0.1",
         "effect": "catalog:",
       },
       "peerDependencies": {
         "@effect/platform-node": "4.0.1",
+        "effect": "^4.0.1",
       },
       "optionalPeers": [
         "@effect/platform-node",
@@ -75,28 +89,43 @@
       "name": "@effect-harness/provider-anthropic",
       "version": "0.0.0",
       "dependencies": {
-        "@effect-harness/auth": "workspace:*",
-        "@effect-harness/harness": "workspace:*",
+        "@effect-harness/auth": "workspace:^",
+        "@effect-harness/harness": "workspace:^",
         "@effect/ai-anthropic": "4.0.1",
+      },
+      "devDependencies": {
         "effect": "catalog:",
+      },
+      "peerDependencies": {
+        "effect": "^4.0.1",
       },
     },
     "packages/provider-claude-code": {
       "name": "@effect-harness/provider-claude-code",
       "version": "0.0.0",
       "dependencies": {
-        "@effect-harness/harness": "workspace:*",
+        "@effect-harness/harness": "workspace:^",
+      },
+      "devDependencies": {
         "effect": "catalog:",
+      },
+      "peerDependencies": {
+        "effect": "^4.0.1",
       },
     },
     "packages/provider-openai": {
       "name": "@effect-harness/provider-openai",
       "version": "0.0.0",
       "dependencies": {
-        "@effect-harness/auth": "workspace:*",
-        "@effect-harness/harness": "workspace:*",
+        "@effect-harness/auth": "workspace:^",
+        "@effect-harness/harness": "workspace:^",
         "@effect/ai-openai": "4.0.1",
+      },
+      "devDependencies": {
         "effect": "catalog:",
+      },
+      "peerDependencies": {
+        "effect": "^4.0.1",
       },
     },
   },

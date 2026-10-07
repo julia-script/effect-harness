@@ -1,40 +1,30 @@
-import * as BunCrypto from '@effect/platform-bun/BunCrypto'
-import * as BunRuntime from '@effect/platform-bun/BunRuntime'
-import * as BunServices from '@effect/platform-bun/BunServices'
-import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
-import * as DurableExecutor from '@effect-harness/durable/Executor'
-import * as Conversation from '@effect-harness/durable/Conversation'
-import * as Record from '@effect-harness/durable/Record'
-import * as Identity from '@effect-harness/durable/Identity'
-import * as Session from '@effect-harness/durable/Session'
-import * as Directory from '@effect-harness/durable/SessionDirectory'
-import * as SqlStore from '@effect-harness/durable/storage/Sqlite'
-import { Submission } from '@effect-harness/durable/workflow/Submission'
-import * as Harness from '@effect-harness/harness/Executor'
-import { ToolError } from '@effect-harness/harness/Error'
-import * as Invocation from '@effect-harness/harness/Invocation'
-import * as Model from '@effect-harness/harness/Model'
-import * as Registry from '@effect-harness/harness/Registry'
-import * as Tool from '@effect-harness/harness/Tool'
-import * as Context from 'effect/Context'
-import * as Array from 'effect/Array'
-import * as ConfigProvider from 'effect/ConfigProvider'
-import * as Console from 'effect/Console'
-import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
-import * as Option from 'effect/Option'
-import * as Ref from 'effect/Ref'
-import * as Schema from 'effect/Schema'
-import * as Stream from 'effect/Stream'
-import * as NativeModel from 'effect/ai/LanguageModel'
-import * as Prompt from 'effect/ai/Prompt'
-import * as Response from 'effect/ai/Response'
-import * as AiTool from 'effect/ai/Tool'
-import * as Toolkit from 'effect/ai/Toolkit'
-import * as ClusterWorkflowEngine from 'effect/cluster/ClusterWorkflowEngine'
-import * as SingleRunner from 'effect/cluster/SingleRunner'
-import * as Activity from 'effect/workflow/Activity'
-import * as Workflow from 'effect/workflow/Workflow'
+import { BunCrypto, BunRuntime, BunServices } from '@effect/platform-bun'
+import { SqliteClient } from '@effect/sql-sqlite-bun'
+import { Conversation, Identity, Record, Session, SessionDirectory } from '@effect-harness/durable'
+import { Executor as DurableExecutor } from '@effect-harness/durable'
+// effect-review-allow P9-namespace-alias-equals-module: durable Executor and harness Executor share the same basename; the aliases distinguish their Layer composition.
+import { SqliteStore } from '@effect-harness/durable/storage'
+import { Submission } from '@effect-harness/durable/workflow'
+import { Invocation, Model, Registry, Tool, ToolError } from '@effect-harness/harness'
+import { Executor as HarnessExecutor } from '@effect-harness/harness'
+// effect-review-allow P9-namespace-alias-equals-module: harness Executor and durable Executor share the same basename; the aliases distinguish their Layer composition.
+import {
+  Array as Arr,
+  ConfigProvider,
+  Console,
+  Context,
+  Effect,
+  Layer,
+  Option,
+  Ref,
+  Schema,
+  Stream,
+} from 'effect'
+import { LanguageModel, Prompt, Response, Toolkit } from 'effect/ai'
+import { Tool as AiTool } from 'effect/ai'
+// effect-review-allow P9-namespace-alias-equals-module: Effect AI Tool and harness Tool share the same basename; AiTool declares native tools while Tool binds harness replay policy.
+import { ClusterWorkflowEngine, SingleRunner } from 'effect/cluster'
+import { Activity, Workflow } from 'effect/workflow'
 import * as Database from './Database.ts'
 
 // An application-authored Workflow uses the ordinary native declaration and executor API.
@@ -72,7 +62,7 @@ const checkUnknownToolBoundary = Effect.gen(function* () {
     params: { text: 'preserved' },
     providerExecuted: false,
   }
-  const model = yield* NativeModel.make({
+  const model = yield* LanguageModel.make({
     generateText: () => Effect.succeed([call, finish('tool-calls')]),
     streamText: () => Stream.fromIterable([call, finish('tool-calls')]),
   })
@@ -107,13 +97,13 @@ const checkUnknownToolBoundary = Effect.gen(function* () {
   const generated = yield* model.generateText(options)
   const streamed = yield* Stream.runCollect(model.streamText(options))
   const unknownCall = Response.ToolCallPart('unregistered', Schema.Struct({ text: Schema.String }))
-  const generatedCall = yield* Array.head(generated.toolCalls).pipe(
+  const generatedCall = yield* Arr.head(generated.toolCalls).pipe(
     Option.match({
       onNone: () => Effect.die('Native generation omitted the unknown tool call'),
       onSome: Effect.succeed,
     }),
   )
-  const streamedPart = yield* Array.findFirst(streamed, Schema.is(unknownCall)).pipe(
+  const streamedPart = yield* Arr.findFirst(streamed, Schema.is(unknownCall)).pipe(
     Option.match({
       onNone: () => Effect.die('Native stream omitted the unknown tool call'),
       onSome: Effect.succeed,
@@ -133,7 +123,7 @@ const main = Effect.gen(function* () {
   const requestId = yield* Schema.decodeEffect(Identity.RequestId)('uppercase-v1')
   const modelCalls = yield* Ref.make(0)
   const toolCalls = yield* Ref.make(0)
-  const native = yield* NativeModel.make({
+  const native = yield* LanguageModel.make({
     generateText: () => Effect.succeed([{ type: 'text', text: 'summary' }, finish('stop')]),
     streamText: () =>
       Stream.unwrap(
@@ -171,7 +161,7 @@ const main = Effect.gen(function* () {
     description: 'Convert text to uppercase without external side effects.',
     parameters: Schema.Struct({ text: Schema.String }),
     success: Schema.String,
-    failure: ToolError,
+    failure: ToolError.ToolError,
   }).addDependency(Invocation.ToolCall)
   const toolkit = Toolkit.make(uppercase)
   const tools = yield* Tool.bind(toolkit, { uppercase: { replay: 'safe' } }).pipe(
@@ -213,14 +203,14 @@ const main = Effect.gen(function* () {
     Layer.provide(registry),
     Layer.provide(BunCrypto.layer),
   )
-  const session = Session.layer.pipe(Layer.provideMerge(SqlStore.layer), Layer.provide(creation))
-  const directory = Directory.layerSingle(sessionId).pipe(Layer.provideMerge(session))
+  const session = Session.layer.pipe(Layer.provideMerge(SqliteStore.layer), Layer.provide(creation))
+  const directory = SessionDirectory.layerSingle(sessionId).pipe(Layer.provideMerge(session))
   const runtime = Layer.mergeAll(DurableExecutor.layer, greetingExecutor).pipe(
     Layer.provideMerge(engine),
     Layer.provideMerge(directory),
     Layer.provide(configuration),
     Layer.provideMerge(catalogue),
-    Layer.provide(Harness.layer.pipe(Layer.provide(Layer.mergeAll(registry, catalogue)))),
+    Layer.provide(HarnessExecutor.layer.pipe(Layer.provide(Layer.mergeAll(registry, catalogue)))),
   )
   yield* Effect.gen(function* () {
     const current = yield* Session.Session
@@ -238,13 +228,13 @@ const main = Effect.gen(function* () {
       conversationId: Record.ROOT_CONVERSATION_ID,
       requestId,
       submission: {
+        _tag: 'input' as const,
         type: 'input' as const,
         message: Prompt.userMessage({ content: [Prompt.textPart({ text: 'uppercase hello' })] }),
       },
     }
-    const result = yield* Submission.execute(payload)
-    if (result.status !== 'done' || result.type !== 'input')
-      return yield* Effect.die('Submission did not finish')
+    const result = yield* Submission.Submission.execute(payload)
+    if (result._tag !== 'InputDone') return yield* Effect.die('Submission did not finish')
     yield* Conversation.awaitIdle(current, root.id)
     const answer = yield* current.entry(result.answer, root.id).pipe(
       Effect.flatMap(
@@ -266,12 +256,12 @@ const main = Effect.gen(function* () {
     )
       return yield* Effect.die('Unexpected committed model answer')
     const counts = { model: yield* Ref.get(modelCalls), tool: yield* Ref.get(toolCalls) }
-    const executionId = yield* Submission.execute(payload, { discard: true })
-    const polled = yield* Submission.poll(executionId)
+    const executionId = yield* Submission.Submission.execute(payload, { discard: true })
+    const polled = yield* Submission.Submission.poll(executionId)
     if (Option.isNone(polled) || polled.value._tag !== 'Complete')
       return yield* Effect.die('Native poll did not observe completion')
-    yield* Submission.resume(executionId)
-    const replayed = yield* Submission.execute(payload)
+    yield* Submission.Submission.resume(executionId)
+    const replayed = yield* Submission.Submission.execute(payload)
     if (
       replayed.id !== result.id ||
       (yield* Ref.get(modelCalls)) !== counts.model ||

@@ -1,3 +1,11 @@
+/**
+ * Single-use Anthropic OAuth consent, refresh and scoped browser callbacks.
+ *
+ * @since 0.0.0
+ */
+import * as Arr from 'effect/Array'
+import * as String from 'effect/String'
+// effect-review-allow P9-namespace-alias-equals-module: @effect-harness/auth/Duration and effect/Duration both bind Duration; AuthDuration distinguishes the concepts.
 import * as AuthDuration from '@effect-harness/auth/Duration'
 import * as Config from 'effect/Config'
 import {
@@ -31,12 +39,54 @@ import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 
 // Protocol adapted from Pi commit 636703a0 (MIT); see package NOTICE.
+/**
+ * Defines clientId for the OAuth boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const clientId = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
+/**
+ * Defines authorizationServer for the OAuth boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const authorizationServer = 'https://platform.claude.com'
+/**
+ * Defines authorizeUrl for the OAuth boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const authorizeUrl = 'https://claude.ai/oauth/authorize'
+/**
+ * Defines tokenUrl for the OAuth boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const tokenUrl = `${authorizationServer}/v1/oauth/token`
+/**
+ * Defines browserRedirectUri for the OAuth boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const browserRedirectUri = 'http://localhost:53692/callback'
+/**
+ * Defines copyCodeRedirectUri for the OAuth boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const copyCodeRedirectUri = `${authorizationServer}/oauth/code/callback`
+/**
+ * Defines scopes for the OAuth boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const scopes = [
   'org:create_api_key',
   'user:profile',
@@ -45,6 +95,12 @@ export const scopes = [
   'user:mcp_servers',
   'user:file_upload',
 ] as const
+/**
+ * Describes the Authorization contract.
+ *
+ * @category types
+ * @since 0.0.0
+ */
 export interface Authorization {
   readonly url: Redacted.Redacted<string>
   /** Pi uses the PKCE verifier as state, so this value is a secret too. */
@@ -52,23 +108,50 @@ export interface Authorization {
   readonly redirectUri: string
   readonly expiresAt: DateTime.Utc
 }
-export interface Service {
-  readonly begin: (options: {
-    readonly account: string
-    readonly method?: 'browser' | 'copyCode'
-  }) => Effect.Effect<Authorization, AuthError>
-  readonly complete: (
-    state: Redacted.Redacted<string>,
-    input: string,
-  ) => Effect.Effect<OpaqueOAuth, AuthError>
-  readonly refresh: (
-    account: string,
-    options?: { readonly force?: boolean },
-  ) => Effect.Effect<OpaqueOAuth, AuthError>
-  readonly accessToken: (account: string) => Effect.Effect<Redacted.Redacted<string>, AuthError>
-  readonly signOut: (account: string) => Effect.Effect<void, AuthError>
-  readonly cancel: (state: Redacted.Redacted<string>) => Effect.Effect<void>
+/**
+ * Types owned by the OAuth concept.
+ *
+ * @category types
+ * @since 0.0.0
+ */
+export declare namespace OAuth {
+  /**
+   * Describes the Service contract.
+   *
+   * @category types
+   * @since 0.0.0
+   */
+  export interface Service {
+    readonly begin: (options: {
+      readonly account: string
+      readonly method?: 'browser' | 'copyCode' | undefined
+    }) => Effect.Effect<Authorization, AuthError>
+    readonly complete: (
+      state: Redacted.Redacted<string>,
+      input: string,
+    ) => Effect.Effect<OpaqueOAuth, AuthError>
+    readonly refresh: (
+      account: string,
+      options?: { readonly force?: boolean | undefined },
+    ) => Effect.Effect<OpaqueOAuth, AuthError>
+    readonly accessToken: (account: string) => Effect.Effect<Redacted.Redacted<string>, AuthError>
+    readonly signOut: (account: string) => Effect.Effect<void, AuthError>
+    readonly cancel: (state: Redacted.Redacted<string>) => Effect.Effect<void>
+  }
 }
+/**
+ * Describes the Service contract.
+ *
+ * @category types
+ * @since 0.0.0
+ */
+export type Service = OAuth.Service
+/**
+ * Identifies the OAuth service in the Effect context.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class OAuth extends Context.Service<OAuth, Service>()(
   '@effect-harness/provider-anthropic/OAuth',
 ) {}
@@ -98,17 +181,22 @@ const permission = (value: ReadonlyArray<string>) =>
     ? Effect.void
     : Effect.fail(failure('permission', 'Anthropic inference scope was not granted'))
 const splitScopes = (value: string): ReadonlyArray<string> => [
-  ...new Set(value.split(/\s+/).filter(Boolean)),
+  ...Arr.dedupe(value.split(/\s+/).filter(String.isNonEmpty)),
 ]
 const matches = (value: OpaqueOAuth) =>
   value.provider === 'anthropic' &&
   value.authorizationServer === authorizationServer &&
   value.clientId === clientId
 
-/** Portable explicit consent service. It never opens a browser or reads another application's credentials. */
+/**
+ * Portable explicit consent service. It never opens a browser or reads another application's credentials.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer = (options?: {
-  readonly authorizationLifetimeMs?: Duration.Input
-  readonly refreshSkewMs?: Duration.Input
+  readonly authorizationLifetimeMs?: Duration.Input | undefined
+  readonly refreshSkewMs?: Duration.Input | undefined
 }): Layer.Layer<OAuth, AuthError, CredentialStore | Crypto.Crypto | HttpClient.HttpClient> =>
   Layer.effect(OAuth)(
     Effect.gen(function* () {
@@ -196,7 +284,7 @@ export const layer = (options?: {
         if (!Number.isSafeInteger(DateTime.toEpochMillis(expiresAt)))
           return yield* failure('protocol', 'Invalid Anthropic token lifetime')
         return {
-          kind: 'opaqueOAuth',
+          _tag: 'opaqueOAuth',
           provider: 'anthropic',
           authorizationServer,
           clientId,
@@ -211,13 +299,11 @@ export const layer = (options?: {
         const updated = yield* store.modify(
           account,
           Effect.fnUntraced(function* (current) {
-            if (
-              Option.isNone(current) ||
-              current.value.kind !== 'opaqueOAuth' ||
-              !matches(current.value)
+            const previous = yield* Effect.fromOption(current, () =>
+              failure('missing', 'Anthropic account credential was not found'),
             )
+            if (previous._tag !== 'opaqueOAuth' || !matches(previous))
               return yield* failure('missing', 'Anthropic account credential was not found')
-            const previous = current.value
             yield* permission(previous.scopes)
             if (
               !refreshOptions?.force &&
@@ -235,7 +321,7 @@ export const layer = (options?: {
             return yield* credential(token, previous.scopes, previous.redirectUri)
           }),
         )
-        if (updated?.kind !== 'opaqueOAuth')
+        if (updated?._tag !== 'opaqueOAuth')
           return yield* failure('missing', 'Anthropic account credential was not found')
         return updated
       })
@@ -284,10 +370,10 @@ export const layer = (options?: {
         }),
         complete: Effect.fnUntraced(function* (secretState, input) {
           const state = secretState
-          const current = HashMap.get(yield* Ref.get(pending), state)
-          if (Option.isNone(current))
-            return yield* failure('callback', 'Unknown or consumed Anthropic authorization')
-          const attempt = current.value
+          const attempt = yield* Effect.fromOption(
+            HashMap.get(yield* Ref.get(pending), state),
+            () => failure('callback', 'Unknown or consumed Anthropic authorization'),
+          )
           if (DateTime.isLessThanOrEqualTo(attempt.authorization.expiresAt, yield* DateTime.now)) {
             yield* Ref.update(pending, (attempts) =>
               Option.exists(HashMap.get(attempts, state), (current) => current === attempt)
@@ -370,6 +456,12 @@ export const layer = (options?: {
     }),
   )
 
+/**
+ * Identifies the Callback service in the Effect context.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class Callback extends Context.Service<
   Callback,
   {
@@ -378,7 +470,12 @@ export class Callback extends Context.Service<
   }
 >()('@effect-harness/provider-anthropic/OAuth/Callback') {}
 
-/** Opt-in browser listener. Caller provides a scoped native HttpServer bound to 127.0.0.1:53692. */
+/**
+ * Opt-in browser listener. Caller provides a scoped native HttpServer bound to 127.0.0.1:53692.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerCallback = (options: {
   readonly account: string
 }): Layer.Layer<Callback, AuthError, HttpServer.HttpServer | OAuth> =>
@@ -408,17 +505,14 @@ export const layerCallback = (options: {
             try: () => new URL(request.url, browserRedirectUri),
             catch: (cause) => failure('callback', 'Invalid Anthropic callback', undefined, cause),
           }).pipe(Effect.option)
-          if (
-            Option.isNone(parsed) ||
-            request.method !== 'GET' ||
-            parsed.value.pathname !== '/callback'
-          )
+          const url = yield* Option.match(parsed, {
+            onNone: () => Effect.void,
+            onSome: Effect.succeed,
+          })
+          if (url === undefined || request.method !== 'GET' || url.pathname !== '/callback')
             return HttpServerResponse.empty({ status: 404 })
           if (
-            !Equal.equals(
-              Redacted.make(parsed.value.searchParams.get('state') ?? ''),
-              authorization.state,
-            )
+            !Equal.equals(Redacted.make(url.searchParams.get('state') ?? ''), authorization.state)
           )
             return HttpServerResponse.text('Invalid sign-in attempt', { status: 400 })
           const exit = yield* Effect.uninterruptibleMask((restore) =>
@@ -426,7 +520,7 @@ export const layerCallback = (options: {
               Effect.flatMap((alreadyClaimed) =>
                 alreadyClaimed
                   ? restore(Deferred.await(result)).pipe(Effect.exit)
-                  : restore(auth.complete(authorization.state, parsed.value.href)).pipe(
+                  : restore(auth.complete(authorization.state, url.href)).pipe(
                       Effect.exit,
                       Effect.tap((exit) => Deferred.done(result, exit)),
                     ),
@@ -468,12 +562,17 @@ export const layerCallback = (options: {
                   ),
             }),
           )
-        }),
+        }).pipe(Effect.withSpan('Callback.await')),
       })
     }),
   )
 
-/** Resolves all layer options through the caller's ConfigProvider. */
+/**
+ * Resolves all layer options through the caller's ConfigProvider.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
 ): Layer.Layer<
@@ -487,7 +586,12 @@ export const layerConfig = (
     }),
   )
 
-/** Resolves all layerCallback options through the caller's ConfigProvider. */
+/**
+ * Resolves all layerCallback options through the caller's ConfigProvider.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerCallbackConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layerCallback>[0]>>,
 ): Layer.Layer<Callback, AuthError | Config.ConfigError, OAuth | HttpServer.HttpServer> =>

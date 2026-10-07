@@ -1,21 +1,22 @@
+// effect-review-allow P8-tests-import-public-specifiers: these adversarial tests exercise private storage validation seams that intentionally have no public package export; all public behavior uses package specifiers.
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
-import * as Document from '../../src/Document.ts'
-import * as Entry from '../../src/Entry.ts'
-import * as Record from '../../src/Record.ts'
-import * as Store from '../../src/Store.ts'
-import * as Observation from '../../src/Observation.ts'
-import * as View from '../../src/View.ts'
+import * as Document from '@effect-harness/durable/Document'
+import * as Entry from '@effect-harness/durable/Entry'
+import * as Record from '@effect-harness/durable/Record'
+import * as Store from '@effect-harness/durable/Store'
+import * as Observation from '@effect-harness/durable/Observation'
+import * as View from '@effect-harness/durable/View'
 import * as State from '../../src/storage/internal/state.ts'
 
 const record: Record.Document = {
   id: Record.DocumentId.make(2),
   kind: 'counter',
-  scope: { kind: 'session' },
+  scope: { _tag: 'session' as const, kind: 'session' },
   createdAt: Record.Seq.make(1),
 }
 const definition = Object.freeze({
@@ -26,7 +27,7 @@ const definition = Object.freeze({
   initial: () => ({ count: 0 }),
 })
 
-describe('constructed carrier boundaries', () => {
+describe('Carriers', () => {
   it.effect('accepts frozen inputs, leaves config untouched and preserves serialized bytes', () =>
     Effect.sync(() => {
       const token = Document.defineUnsafe(definition)
@@ -37,7 +38,11 @@ describe('constructed carrier boundaries', () => {
       const input = Object.freeze({ record, version: 1, value: { count: 0 }, deltasSinceBase: 0 })
       const snapshot = Document.makeSnapshot(input)
       assert.notStrictEqual<object>(snapshot, input)
-      assert.strictEqual(JSON.stringify(snapshot), JSON.stringify(input))
+      assert.deepStrictEqual(snapshot.toJSON(), {
+        _id: '@effect-harness/durable/Document/Snapshot',
+      })
+      assert.strictEqual(snapshot.record, input.record)
+      assert.deepStrictEqual(snapshot.value, input.value)
       assert.strictEqual(Reflect.ownKeys(input).length, 4)
       const pageInput = Object.freeze({ items: [record], next: { after: 2 } })
       const page = Record.makePage(pageInput)
@@ -105,6 +110,25 @@ describe('constructed carrier boundaries', () => {
       assert.strictEqual(reads, 3)
     }),
   )
+  it.effect('retains both immutable state write forms and deferred validation', () =>
+    Effect.gen(function* () {
+      const self = Record.emptyState()
+      const before = structuredClone(self)
+      const writes = [
+        { _tag: 'conversation', type: 'conversation', value: { id: Record.ROOT_CONVERSATION_ID } },
+      ] as const satisfies ReadonlyArray<Record.Write>
+      const dataFirst = yield* State.applyWrites(self, writes)
+      const dataLast = yield* State.applyWrites(writes)(self)
+      assert.deepStrictEqual(dataFirst, dataLast)
+      assert.deepStrictEqual(self, before)
+      assert.notStrictEqual(dataFirst, self)
+      assert.deepStrictEqual(dataFirst.conversations, [{ id: Record.ROOT_CONVERSATION_ID }])
+      const late: Array<Record.Write> = []
+      const delayed = State.applyWrites(late)(self)
+      late.push(...writes)
+      assert.deepStrictEqual(yield* delayed, dataFirst)
+    }),
+  )
   it.effect('rejects malformed empty persisted paths and permits root View replacement', () =>
     Effect.gen(function* () {
       const malformed: unknown = [['delete', []]]
@@ -133,7 +157,7 @@ describe('constructed carrier boundaries', () => {
         Option.isNone(
           State.findDocument(
             Record.emptyState(),
-            { kind: 'missing', scope: { kind: 'session' } },
+            { kind: 'missing', scope: { _tag: 'session' as const, kind: 'session' } },
             'current',
           ),
         ),

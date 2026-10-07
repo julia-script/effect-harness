@@ -1,3 +1,6 @@
+import * as Order from 'effect/Order'
+import * as Predicate from 'effect/Predicate'
+import { dual } from 'effect/Function'
 import * as Option from 'effect/Option'
 import * as Effect from 'effect/Effect'
 import * as Arr from 'effect/Array'
@@ -12,10 +15,10 @@ export class CloneError extends Schema.TaggedError<CloneError>(
 )('CloneError', { message: Schema.String, cause: Schema.Defect() }) {}
 
 /** Copies values, including scoped JSON proxies, without throwing native clone/access failures. */
-export const detached = <A>(value: A): Result.Result<A, CloneError> => {
+export const detached = <A>(self: A): Result.Result<A, CloneError> => {
   // Persisted facts are ordinary JSON and use the optimized native path. Scoped drafts
   // contain Proxy values; only that unsupported-clone case needs recursive unwrapping.
-  const native = Result.try({ try: () => structuredClone(value), catch: (cause) => cause })
+  const native = Result.try({ try: () => structuredClone(self), catch: (cause) => cause })
   if (Result.isSuccess(native)) return Result.succeed(native.success)
   const cause = native.failure
   if (!(cause instanceof DOMException) || cause.name !== 'DataCloneError')
@@ -43,38 +46,38 @@ export const detached = <A>(value: A): Result.Result<A, CloneError> => {
   }
   // Every object is rebuilt; the generic type preserves the caller's validated record shape.
   return Result.try({
-    try: () => copy(value) as A,
+    try: () => copy(self) as A,
     catch: (cause) => new CloneError({ message: 'Cannot detach durable proxy', cause }),
   })
 }
 /** Synchronous twin for protocols whose callbacks cannot return a Result. */
-export const detachedUnsafe = <A>(value: A): A => Result.getOrThrow(detached(value))
+export const detachedUnsafe = <A>(self: A): A => Result.getOrThrow(detached(self))
 /** Lifts cloning into the storage failure channel at Effect boundaries. */
-export const detachedEffect = <A>(value: A): Effect.Effect<A, StorageError> =>
-  Effect.suspend(() => Effect.fromResult(detached(value))).pipe(
+export const detachedEffect = <A>(self: A): Effect.Effect<A, StorageError> =>
+  Effect.suspend(() => Effect.fromResult(detached(self))).pipe(
     Effect.mapError((error) => rejected(error.message, undefined, error.cause)),
   )
-export const validate = Effect.fnUntraced(function* <S extends Schema.Constraint>(
+export const validate = <S extends Schema.Constraint>(
   schema: S,
   value: unknown,
-): Effect.fn.Return<S['Type'], StorageError, S['DecodingServices']> {
-  return yield* Schema.decodeUnknownEffect(schema)(value).pipe(
+): Effect.Effect<S['Type'], StorageError, S['DecodingServices']> =>
+  Effect.suspend(() => Schema.decodeUnknownEffect(schema)(value)).pipe(
     Effect.mapError((cause) => rejected('Invalid durable value', Invalid, cause)),
   )
-})
 
-export const applyOps = Effect.fnUntraced(function* (
-  value: Record.JsonObject,
+const applyOpsImpl = Effect.fnUntraced(function* (
+  self: Record.JsonObject,
   ops: ReadonlyArray<Record.Op>,
 ): Effect.fn.Return<Record.JsonObject, StorageError> {
   const validOps = yield* validate(Schema.Array(Record.Op), ops).pipe(
     Effect.mapError((cause) => rejected('Invalid document operation', Corrupt, cause)),
   )
+  // effect-review-allow P2-no-throw-in-effect-code: synchronous operation TypeErrors are confined to this catching thunk and become corrupt StorageError failures.
   const result = yield* Effect.try({
     // effect-review-allow P1-throw-only-in-unsafe-orthrow: this synchronous
     // catching thunk maps every native clone/operation throw into StorageError.
     try: () => {
-      let result = detachedUnsafe(value)
+      let result = detachedUnsafe(self)
       for (const op of validOps) {
         if (op[0] === 'replace') {
           result = detachedUnsafe(op[1])
@@ -83,20 +86,22 @@ export const applyOps = Effect.fnUntraced(function* (
         const path = op[1]
         let current: unknown = result
         for (const segment of path.slice(0, -1)) {
-          if (current === null || typeof current !== 'object' || !Object.hasOwn(current, segment))
+          if (!Predicate.isObjectOrArray(current) || !Object.hasOwn(current, segment))
             throw new TypeError('Invalid operation path')
           current = Reflect.get(current, segment)
         }
         const key = Arr.lastNonEmpty(path)
-        if (current === null || typeof current !== 'object')
-          throw new TypeError('Invalid operation target')
+        if (!Predicate.isObjectOrArray(current)) throw new TypeError('Invalid operation target')
         if (
           Array.isArray(current) &&
-          (typeof key !== 'number' || !Number.isSafeInteger(key) || key < 0 || key > current.length)
+          (!Predicate.isNumber(key) ||
+            !Number.isSafeInteger(key) ||
+            key < 0 ||
+            key > current.length)
         )
           throw new TypeError('Invalid array operation')
         if (op[0] === 'delete') {
-          if (Array.isArray(current) && typeof key === 'number') current.splice(key, 1)
+          if (Array.isArray(current) && Predicate.isNumber(key)) current.splice(key, 1)
           else Reflect.deleteProperty(current, key)
         } else
           Object.defineProperty(current, key, {
@@ -113,15 +118,18 @@ export const applyOps = Effect.fnUntraced(function* (
   return yield* validate(Schema.JsonObject, result)
 })
 
-export const materialize = Effect.fnUntraced(function* (
-  document: Record.StoredDocument,
+const materializeImpl = Effect.fnUntraced(function* (
+  self: Record.StoredDocument,
   at: Record.Point,
 ): Effect.fn.Return<Option.Option<import('../../Document.ts').Snapshot>, StorageError> {
-  if (at !== 'current' && Record.currentOnly(document.record))
+  if (at !== 'current' && Record.isCurrentOnly(self.record))
     return yield* rejected('Document does not retain historical content')
-  if (!Record.isAlive(document.record, at)) return Option.none()
-  const revisions = document.revisions.filter((revision) => at === 'current' || revision.seq <= at)
-  const baseIndex = revisions.findLastIndex((revision) => revision.content.kind === 'base')
+  if (!Record.isAlive(self.record, at)) return Option.none()
+  const revisions = Arr.filter(self.revisions, (revision) => at === 'current' || revision.seq <= at)
+  const baseIndex = Arr.findLastIndex(
+    revisions,
+    (revision) => revision.content.kind === 'base',
+  ).pipe(Option.getOrElse(() => -1))
   const base = revisions[baseIndex]
   if (base === undefined || base.content.kind !== 'base')
     return yield* rejected('Document is missing a required base', Corrupt)
@@ -133,7 +141,7 @@ export const materialize = Effect.fnUntraced(function* (
   }
   return Option.some(
     Document.makeSnapshot({
-      record: yield* detachedEffect(document.record),
+      record: yield* detachedEffect(self.record),
       version: base.content.version,
       value,
       deltasSinceBase: revisions.length - baseIndex - 1,
@@ -142,8 +150,8 @@ export const materialize = Effect.fnUntraced(function* (
 })
 
 const sameScope = (a: Record.Scope, b: Record.Scope) => Record.scopeKey(a) === Record.scopeKey(b)
-export const visibleEntries = Effect.fnUntraced(function* (
-  state: Record.State,
+const visibleEntriesImpl = Effect.fnUntraced(function* (
+  self: Record.State,
   conversationId: Record.ConversationId,
   min = 0,
   max = Number.MAX_SAFE_INTEGER,
@@ -155,28 +163,30 @@ export const visibleEntries = Effect.fnUntraced(function* (
   while (true) {
     if (seen.has(current)) return yield* rejected('Conversation ancestry is cyclic', Corrupt)
     seen.add(current)
-    const conversationOption = Arr.findFirst(state.conversations, (item) => item.id === current)
+    const conversationOption = Arr.findFirst(self.conversations, (item) => item.id === current)
     if (Option.isNone(conversationOption)) return yield* rejected('Unknown conversation', NotFound)
     const conversation = conversationOption.value
     entries.push(
       ...(yield* detachedEffect(
-        state.entries
-          .filter(
-            (item) =>
-              item.entry.conversationId === current && item.entry.id >= min && item.entry.id <= cap,
-          )
-          .map((item) => item.entry),
+        Arr.filter(
+          self.entries,
+          (item) =>
+            item.entry.conversationId === current && item.entry.id >= min && item.entry.id <= cap,
+        ).map((item) => item.entry),
       )),
     )
     if (conversation.parent === undefined) break
     cap = Math.min(cap, conversation.parent.at)
     current = conversation.parent.conversationId
   }
-  return entries.sort((a, b) => b.id - a.id)
+  return Arr.sort(
+    entries,
+    Order.flip(Order.mapInput(Order.Number, (item: (typeof entries)[number]) => item.id)),
+  )
 })
 
-export const page = <A extends { readonly id: number }>(
-  items: ReadonlyArray<A>,
+const pageImpl = <A extends { readonly id: number }>(
+  self: ReadonlyArray<A>,
   limit: number,
   cursor?: Record.Cursor,
 ): Effect.Effect<Record.Page<A>, StorageError> => {
@@ -186,52 +196,54 @@ export const page = <A extends { readonly id: number }>(
     (cursor !== undefined && !Number.isSafeInteger(cursor.after))
   )
     return Effect.fail(rejected('Invalid scan size or cursor'))
-  const kept = items
-    .filter((item) => cursor === undefined || item.id > cursor.after)
-    .sort((a, b) => a.id - b.id)
+  const kept = Arr.sortWith(
+    Arr.filter(self, (item) => cursor === undefined || item.id > cursor.after),
+    (item: A) => item.id,
+    Order.Number,
+  )
   const shown = kept.slice(0, limit)
   const last = shown.at(-1)
   return detachedEffect(shown).pipe(
-    Effect.map((items) =>
+    Effect.map((self) =>
       Record.makePage({
-        items,
+        items: self,
         ...(kept.length > limit && last !== undefined ? { next: { after: last.id } } : {}),
       }),
     ),
   )
 }
 
-export const applyWrites = Effect.fnUntraced(function* (
-  state: Record.State,
+const applyWritesImpl = Effect.fnUntraced(function* (
+  self: Record.State,
   input: ReadonlyArray<Record.Write>,
 ): Effect.fn.Return<Record.State, StorageError> {
   const writes = yield* validate(Schema.Array(Record.Write), input)
-  const seq = yield* validate(Record.Seq, state.nextSeq)
+  const seq = yield* validate(Record.Seq, self.nextSeq)
   const conversations = new Map(
-    (yield* detachedEffect(state.conversations)).map((item) => [item.id, item]),
+    (yield* detachedEffect(self.conversations)).map((item) => [item.id, item]),
   )
   const entries = new Map(
-    (yield* detachedEffect(state.entries)).map((item) => [item.entry.id, item]),
+    (yield* detachedEffect(self.entries)).map((item) => [item.entry.id, item]),
   )
-  const tasks = new Map((yield* detachedEffect(state.tasks)).map((item) => [item.id, item]))
+  const tasks = new Map((yield* detachedEffect(self.tasks)).map((item) => [item.id, item]))
   const submissions = new Map(
-    (yield* detachedEffect(state.submissions)).map((item) => [item.id, item]),
+    (yield* detachedEffect(self.submissions)).map((item) => [item.id, item]),
   )
   const documents = new Map(
-    (yield* detachedEffect(state.documents)).map((item) => [item.record.id, item]),
+    (yield* detachedEffect(self.documents)).map((item) => [item.record.id, item]),
   )
   const ids = new Map<number, string>()
   for (const [kind, values] of [
-    ['conversation', state.conversations],
-    ['task', state.tasks],
-    ['submission', state.submissions],
+    ['conversation', self.conversations],
+    ['task', self.tasks],
+    ['submission', self.submissions],
   ] as const)
     for (const item of values) ids.set(item.id, kind)
-  for (const item of state.entries) ids.set(item.entry.id, 'entry')
-  for (const item of state.documents) ids.set(item.record.id, 'document')
-  let nextId = state.nextId
+  for (const item of self.entries) ids.set(item.entry.id, 'entry')
+  for (const item of self.documents) ids.set(item.record.id, 'document')
+  let nextId = self.nextId
   const changed = new Set(
-    writes.flatMap((write) => {
+    Arr.flatMap(writes, (write) => {
       if (write.type === 'document.change' || write.type === 'document.retire') return [write.id]
       if (write.type === 'document.create' || write.type === 'document.copy')
         return [write.record.id]
@@ -247,8 +259,8 @@ export const applyWrites = Effect.fnUntraced(function* (
       continue
     }
     let id: number
-    if ('value' in write) id = write.value.id
-    else if ('record' in write) id = write.record.id
+    if (Predicate.hasProperty(write, 'value')) id = write.value.id
+    else if (Predicate.hasProperty(write, 'record')) id = write.record.id
     else id = write.id
     if (
       id === 1 &&
@@ -314,7 +326,7 @@ export const applyWrites = Effect.fnUntraced(function* (
           )
             return yield* rejected('Document copy source does not match')
           const stored = storedOption.value
-          content = { kind: 'base', version: stored.version, value: stored.value }
+          content = { _tag: 'base', kind: 'base', version: stored.version, value: stored.value }
         } else content = write.content
         if (content.kind !== 'base') return yield* rejected('Document creation requires a base')
         documents.set(write.record.id, {
@@ -355,11 +367,11 @@ export const applyWrites = Effect.fnUntraced(function* (
             write.content.kind === 'base'
               ? write.content.value
               : yield* applyOps(snapshot.value, write.content.ops)
-          if (!Json.equal(published, persisted))
+          if (!Json.equals(published, persisted))
             return yield* rejected('Publication operations differ from persisted document')
         }
         const revisions =
-          write.content.kind === 'base' && Record.currentOnly(previous.record)
+          write.content.kind === 'base' && Record.isCurrentOnly(previous.record)
             ? []
             : previous.revisions
         documents.set(write.id, {
@@ -376,7 +388,7 @@ export const applyWrites = Effect.fnUntraced(function* (
       return yield* rejected('Document is absent or retired', NotFound)
     documents.set(previous.record.id, {
       record: { ...previous.record, retiredAt: seq },
-      revisions: Record.currentOnly(previous.record) ? [] : previous.revisions,
+      revisions: Record.isCurrentOnly(previous.record) ? [] : previous.revisions,
     })
   }
   const addresses = new Set<string>()
@@ -388,7 +400,7 @@ export const applyWrites = Effect.fnUntraced(function* (
     addresses.add(address)
   }
   return {
-    ...state,
+    ...self,
     nextId,
     nextSeq: seq + 1,
     conversations: [...conversations.values()],
@@ -398,27 +410,38 @@ export const applyWrites = Effect.fnUntraced(function* (
     documents: [...documents.values()],
   }
 })
-export const findDocument = (
-  state: Record.State,
+const findDocumentImpl = (
+  self: Record.State,
   address: Record.Address,
   at: Record.Point,
 ): Option.Option<Record.StoredDocument> =>
   Arr.findFirst(
-    state.documents,
+    self.documents,
     (item) =>
       Record.addressKey(item.record) === Record.addressKey(address) &&
       Record.isAlive(item.record, at),
   )
-export const documentsInScope = (
-  state: Record.State,
+const documentsInScopeImpl = (
+  self: Record.State,
   scope: Record.Scope,
   at: Record.Point,
 ): ReadonlyArray<Record.StoredDocument> =>
-  state.documents.filter(
+  Arr.filter(
+    self.documents,
     (item) => sameScope(item.record.scope, scope) && Record.isAlive(item.record, at),
   )
 
 /** Validate arithmetic cursors without narrowing the allocator exhaustion sentinel. */
+export const applyWrites: {
+  (
+    input: ReadonlyArray<Record.Write>,
+  ): (self: Record.State) => Effect.Effect<Record.State, StorageError>
+  (
+    self: Record.State,
+    input: ReadonlyArray<Record.Write>,
+  ): Effect.Effect<Record.State, StorageError>
+} = dual(2, applyWritesImpl)
+
 export const cursor = (nextSeq: number): Effect.Effect<Record.Seq | 0, StorageError> =>
   validate(Record.JournalCursor, nextSeq - 1).pipe(
     Effect.mapError((cause) => rejected('Invalid computed journal cursor', Corrupt, cause)),
@@ -444,7 +467,7 @@ export const validateState = Effect.fnUntraced(function* (
     ids.add(id)
   }
   if (
-    allIds.includes(1) &&
+    Arr.contains(allIds, 1) &&
     !state.conversations.some(
       (record) => record.id === 1 && record.parent === undefined && record.owner === undefined,
     )
@@ -469,7 +492,7 @@ export const validateState = Effect.fnUntraced(function* (
     } else if (record.history !== undefined || record.fork !== undefined)
       return yield* rejected('Persisted document policy is corrupt', Corrupt)
     if (
-      !Record.currentOnly(record) &&
+      !Record.isCurrentOnly(record) &&
       (record.retiredAt === undefined || record.retiredAt > record.createdAt)
     )
       yield* materialize(document, record.createdAt)
@@ -483,7 +506,7 @@ export const validateState = Effect.fnUntraced(function* (
       )
         return yield* rejected('Persisted document revision sequence is corrupt', Corrupt)
       previous = revision.seq
-      if (revision.content.kind === 'base' && !Record.currentOnly(record))
+      if (revision.content.kind === 'base' && !Record.isCurrentOnly(record))
         yield* materialize(document, revision.seq)
     }
     if (record.retiredAt === undefined) {
@@ -492,7 +515,7 @@ export const validateState = Effect.fnUntraced(function* (
         return yield* rejected('Persisted document addresses overlap', Corrupt)
       addresses.add(key)
       yield* materialize(document, 'current')
-    } else if (!Record.currentOnly(record) && record.retiredAt > record.createdAt)
+    } else if (!Record.isCurrentOnly(record) && record.retiredAt > record.createdAt)
       yield* materialize(
         document,
         yield* validate(Record.Seq, record.retiredAt - 1).pipe(
@@ -516,3 +539,71 @@ export const validateState = Effect.fnUntraced(function* (
   return state
 })
 import * as Json from '@effect-harness/harness/Json'
+
+export const applyOps: {
+  (
+    ops: ReadonlyArray<Record.Op>,
+  ): (self: Record.JsonObject) => Effect.Effect<Record.JsonObject, StorageError>
+  (
+    self: Record.JsonObject,
+    ops: ReadonlyArray<Record.Op>,
+  ): Effect.Effect<Record.JsonObject, StorageError>
+} = dual(2, applyOpsImpl)
+
+export const materialize: {
+  (
+    at: Record.Point,
+  ): (self: Record.StoredDocument) => Effect.Effect<Option.Option<Document.Snapshot>, StorageError>
+  (
+    self: Record.StoredDocument,
+    at: Record.Point,
+  ): Effect.Effect<Option.Option<Document.Snapshot>, StorageError>
+} = dual(2, materializeImpl)
+
+export const visibleEntries: {
+  (
+    conversationId: Record.ConversationId,
+    min?: number,
+    max?: number,
+  ): (self: Record.State) => Effect.Effect<ReadonlyArray<Record.Entry>, StorageError>
+  (
+    self: Record.State,
+    conversationId: Record.ConversationId,
+    min?: number,
+    max?: number,
+  ): Effect.Effect<ReadonlyArray<Record.Entry>, StorageError>
+} = dual((args) => Predicate.hasProperty(args[0], 'conversations'), visibleEntriesImpl)
+
+export const page: {
+  (
+    limit: number,
+    cursor?: Record.Cursor,
+  ): <A extends { readonly id: number }>(
+    self: ReadonlyArray<A>,
+  ) => Effect.Effect<Record.Page<A>, StorageError>
+  <A extends { readonly id: number }>(
+    self: ReadonlyArray<A>,
+    limit: number,
+    cursor?: Record.Cursor,
+  ): Effect.Effect<Record.Page<A>, StorageError>
+} = dual((args) => Array.isArray(args[0]), pageImpl)
+
+export const findDocument: {
+  (
+    address: Record.Address,
+    at: Record.Point,
+  ): (self: Record.State) => Option.Option<Record.StoredDocument>
+  (
+    self: Record.State,
+    address: Record.Address,
+    at: Record.Point,
+  ): Option.Option<Record.StoredDocument>
+} = dual(3, findDocumentImpl)
+
+export const documentsInScope: {
+  (
+    scope: Record.Scope,
+    at: Record.Point,
+  ): (self: Record.State) => ReadonlyArray<Record.StoredDocument>
+  (self: Record.State, scope: Record.Scope, at: Record.Point): ReadonlyArray<Record.StoredDocument>
+} = dual(3, documentsInScopeImpl)

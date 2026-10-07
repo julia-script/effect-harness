@@ -1,3 +1,8 @@
+/**
+ * Scoped intent-only MCP sessions with tool execution blocked at the provider boundary.
+ *
+ * @since 0.0.0
+ */
 import * as Arr from 'effect/Array'
 import * as Ref from 'effect/Ref'
 import * as HashMap from 'effect/HashMap'
@@ -17,13 +22,25 @@ import * as HttpRouter from 'effect/http/HttpRouter'
 import * as HttpServer from 'effect/http/HttpServer'
 import * as HttpServerRequest from 'effect/http/HttpServerRequest'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
-import { processError, unsupported } from './Error.ts'
+import { processError, unsupported } from './ClaudeCodeError.ts'
 
+/**
+ * Describes the Session contract.
+ *
+ * @category types
+ * @since 0.0.0
+ */
 export interface Session {
   readonly url: string
   /** CLI alias -> original native Effect Tool name. */
   readonly aliases: ReadonlyMap<string, string>
 }
+/**
+ * Identifies the IntentServer service in the Effect context.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class IntentServer extends Context.Service<
   IntentServer,
   {
@@ -33,7 +50,12 @@ export class IntentServer extends Context.Service<
   }
 >()('@effect-harness/provider-claude-code/IntentServer') {}
 
-/** Explicit text-only capability: attempts to supply tools produce a native typed error. */
+/**
+ * Explicit text-only capability: attempts to supply tools produce a native typed error.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerDisabled: Layer.Layer<IntentServer, never, never> = Layer.succeed(
   IntentServer,
   IntentServer.of({
@@ -41,7 +63,12 @@ export const layerDisabled: Layer.Layer<IntentServer, never, never> = Layer.succ
   }),
 )
 
-/** Serves native MCP descriptors; every tools/call handler waits forever and never runs a real tool. */
+/**
+ * Serves native MCP descriptors; every tools/call handler waits forever and never runs a real tool.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer: Layer.Layer<
   IntentServer,
   AiError.AiError,

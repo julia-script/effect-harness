@@ -1,4 +1,12 @@
-import * as Arrays from 'effect/Array'
+/**
+ * Extension installation, snapshot resolution and prompt rendering.
+ *
+ * @since 0.0.0
+ */
+import { constUndefined } from 'effect/Function'
+import * as Exit from 'effect/Exit'
+import { dual } from 'effect/Function'
+import * as Arr from 'effect/Array'
 import * as Option from 'effect/Option'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -7,16 +15,28 @@ import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 import * as Agent from './Agent.ts'
-import { RegistryError, RegistryFailure } from './Error.ts'
+import { RegistryError, RegistryFailure } from './RegistryError.ts'
 import type * as Extension from './Extension.ts'
 import * as Hook from './Hook.ts'
 import { Invocation } from './Invocation.ts'
 import type * as Tool from './Tool.ts'
 
+/**
+ * Registry snapshot contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Snapshot {
   readonly revision: number
   readonly extensions: ReadonlyArray<Extension.Extension>
 }
+/**
+ * Registry resolved contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Resolved {
   readonly snapshot: Snapshot
   readonly state: Agent.State
@@ -26,6 +46,12 @@ export interface Resolved {
   readonly sections: ReadonlyArray<Extension.Section>
   readonly hooks: ReadonlyArray<Hook.Registration>
 }
+/**
+ * Service for registry capabilities.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class Registry extends Context.Service<
   Registry,
   {
@@ -37,10 +63,8 @@ export class Registry extends Context.Service<
     readonly uninstall: (name: string) => Effect.Effect<void>
   }
 >()('@effect-harness/harness/Registry') {}
-function validate(
-  extensions: ReadonlyArray<Extension.Extension>,
-): Effect.Effect<void, RegistryError> {
-  for (const extension of extensions) {
+function validate(self: ReadonlyArray<Extension.Extension>): Effect.Effect<void, RegistryError> {
+  for (const extension of self) {
     if (extension.name === '')
       return Effect.fail(
         new RegistryError({
@@ -80,6 +104,12 @@ function validate(
   }
   return Effect.void
 }
+/**
+ * Creates a validated extension registry with atomic immutable revision snapshots.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const make = Effect.fnUntraced(function* (
   initial: ReadonlyArray<Extension.Extension> = [],
 ): Effect.fn.Return<Registry['Service'], RegistryError> {
@@ -91,7 +121,7 @@ export const make = Effect.fnUntraced(function* (
   })
   const lock = yield* Semaphore.make(1)
   return Registry.of({
-    snapshot: SubscriptionRef.get(ref),
+    snapshot: SubscriptionRef.get(ref).pipe(Effect.withSpan('Registry.snapshot')),
     changes: SubscriptionRef.changes(ref),
     install: (extensions) =>
       lock.withPermit(
@@ -106,7 +136,7 @@ export const make = Effect.fnUntraced(function* (
           if (
             extensions.length === 0 ||
             ([...candidate.values()].every((extension, index) =>
-              Option.contains(Arrays.get(before.extensions, index), extension),
+              Option.contains(Arr.get(before.extensions, index), extension),
             ) &&
               candidate.size === before.extensions.length)
           )
@@ -128,15 +158,25 @@ export const make = Effect.fnUntraced(function* (
       ),
   })
 })
+/**
+ * Layer for Registry capabilities.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer = (
   extensions: ReadonlyArray<Extension.Extension> = [],
 ): Layer.Layer<Registry, RegistryError> => Layer.effect(Registry, make(extensions))
-/** The builder captures service implementations at Layer construction, not at request execution. */
+/**
+ * The builder captures service implementations at Layer construction, not at request execution.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerEffect = <E, R>(
-  extensions: Effect.Effect<ReadonlyArray<Extension.Extension>, E, R>,
-): Layer.Layer<Registry, E | RegistryError, R> =>
-  Layer.effect(Registry, Effect.flatMap(extensions, make))
-export const resolve = Effect.fnUntraced(function* (
+  self: Effect.Effect<ReadonlyArray<Extension.Extension>, E, R>,
+): Layer.Layer<Registry, E | RegistryError, R> => Layer.effect(Registry, Effect.flatMap(self, make))
+const resolveImpl = Effect.fnUntraced(function* (
   snapshot: Snapshot,
   state: Agent.State,
   settings: Agent.Settings,
@@ -156,41 +196,51 @@ export const resolve = Effect.fnUntraced(function* (
   }
   for (const extension of selected) {
     for (const wrapper of extension.toolWraps ?? []) {
-      const current = Option.fromUndefinedOr(tools.get(wrapper.name))
-      if (Option.isNone(current)) continue
-      const next = yield* Hook.recover(
-        Effect.suspend(() => wrapper.wrap.call(wrapper, current.value)),
-      )
-      if (next === undefined) tools.delete(wrapper.name)
-      else if (next.tool.name !== wrapper.name) {
-        tools.delete(wrapper.name)
-        yield* (yield* Invocation).report(
-          new RegistryError({
-            reason: new RegistryFailure({ message: `Tool wrapper renamed ${wrapper.name}` }),
+      yield* Option.match(Option.fromUndefinedOr(tools.get(wrapper.name)), {
+        onNone: () => Effect.void,
+        onSome: (value) =>
+          Effect.gen(function* () {
+            const next = yield* Hook.recover(
+              Effect.suspend(() => wrapper.wrap.call(wrapper, value)),
+            )
+            if (next === undefined) tools.delete(wrapper.name)
+            else if (next.tool.name !== wrapper.name) {
+              tools.delete(wrapper.name)
+              yield* (yield* Invocation).report(
+                new RegistryError({
+                  reason: new RegistryFailure({ message: `Tool wrapper renamed ${wrapper.name}` }),
+                }),
+              )
+            } else tools.set(wrapper.name, next)
           }),
-        )
-      } else tools.set(wrapper.name, next)
+      })
     }
     for (const wrapper of extension.sectionWraps ?? []) {
-      const current = Option.fromUndefinedOr(sections.get(wrapper.key))
-      if (Option.isNone(current)) continue
-      const next = yield* Hook.recover(
-        Effect.suspend(() => wrapper.wrap.call(wrapper, current.value)),
-      )
-      if (next === undefined) sections.delete(wrapper.key)
-      else if (next.key !== wrapper.key) {
-        sections.delete(wrapper.key)
-        yield* (yield* Invocation).report(
-          new RegistryError({
-            reason: new RegistryFailure({ message: `Section wrapper renamed ${wrapper.key}` }),
+      yield* Option.match(Option.fromUndefinedOr(sections.get(wrapper.key)), {
+        onNone: () => Effect.void,
+        onSome: (value) =>
+          Effect.gen(function* () {
+            const next = yield* Hook.recover(
+              Effect.suspend(() => wrapper.wrap.call(wrapper, value)),
+            )
+            if (next === undefined) sections.delete(wrapper.key)
+            else if (next.key !== wrapper.key) {
+              sections.delete(wrapper.key)
+              yield* (yield* Invocation).report(
+                new RegistryError({
+                  reason: new RegistryFailure({
+                    message: `Section wrapper renamed ${wrapper.key}`,
+                  }),
+                }),
+              )
+            } else sections.set(wrapper.key, next)
           }),
-        )
-      } else sections.set(wrapper.key, next)
+      })
     }
   }
   let offered: ReadonlyArray<Tool.Registration> = [...tools.values()]
   if (Array.isArray(state.tools))
-    offered = [...new Set(state.tools)].flatMap((name) => {
+    offered = Arr.dedupe(state.tools).flatMap((name) => {
       return Option.toArray(Option.fromUndefinedOr(tools.get(name)))
     })
   else if (state.tools !== undefined) {
@@ -214,12 +264,36 @@ export const resolve = Effect.fnUntraced(function* (
     hooks: selected.flatMap((extension) => extension.hooks ?? []),
   } satisfies Resolved
 })
-export const handlers = (
-  agent: Resolved,
-  operation: Hook.Operation,
-): ReadonlyArray<Hook.Handlers> =>
-  agent.hooks.filter((hook) => hook.operation === operation).map((hook) => hook.handlers)
-export const render = Effect.fnUntraced(function* (
+/**
+ * Resolves the configured extensions, tools and model-facing sections.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const resolve: {
+  (
+    state: Agent.State,
+    settings: Agent.Settings,
+  ): (self: Snapshot) => Effect.Effect<Resolved, never, Invocation>
+  (
+    self: Snapshot,
+    state: Agent.State,
+    settings: Agent.Settings,
+  ): Effect.Effect<Resolved, never, Invocation>
+} = dual(3, resolveImpl)
+const handlersImpl = (self: Resolved, operation: Hook.Operation): Array<Hook.Handlers> =>
+  self.hooks.filter((hook) => hook.operation === operation).map((hook) => hook.handlers)
+/**
+ * Returns registered handlers for the requested lifecycle operation.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const handlers: {
+  (operation: Hook.Operation): (self: Resolved) => Array<Hook.Handlers>
+  (self: Resolved, operation: Hook.Operation): Array<Hook.Handlers>
+} = dual(2, handlersImpl)
+const renderImpl = Effect.fnUntraced(function* (
   agent: Resolved,
   view: import('./Context.ts').View,
   shown: ReadonlyMap<string, string>,
@@ -229,17 +303,44 @@ export const render = Effect.fnUntraced(function* (
   const desired = new Map<string, string>()
   for (const section of agent.sections) {
     const result = yield* Effect.exit(Effect.suspend(() => section.render.call(section, input)))
-    if (result._tag === 'Failure') {
-      yield* Hook.recover(Effect.failCause(result.cause))
-      const kept = Option.fromUndefinedOr(shown.get(section.key))
-      if (Option.isSome(kept)) desired.set(section.key, kept.value)
-    } else if (result.value !== undefined)
-      desired.set(
-        section.key,
-        section.tag === false
-          ? result.value
-          : `<${section.key}>\n${result.value}\n</${section.key}>`,
-      )
+    yield* Exit.match(result, {
+      onFailure: (cause) =>
+        Hook.recover(Effect.failCause(cause)).pipe(
+          Effect.map(() =>
+            Option.match(Option.fromUndefinedOr(shown.get(section.key)), {
+              onNone: constUndefined,
+              onSome: (self) => {
+                desired.set(section.key, self)
+              },
+            }),
+          ),
+        ),
+      onSuccess: (self) =>
+        Effect.sync(() => {
+          if (self !== undefined)
+            desired.set(
+              section.key,
+              section.tag === false ? self : `<${section.key}>\n${self}\n</${section.key}>`,
+            )
+        }),
+    })
   }
   return desired
 })
+/**
+ * Renders effective managed sections while retaining prior values after hook failure.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const render: {
+  (
+    view: import('./Context.ts').View,
+    shown: ReadonlyMap<string, string>,
+  ): (self: Resolved) => Effect.Effect<Map<string, string>, never, Invocation>
+  (
+    self: Resolved,
+    view: import('./Context.ts').View,
+    shown: ReadonlyMap<string, string>,
+  ): Effect.Effect<Map<string, string>, never, Invocation>
+} = dual(3, renderImpl)

@@ -5,7 +5,7 @@ import * as Exit from 'effect/Exit'
 import * as Queue from 'effect/Queue'
 import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
-import type { DirectoryNotifications, FileError } from '../../src/Env.ts'
+import type { DirectoryNotifications, FileError } from '@effect-harness/harness/Env'
 
 /** Controlled installation and typed notifications, with the same observable startup contract as native adapters. */
 export const notifications = (

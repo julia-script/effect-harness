@@ -1,3 +1,12 @@
+/**
+ * Single-use ChatGPT OAuth authorization and persisted account credentials.
+ *
+ * @since 0.0.0
+ */
+import * as Arr from 'effect/Array'
+import * as String from 'effect/String'
+import * as Time from '@effect-harness/auth/Time'
+// effect-review-allow P9-namespace-alias-equals-module: @effect-harness/auth/Duration and effect/Duration both bind Duration; AuthDuration distinguishes the concepts.
 import * as AuthDuration from '@effect-harness/auth/Duration'
 import * as Config from 'effect/Config'
 import {
@@ -25,7 +34,7 @@ import * as Duration from 'effect/Duration'
 import * as Ref from 'effect/Ref'
 import * as HashMap from 'effect/HashMap'
 import * as Context from 'effect/Context'
-import * as Crypto from 'effect/Crypto'
+import type * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
@@ -34,8 +43,26 @@ import * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 
+/**
+ * Tests whether an unknown value satisfies the decoded suer schema.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
 export const issuer = 'https://auth.openai.com'
+/**
+ * Defines resource for the ChatGpt boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const resource = 'https://api.openai.com/v1'
+/**
+ * Defines directScope for the ChatGpt boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const directScope = 'chatgpt.tokens.use.direct'
 const tokenEndpoint = `${issuer}/api/accounts/oauth/token`
 const jwksUrl = `${issuer}/.well-known/jwks.json`
@@ -48,6 +75,12 @@ const requestedScopes = [
   directScope,
 ]
 
+/**
+ * Describes the Authorization contract.
+ *
+ * @category types
+ * @since 0.0.0
+ */
 export interface Authorization {
   readonly url: Redacted.Redacted<string>
   readonly state: string
@@ -60,30 +93,69 @@ interface Pending {
   readonly hostId: string
   readonly returning?: OAuth | Registration | undefined
 }
+/**
+ * Defines Model for the ChatGpt boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const Model = Schema.Struct({
   slug: Schema.NonEmptyString,
   display_name: Schema.String,
   visibility: Schema.String,
 })
 export type Model = typeof Model.Type
-export const isModel: (value: unknown) => value is Model = Schema.is(Model)
+/**
+ * Tests whether an unknown value satisfies the decoded Model schema.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isModel: (u: unknown) => u is Model = Schema.is(Model)
 const ModelList = Schema.Struct({ models: Schema.Array(Model) })
 
-export interface Service {
-  readonly begin: (options: {
-    readonly redirectUri: string
-    readonly account?: string | undefined
-  }) => Effect.Effect<Authorization, AuthError>
-  readonly complete: (callbackUrl: string) => Effect.Effect<OAuth, AuthError>
-  readonly refresh: (
-    account: string,
-    options?: { readonly force?: boolean | undefined },
-  ) => Effect.Effect<OAuth, AuthError>
-  readonly accessToken: (account: string) => Effect.Effect<Redacted.Redacted<string>, AuthError>
-  readonly models: (account: string) => Effect.Effect<ReadonlyArray<Model>, AuthError>
-  readonly signOut: (account: string) => Effect.Effect<void, AuthError>
-  readonly cancel: (state: string) => Effect.Effect<void>
+/**
+ * Types owned by the ChatGpt concept.
+ *
+ * @category types
+ * @since 0.0.0
+ */
+export declare namespace ChatGpt {
+  /**
+   * Describes the Service contract.
+   *
+   * @category types
+   * @since 0.0.0
+   */
+  export interface Service {
+    readonly begin: (options: {
+      readonly redirectUri: string
+      readonly account?: string | undefined
+    }) => Effect.Effect<Authorization, AuthError>
+    readonly complete: (callbackUrl: string) => Effect.Effect<OAuth, AuthError>
+    readonly refresh: (
+      account: string,
+      options?: { readonly force?: boolean | undefined },
+    ) => Effect.Effect<OAuth, AuthError>
+    readonly accessToken: (account: string) => Effect.Effect<Redacted.Redacted<string>, AuthError>
+    readonly models: (account: string) => Effect.Effect<ReadonlyArray<Model>, AuthError>
+    readonly signOut: (account: string) => Effect.Effect<void, AuthError>
+    readonly cancel: (state: string) => Effect.Effect<void>
+  }
 }
+/**
+ * Describes the Service contract.
+ *
+ * @category types
+ * @since 0.0.0
+ */
+export type Service = ChatGpt.Service
+/**
+ * Identifies the ChatGpt service in the Effect context.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class ChatGpt extends Context.Service<ChatGpt, Service>()(
   '@effect-harness/provider-openai/ChatGpt',
 ) {}
@@ -95,7 +167,7 @@ const parseUrl = (input: string) =>
       new AuthError({ reason: new AuthCallbackError({ cause, message: 'Invalid callback URL' }) }),
   })
 const scopeList = (scope: string): ReadonlyArray<string> => [
-  ...new Set(scope.split(/\s+/).filter((item) => item.length > 0)),
+  ...Arr.dedupe(scope.split(/\s+/).filter(String.isNonEmpty)),
 ]
 const requireDirect = (scopes: ReadonlyArray<string>) =>
   scopes.includes(directScope)
@@ -113,8 +185,8 @@ const deadlines = (
 ) =>
   Schema.decodeEffect(
     Schema.Struct({
-      expiresAt: OAuth.fields.expiresAt,
-      earliestRefreshAt: OAuth.fields.earliestRefreshAt,
+      expiresAt: Time.EpochMillis,
+      earliestRefreshAt: Schema.optional(Time.EpochMillis),
     }),
   )({
     expiresAt: DateTime.toEpochMillis(
@@ -138,6 +210,12 @@ const deadlines = (
     ),
   )
 
+/**
+ * Provides ChatGpt services with the declared native dependencies.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer = (options: {
   readonly appName: string
   readonly authorizationLifetimeMs?: Duration.Input | undefined
@@ -176,35 +254,51 @@ export const layer = (options: {
       yield* Effect.addFinalizer(() => Ref.set(pending, HashMap.empty()))
       const load = Effect.fnUntraced(function* (key: string) {
         const current = yield* store.get(key)
+        const credential = yield* Effect.fromOption(
+          current,
+          () =>
+            new AuthError({
+              reason: new AuthMissingError({
+                message: 'ChatGPT account registration was not found',
+              }),
+            }),
+        )
         if (
-          Option.isNone(current) ||
-          (current.value.kind !== 'oauth' && current.value.kind !== 'registration') ||
-          current.value.provider !== 'openai' ||
-          current.value.issuer !== issuer
+          (credential._tag !== 'oauth' && credential._tag !== 'registration') ||
+          credential.provider !== 'openai' ||
+          credential.issuer !== issuer
         )
           return yield* new AuthError({
             reason: new AuthMissingError({
               message: 'ChatGPT account registration was not found',
             }),
           })
-        return current.value
+        return credential
       })
       const refresh: Service['refresh'] = Effect.fnUntraced(function* (key, refreshOptions) {
         const updated = yield* store.modify(
           key,
           Effect.fnUntraced(function* (current) {
+            const credential = yield* Effect.fromOption(
+              current,
+              () =>
+                new AuthError({
+                  reason: new AuthMissingError({
+                    message: 'ChatGPT account is signed out',
+                  }),
+                }),
+            )
             if (
-              Option.isNone(current) ||
-              current.value.kind !== 'oauth' ||
-              current.value.provider !== 'openai' ||
-              current.value.issuer !== issuer
+              credential._tag !== 'oauth' ||
+              credential.provider !== 'openai' ||
+              credential.issuer !== issuer
             )
               return yield* new AuthError({
                 reason: new AuthMissingError({
                   message: 'ChatGPT account is signed out',
                 }),
               })
-            const credential = current.value
+
             if (credential.clientId === 'dynamic_agent_client')
               return yield* new AuthError({
                 reason: new AuthProtocolError({
@@ -261,7 +355,7 @@ export const layer = (options: {
             }
           }),
         )
-        if (updated?.kind !== 'oauth')
+        if (updated?._tag !== 'oauth')
           return yield* new AuthError({
             reason: new AuthMissingError({
               message: 'ChatGPT account is signed out',
@@ -337,7 +431,7 @@ export const layer = (options: {
           })
           if (returning === undefined) query.set('agent_name_hint', options.appName)
           else {
-            if (returning.kind === 'oauth')
+            if (returning._tag === 'oauth')
               query.set('id_token_hint', Redacted.value(returning.idToken))
             if (returning.email !== undefined) query.set('login_hint', returning.email)
           }
@@ -374,13 +468,22 @@ export const layer = (options: {
           const state = callback.searchParams.get('state')
           const current =
             state === null ? Option.none<Pending>() : HashMap.get(yield* Ref.get(pending), state)
-          if (Option.isNone(current) || state === null)
+          const attempt = yield* Effect.fromOption(
+            current,
+            () =>
+              new AuthError({
+                reason: new AuthCallbackError({
+                  message: 'Authorization state does not match a pending attempt',
+                }),
+              }),
+          )
+          if (state === null)
             return yield* new AuthError({
               reason: new AuthCallbackError({
                 message: 'Authorization state does not match a pending attempt',
               }),
             })
-          const attempt = current.value
+
           const expected = yield* parseUrl(attempt.authorization.redirectUri)
           if (
             callback.origin !== expected.origin ||
@@ -477,7 +580,7 @@ export const layer = (options: {
           yield* requireDirect(scopes)
           const now = yield* DateTime.now
           const credential: OAuth = {
-            kind: 'oauth',
+            _tag: 'oauth',
             provider: 'openai',
             issuer,
             subject: identity.sub,
@@ -548,26 +651,34 @@ export const layer = (options: {
           yield* store.modify(
             account,
             Effect.fnUntraced(function* (current) {
+              const credential = yield* Effect.fromOption(
+                current,
+                () =>
+                  new AuthError({
+                    reason: new AuthMissingError({
+                      message: 'ChatGPT registration was not found',
+                    }),
+                  }),
+              )
               if (
-                Option.isNone(current) ||
-                (current.value.kind !== 'oauth' && current.value.kind !== 'registration') ||
-                current.value.provider !== 'openai' ||
-                current.value.issuer !== issuer
+                (credential._tag !== 'oauth' && credential._tag !== 'registration') ||
+                credential.provider !== 'openai' ||
+                credential.issuer !== issuer
               )
                 return yield* new AuthError({
                   reason: new AuthMissingError({
                     message: 'ChatGPT registration was not found',
                   }),
                 })
-              const credential = current.value
-              if (credential.kind === 'registration') return credential
+
+              if (credential._tag === 'registration') return credential
               yield* Token.revoke(`${issuer}/api/accounts/oauth/revoke`, {
                 token: credential.refreshToken,
                 token_type_hint: 'refresh_token',
                 client_id: credential.clientId,
               }).pipe(Effect.provideService(HttpClient.HttpClient, client))
               return {
-                kind: 'registration',
+                _tag: 'registration',
                 provider: credential.provider,
                 issuer: credential.issuer,
                 subject: credential.subject,
@@ -586,7 +697,12 @@ export const layer = (options: {
     }),
   )
 
-/** Resolves all layer options through the caller's ConfigProvider. */
+/**
+ * Resolves all layer options through the caller's ConfigProvider.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
 ): Layer.Layer<

@@ -1,3 +1,11 @@
+/**
+ * Pinned tool intent, progress and terminal execution settlement.
+ *
+ * @since 0.0.0
+ */
+import * as result from 'effect/Result'
+// effect-review-allow P9-namespace-alias-equals-module: the native Workflow Result schema is an imported binding in this module.
+import { tagged } from '../internal/legacyTag.ts'
 import * as Arr from 'effect/Array'
 import type * as Agent from '@effect-harness/harness/Agent'
 import type { StorageError } from '../StorageError.ts'
@@ -6,7 +14,7 @@ import * as Entry from '../Entry.ts'
 import * as Serialization from '../Serialization.ts'
 import { ToolCheckpoint } from './Outcome.ts'
 import * as Layer from 'effect/Layer'
-import * as Harness from '@effect-harness/harness/Executor'
+import * as Executor from '@effect-harness/harness/Executor'
 import * as Invocation from '@effect-harness/harness/Invocation'
 import * as Tool from '@effect-harness/harness/Tool'
 import * as ToolResult from '@effect-harness/harness/ToolResult'
@@ -21,7 +29,7 @@ import * as Conversation from '../Conversation.ts'
 import * as Document from '../Document.ts'
 import * as Inbox from '../Inbox.ts'
 import * as Ownership from '../Ownership.ts'
-import * as Record from '../Record.ts'
+import type * as Record from '../Record.ts'
 import * as Session from '../Session.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
 import * as Usage from '../Usage.ts'
@@ -31,17 +39,38 @@ import { ToolCall, Result } from './ToolCall.ts'
 import * as Cancellation from './Cancellation.ts'
 import * as Structured from './Structured.ts'
 
+/**
+ * Pinned tool intent document definition.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const IntentDoc = Document.defineUnsafe({
   kind: 'harness.tool-intent',
   version: 1,
   scope: 'task',
   schema: Document.jsonObjectCodec(Schema.Struct({ intent: Tool.Intent, started: Schema.Boolean })),
+  // effect-review-allow P4-decode-effect-at-boundary: this synchronous document initializer may throw; Session.transaction catches its seed decoder with Effect.try before commit.
   initial: (seed) => ({ intent: Schema.decodeUnknownSync(Tool.Intent)(seed), started: false }),
 })
+/**
+ * Outcome schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Outcome = Schema.Struct({ execution: Tool.Execution, receipt: Result })
+/**
+ * Decoded Outcome values.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Outcome = typeof Outcome.Type
+
 const Prepared = Schema.Union([
-  Schema.Struct({ type: Schema.Literal('intent'), intent: Tool.Intent }),
-  Schema.Struct({ type: Schema.Literal('rejected'), message: Schema.String }),
+  tagged('intent', { type: Schema.tag('intent'), intent: Tool.Intent }),
+  tagged('rejected', { type: Schema.tag('rejected'), message: Schema.String }),
 ])
 const invalid = (message: string, cause?: unknown) =>
   new ExecutionError({
@@ -49,13 +78,18 @@ const invalid = (message: string, cause?: unknown) =>
   })
 const codecError = (cause: unknown) => invalid('Tool result cannot be persisted', cause)
 
-/** A native tool result entry also covers an unoffered call, which has no executable task. */
+/**
+ * A native tool result entry also covers an unoffered call, which has no executable task.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const appendResult = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   payload: Pick<
     typeof ToolCall.payloadSchema.Type,
     'conversationId' | 'assistantId' | 'callId' | 'name'
-  > & { readonly taskId?: Record.TaskId },
+  > & { readonly taskId?: Record.TaskId | undefined },
   execution: Tool.Execution,
 ): Effect.fn.Return<Record.Entry, StorageError | ExecutionError> {
   const result = yield* ToolResult.encode(execution.result).pipe(Effect.mapError(codecError))
@@ -87,10 +121,10 @@ export const appendResult = Effect.fnUntraced(function* (
     }).pipe(Effect.mapError(codecError)),
   })
   const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
-  const slot = live.tools?.find((slot) => slot.callId === payload.callId)
-  if (slot !== undefined) {
-    slot.status = 'done'
-    slot.entry = entry.id
+  const slot = Arr.findFirst(live.tools ?? [], (slot) => slot.callId === payload.callId)
+  if (Option.isSome(slot)) {
+    slot.value.status = 'done'
+    slot.value.entry = entry.id
   }
   if (execution.result.usage !== undefined)
     yield* Usage.record(tx, payload.conversationId, 'tools', payload.name, execution.result.usage)
@@ -113,36 +147,46 @@ const progress =
             return
 
           const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
-          const slot = live.tools?.find((slot) => slot.callId === payload.callId)
-          if (slot === undefined) return
+          const slot = Arr.findFirst(live.tools ?? [], (slot) => slot.callId === payload.callId)
+          if (Option.isNone(slot)) return
           if (value.clear === true) {
-            delete slot.output
-            delete slot.details
-            delete slot.diagnostics
-            delete slot.droppedBytes
-            delete slot.droppedLines
+            delete slot.value.output
+            delete slot.value.details
+            delete slot.value.diagnostics
+            delete slot.value.droppedBytes
+            delete slot.value.droppedLines
           }
-          if (value.output !== undefined) slot.output = value.output
-          if (value.details !== undefined) slot.details = yield* Document.copyEffect(value.details)
+          if (value.output !== undefined) slot.value.output = value.output
+          if (value.details !== undefined)
+            slot.value.details = yield* Document.copyEffect(value.details)
           if (value.diagnostics !== undefined)
-            slot.diagnostics = [
-              ...(slot.diagnostics ?? []),
+            slot.value.diagnostics = [
+              ...(slot.value.diagnostics ?? []),
               ...(yield* Document.copyEffect(value.diagnostics)),
             ]
-          if (value.droppedBytes !== undefined) slot.droppedBytes = value.droppedBytes
-          if (value.droppedLines !== undefined) slot.droppedLines = value.droppedLines
+          if (value.droppedBytes !== undefined) slot.value.droppedBytes = value.droppedBytes
+          if (value.droppedLines !== undefined) slot.value.droppedLines = value.droppedLines
         }),
       )
       .pipe(Effect.asVoid, Effect.orDie)
 
-/** Registers an ordinary native child Workflow. Its intent commits before any handler side effect. */
+/**
+ * Registers an ordinary native child Workflow.
+ *
+ * **Details**
+ *
+ * Its intent commits before any handler side effect.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer: Layer.Layer<
   never,
   never,
   | Cancellation.Cancellation
   | Conversation.Configuration
   | Ownership.Declarations
-  | Harness.Executor
+  | Executor.Executor
   | SessionDirectory
   | WorkflowEngine.WorkflowEngine
 > = ToolCall.toLayer(
@@ -150,7 +194,7 @@ export const layer: Layer.Layer<
     const session = yield* (yield* SessionDirectory)
       .resolve(payload.sessionId)
       .pipe(Effect.mapError(storageError))
-    const executor = yield* Harness.Executor
+    const executor = yield* Executor.Executor
     const config = yield* Conversation.Configuration
     const settlementContext = yield* Effect.context<
       Cancellation.Cancellation | Ownership.Declarations | WorkflowEngine.WorkflowEngine
@@ -186,7 +230,11 @@ export const layer: Layer.Layer<
             .snapshot(IntentDoc, { owner: payload.taskId })
             .pipe(Effect.mapError(storageError))
           if (Option.isSome(persisted))
-            return { type: 'intent' as const, intent: persisted.value.value.intent }
+            return {
+              _tag: 'intent' as const,
+              type: 'intent' as const,
+              intent: persisted.value.value.intent,
+            }
           const intent = yield* Effect.result(
             executor
               .prepareTool(agent, {
@@ -200,28 +248,33 @@ export const layer: Layer.Layer<
                   Ownership.layerCurrent(payload).pipe(
                     Layer.provide(Layer.succeed(Session.Session, session)),
                   ),
+                  // effect-review-allow P3-layer-memo-by-reference: Current.check and the captured Session belong to this invocation and terminate with its scope.
+                  { local: true },
                 ),
               ),
           )
-          if (intent._tag === 'Failure')
-            return { type: 'rejected' as const, message: intent.failure.message }
-          yield* session
-            .transaction(
-              Effect.fnUntraced(function* (tx) {
-                return yield* tx.doc(IntentDoc, {
-                  owner: payload.taskId,
-                  seed: yield* Schema.encodeEffect(Serialization.json(Tool.Intent))(
-                    intent.success,
-                  ).pipe(Effect.mapError(codecError)),
-                })
+          return yield* result.match(intent, {
+            onFailure: (failure) =>
+              Effect.succeed({
+                _tag: 'rejected' as const,
+                type: 'rejected' as const,
+                message: failure.message,
               }),
-            )
-            .pipe(
-              Effect.mapError((cause) =>
-                cause instanceof ExecutionError ? cause : storageError(cause),
-              ),
-            )
-          return { type: 'intent' as const, intent: intent.success }
+            onSuccess: (success) =>
+              session
+                .transaction((tx) =>
+                  Schema.encodeEffect(Serialization.json(Tool.Intent))(success).pipe(
+                    Effect.mapError(codecError),
+                    Effect.flatMap((seed) => tx.doc(IntentDoc, { owner: payload.taskId, seed })),
+                  ),
+                )
+                .pipe(
+                  Effect.mapError((cause) =>
+                    cause instanceof ExecutionError ? cause : storageError(cause),
+                  ),
+                  Effect.as({ _tag: 'intent' as const, type: 'intent' as const, intent: success }),
+                ),
+          })
         }),
       ).pipe(
         Effect.mapError((error) => (error._tag === 'StorageError' ? storageError(error) : error)),
@@ -239,10 +292,10 @@ export const layer: Layer.Layer<
             if (task.state.status === 'terminal' || task.state.status === 'completing')
               return task.state.outcome ?? null
             const entry = yield* appendResult(tx, payload, execution)
-            let status: (typeof Result.Type)['status'] =
+            let status: Result['status'] =
               execution.outcome === 'completed' ? 'completed' : 'failed'
             if (task.abortRequested || execution.outcome === 'interrupted') status = 'aborted'
-            const receipt: typeof Result.Type = {
+            const receipt: Result = {
               status,
               entryId: entry.id,
               ...(execution.result.control === undefined
@@ -316,9 +369,13 @@ export const layer: Layer.Layer<
                 const before = doc.started
                 doc.started = true
                 const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
-                const slot = live.tools?.find((slot) => slot.callId === payload.callId)
-                if (slot !== undefined) slot.status = 'running'
+                const slot = Arr.findFirst(
+                  live.tools ?? [],
+                  (slot) => slot.callId === payload.callId,
+                )
+                if (Option.isSome(slot)) slot.value.status = 'running'
                 yield* tx.write({
+                  _tag: 'task',
                   type: 'task',
                   value: {
                     ...task,

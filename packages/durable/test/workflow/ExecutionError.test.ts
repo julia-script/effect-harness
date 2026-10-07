@@ -16,7 +16,7 @@ import { storageError } from '@effect-harness/durable/workflow/SubmissionExecuto
 const codec: Schema.Codec<ExecutionError.ExecutionError, Schema.Json> = Schema.toCodecJson(
   ExecutionError.ExecutionErrorCodec,
 )
-describe('workflow.ExecutionError', () => {
+describe('ExecutionError', () => {
   it.effect('retains the native declaration decoder failure when wrapping it', () =>
     Effect.gen(function* () {
       const exit = yield* Ownership.execute({

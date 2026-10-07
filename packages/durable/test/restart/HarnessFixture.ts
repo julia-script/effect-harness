@@ -1,5 +1,5 @@
 import * as Duration from 'effect/Duration'
-import * as Identity from '../../src/Identity.ts'
+import * as Identity from '@effect-harness/durable/Identity'
 /** Executable test boundary: each worker owns a fresh SQL-backed native engine and real harness Layers. */
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
@@ -7,11 +7,12 @@ import * as FileSystem from 'effect/FileSystem'
 import * as BunRuntime from '@effect/platform-bun/BunRuntime'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
 import * as Harness from '@effect-harness/harness/Executor'
-import { ToolError, ToolExecution } from '@effect-harness/harness/Error'
+import { ToolError, ToolExecution } from '@effect-harness/harness/ToolError'
 import * as Invocation from '@effect-harness/harness/Invocation'
 import * as Model from '@effect-harness/harness/Model'
 import * as Registry from '@effect-harness/harness/Registry'
 import * as Tool from '@effect-harness/harness/Tool'
+import * as Hook from '@effect-harness/harness/Hook'
 import * as Context from 'effect/Context'
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
@@ -31,22 +32,22 @@ import * as ClusterWorkflowEngine from 'effect/cluster/ClusterWorkflowEngine'
 import * as SingleRunner from 'effect/cluster/SingleRunner'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Activity from 'effect/workflow/Activity'
-import * as Conversation from '../../src/Conversation.ts'
-import * as Inbox from '../../src/Inbox.ts'
-import * as Ownership from '../../src/Ownership.ts'
-import * as Record from '../../src/Record.ts'
-import * as Session from '../../src/Session.ts'
-import * as Directory from '../../src/SessionDirectory.ts'
-import * as SqlStore from '../../src/storage/Sqlite.ts'
-import * as DurableExecutor from '../../src/Executor.ts'
-import * as CompactionExecutor from '../../src/workflow/CompactionExecutor.ts'
-import * as SubmissionExecutor from '../../src/workflow/SubmissionExecutor.ts'
-import * as Cancellation from '../../src/workflow/Cancellation.ts'
-import * as Structured from '../../src/workflow/Structured.ts'
-import { Submission } from '../../src/workflow/Submission.ts'
-import { Abort } from '../../src/workflow/Abort.ts'
-import { Compaction } from '../../src/workflow/Compaction.ts'
-import { ExecutionErrorCodec } from '../../src/workflow/ExecutionError.ts'
+import * as Conversation from '@effect-harness/durable/Conversation'
+import * as Inbox from '@effect-harness/durable/Inbox'
+import * as Ownership from '@effect-harness/durable/Ownership'
+import * as Record from '@effect-harness/durable/Record'
+import * as Session from '@effect-harness/durable/Session'
+import * as Directory from '@effect-harness/durable/SessionDirectory'
+import * as SqlStore from '@effect-harness/durable/storage/SqliteStore'
+import * as DurableExecutor from '@effect-harness/durable/Executor'
+import * as CompactionExecutor from '@effect-harness/durable/workflow/CompactionExecutor'
+import * as SubmissionExecutor from '@effect-harness/durable/workflow/SubmissionExecutor'
+import * as Cancellation from '@effect-harness/durable/workflow/Cancellation'
+import * as Structured from '@effect-harness/durable/workflow/Structured'
+import { Submission } from '@effect-harness/durable/workflow/Submission'
+import { Abort } from '@effect-harness/durable/workflow/Abort'
+import { Compaction } from '@effect-harness/durable/workflow/Compaction'
+import { ExecutionErrorCodec } from '@effect-harness/durable/workflow/ExecutionError'
 
 const Child = Workflow.make('restart/owned-child/v1', {
   payload: {
@@ -78,6 +79,7 @@ const input = (key: string, whenBusy?: 'steer' | 'followUp') => ({
   conversationId: Record.ROOT_CONVERSATION_ID,
   requestId: Identity.RequestId.make(key),
   submission: {
+    _tag: 'input' as const,
     type: 'input' as const,
     message: Prompt.userMessage({ content: [Prompt.textPart({ text: key })] }),
     ...(whenBusy === undefined ? {} : { whenBusy }),
@@ -294,7 +296,9 @@ const main = Effect.gen(function* () {
                   Effect.andThen(
                     first && scenario === 'tool-before-intent'
                       ? Effect.never
-                      : Effect.succeed({ args: { text: first ? 'pinned' : 'changed' } }),
+                      : Effect.succeed(
+                          Hook.ToolDecision.Args({ args: { text: first ? 'pinned' : 'changed' } }),
+                        ),
                   ),
                 ),
               afterTool: () => audit('afterTool').pipe(Effect.as(undefined)),
@@ -431,7 +435,7 @@ const main = Effect.gen(function* () {
               const payload =
                 existing === undefined
                   ? yield* session.transaction((tx) =>
-                      CompactionExecutor.create(
+                      CompactionExecutor.make(
                         tx,
                         Identity.SessionId.make('restart'),
                         Record.ROOT_CONVERSATION_ID,
@@ -451,7 +455,11 @@ const main = Effect.gen(function* () {
         yield* Abort.execute({
           sessionId: Identity.SessionId.make('restart'),
           requestId: Identity.RequestId.make('abort-reconcile'),
-          target: { type: 'conversation', id: Record.ROOT_CONVERSATION_ID },
+          target: {
+            _tag: 'conversation' as const,
+            type: 'conversation',
+            id: Record.ROOT_CONVERSATION_ID,
+          },
           background: false,
         })
       const running = yield* receipt.pipe(Effect.forkScoped)
@@ -464,7 +472,7 @@ const main = Effect.gen(function* () {
             ),
           )
           const payload = yield* session.transaction((tx) =>
-            CompactionExecutor.create(
+            CompactionExecutor.make(
               tx,
               Identity.SessionId.make('restart'),
               Record.ROOT_CONVERSATION_ID,
@@ -524,6 +532,7 @@ const main = Effect.gen(function* () {
         }
         if (scenario.startsWith('abort'))
           yield* Cancellation.mark(session, {
+            _tag: 'conversation' as const,
             kind: 'conversation',
             id: Record.ROOT_CONVERSATION_ID,
           })
@@ -553,8 +562,12 @@ const main = Effect.gen(function* () {
           requestId: submission.requestId,
           submission:
             submission.type === 'input'
-              ? { type: 'input', message: Prompt.userMessage({ content: [] }) }
-              : { type: 'write', entry: { kind: 'poll-identity-only' } },
+              ? {
+                  _tag: 'input' as const,
+                  type: 'input',
+                  message: Prompt.userMessage({ content: [] }),
+                }
+              : { _tag: 'write' as const, type: 'write', entry: { kind: 'poll-identity-only' } },
         })
         yield* waitFor(
           Submission.poll(executionId).pipe(

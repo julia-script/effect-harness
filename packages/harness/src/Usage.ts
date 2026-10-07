@@ -1,7 +1,19 @@
+/**
+ * Token and price ledgers with explicit partial-cost metadata.
+ *
+ * @since 0.0.0
+ */
+import { dual } from 'effect/Function'
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
 import type * as Response from 'effect/ai/Response'
 
+/**
+ * Schema for cost.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Cost = Schema.Struct({
   /** False means the numeric amounts are a partial subtotal, not a complete price. */
   known: SchemaField.optional(Schema.Boolean),
@@ -13,6 +25,12 @@ export const Cost = Schema.Struct({
   cacheWrite: Schema.Finite,
   total: Schema.Finite,
 })
+/**
+ * Schema for usage.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Usage = Schema.Struct({
   input: Schema.Finite,
   output: Schema.Finite,
@@ -23,12 +41,36 @@ export const Usage = Schema.Struct({
   reasoning: SchemaField.optional(Schema.Finite),
   cost: Cost,
 })
+/**
+ * Usage usage contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type Usage = typeof Usage.Type
+/**
+ * Schema for state.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const State = Schema.Struct({
   models: Schema.Record(Schema.String, Usage),
   tools: Schema.Record(Schema.String, Usage),
 })
+/**
+ * Usage state contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type State = typeof State.Type
+/**
+ * Creates usage with zero measured counters.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const zero = (): Usage => ({
   input: 0,
   output: 0,
@@ -37,95 +79,172 @@ export const zero = (): Usage => ({
   totalTokens: 0,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 })
+/**
+ * Creates an empty usage state.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const empty = (): State => ({ models: {}, tools: {} })
-export function add(left: Usage, right: Usage): Usage {
+function addImpl(self: Usage, that: Usage): Usage {
   return {
-    input: left.input + right.input,
-    output: left.output + right.output,
-    cacheRead: left.cacheRead + right.cacheRead,
-    cacheWrite: left.cacheWrite + right.cacheWrite,
-    totalTokens: left.totalTokens + right.totalTokens,
-    ...(left.cacheWrite1h === undefined && right.cacheWrite1h === undefined
+    input: self.input + that.input,
+    output: self.output + that.output,
+    cacheRead: self.cacheRead + that.cacheRead,
+    cacheWrite: self.cacheWrite + that.cacheWrite,
+    totalTokens: self.totalTokens + that.totalTokens,
+    ...(self.cacheWrite1h === undefined && that.cacheWrite1h === undefined
       ? {}
-      : { cacheWrite1h: (left.cacheWrite1h ?? 0) + (right.cacheWrite1h ?? 0) }),
-    ...(left.reasoning === undefined && right.reasoning === undefined
+      : { cacheWrite1h: (self.cacheWrite1h ?? 0) + (that.cacheWrite1h ?? 0) }),
+    ...(self.reasoning === undefined && that.reasoning === undefined
       ? {}
-      : { reasoning: (left.reasoning ?? 0) + (right.reasoning ?? 0) }),
+      : { reasoning: (self.reasoning ?? 0) + (that.reasoning ?? 0) }),
     cost: {
-      ...(left.cost.known === undefined && right.cost.known === undefined
+      ...(self.cost.known === undefined && that.cost.known === undefined
         ? {}
-        : { known: left.cost.known !== false && right.cost.known !== false }),
-      ...(left.cost.totalKnown === undefined &&
-      right.cost.totalKnown === undefined &&
-      left.cost.known === undefined &&
-      right.cost.known === undefined
+        : { known: self.cost.known !== false && that.cost.known !== false }),
+      ...(self.cost.totalKnown === undefined &&
+      that.cost.totalKnown === undefined &&
+      self.cost.known === undefined &&
+      that.cost.known === undefined
         ? {}
         : {
             totalKnown:
-              (left.cost.totalKnown ?? left.cost.known) !== false &&
-              (right.cost.totalKnown ?? right.cost.known) !== false,
+              (self.cost.totalKnown ?? self.cost.known) !== false &&
+              (that.cost.totalKnown ?? that.cost.known) !== false,
           }),
-      input: left.cost.input + right.cost.input,
-      output: left.cost.output + right.cost.output,
-      cacheRead: left.cost.cacheRead + right.cost.cacheRead,
-      cacheWrite: left.cost.cacheWrite + right.cost.cacheWrite,
-      total: left.cost.total + right.cost.total,
+      input: self.cost.input + that.cost.input,
+      output: self.cost.output + that.cost.output,
+      cacheRead: self.cost.cacheRead + that.cost.cacheRead,
+      cacheWrite: self.cost.cacheWrite + that.cost.cacheWrite,
+      total: self.cost.total + that.cost.total,
     },
   }
 }
-export function record(state: State, bucket: keyof State, key: string, usage: Usage): State {
-  const old = Object.hasOwn(state[bucket], key) ? state[bucket][key] : undefined
-  const totals = { ...state[bucket] }
+/**
+ * Adds token and cost counters while retaining partial-cost knowledge.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const add: {
+  (that: Usage): (self: Usage) => Usage
+  (self: Usage, that: Usage): Usage
+} = dual(2, addImpl)
+function recordImpl(self: State, bucket: keyof State, key: string, usage: Usage): State {
+  const old = Object.hasOwn(self[bucket], key) ? self[bucket][key] : undefined
+  const totals = { ...self[bucket] }
   Object.defineProperty(totals, key, {
     value: add(old ?? zero(), usage),
     enumerable: true,
     configurable: true,
     writable: true,
   })
-  return { ...state, [bucket]: totals }
+  return { ...self, [bucket]: totals }
 }
-export function sum(states: ReadonlyArray<State>): State {
+/**
+ * Records usage under an own-key ledger entry without mutating prior state.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const record: {
+  (bucket: keyof State, key: string, usage: Usage): (self: State) => State
+  (self: State, bucket: keyof State, key: string, usage: Usage): State
+} = dual(4, recordImpl)
+/**
+ * Combines independent usage ledgers.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export function sum(self: ReadonlyArray<State>): State {
   let total = empty()
-  for (const state of states)
+  for (const state of self)
     for (const bucket of ['models', 'tools'] as const)
       for (const [key, value] of Object.entries(state[bucket]))
         total = record(total, bucket, key, value)
   return total
 }
 /** Cost and extended cache counters are provider metadata, not inferred prices. */
-export function fromResponse(
-  value: Response.Usage,
+function fromResponseImpl(
+  self: Response.Usage,
   extra: Partial<Pick<Usage, 'cost' | 'cacheWrite1h'>> = {},
 ): Usage {
   const input =
-    value.inputTokens.uncached ??
+    self.inputTokens.uncached ??
     Math.max(
       0,
-      (value.inputTokens.total ?? 0) -
-        (value.inputTokens.cacheRead ?? 0) -
-        (value.inputTokens.cacheWrite ?? 0),
+      (self.inputTokens.total ?? 0) -
+        (self.inputTokens.cacheRead ?? 0) -
+        (self.inputTokens.cacheWrite ?? 0),
     )
-  const output = value.outputTokens.total ?? 0
-  const cacheRead = value.inputTokens.cacheRead ?? 0
-  const cacheWrite = value.inputTokens.cacheWrite ?? 0
+  const output = self.outputTokens.total ?? 0
+  const cacheRead = self.inputTokens.cacheRead ?? 0
+  const cacheWrite = self.inputTokens.cacheWrite ?? 0
   return {
     input,
     output,
     cacheRead,
     cacheWrite,
-    totalTokens: (value.inputTokens.total ?? input + cacheRead + cacheWrite) + output,
-    ...(value.outputTokens.reasoning === undefined
+    totalTokens: (self.inputTokens.total ?? input + cacheRead + cacheWrite) + output,
+    ...(self.outputTokens.reasoning === undefined
       ? {}
-      : { reasoning: value.outputTokens.reasoning }),
+      : { reasoning: self.outputTokens.reasoning }),
     ...extra,
     cost: extra.cost ?? { ...zero().cost, known: false, totalKnown: false },
   }
 }
-export const contextTokens = (value: Usage): number =>
-  value.input + value.cacheRead + value.cacheWrite + value.output
+/**
+ * Converts native usage while preserving explicit cache and price metadata.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const fromResponse: {
+  (extra?: Partial<Pick<Usage, 'cost' | 'cacheWrite1h'>>): (self: Response.Usage) => Usage
+  (self: Response.Usage, extra?: Partial<Pick<Usage, 'cost' | 'cacheWrite1h'>>): Usage
+} = dual(
+  (args) => typeof args[0] === 'object' && args[0] != null && 'inputTokens' in args[0],
+  fromResponseImpl,
+)
+/**
+ * Returns the measured input, cache and output token total.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const contextTokens = (self: Usage): number =>
+  self.input + self.cacheRead + self.cacheWrite + self.output
 
-export const isCost: (input: unknown) => input is typeof Cost.Type = Schema.is(Cost)
+/**
+ * Checks whether an unknown value satisfies the Cost contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isCost: (u: unknown) => u is Cost = Schema.is(Cost)
 
-export const isUsage: (input: unknown) => input is Usage = Schema.is(Usage)
+/**
+ * Checks whether an unknown value satisfies the Usage contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isUsage: (u: unknown) => u is Usage = Schema.is(Usage)
 
-export const isState: (input: unknown) => input is State = Schema.is(State)
+/**
+ * Checks whether an unknown value satisfies the State contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isState: (u: unknown) => u is State = Schema.is(State)
+
+/**
+ * Usage cost contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Cost = typeof Cost.Type

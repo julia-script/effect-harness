@@ -1,31 +1,12 @@
-import * as AiError from 'effect/ai/AiError'
-
-export const unsupported = (capability: string): AiError.AiError =>
-  new AiError.AiError({
-    module: 'ClaudeCode',
-    method: 'request',
-    reason: new AiError.InvalidRequestError({
-      description: `Claude Code CLI does not support ${capability} through this adapter`,
-    }),
-  })
-export const protocol = (description: string): AiError.AiError =>
-  new AiError.AiError({
-    module: 'ClaudeCode',
-    method: 'protocol',
-    reason: new AiError.InvalidOutputError({ description }),
-  })
-export const processError = (description: string): AiError.AiError =>
-  new AiError.AiError({
-    module: 'ClaudeCode',
-    method: 'process',
-    reason: new AiError.UnknownError({ description }),
-  })
-export const authentication = (): AiError.AiError =>
-  new AiError.AiError({
-    module: 'ClaudeCode',
-    method: 'account',
-    reason: new AiError.AuthenticationError({
-      kind: 'MissingKey',
-      description: 'Sign in to the installed Claude Code CLI with your Claude account',
-    }),
-  })
+/**
+ * Compatibility forwarding path for the Claude Code error concept.
+ *
+ * @since 0.0.0
+ */
+/**
+ * Compatibility forwarding path for Claude Code error mappings.
+ *
+ * @category exports
+ * @since 0.0.0
+ */
+export * from './ClaudeCodeError.ts'

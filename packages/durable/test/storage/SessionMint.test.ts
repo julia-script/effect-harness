@@ -24,7 +24,7 @@ const delayedId = Record.TaskId.pipe(
 )
 const layers = sessionLayer(Memory.layer)
 
-describe('Session.mint', () => {
+describe('SessionMint', () => {
   it.effect('serializes effectful decoding with its required services and replays receipts', () =>
     Effect.gen(function* () {
       const session = yield* Session.Session

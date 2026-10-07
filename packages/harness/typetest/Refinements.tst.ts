@@ -19,7 +19,7 @@ declare const input: unknown
 
 test('named unknown refinements use the actual public decoded codec, including aliases', () => {
   if (Agent.isModelRef(input)) expect(input).type.toBe<Agent.ModelRef>()
-  if (Agent.isSelectionEdit(input)) expect(input).type.toBe<typeof Agent.SelectionEdit.Type>()
+  if (Agent.isSelectionEdit(input)) expect(input).type.toBe<Agent.SelectionEdit>()
   if (Agent.isSelection(input)) expect(input).type.toBe<Agent.Selection>()
   if (Agent.isToolSelection(input)) expect(input).type.toBe<Agent.ToolSelection>()
   if (Agent.isState(input)) expect(input).type.toBe<Agent.State>()

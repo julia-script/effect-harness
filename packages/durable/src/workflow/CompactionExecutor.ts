@@ -1,3 +1,12 @@
+/**
+ * Native compaction execution, retries and atomic summary settlement.
+ *
+ * @since 0.0.0
+ */
+import * as result from 'effect/Result'
+// effect-review-allow P9-namespace-alias-equals-module: the native Workflow Result schema is an imported binding in this module.
+import * as Arr from 'effect/Array'
+import { tagged } from '../internal/legacyTag.ts'
 import type { StorageError } from '../StorageError.ts'
 import * as Option from 'effect/Option'
 import * as Time from '@effect-harness/harness/Time'
@@ -7,9 +16,9 @@ import * as Identity from '../Identity.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import type * as Layer from 'effect/Layer'
 import * as Agent from '@effect-harness/harness/Agent'
-import * as Harness from '@effect-harness/harness/Executor'
+import * as Executor from '@effect-harness/harness/Executor'
 import * as Invocation from '@effect-harness/harness/Invocation'
-import * as Totals from '@effect-harness/harness/Usage'
+import * as Usage from '@effect-harness/harness/Usage'
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -17,13 +26,13 @@ import * as Prompt from 'effect/ai/Prompt'
 import * as ClusterSchema from 'effect/cluster/ClusterSchema'
 import * as Activity from 'effect/workflow/Activity'
 import * as Conversation from '../Conversation.ts'
-import * as Document from '../Document.ts'
+import type * as Document from '../Document.ts'
 import * as Inbox from '../Inbox.ts'
 import * as Ownership from '../Ownership.ts'
 import * as Record from '../Record.ts'
 import type * as Session from '../Session.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
-import * as Usage from '../Usage.ts'
+import { record as recordUsage } from '../Usage.ts'
 import { Compaction, Result } from './Compaction.ts'
 import * as Cancellation from './Cancellation.ts'
 import * as Structured from './Structured.ts'
@@ -39,17 +48,17 @@ import { Submission, EntryDraft } from './Submission.ts'
 import * as SubmissionExecutor from './SubmissionExecutor.ts'
 
 const Prepared = Schema.Union([
-  Schema.Struct({ type: Schema.Literal('none') }),
-  Schema.Struct({
-    type: Schema.Literal('summary'),
+  tagged('none', { type: Schema.tag('none') }),
+  tagged('summary', {
+    type: Schema.tag('summary'),
     firstKept: Record.EntryId,
     summary: Schema.String,
   }),
-  Schema.Struct({ type: Schema.Literal('request'), request: Harness.SummaryRequest }),
+  tagged('request', { type: Schema.tag('request'), request: Executor.SummaryRequest }),
 ])
 const SummarySubmission = Schema.Struct({
   ...Submission.payloadSchema.fields,
-  submission: Schema.Struct({ type: Schema.Literal('write'), entry: EntryDraft }),
+  submission: tagged('write', { type: Schema.tag('write'), entry: EntryDraft }),
 })
 const Settlement = Schema.Struct({
   result: Result,
@@ -57,12 +66,12 @@ const Settlement = Schema.Struct({
   submission: Schema.optionalKey(SummarySubmission),
 })
 const Attempt = Schema.Union([
-  Schema.Struct({ type: Schema.Literal('summary'), summary: Harness.Summary }),
-  Schema.Struct({
-    type: Schema.Literal('failure'),
+  tagged('summary', { type: Schema.tag('summary'), summary: Executor.Summary }),
+  tagged('failure', {
+    type: Schema.tag('failure'),
     message: Schema.String,
     retryable: Schema.Boolean,
-    usage: Schema.optionalKey(Totals.Usage),
+    usage: Schema.optionalKey(Usage.Usage),
   }),
 ])
 const domainError = (error: import('../StorageError.ts').StorageError | ExecutionError) =>
@@ -75,8 +84,13 @@ const invalid = (cause?: unknown) =>
     }),
   })
 
-/** Creates the domain projection and returns an ordinary Compaction Workflow payload. */
-export const create = Effect.fnUntraced(function* (
+/**
+ * Creates the domain projection and returns an ordinary Compaction Workflow payload.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
+export const make = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   sessionId: Identity.SessionId,
   conversationId: Record.ConversationId,
@@ -110,6 +124,7 @@ export const create = Effect.fnUntraced(function* (
     payload,
   }
   yield* tx.write({
+    _tag: 'task',
     type: 'task',
     value: {
       id: taskId,
@@ -134,14 +149,19 @@ export const create = Effect.fnUntraced(function* (
   return payload
 })
 
-/** Pinned summary requests and absolute retry deadlines are native cached Activities. */
+/**
+ * Pinned summary requests and absolute retry deadlines are native cached Activities.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer: Layer.Layer<
   never,
   never,
   | Cancellation.Cancellation
   | Conversation.Configuration
   | Ownership.Declarations
-  | Harness.Executor
+  | Executor.Executor
   | SessionDirectory
   | WorkflowEngine.WorkflowEngine
 > = Compaction.toLayer(
@@ -149,7 +169,7 @@ export const layer: Layer.Layer<
     const session = yield* (yield* SessionDirectory)
       .resolve(payload.sessionId)
       .pipe(Effect.mapError(SubmissionExecutor.storageError))
-    const executor = yield* Harness.Executor
+    const executor = yield* Executor.Executor
     const config = yield* Conversation.Configuration
     const invocation = Invocation.Invocation.of({
       cwd: config.cwd,
@@ -170,7 +190,10 @@ export const layer: Layer.Layer<
     })
     const removeStatus = (live: Document.Draft<Inbox.LiveState>) => {
       if (live.compactions !== undefined)
-        live.compactions = live.compactions.filter((status) => status.taskId !== payload.taskId)
+        live.compactions = Arr.filter(
+          live.compactions,
+          (status) => status.taskId !== payload.taskId,
+        )
     }
     const complete = Effect.fnUntraced(function* (summary?: {
       firstKept: Record.EntryId
@@ -192,7 +215,7 @@ export const layer: Layer.Layer<
                   reason: new Aborted({ message: 'Compaction aborted' }),
                 })
               const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
-              let result: typeof Result.Type = {}
+              let result: Result = {}
               let notify: ReadonlyArray<Record.SubmissionId> = []
               let submission: typeof SummarySubmission.Type | undefined
               if (summary !== undefined) {
@@ -219,7 +242,7 @@ export const layer: Layer.Layer<
                     sessionId: payload.sessionId,
                     conversationId: payload.conversationId,
                     requestId: Identity.RequestId.make(`compaction:${payload.taskId}`),
-                    submission: { type: 'write', entry },
+                    submission: { _tag: 'write', type: 'write', entry },
                   }
                   const admitted = yield* SubmissionExecutor.admitInTransaction(
                     tx,
@@ -309,7 +332,10 @@ export const layer: Layer.Layer<
                     }),
                 ),
               )
-            return yield* Schema.decodeEffect(Prepared)(value).pipe(Effect.mapError(invalid))
+            return yield* Schema.decodeUnknownEffect(Schema.toType(Prepared))({
+              ...value,
+              type: value._tag,
+            }).pipe(Effect.mapError(invalid))
           }),
         ).pipe(Effect.mapError(domainError)),
       })
@@ -338,39 +364,47 @@ export const layer: Layer.Layer<
                       })
                     const task = taskOption.value
                     const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
-                    const status = live.compactions?.find(
+                    const status = Arr.findFirst(
+                      live.compactions ?? [],
                       (status) => status.taskId === payload.taskId,
                     )
-                    if (status !== undefined) {
-                      status.attempt = attempt
-                      delete status.retry
+                    if (Option.isSome(status)) {
+                      status.value.attempt = attempt
+                      delete status.value.retry
                     }
                     yield* tx.write({
+                      _tag: 'task',
                       type: 'task',
                       value: { ...task, state: { status: 'running' } },
                     })
                   }),
                 )
                 .pipe(Effect.mapError(domainError))
-              const result = yield* Effect.result(executor.compact({ ...pinned, attempt }))
-              if (result._tag === 'Success')
-                return { type: 'summary' as const, summary: result.success }
-              const error = result.failure
-              return {
-                type: 'failure' as const,
-                message: error.message,
-                retryable: (yield* executor.classifyFailure(pinned.request, error).pipe(
-                  Effect.mapError(
-                    (failure) =>
-                      new ExecutionError({
-                        reason: new (failure.reason._tag === 'ModelNoModel' ? NoModel : ModelError)(
-                          { message: failure.message, cause: failure },
-                        ),
-                      }),
+              const attemptResult = yield* Effect.result(executor.compact({ ...pinned, attempt }))
+              return yield* result.match(attemptResult, {
+                onSuccess: (summary) =>
+                  Effect.succeed({ _tag: 'summary' as const, type: 'summary' as const, summary }),
+                onFailure: (error) =>
+                  executor.classifyFailure(pinned.request, error).pipe(
+                    Effect.mapError(
+                      (failure) =>
+                        new ExecutionError({
+                          reason: new (failure.reason._tag === 'ModelNoModel'
+                            ? NoModel
+                            : ModelError)({ message: failure.message, cause: failure }),
+                        }),
+                    ),
+                    Effect.map((classification) => ({
+                      _tag: 'failure' as const,
+                      type: 'failure' as const,
+                      message: error.message,
+                      retryable: classification.retryable,
+                      ...('usage' in error && error.usage !== undefined
+                        ? { usage: error.usage }
+                        : {}),
+                    })),
                   ),
-                )).retryable,
-                ...('usage' in error && error.usage !== undefined ? { usage: error.usage } : {}),
-              }
+              })
             }),
           ).pipe(Effect.mapError(domainError)),
         })
@@ -390,7 +424,7 @@ export const layer: Layer.Layer<
                 const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
                 const usage = response.type === 'summary' ? response.summary.usage : response.usage
                 if (usage !== undefined)
-                  yield* Usage.record(
+                  yield* recordUsage(
                     tx,
                     payload.conversationId,
                     'models',
@@ -399,14 +433,17 @@ export const layer: Layer.Layer<
                   )
                 const retry =
                   response.type === 'failure' &&
-                  Agent.shouldRetry(config.settings.retry, attempt, response.retryable)
+                  Agent.isRetryAllowed(config.settings.retry, attempt, response.retryable)
                 const at = DateTime.addDuration(
                   yield* DateTime.now,
                   Agent.retryDelay(config.settings.retry, attempt),
                 )
-                const status = live.compactions?.find((status) => status.taskId === payload.taskId)
-                if (status !== undefined && retry && response.type === 'failure')
-                  status.retry = { at: DateTime.toEpochMillis(at), error: response.message }
+                const status = Arr.findFirst(
+                  live.compactions ?? [],
+                  (status) => status.taskId === payload.taskId,
+                )
+                if (Option.isSome(status) && retry && response.type === 'failure')
+                  status.value.retry = { at: DateTime.toEpochMillis(at), error: response.message }
                 return { at: DateTime.toEpochMillis(at), retry }
               }),
               { key: `workflow/compaction/usage/${executionId}/${attempt}` },

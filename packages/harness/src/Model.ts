@@ -1,3 +1,8 @@
+/**
+ * Native model catalogs, deferred capabilities and semantic provider failures.
+ *
+ * @since 0.0.0
+ */
 import * as Option from 'effect/Option'
 import * as DateTime from 'effect/DateTime'
 import * as Duration from 'effect/Duration'
@@ -9,13 +14,19 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import type * as LanguageModel from 'effect/ai/LanguageModel'
 import type * as Prompt from 'effect/ai/Prompt'
-import * as Agent from './Agent.ts'
-import { ModelError, ModelNoModel, ModelUnsupported } from './Error.ts'
+import type * as Agent from './Agent.ts'
+import { ModelError, ModelNoModel, ModelUnsupported } from './ModelError.ts'
 import type * as Usage from './Usage.ts'
 import * as AiError from 'effect/ai/AiError'
 import type * as Response from 'effect/ai/Response'
 import * as Serialization from './Serialization.ts'
 
+/**
+ * Schema for request options.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const RequestOptions = Schema.Struct({
   thinking: Schema.String,
   options: Schema.Record(Schema.String, Schema.Json),
@@ -23,8 +34,23 @@ export const RequestOptions = Schema.Struct({
   maxTokens: SchemaField.optional(Schema.Finite),
   cache: SchemaField.optional(Schema.Literals(['none', 'short', 'long'])),
 })
+/**
+ * Model request options contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type RequestOptions = typeof RequestOptions.Type
-/** A native LanguageModel with provider capability translation. Layer construction captures required provider/client services. */
+/**
+ * A native LanguageModel with provider capability translation.
+ *
+ * **Details**
+ *
+ * Layer construction captures required provider/client services.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Descriptor {
   readonly ref: Agent.ModelRef
   readonly model: LanguageModel.LanguageModel
@@ -42,12 +68,24 @@ export interface Descriptor {
     | ((error: unknown) => { readonly retryable: boolean; readonly overflow: boolean })
     | undefined
 }
+/**
+ * Service for model capabilities.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class Catalog extends Context.Service<
   Catalog,
   {
     readonly resolve: (ref: Agent.ModelRef) => Effect.Effect<Descriptor, ModelError>
   }
 >()('@effect-harness/harness/Model/Catalog') {}
+/**
+ * Layer for Model capabilities.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export function layer(descriptors: ReadonlyArray<Descriptor>): Layer.Layer<Catalog> {
   const entries = new Map(descriptors.map((descriptor) => [key(descriptor.ref), descriptor]))
   return Layer.succeed(
@@ -70,7 +108,16 @@ export function layer(descriptors: ReadonlyArray<Descriptor>): Layer.Layer<Catal
   )
 }
 const key = (ref: Agent.ModelRef): string => JSON.stringify([ref.provider, ref.modelId])
-/** Default capability translator for models with no provider-specific options. Unknown options fail explicitly. */
+/**
+ * Default capability translator for models with no provider-specific options.
+ *
+ * **Details**
+ *
+ * Unknown options fail explicitly.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const noOptions = (
   options: RequestOptions,
 ): Effect.Effect<Context.Context<never>, ModelError> =>
@@ -88,11 +135,29 @@ export const noOptions = (
       )
     : Effect.succeed(Context.empty())
 
+/**
+ * Schema for deferred decision.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const DeferredDecision = Schema.Struct({
   handle: Schema.Json,
   pollAfterMs: SchemaField.optional(Time.DurationMillis),
 })
+/**
+ * Model deferred decision contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type DeferredDecision = typeof DeferredDecision.Type
+/**
+ * Model deferred capability contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface DeferredCapability {
   readonly inspect: (parts: ReadonlyArray<Response.AnyPart>) => Option.Option<DeferredDecision>
   readonly fetch: (
@@ -107,7 +172,12 @@ export interface DeferredCapability {
     options: RequestOptions,
   ) => Effect.Effect<void, ModelError | import('effect/ai/AiError').AiError>
 }
-/** Root persists this absolute deadline; the harness does not create a timer or poll loop. */
+/**
+ * Root persists this absolute deadline; the harness does not create a timer or poll loop.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const pollAt = (
   now: DateTime.Utc,
   previous?: DateTime.Utc,
@@ -260,10 +330,21 @@ const foreignTransient = new RegExp(
   'i',
 )
 
+/**
+ * Returns a guarded display description of an arbitrary caught value.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export function errorText(error: unknown): string {
   return Serialization.errorText(error)
 }
-/** Converts SDK invalid-request diagnostics and otherwise unclassified foreign sentinels once at the model boundary. */
+/**
+ * Converts SDK invalid-request diagnostics and otherwise unclassified foreign sentinels once at the model boundary.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export function providerError(error: unknown, provider?: string): AiError.AiError {
   if (error instanceof ModelError)
     return new AiError.AiError({
@@ -316,6 +397,12 @@ export function providerError(error: unknown, provider?: string): AiError.AiErro
   })
 }
 
+/**
+ * Classifies retry and context-overflow behavior using semantic native AI errors.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export function classify(
   error: unknown,
   provider?: string,
@@ -328,8 +415,18 @@ export function classify(
   }
 }
 
-export const isRequestOptions: (input: unknown) => input is RequestOptions =
-  Schema.is(RequestOptions)
+/**
+ * Checks whether an unknown value satisfies the RequestOptions contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isRequestOptions: (u: unknown) => u is RequestOptions = Schema.is(RequestOptions)
 
-export const isDeferredDecision: (input: unknown) => input is DeferredDecision =
-  Schema.is(DeferredDecision)
+/**
+ * Checks whether an unknown value satisfies the DeferredDecision contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isDeferredDecision: (u: unknown) => u is DeferredDecision = Schema.is(DeferredDecision)

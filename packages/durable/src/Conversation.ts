@@ -1,10 +1,21 @@
-import * as SharedPatch from '@effect-harness/harness/SystemPatch'
+/**
+ * Agent and provider documents, conversation projections and configuration.
+ *
+ * @since 0.0.0
+ */
+import { constTrue } from 'effect/Function'
+import * as Arr from 'effect/Array'
+import * as records from 'effect/Record'
+// effect-review-allow P9-namespace-alias-equals-module: effect/Record and durable/Record both introduce Record; the records alias distinguishes dictionary operations from the imported domain schema namespace.
+import * as Predicate from 'effect/Predicate'
+import * as systemPatch from '@effect-harness/harness/SystemPatch'
+// effect-review-allow P9-namespace-alias-equals-module: the exported SystemPatch schema binding collides with its canonical source namespace.
 import * as Agent from '@effect-harness/harness/Agent'
-import * as ConversationContext from '@effect-harness/harness/Context'
+import * as Context from '@effect-harness/harness/Context'
 import * as Registry from '@effect-harness/harness/Registry'
 import * as Invocation from '@effect-harness/harness/Invocation'
-import * as Totals from '@effect-harness/harness/Usage'
-import * as Context from 'effect/Context'
+import * as Usage from '@effect-harness/harness/Usage'
+import { Service } from 'effect/Context'
 import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -16,14 +27,20 @@ import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
 import * as Document from './Document.ts'
 import * as Inbox from './Inbox.ts'
-import * as Record from './Record.ts'
+import type * as Record from './Record.ts'
 import * as Session from './Session.ts'
 import { rejected, type StorageError, NotFound } from './StorageError.ts'
-import * as Usage from './Usage.ts'
+import { UsageDoc } from './Usage.ts'
 import * as Ownership from './Ownership.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import { ExecutionError, InvalidState, InvalidArguments } from './workflow/ExecutionError.ts'
 
+/**
+ * Agent settings document definition.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const AgentDoc = Document.defineUnsafe({
   kind: 'harness.agent',
   version: 1,
@@ -32,9 +49,29 @@ export const AgentDoc = Document.defineUnsafe({
   fork: 'asOf',
   schema: Document.jsonObjectCodec(Agent.State),
   initial: (): Agent.State => ({}),
-  checkpointWhen: () => true,
+  checkpointWhen: constTrue,
 })
+/**
+ * ProviderState schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const ProviderState = Schema.Struct({ sessionId: Schema.NonEmptyString })
+/**
+ * Decoded ProviderState values.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type ProviderState = typeof ProviderState.Type
+
+/**
+ * Provider session document definition.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const ProviderDoc = Document.defineUnsafe({
   kind: 'harness.provider',
   version: 1,
@@ -42,25 +79,47 @@ export const ProviderDoc = Document.defineUnsafe({
   history: 'latest',
   fork: 'initial',
   schema: ProviderState,
-  initial: (seed) => ({ sessionId: typeof seed === 'string' ? seed : '' }),
-  checkpointWhen: () => true,
+  initial: (seed) => ({ sessionId: Predicate.isString(seed) ? seed : '' }),
+  checkpointWhen: constTrue,
 })
 
-export interface Options {
-  /** Positive safe integer, default sixteen; sequential tool rounds remain one. */
-  readonly toolConcurrency?: number
+/**
+ * Options contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export declare namespace Conversation {
+  interface Options {
+    /** Positive safe integer, default sixteen; sequential tool rounds remain one. */
+    readonly toolConcurrency?: number | undefined
 
-  readonly settings?: Agent.SettingsInput | undefined
-  readonly cwd?: string | undefined
-  readonly report?: ((error: unknown) => Effect.Effect<void>) | undefined
-  readonly created?:
-    | ((
-        tx: Session.Transaction,
-        conversation: Record.Conversation,
-      ) => Effect.Effect<void, StorageError>)
-    | undefined
+    readonly settings?: Agent.SettingsInput | undefined
+    readonly cwd?: string | undefined
+    readonly report?: ((error: unknown) => Effect.Effect<void>) | undefined
+    readonly created?:
+      | ((
+          tx: Session.Transaction,
+          conversation: Record.Conversation,
+        ) => Effect.Effect<void, StorageError>)
+      | undefined
+  }
 }
-export class Configuration extends Context.Service<
+/**
+ * Compatibility alias for Conversation.Options.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Options = Conversation.Options
+
+/**
+ * Configuration service.
+ *
+ * @category services
+ * @since 0.0.0
+ */
+export class Configuration extends Service<
   Configuration,
   {
     readonly settings: Agent.Settings
@@ -77,6 +136,12 @@ export class Configuration extends Context.Service<
     ) => Effect.Effect<void, StorageError>
   }
 >()('@effect-harness/durable/Conversation/Configuration') {}
+/**
+ * layerConfiguration service Layer.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerConfiguration = (
   options: Options = {},
 ): Layer.Layer<Configuration, Schema.SchemaError> =>
@@ -110,7 +175,12 @@ export const layerConfiguration = (
     }),
   )
 
-/** Provide this to Session.layer so raw transaction creation and native Workflow creation share atomic initialization. */
+/**
+ * Provides this to Session.layer so raw transaction creation and native Workflow creation share atomic initialization.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerCreation: Layer.Layer<
   Session.CreationHook,
   never,
@@ -144,7 +214,7 @@ export const layerCreation: Layer.Layer<
         }
         yield* tx.doc(Inbox.InboxDoc, { owner: conversation.id })
         yield* tx.doc(Inbox.LiveDoc, { owner: conversation.id })
-        yield* tx.doc(Usage.UsageDoc, { owner: conversation.id })
+        yield* tx.doc(UsageDoc, { owner: conversation.id })
         yield* recover(tx, conversation)
         if (Option.isSome(registry)) {
           const invocation = { cwd: config.cwd, report: config.report, progress: () => Effect.void }
@@ -168,21 +238,50 @@ export const layerCreation: Layer.Layer<
   }),
 )
 
-export const SystemPatch = SharedPatch.SystemPatch
+/**
+ * Canonical system patch schema.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const SystemPatch = systemPatch.SystemPatch
+/**
+ * Canonical system patch schema.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type SystemPatch = typeof SystemPatch.Type
+/**
+ * Metadata schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Metadata = Schema.Struct({
   status: Schema.optionalKey(
     Schema.Literals(['stop', 'length', 'tool-calls', 'aborted', 'error', 'deferred']),
   ),
-  usage: Schema.optionalKey(Totals.Usage),
+  usage: Schema.optionalKey(Usage.Usage),
   system: Schema.optionalKey(SystemPatch),
 })
+/**
+ * Metadata contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type Metadata = typeof Metadata.Type
 
-/** Convert committed encoded AI messages and context edits into the generic harness's pure context inputs. */
+/**
+ * Convert committed encoded AI messages and context edits into the generic harness's pure context inputs.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const projectEntry = Effect.fnUntraced(function* (
   entry: Record.Entry,
-): Effect.fn.Return<ConversationContext.Entry, ExecutionError> {
+): Effect.fn.Return<Context.Entry, ExecutionError> {
   const invalid = (cause?: unknown) =>
     new ExecutionError({
       reason: new InvalidState({
@@ -193,7 +292,7 @@ export const projectEntry = Effect.fnUntraced(function* (
   const messages = yield* Schema.decodeEffect(Schema.toCodecJson(Schema.Array(Prompt.Message)))(
     entry.model ?? [],
   ).pipe(Effect.mapError(invalid))
-  const edits: ConversationContext.Edit[] = []
+  const edits: Array<Context.Edit> = []
   for (const edit of entry.edits ?? []) {
     if (edit.action === 'omit') edits.push(edit)
     else
@@ -207,8 +306,8 @@ export const projectEntry = Effect.fnUntraced(function* (
   const data = entry.data
   const metadata =
     data !== null &&
-    typeof data === 'object' &&
-    !Array.isArray(data) &&
+    Predicate.isObject(data) &&
+    !Arr.isArray(data) &&
     Object.hasOwn(data, 'harness')
       ? yield* Schema.decodeUnknownEffect(Schema.Struct({ harness: Metadata }))(data).pipe(
           Effect.map((value) => value.harness),
@@ -225,19 +324,24 @@ export const projectEntry = Effect.fnUntraced(function* (
   }
 })
 
-/** Read the complete inherited transcript in ascending entry order; scans themselves remain newest first. */
+/**
+ * Reads the complete inherited transcript in ascending entry order; scans themselves remain newest first.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const context = Effect.fnUntraced(function* (
   session: Session.Service,
   conversationId: Record.ConversationId,
   at?: Record.EntryId,
-): Effect.fn.Return<ConversationContext.View, StorageError | ExecutionError> {
+): Effect.fn.Return<Context.View, StorageError | ExecutionError> {
   if (at !== undefined && Option.isNone(yield* session.entry(at, conversationId)))
     return yield* new ExecutionError({
       reason: new InvalidArguments({
         message: 'Context cutoff is not visible in this conversation',
       }),
     })
-  const entries: Record.Entry[] = []
+  const entries: Array<Record.Entry> = []
   // Freeze the visible cutoff before paginating so concurrent appends cannot extend this read.
   const first = yield* session.scanEntries(
     { conversationId, ...(at === undefined ? {} : { maxEntryId: at }) },
@@ -255,13 +359,23 @@ export const context = Effect.fnUntraced(function* (
     entries.push(...page.items)
     cursor = page.next
   }
-  const head = entries.find((entry) => entry.head !== undefined)?.head
-  const active = entries.filter((entry) => head === undefined || entry.id >= head)
+  const head = Option.getOrUndefined(
+    Option.flatMap(
+      Arr.findFirst(entries, (entry) => entry.head !== undefined),
+      (entry) => Option.fromUndefinedOr(entry.head),
+    ),
+  )
+  const active = Arr.filter(entries, (entry) => head === undefined || entry.id >= head)
   const projected = yield* Effect.forEach(active.reverse(), projectEntry)
-  return ConversationContext.derive(projected, at)
+  return Context.derive(projected, at)
 })
 
-/** Reset is an ordinary entry draft admitted by Submission; transcript, agent, usage and provider identity remain durable. */
+/**
+ * Reset is an ordinary entry draft admitted by Submission; transcript, agent, usage and provider identity remain durable.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const resetDraft = Effect.fnUntraced(function* (
   note?: string,
 ): Effect.fn.Return<Record.EntryDraft, ExecutionError> {
@@ -290,8 +404,13 @@ export const resetDraft = Effect.fnUntraced(function* (
   return { kind: 'harness.reset', head: 'self' as const, model } satisfies Record.EntryDraft
 })
 
-/** Domain reads and atomic configuration only. Execute durable work with the exported native Workflow services. */
-export class Conversation extends Context.Service<
+/**
+ * Domain reads and atomic configuration only. Execute durable work with the exported native Workflow services.
+ *
+ * @category services
+ * @since 0.0.0
+ */
+export class Conversation extends Service<
   Conversation,
   {
     readonly root: Session.Service['root']
@@ -310,18 +429,24 @@ export class Conversation extends Context.Service<
     readonly context: (
       id: Record.ConversationId,
       at?: Record.EntryId,
-    ) => Effect.Effect<ConversationContext.View, StorageError | ExecutionError>
+    ) => Effect.Effect<Context.View, StorageError | ExecutionError>
   }
 >()('@effect-harness/durable/Conversation') {}
 
+/**
+ * layer service Layer.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer: Layer.Layer<Conversation, never, Session.Session> = Layer.effect(Conversation)(
   Effect.gen(function* () {
     const session = yield* Session.Session
     return Conversation.of({
       root: session.root,
-      create: (ownership = { kind: 'ownerless' }) =>
+      create: (ownership = { _tag: 'ownerless', kind: 'ownerless' }) =>
         session.transaction((tx) => tx.createConversation({ ownership })),
-      fork: (parent, at, ownership = { kind: 'ownerless' }) =>
+      fork: (parent, at, ownership = { _tag: 'ownerless', kind: 'ownerless' }) =>
         session.transaction((tx) => tx.forkConversation(parent, at, { ownership })),
       configure: (id, change) =>
         session.transaction(
@@ -330,7 +455,8 @@ export const layer: Layer.Layer<Conversation, never, Session.Session> = Layer.ef
               return yield* rejected('Conversation is absent', NotFound)
             const draft = yield* tx.doc(AgentDoc, { owner: id })
             const next = Agent.configure(draft, change)
-            for (const key of Object.keys(draft)) Reflect.deleteProperty(draft, key)
+            for (const key of records.keys<string, unknown>(draft))
+              Reflect.deleteProperty(draft, key)
             Object.assign(draft, next)
             return yield* Document.copyEffect(next)
           }),
@@ -340,7 +466,16 @@ export const layer: Layer.Layer<Conversation, never, Session.Session> = Layer.ef
   }),
 )
 
-/** Wait for ordinary owned work to finish, driving its declared native executions. Omit id to wait across the Session's ownerless conversation roots. Background subtrees are excluded; missing declarations remain blocked until restored. */
+/**
+ * Waits for ordinary owned work to finish, driving its declared native executions.
+ *
+ * **Details**
+ *
+ * Omit id to wait across the Session's ownerless conversation roots. Background subtrees are excluded; missing declarations remain blocked until restored.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const awaitIdle = Effect.fnUntraced(function* (
   session: Session.Service,
   id?: Record.ConversationId,
@@ -358,13 +493,18 @@ export const awaitIdle = Effect.fnUntraced(function* (
         const state = yield* session.committed
         const roots =
           id === undefined
-            ? state.conversations
-                .filter((conversation) => conversation.owner === undefined)
-                .map((conversation) => conversation.id)
+            ? Arr.filter(
+                state.conversations,
+                (conversation) => conversation.owner === undefined,
+              ).map((conversation) => conversation.id)
             : [id]
         const tasks = new Map<Record.TaskId, Record.Task>()
         for (const root of roots) {
-          const reachedOption = Ownership.reach(state, { kind: 'conversation', id: root })
+          const reachedOption = Ownership.reach(state, {
+            _tag: 'conversation',
+            kind: 'conversation',
+            id: root,
+          })
           if (Option.isNone(reachedOption))
             return yield* rejected('Conversation is absent', NotFound)
           const reached = reachedOption.value

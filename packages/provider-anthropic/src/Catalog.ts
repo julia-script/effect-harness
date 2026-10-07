@@ -1,3 +1,9 @@
+/**
+ * Validated model catalogues with pinned request configuration and usage accounting.
+ *
+ * @since 0.0.0
+ */
+import { dual, constUndefined } from 'effect/Function'
 import * as HashMap from 'effect/HashMap'
 import * as Option from 'effect/Option'
 import type * as HttpClient from 'effect/http/HttpClient'
@@ -6,7 +12,7 @@ import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
 import * as Generated from '@effect/ai-anthropic/Generated'
 import * as Model from '@effect-harness/harness/Model'
-import { ModelError, ModelNoModel, ModelUnsupported } from '@effect-harness/harness/Error'
+import { ModelError, ModelNoModel, ModelUnsupported } from '@effect-harness/harness/ModelError'
 import * as Usage from '@effect-harness/harness/Usage'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -14,9 +20,13 @@ import * as Layer from 'effect/Layer'
 import * as Result from 'effect/Result'
 import * as Predicate from 'effect/Predicate'
 import * as Schema from 'effect/Schema'
+import * as SchemaGetter from 'effect/SchemaGetter'
+import * as Record from 'effect/Record'
+import * as Arr from 'effect/Array'
 import type * as Response from 'effect/ai/Response'
 import type * as Redacted from 'effect/Redacted'
-import * as Prompt from './Prompt.ts'
+// effect-review-allow P9-namespace-alias-equals-module: @effect/ai-anthropic/AnthropicLanguageModel and ./AnthropicLanguageModel.ts both bind AnthropicLanguageModel; anthropicLanguageModel distinguishes the owned model constructor.
+import * as anthropicLanguageModel from './AnthropicLanguageModel.ts'
 
 const fail = (message: string, cause?: unknown) =>
   new ModelError({
@@ -46,6 +56,12 @@ const Options = Schema.Struct({
   midConversationSystemMessages: Schema.optionalKey(Schema.Boolean),
 })
 const Price = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
+/**
+ * Defines Prices for the Catalog boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const Prices = Schema.Struct({
   input: Price,
   output: Price,
@@ -65,17 +81,44 @@ const EntryOptions = Schema.Struct({
   strictJsonSchema: Schema.optional(Schema.Boolean),
   midConversationSystemMessages: Schema.optional(Schema.Boolean),
 })
+/**
+ * Defines Entry for the Catalog boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const Entry = Schema.Struct({
   modelId: Schema.NonEmptyString,
   contextWindow: Limit,
   maxOutputTokens: Limit,
   thinking: Schema.optional(
     Schema.Union([
-      Schema.Struct({ mode: Schema.Literal('adaptive') }),
+      Schema.Struct({ mode: Schema.tag('adaptive') }).pipe(
+        Schema.decodeTo(Schema.TaggedStruct('adaptive', {}), {
+          decode: SchemaGetter.transform(() => ({ _tag: 'adaptive' as const })),
+          encode: SchemaGetter.transform(() => ({ mode: 'adaptive' as const })),
+        }),
+      ),
       Schema.Struct({
-        mode: Schema.Literal('budget'),
+        mode: Schema.tag('budget'),
         budgets: Schema.Record(Schema.String, Limit.check(Schema.isGreaterThanOrEqualTo(1024))),
-      }),
+      }).pipe(
+        Schema.decodeTo(
+          Schema.TaggedStruct('budget', {
+            budgets: Schema.Record(Schema.String, Limit.check(Schema.isGreaterThanOrEqualTo(1024))),
+          }),
+          {
+            decode: SchemaGetter.transform((self) => ({
+              _tag: 'budget' as const,
+              budgets: self.budgets,
+            })),
+            encode: SchemaGetter.transform((self) => ({
+              mode: 'budget' as const,
+              budgets: self.budgets,
+            })),
+          },
+        ),
+      ),
     ]),
   ),
   efforts: Schema.optional(Schema.Array(Schema.Literals(['low', 'medium', 'high']))),
@@ -93,7 +136,7 @@ export const Entry = Schema.Struct({
   ),
   Schema.makeFilter(
     (entry) =>
-      entry.thinking?.mode !== 'budget' ||
+      entry.thinking?._tag !== 'budget' ||
       Object.values(entry.thinking.budgets).every((budget) => budget < entry.maxOutputTokens),
   ),
 )
@@ -101,10 +144,9 @@ export type Entry = typeof Entry.Type
 const decode = (value: unknown) =>
   Schema.decodeUnknownEffect(Options, { onExcessProperty: 'error' })(
     Predicate.isReadonlyObject(value)
-      ? Object.fromEntries(
-          Object.entries(value).filter(
-            ([key, entry]) => entry !== undefined || !Object.hasOwn(Options.fields, key),
-          ),
+      ? Record.filter(
+          value,
+          (entry, key) => entry !== undefined || !Object.hasOwn(Options.fields, key),
         )
       : value,
   ).pipe(
@@ -117,7 +159,7 @@ const cacheMetadata = Schema.Struct({
     usage: Schema.Struct({
       cache_creation: Schema.NullOr(
         Schema.Struct({
-          ephemeral_1h_input_tokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+          ephemeral_1h_input_tokens: Schema.Natural,
         }),
       ),
     }),
@@ -129,9 +171,10 @@ const usage = (
   prices?: Prices,
 ): Usage.Usage => {
   const extended = Schema.decodeUnknownResult(cacheMetadata)(metadata)
-  const cacheWrite1h = Result.isSuccess(extended)
-    ? extended.success.anthropic.usage.cache_creation?.ephemeral_1h_input_tokens
-    : undefined
+  const cacheWrite1h = Result.getOrElse(
+    Result.map(extended, (self) => self.anthropic.usage.cache_creation?.ephemeral_1h_input_tokens),
+    constUndefined,
+  )
   const result = Usage.fromResponse(value, cacheWrite1h === undefined ? {} : { cacheWrite1h })
   if (prices === undefined) return result
   const input =
@@ -173,6 +216,12 @@ const usage = (
   }
 }
 
+/**
+ * Describes the Descriptor contract.
+ *
+ * @category types
+ * @since 0.0.0
+ */
 export interface Descriptor {
   readonly ref: { provider: string; modelId: string }
   readonly model: Model.Descriptor['model']
@@ -186,19 +235,24 @@ export interface Descriptor {
 }
 
 /** Captures the standard native client; public user metadata correlates UUID7 requests without private affinity headers. */
-export const descriptor = Effect.fnUntraced(function* (
-  entry: Entry,
+const descriptorImpl = Effect.fnUntraced(function* (
+  self: Entry,
   provider: string = 'anthropic',
 ): Effect.fn.Return<Descriptor, ModelError, AnthropicClient.AnthropicClient> {
-  const defaults = yield* decode(entry.config ?? {})
-  yield* Schema.decodeEffect(Entry)({ ...entry, config: defaults }).pipe(
+  yield* Schema.decodeEffect(Schema.toType(Entry))(self).pipe(
     Effect.mapError((cause) =>
       fail('Invalid Anthropic catalogue entry, defaults or thinking budget', cause),
     ),
   )
-  const model = yield* Prompt.make({
-    model: entry.modelId,
-    config: { ...defaults, max_tokens: defaults.max_tokens ?? entry.maxOutputTokens },
+  const defaults = yield* decode(self.config ?? {})
+  yield* Schema.decodeEffect(Schema.toType(Entry))({ ...self, config: defaults }).pipe(
+    Effect.mapError((cause) =>
+      fail('Invalid Anthropic catalogue entry, defaults or thinking budget', cause),
+    ),
+  )
+  const model = yield* anthropicLanguageModel.make({
+    model: self.modelId,
+    config: { ...defaults, max_tokens: defaults.max_tokens ?? self.maxOutputTokens },
   })
   const configure = Effect.fnUntraced(function* (request: Model.RequestOptions) {
     if (request.sessionId !== undefined)
@@ -207,8 +261,8 @@ export const descriptor = Effect.fnUntraced(function* (
       )
     const supplied = yield* decode(request.options)
     const merged = { ...defaults, ...supplied }
-    const max = request.maxTokens ?? merged.max_tokens ?? entry.maxOutputTokens
-    if (!positive(max) || max > entry.maxOutputTokens)
+    const max = request.maxTokens ?? merged.max_tokens ?? self.maxOutputTokens
+    if (!positive(max) || max > self.maxOutputTokens)
       return yield* fail(
         'maxTokens must be a positive integer within the declared model output limit',
       )
@@ -221,8 +275,8 @@ export const descriptor = Effect.fnUntraced(function* (
     let thinking: typeof Generated.BetaThinkingConfigParam.Encoded = { type: 'disabled' }
     let effort = merged.output_config?.effort
     if (request.thinking !== 'off') {
-      if (entry.thinking?.mode === 'adaptive') {
-        if (!entry.efforts?.some((value) => value === request.thinking))
+      if (self.thinking?._tag === 'adaptive') {
+        if (!self.efforts?.some((value) => value === request.thinking))
           return yield* fail('Requested adaptive effort is not declared supported')
         thinking = { type: 'adaptive' }
         const decoded = yield* Schema.decodeUnknownEffect(
@@ -238,16 +292,16 @@ export const descriptor = Effect.fnUntraced(function* (
         )
           return yield* fail('Conflicting adaptive effort and pinned thinking')
         effort = decoded
-      } else if (entry.thinking?.mode === 'budget') {
-        const budget = Object.hasOwn(entry.thinking.budgets, request.thinking)
-          ? entry.thinking.budgets[request.thinking]
+      } else if (self.thinking?._tag === 'budget') {
+        const budget = Object.hasOwn(self.thinking.budgets, request.thinking)
+          ? self.thinking.budgets[request.thinking]
           : undefined
         if (budget === undefined || budget >= max)
           return yield* fail('No declared thinking budget fits this output limit')
         thinking = { type: 'enabled', budget_tokens: budget }
       } else return yield* fail('This model does not declare thinking support')
     }
-    if (effort !== undefined && effort !== null && !entry.efforts?.includes(effort))
+    if (effort !== undefined && effort !== null && !self.efforts?.includes(effort))
       return yield* fail('Native effort option is not declared supported by this model')
     if (
       supplied.thinking !== undefined &&
@@ -257,9 +311,9 @@ export const descriptor = Effect.fnUntraced(function* (
           supplied.thinking.budget_tokens !== thinking.budget_tokens))
     )
       return yield* fail('Use the pinned thinking field and declared budgets')
-    if (request.cache !== undefined && request.cache !== 'none' && entry.cache !== true)
+    if (request.cache !== undefined && request.cache !== 'none' && self.cache !== true)
       return yield* fail('This model does not declare prompt caching')
-    if (merged.cache_control !== undefined && merged.cache_control !== null && entry.cache !== true)
+    if (merged.cache_control !== undefined && merged.cache_control !== null && self.cache !== true)
       return yield* fail('Native caching is not declared supported')
     if (request.cache !== undefined && supplied.cache_control !== undefined)
       return yield* fail('Specify either cache or native cache_control')
@@ -286,27 +340,44 @@ export const descriptor = Effect.fnUntraced(function* (
     })
     return Context.make(AnthropicLanguageModel.Config, {
       ...config,
-      model: entry.modelId,
+      model: self.modelId,
       max_tokens: max,
     })
   })
   return {
-    ref: { provider, modelId: entry.modelId },
+    ref: { provider, modelId: self.modelId },
     model,
-    contextWindow: entry.contextWindow,
-    maxOutputTokens: entry.maxOutputTokens,
+    contextWindow: self.contextWindow,
+    maxOutputTokens: self.maxOutputTokens,
     configure,
-    usage: (value, metadata) => usage(value, metadata, entry.prices),
+    usage: (value, metadata) => usage(value, metadata, self.prices),
     classify: (error) => Model.classify(error, 'anthropic'),
   } satisfies Model.Descriptor
 })
+/**
+ * Captures a validated catalogue entry and pins its model and request configuration.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
+export const descriptor: {
+  (provider?: string): (self: Entry) => ReturnType<typeof descriptorImpl>
+  (self: Entry, provider?: string): ReturnType<typeof descriptorImpl>
+} = dual((args) => typeof args[0] === 'object' && args[0] !== null, descriptorImpl)
+
+/**
+ * Provides Catalog services with the declared native dependencies.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer = (options: {
   readonly models: ReadonlyArray<Entry>
   readonly provider?: string | undefined
 }): Layer.Layer<Model.Catalog, ModelError, AnthropicClient.AnthropicClient> =>
   Layer.effect(Model.Catalog)(
     Effect.gen(function* () {
-      if (new Set(options.models.map((entry) => entry.modelId)).size !== options.models.length)
+      if (Arr.dedupe(options.models.map((entry) => entry.modelId)).length !== options.models.length)
         return yield* fail('Duplicate Anthropic catalogue model IDs')
       const entries = yield* Effect.forEach(options.models, (entry) =>
         descriptor(entry, options.provider),
@@ -315,19 +386,28 @@ export const layer = (options: {
       return Model.Catalog.of({
         resolve: (ref) => {
           const found = HashMap.get(byId, ref.modelId)
-          return Option.isSome(found) && found.value.ref.provider === ref.provider
-            ? Effect.succeed(found.value)
-            : Effect.fail(
-                new ModelError({
-                  reason: new ModelNoModel({
-                    message: 'Anthropic model is not available in this catalogue',
-                  }),
+          return Effect.fromOption(
+            Option.filter(found, (self) => self.ref.provider === ref.provider),
+            () =>
+              new ModelError({
+                reason: new ModelNoModel({
+                  message: 'Anthropic model is not available in this catalogue',
                 }),
-              )
+              }),
+          )
         },
       })
     }),
   )
+// effect-review-allow P4-layer-provide-vs-provideMerge: the public catalogue
+// exposes the exact captured native client alongside its descriptors, so callers
+// share one transport lifecycle and retain per-request native Config injection.
+/**
+ * Provides Catalog services with the declared native dependencies.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerApiKey = (
   options: AnthropicClient.Options & {
     readonly apiKey: Redacted.Redacted<string>
@@ -340,7 +420,12 @@ export const layerApiKey = (
   HttpClient.HttpClient
 > => layer(options).pipe(Layer.provideMerge(AnthropicClient.layer(options)))
 
-/** Resolves all layer options through the caller's ConfigProvider. */
+/**
+ * Resolves all layer options through the caller's ConfigProvider.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
 ): Layer.Layer<Model.Catalog, ModelError | Config.ConfigError, AnthropicClient.AnthropicClient> =>
@@ -350,7 +435,12 @@ export const layerConfig = (
     }),
   )
 
-/** Resolves all layerApiKey options through the caller's ConfigProvider. */
+/**
+ * Resolves all layerApiKey options through the caller's ConfigProvider.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerApiKeyConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layerApiKey>[0]>>,
 ): Layer.Layer<

@@ -1,3 +1,13 @@
+/**
+ * Portable scoped file, directory, watch and process capabilities.
+ *
+ * @since 0.0.0
+ */
+import { constant } from 'effect/Function'
+import * as Pipeable from 'effect/Pipeable'
+import * as Inspectable from 'effect/Inspectable'
+import { dual, constFalse } from 'effect/Function'
+import * as Data from 'effect/Data'
 import * as Predicate from 'effect/Predicate'
 import * as DateTime from 'effect/DateTime'
 import * as Ref from 'effect/Ref'
@@ -9,19 +19,33 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Path from 'effect/Path'
-import type * as PlatformError from 'effect/PlatformError'
-import * as Scope from 'effect/Scope'
+import * as PlatformError from 'effect/PlatformError'
+import type * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
 import type * as Stream from 'effect/Stream'
-import { ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
+import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import * as Decode from './env/Decode.ts'
 import * as AtomicWrite from './env/AtomicWrite.ts'
-import * as Exec from './env/Exec.ts'
-import * as Watch from './env/Watch.ts'
+import * as exec from './env/internal/exec.ts'
+import * as watch from './env/internal/watch.ts'
 
-import { FileError, ExecutionError, FileInvalid, fileReason } from './env/Error.ts'
-export * from './env/Error.ts'
+import { FileError, FileInvalid, fileReason } from './FileError.ts'
+import { ExecutionError } from './ExecutionError.ts'
+/**
+ * @since 0.0.0
+ */
+export * from './FileError.ts'
+/**
+ * @since 0.0.0
+ */
+export * from './ExecutionError.ts'
 
+/**
+ * Env file info contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface FileInfo {
   readonly name: string
   readonly path: string
@@ -31,6 +55,12 @@ export interface FileInfo {
   /** Native identity used by watch snapshots; adapters without stable identities may omit it. */
   readonly identity?: string | undefined
 }
+/**
+ * Env line scan contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface LineScan {
   readonly newlines: number
   readonly start: number
@@ -41,7 +71,13 @@ export interface LineScan {
   readonly firstLineBytes: number
 }
 const BinaryReaderTypeId = '~@effect-harness/harness/Env/BinaryReader'
-export interface BinaryReader {
+/**
+ * Env binary reader contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export interface BinaryReader extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [BinaryReaderTypeId]: typeof BinaryReaderTypeId
   readonly info: Effect.Effect<FileInfo, FileError>
   readonly read: (offset: number, length: number) => Effect.Effect<Uint8Array, FileError>
@@ -50,57 +86,93 @@ export interface BinaryReader {
     readonly endLine?: number | undefined
   }) => Effect.Effect<LineScan, FileError>
 }
-/** Attach the owned handle identity while preserving capability getters. */
+/**
+ * Attaches handle identity without evaluating or changing capability getters.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const makeBinaryReader = (
-  input: Omit<BinaryReader, typeof BinaryReaderTypeId>,
+  input: Omit<
+    BinaryReader,
+    typeof BinaryReaderTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
+  >,
 ): BinaryReader => {
-  const handle: BinaryReader = {
-    [BinaryReaderTypeId]: BinaryReaderTypeId,
-    get info() {
-      return input.info
-    },
-    get read() {
-      return input.read
-    },
-    get scanLines() {
-      return input.scanLines
-    },
-  }
+  const handle: BinaryReader = Object.create(BinaryReaderProto)
   Object.defineProperties(handle, Object.getOwnPropertyDescriptors(input))
-  Object.defineProperty(handle, BinaryReaderTypeId, { enumerable: false })
+  Object.defineProperty(handle, BinaryReaderTypeId, {
+    value: BinaryReaderTypeId,
+    enumerable: false,
+  })
   return handle
 }
-export const isBinaryReader = (input: unknown): input is BinaryReader =>
-  Predicate.hasProperty(input, BinaryReaderTypeId)
+/**
+ * Checks whether an unknown value satisfies the BinaryReader contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isBinaryReader = (u: unknown): u is BinaryReader =>
+  Predicate.hasProperty(u, BinaryReaderTypeId)
 
+/**
+ * Env text line contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface TextLine {
   readonly text: string
   readonly terminated: boolean
 }
 const TextLineReaderTypeId = '~@effect-harness/harness/Env/TextLineReader'
-export interface TextLineReader {
+/**
+ * Env text line reader contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export interface TextLineReader extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [TextLineReaderTypeId]: typeof TextLineReaderTypeId
   readonly readLine: Effect.Effect<Option.Option<TextLine>, FileError>
 }
-/** Attach the owned handle identity while preserving capability getters. */
+/**
+ * Attaches handle identity without evaluating or changing capability getters.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const makeTextLineReader = (
-  input: Omit<TextLineReader, typeof TextLineReaderTypeId>,
+  input: Omit<
+    TextLineReader,
+    typeof TextLineReaderTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
+  >,
 ): TextLineReader => {
-  const handle: TextLineReader = {
-    [TextLineReaderTypeId]: TextLineReaderTypeId,
-    get readLine() {
-      return input.readLine
-    },
-  }
+  const handle: TextLineReader = Object.create(TextLineReaderProto)
   Object.defineProperties(handle, Object.getOwnPropertyDescriptors(input))
-  Object.defineProperty(handle, TextLineReaderTypeId, { enumerable: false })
+  Object.defineProperty(handle, TextLineReaderTypeId, {
+    value: TextLineReaderTypeId,
+    enumerable: false,
+  })
   return handle
 }
-export const isTextLineReader = (input: unknown): input is TextLineReader =>
-  Predicate.hasProperty(input, TextLineReaderTypeId)
+/**
+ * Checks whether an unknown value satisfies the TextLineReader contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isTextLineReader = (u: unknown): u is TextLineReader =>
+  Predicate.hasProperty(u, TextLineReaderTypeId)
 
 const DirReaderTypeId = '~@effect-harness/harness/Env/DirReader'
-export interface DirReader {
+/**
+ * Env dir reader contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export interface DirReader extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [DirReaderTypeId]: typeof DirReaderTypeId
   readonly next: (
     maxEntries: number,
@@ -109,21 +181,37 @@ export interface DirReader {
     FileError
   >
 }
-/** Attach the owned handle identity while preserving capability getters. */
-export const makeDirReader = (input: Omit<DirReader, typeof DirReaderTypeId>): DirReader => {
-  const handle: DirReader = {
-    [DirReaderTypeId]: DirReaderTypeId,
-    get next() {
-      return input.next
-    },
-  }
+/**
+ * Attaches handle identity without evaluating or changing capability getters.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
+export const makeDirReader = (
+  input: Omit<
+    DirReader,
+    typeof DirReaderTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
+  >,
+): DirReader => {
+  const handle: DirReader = Object.create(DirReaderProto)
   Object.defineProperties(handle, Object.getOwnPropertyDescriptors(input))
-  Object.defineProperty(handle, DirReaderTypeId, { enumerable: false })
+  Object.defineProperty(handle, DirReaderTypeId, { value: DirReaderTypeId, enumerable: false })
   return handle
 }
-export const isDirReader = (input: unknown): input is DirReader =>
-  Predicate.hasProperty(input, DirReaderTypeId)
+/**
+ * Checks whether an unknown value satisfies the DirReader contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isDirReader = (u: unknown): u is DirReader => Predicate.hasProperty(u, DirReaderTypeId)
 
+/**
+ * Env watch target contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface WatchTarget {
   readonly path: string
   readonly recursive?: boolean | undefined
@@ -131,45 +219,84 @@ export interface WatchTarget {
     | { readonly hidden?: boolean | undefined; readonly names?: ReadonlyArray<string> | undefined }
     | undefined
 }
-export type WatchChange =
-  | { readonly paths: ReadonlyArray<string> }
-  | { readonly overflow: true }
-  | { readonly error: FileError }
+/**
+ * Env watch change contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type WatchChange = Data.TaggedEnum<{
+  Paths: { readonly paths: ReadonlyArray<string> }
+  Overflow: {}
+  Error: { readonly error: FileError }
+}>
+/**
+ * Constructors and matchers for path changes, coverage overflow and terminal watch failures.
+ *
+ * @category constants
+ * @since 0.0.0
+ */
+export const WatchChange = Data.taggedEnum<WatchChange>()
 const WatcherTypeId = '~@effect-harness/harness/Env/Watcher'
-export interface Watcher {
+/**
+ * Env watcher contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export interface Watcher extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [WatcherTypeId]: typeof WatcherTypeId
   readonly mode: 'native' | 'polling'
   readonly changes: Stream.Stream<WatchChange>
 }
-/** Attach the owned handle identity while preserving capability getters. */
-export const makeWatcher = (input: Omit<Watcher, typeof WatcherTypeId>): Watcher => {
-  const handle: Watcher = {
-    [WatcherTypeId]: WatcherTypeId,
-    get mode() {
-      return input.mode
-    },
-    get changes() {
-      return input.changes
-    },
-  }
+/**
+ * Attaches handle identity without evaluating or changing capability getters.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
+export const makeWatcher = (
+  input: Omit<
+    Watcher,
+    typeof WatcherTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
+  >,
+): Watcher => {
+  const handle: Watcher = Object.create(WatcherProto)
   Object.defineProperties(handle, Object.getOwnPropertyDescriptors(input))
-  Object.defineProperty(handle, WatcherTypeId, { enumerable: false })
+  Object.defineProperty(handle, WatcherTypeId, { value: WatcherTypeId, enumerable: false })
   return handle
 }
-export const isWatcher = (input: unknown): input is Watcher =>
-  Predicate.hasProperty(input, WatcherTypeId)
+/**
+ * Checks whether an unknown value satisfies the Watcher contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isWatcher = (u: unknown): u is Watcher => Predicate.hasProperty(u, WatcherTypeId)
 
-export interface WatchOptions {
-  readonly mode?: 'native' | 'polling' | undefined
-  readonly pollIntervalMs?: Duration.Input | undefined
-  readonly directoryBudget?: number | undefined
-}
-/** A single-consumer directory stream; started settles when its native installation succeeds or fails. */
+/**
+ * Env watch options contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type WatchOptions = Env.WatchOptions
+/**
+ * A single-consumer directory stream; started settles when its native installation succeeds or fails.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface DirectoryNotifications {
   readonly changes: Stream.Stream<string | undefined, FileError>
   readonly started: Effect.Effect<void, FileError>
 }
-/** Missing native FileSystem capabilities; a remote or platform Layer implements this narrow boundary. */
+/**
+ * Missing native FileSystem capabilities; a remote or platform Layer implements this narrow boundary.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class NativeFiles extends Context.Service<
   NativeFiles,
   {
@@ -182,51 +309,63 @@ export class NativeFiles extends Context.Service<
     readonly watchDirectory: (path: string) => Effect.Effect<DirectoryNotifications, FileError>
   }
 >()('@effect-harness/harness/Env/NativeFiles') {}
+/**
+ * Env shell output info contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface ShellOutputInfo {
   readonly stream: 'stdout' | 'stderr'
   readonly skipped?:
     | { readonly bytes: number; readonly newlines: number; readonly endsWithNewline: boolean }
     | undefined
 }
-export interface ShellOutputWindow {
-  readonly maxBytes: number
-  readonly maxLines: number
-  readonly minIntervalMs: Duration.Input
-  readonly bytesPerSecond: number
-}
-export interface ShellExecOptions {
-  readonly cwd?: string | undefined
-  readonly env?: Readonly<Record<string, string>> | undefined
-  readonly inheritEnv?: boolean | undefined
-  readonly timeout?: Duration.Input | undefined
-  readonly onSpill?: ((path: string) => Effect.Effect<void, ExecutionError>) | undefined
-  readonly onOutput?:
-    | ((text: string, info: ShellOutputInfo) => Effect.Effect<void, ExecutionError>)
-    | undefined
-  readonly spill?: { readonly afterBytes: number; readonly afterLines: number } | undefined
-  readonly window?: ShellOutputWindow | undefined
-}
-export interface ShellExecResult {
-  readonly exitCode: number
-  readonly spillPath?: string | undefined
-}
+/**
+ * Env shell output window contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type ShellOutputWindow = Env.ShellOutputWindow
+/**
+ * Env shell exec options contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type ShellExecOptions = Env.ShellExecOptions
+/**
+ * Env shell exec result contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type ShellExecResult = Env.ShellExecResult
+/**
+ * Env shell configuration contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface ShellConfiguration {
   readonly program: string
   readonly args: ReadonlyArray<string>
   readonly commandOnStdin?: boolean | undefined
 }
-export interface Options {
-  readonly id: string
-  readonly cwd: string
-  readonly home?: string | undefined
-  readonly resolveShell?: Effect.Effect<ShellConfiguration, ExecutionError> | undefined
-  readonly shell?: string | undefined
-  readonly watch?: WatchOptions | undefined
-  readonly resolveWatchMode?:
-    | ((targets: ReadonlyArray<WatchTarget>) => Effect.Effect<'native' | 'polling', FileError>)
-    | undefined
-  readonly env?: Readonly<Record<string, string>> | undefined
-}
+/**
+ * Env options contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Options = Env.Options
+/**
+ * Service for env capabilities.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class Env extends Context.Service<
   Env,
   {
@@ -284,44 +423,83 @@ export class Env extends Context.Service<
     ) => Effect.Effect<ShellExecResult, ExecutionError>
   }
 >()('@effect-harness/harness/Env') {}
-export const fromPlatform = (error: PlatformError.PlatformError, path?: string): FileError => {
+const fromPlatformImpl = (self: PlatformError.PlatformError, path?: string): FileError => {
   let code: FileError['code'] = 'unknown'
-  const cause = error.reason.cause
+  const cause = self.reason.cause
   const nativeCode = NativeError.code(cause) ?? ''
+  let reasonCode: FileError['code']
+  switch (self.reason._tag) {
+    case 'NotFound':
+      reasonCode = 'not_found'
+      break
+    case 'PermissionDenied':
+      reasonCode = 'permission_denied'
+      break
+    case 'BadArgument':
+      reasonCode = 'invalid'
+      break
+    case 'AlreadyExists':
+    case 'BadResource':
+    case 'Busy':
+    case 'InvalidData':
+    case 'TimedOut':
+    case 'UnexpectedEof':
+    case 'Unknown':
+    case 'WouldBlock':
+    case 'WriteZero':
+      reasonCode = 'unknown'
+      break
+  }
   if (nativeCode === 'ABORT_ERR') code = 'aborted'
-  else if (error.reason._tag === 'NotFound' || nativeCode === 'ENOENT') code = 'not_found'
-  else if (
-    error.reason._tag === 'PermissionDenied' ||
-    nativeCode === 'EACCES' ||
-    nativeCode === 'EPERM'
-  )
+  else if (reasonCode === 'not_found' || nativeCode === 'ENOENT') code = 'not_found'
+  else if (reasonCode === 'permission_denied' || nativeCode === 'EACCES' || nativeCode === 'EPERM')
     code = 'permission_denied'
   else if (nativeCode === 'ENOTDIR') code = 'not_directory'
   else if (nativeCode === 'EISDIR') code = 'is_directory'
-  else if (error.reason._tag === 'BadArgument' || nativeCode === 'EINVAL' || nativeCode === 'ELOOP')
+  else if (reasonCode === 'invalid' || nativeCode === 'EINVAL' || nativeCode === 'ELOOP')
     code = 'invalid'
   else if (nativeCode === 'ENOTSUP' || nativeCode === 'ENOSYS') code = 'not_supported'
 
   return new FileError({
     reason: fileReason(code, {
-      message: error.message,
-      cause: error,
+      message: self.message,
+      cause: self,
       ...(path === undefined ? {} : { path }),
     }),
   })
 }
+/**
+ * Maps platform reasons and ordered native errno fallbacks to a semantic file failure.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const fromPlatform: {
+  (path?: string): (self: PlatformError.PlatformError) => FileError
+  (self: PlatformError.PlatformError, path?: string): FileError
+} = dual((args) => PlatformError.isPlatformError(args[0]), fromPlatformImpl)
+/**
+ * Acquires scoped file, watcher and process capabilities from the injected platform services.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const make = Effect.fnUntraced(function* (
   options: Options,
 ): Effect.fn.Return<
   Env['Service'],
   never,
-  FileSystem.FileSystem | Path.Path | NativeFiles | ChildProcessSpawner | Scope.Scope
+  | FileSystem.FileSystem
+  | Path.Path
+  | NativeFiles
+  | ChildProcessSpawner.ChildProcessSpawner
+  | Scope.Scope
 > {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const native = yield* NativeFiles
-  const spawner = yield* ChildProcessSpawner
-  const shell = yield* Exec.make(fs, path, spawner, options)
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+  const shell = yield* exec.make({ fs, path, spawner, defaults: options })
   const absolutePath = Effect.fnUntraced(function* (value: string, cwd = options.cwd) {
     let input = value
     if (input.startsWith('file:')) {
@@ -330,8 +508,10 @@ export const make = Effect.fnUntraced(function* (
         catch: (cause) =>
           new FileError({ reason: new FileInvalid({ message: 'Invalid URL', cause }) }),
       }).pipe(Effect.option)
-      if (Option.isSome(url))
-        input = yield* path.fromFileUrl(url.value).pipe(Effect.orElseSucceed(() => input))
+      input = yield* Option.match(url, {
+        onNone: () => Effect.succeed(input),
+        onSome: (value) => path.fromFileUrl(value).pipe(Effect.orElseSucceed(() => input)),
+      })
     }
     if (
       options.home !== undefined &&
@@ -341,26 +521,26 @@ export const make = Effect.fnUntraced(function* (
     return path.resolve(cwd, input)
   })
   const at = <A, E, R>(
-    value: string,
+    self: string,
     operation: (resolved: string) => Effect.Effect<A, E, R>,
-  ): Effect.Effect<A, E | FileError, R> => Effect.flatMap(absolutePath(value), operation)
+  ): Effect.Effect<A, E | FileError, R> => Effect.flatMap(absolutePath(self), operation)
   const io = <A, R>(
-    value: string,
+    self: string,
     operation: (resolved: string) => Effect.Effect<A, PlatformError.PlatformError, R>,
   ) =>
-    at(value, (resolved) =>
+    at(self, (resolved) =>
       operation(resolved).pipe(Effect.mapError((error) => fromPlatform(error, resolved))),
     )
   // P5-request-resolver-batching: each content read is a new observation (including reads before/after a write).
   // The platform has no bulk snapshot API; deduplication would suppress the caller's required fresh sample.
-  const readBinaryFile = (value: string) => io(value, fs.readFile)
+  const readBinaryFile = (self: string) => io(self, fs.readFile)
   // P5-request-resolver-batching: opening returns a scope-owned cursor/handle, never a reusable keyed value.
   // Sharing a resolver result would merge unrelated reader lifetimes and independent metadata samples.
   const openBinaryReader = (
-    value: string,
+    self: string,
     readerOptions?: { readonly noFollow?: boolean | undefined },
-  ) => at(value, (resolved) => native.openBinaryReader(resolved, readerOptions))
-  const openDirReader = (value: string) => at(value, native.openDirReader)
+  ) => at(self, (resolved) => native.openBinaryReader(resolved, readerOptions))
+  const openDirReader = (self: string) => at(self, native.openDirReader)
   const openTextLineReader = Effect.fnUntraced(function* (value: string) {
     const reader = yield* openBinaryReader(value)
     const lock = yield* Semaphore.make(1)
@@ -389,8 +569,9 @@ export const make = Effect.fnUntraced(function* (
             return Option.some({ text: current.pending, terminated: false })
           }
           const bytes = yield* reader.read(current.position, 65536)
-          const decoded =
-            bytes.length === 0 ? Decode.decode(decoder) : Decode.decode(decoder, bytes)
+          const decoded = yield* bytes.length === 0
+            ? Decode.decode(decoder)
+            : Decode.decode(decoder, bytes)
           yield* Ref.update(state, (value) => ({
             ...value,
             position: current.position + bytes.length,
@@ -401,11 +582,11 @@ export const make = Effect.fnUntraced(function* (
       }),
     )
     const close = lock.withPermit(Ref.update(state, (value) => ({ ...value, closed: true })))
-    yield* Effect.addFinalizer(() => close)
+    yield* Effect.addFinalizer(constant(close))
     return makeTextLineReader({ readLine })
   })
-  const append = (value: string, content: string | Uint8Array) =>
-    io(value, (resolved) =>
+  const append = (self: string, content: string | Uint8Array) =>
+    io(self, (resolved) =>
       Effect.uninterruptible(
         fs
           .makeDirectory(path.dirname(resolved), { recursive: true })
@@ -439,11 +620,17 @@ export const make = Effect.fnUntraced(function* (
           reason: new FileInvalid({ message: 'Invalid maxLines', path: value }),
         })
       const reader = yield* openTextLineReader(value)
-      const lines: string[] = []
+      const lines: Array<string> = []
       while (lines.length < max) {
         const line = yield* reader.readLine
-        if (Option.isNone(line)) break
-        lines.push(line.value.text)
+        const more = Option.match(line, {
+          onNone: constFalse,
+          onSome: (self) => {
+            lines.push(self.text)
+            return true
+          },
+        })
+        if (!more) break
       }
       return lines
     }, Effect.scoped),
@@ -481,7 +668,7 @@ export const make = Effect.fnUntraced(function* (
     // metadata snapshot exists, and deduplication would mix cursor positions or conceal newly added files.
     listDir: Effect.fnUntraced(function* (value) {
       const reader = yield* openDirReader(value)
-      const entries: FileInfo[] = []
+      const entries: Array<FileInfo> = []
       while (true) {
         const page = yield* reader.next(256)
         entries.push(...page.entries)
@@ -500,7 +687,13 @@ export const make = Effect.fnUntraced(function* (
               (options.resolveWatchMode === undefined
                 ? 'native'
                 : yield* options.resolveWatchMode(resolved))
-            return yield* Watch.make(fs, path, native, resolved, { ...settings, mode })
+            return yield* watch.make({
+              fs,
+              path,
+              native,
+              targets: resolved,
+              options: { ...settings, mode },
+            })
           }),
         ),
       ),
@@ -530,7 +723,126 @@ export const make = Effect.fnUntraced(function* (
     exec: shell.exec,
   })
 })
+/**
+ * Layer for Env capabilities.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer = (
   options: Options,
-): Layer.Layer<Env, never, FileSystem.FileSystem | Path.Path | NativeFiles | ChildProcessSpawner> =>
-  Layer.effect(Env, make(options))
+): Layer.Layer<
+  Env,
+  never,
+  FileSystem.FileSystem | Path.Path | NativeFiles | ChildProcessSpawner.ChildProcessSpawner
+> => Layer.effect(Env, make(options))
+
+const BinaryReaderProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  toJSON(): unknown {
+    return { _id: '@effect-harness/harness/Env/BinaryReader' }
+  },
+}
+
+const TextLineReaderProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  toJSON(): unknown {
+    return { _id: '@effect-harness/harness/Env/TextLineReader' }
+  },
+}
+
+const DirReaderProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  toJSON(): unknown {
+    return { _id: '@effect-harness/harness/Env/DirReader' }
+  },
+}
+
+const WatcherProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  toJSON(): unknown {
+    return { _id: '@effect-harness/harness/Env/Watcher' }
+  },
+}
+
+/**
+ * Type contracts owned by `Env`.
+ *
+ * @category utility types
+ * @since 0.0.0
+ */
+export declare namespace Env {
+  /**
+   * Env watch options type contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface WatchOptions {
+    readonly mode?: 'native' | 'polling' | undefined
+    readonly pollIntervalMs?: Duration.Input | undefined
+    readonly directoryBudget?: number | undefined
+  }
+  /**
+   * Env shell output window type contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface ShellOutputWindow {
+    readonly maxBytes: number
+    readonly maxLines: number
+    readonly minIntervalMs: Duration.Input
+    readonly bytesPerSecond: number
+  }
+  /**
+   * Env shell exec options type contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface ShellExecOptions {
+    readonly cwd?: string | undefined
+    readonly env?: Readonly<Record<string, string>> | undefined
+    readonly inheritEnv?: boolean | undefined
+    readonly timeout?: Duration.Input | undefined
+    readonly onSpill?: ((path: string) => Effect.Effect<void, ExecutionError>) | undefined
+    readonly onOutput?:
+      | ((text: string, info: ShellOutputInfo) => Effect.Effect<void, ExecutionError>)
+      | undefined
+    readonly spill?: { readonly afterBytes: number; readonly afterLines: number } | undefined
+    readonly window?: ShellOutputWindow | undefined
+  }
+  /**
+   * Env shell exec result type contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface ShellExecResult {
+    readonly exitCode: number
+    readonly spillPath?: string | undefined
+  }
+  /**
+   * Configuration accepted by Env.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface Options {
+    readonly id: string
+    readonly cwd: string
+    readonly home?: string | undefined
+    readonly resolveShell?: Effect.Effect<ShellConfiguration, ExecutionError> | undefined
+    readonly shell?: string | undefined
+    readonly watch?: WatchOptions | undefined
+    readonly resolveWatchMode?:
+      | ((targets: ReadonlyArray<WatchTarget>) => Effect.Effect<'native' | 'polling', FileError>)
+      | undefined
+    readonly env?: Readonly<Record<string, string>> | undefined
+  }
+}

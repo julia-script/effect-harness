@@ -1,5 +1,16 @@
+/**
+ * Native Workflow declaration metadata and pure ownership traversal.
+ *
+ * @since 0.0.0
+ */
+import * as Arr from 'effect/Array'
+import { constFalse, constant } from 'effect/Function'
+import * as Predicate from 'effect/Predicate'
+import { dual } from 'effect/Function'
+import * as Data from 'effect/Data'
 import type { StorageError } from './StorageError.ts'
-import * as Id from './Identity.ts'
+import * as identity from './Identity.ts'
+// effect-review-allow P9-namespace-alias-equals-module: the exported Identity value type collides with the imported identifier namespace.
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Ref from 'effect/Ref'
@@ -8,19 +19,35 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
-import * as Record from './Record.ts'
+import type * as Record from './Record.ts'
 import * as Session from './Session.ts'
 import { ExecutionError, InvalidState, Closed, Aborted } from './workflow/ExecutionError.ts'
 
-/** Durable references identify native Workflow executions; they contain no custom scheduler state. */
+/**
+ * Durable references identify native Workflow executions; they contain no custom scheduler state.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Binding = Schema.Struct({
   workflow: Schema.String,
   executionId: Schema.String,
   payload: Schema.Json,
 })
+/**
+ * Binding contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type Binding = typeof Binding.Type
 
-/** Declarations for cancellation and inspection; execution registration is each declaration's ordinary toLayer. */
+/**
+ * Declarations for cancellation and inspection; execution registration is each declaration's ordinary toLayer.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class Declarations extends Context.Service<
   Declarations,
   {
@@ -29,13 +56,20 @@ export class Declarations extends Context.Service<
     readonly schemaContext: Context.Context<never>
   }
 >()('@effect-harness/durable/Ownership/Declarations') {}
-/** Schema services retained structurally across heterogeneous native declarations. */
-export type DeclarationServices<W extends Workflow.Any> =
-  | W['payloadSchema']['EncodingServices']
-  | W['payloadSchema']['DecodingServices']
-  | W['successSchema']['DecodingServices']
-  | W['errorSchema']['DecodingServices']
+/**
+ * Schema services retained structurally across heterogeneous native declarations. Compatibility alias for Declarations.Services.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type DeclarationServices<W extends Workflow.Any> = Declarations.Services<W>
 
+/**
+ * layerDeclarations service Layer.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerDeclarations = <const W extends ReadonlyArray<Workflow.Any>>(
   workflows: W,
 ): Layer.Layer<Declarations, never, DeclarationServices<W[number]>> =>
@@ -54,7 +88,12 @@ export const layerDeclarations = <const W extends ReadonlyArray<Workflow.Any>>(
     }),
   )
 
-/** Execute native declarations with their captured schema context and the caller's optional WorkflowInstance. */
+/**
+ * Executes native declarations with their captured schema context and the caller's optional WorkflowInstance.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const execute = Effect.fnUntraced(function* (
   binding: Binding,
 ): Effect.fn.Return<unknown, ExecutionError, Declarations | WorkflowEngine.WorkflowEngine> {
@@ -70,7 +109,7 @@ export const execute = Effect.fnUntraced(function* (
     success: declaration.successSchema,
     error: declaration.errorSchema,
     annotations: declaration.annotations,
-    idempotencyKey: () => binding.executionId,
+    idempotencyKey: constant(binding.executionId),
   })
   const engine = yield* WorkflowEngine.WorkflowEngine
   const parent = yield* Effect.serviceOption(WorkflowEngine.WorkflowInstance)
@@ -82,14 +121,18 @@ export const execute = Effect.fnUntraced(function* (
     // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Workflow.Any erases heterogeneous schema channels; layerDeclarations requires and captures every schema service, and this boundary supplies that Context and maps native failures.
     const decode = Schema.decodeEffect(Schema.toCodecJson(workflow.payloadSchema))(binding.payload)
     // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Workflow.Any erases heterogeneous schema channels; layerDeclarations requires and captures every schema service, and this boundary supplies that Context and maps native failures.
-    const payload = yield* Option.isSome(parent)
-      ? // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Workflow.Any erases heterogeneous schema channels; layerDeclarations requires and captures every schema service, and this boundary supplies that Context and maps native failures.
-        Workflow.wrapActivityResult(decode, () => false).pipe(
-          Effect.provideService(WorkflowEngine.WorkflowInstance, parent.value),
-        )
-      : // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- This native decoder has erased schema services, all captured and supplied by the enclosing execution boundary.
-        decode
-    // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Workflow.Any erases heterogeneous schema channels; layerDeclarations requires and captures every schema service, and this boundary supplies that Context and maps native failures.
+    const payload = yield* Option.match(parent, {
+      // Heterogeneous declaration schema requirements were captured at construction.
+      onSome: (instance) =>
+        // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Native Workflow.Any erases schema services already required and captured by layerDeclarations; this invocation supplies that exact Context.
+        Workflow.wrapActivityResult(decode, constFalse).pipe(
+          // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- The native wrapper carries only the captured heterogeneous declaration schema services, not a new unknown requirement.
+          Effect.provideService(WorkflowEngine.WorkflowInstance, instance),
+        ),
+      // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Workflow.Any erases only declaration schema services already required and captured by layerDeclarations.
+      onNone: () => decode,
+    })
+    // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Native Workflow.Any erases schema errors; the boundary below maps every native typed failure to structured ExecutionError.
     return yield* engine.execute(workflow, {
       executionId: binding.executionId,
       payload,
@@ -110,12 +153,19 @@ export const execute = Effect.fnUntraced(function* (
   )
 })
 
-export interface Identity {
-  readonly sessionId: Id.SessionId
-  readonly conversationId: Record.ConversationId
-  readonly taskId: Record.TaskId
-}
-/** A scoped domain identity for tools and user-defined native Workflow activities. */
+/**
+ * Compatibility alias for Current.Identity.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Identity = Current.Identity
+/**
+ * A scoped domain identity for tools and user-defined native Workflow activities.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class Current extends Context.Service<
   Current,
   Identity & {
@@ -124,6 +174,12 @@ export class Current extends Context.Service<
   }
 >()('@effect-harness/durable/Ownership/Current') {}
 
+/**
+ * layerCurrent service Layer.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerCurrent = (identity: Identity): Layer.Layer<Current, never, Session.Session> =>
   Layer.effect(Current)(
     Effect.gen(function* () {
@@ -163,7 +219,16 @@ function writable(option: Option.Option<Record.Task>): Effect.Effect<Record.Task
   return Effect.succeed(task)
 }
 
-/** First committed value wins. The producer can repeat after a crash; memoization does not promise remote exactly-once effects. */
+/**
+ * First committed value wins.
+ *
+ * **Details**
+ *
+ * The producer can repeat after a crash; memoization does not promise remote exactly-once effects.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const memo = Effect.fnUntraced(function* <S extends Schema.Constraint, E, R>(
   name: string,
   schema: S,
@@ -200,37 +265,56 @@ export const memo = Effect.fnUntraced(function* <S extends Schema.Constraint, E,
         writable: true,
         configurable: true,
       })
-      yield* tx.write({ type: 'task', value: { ...latest, memos } })
+      yield* tx.write({ _tag: 'task', type: 'task', value: { ...latest, memos } })
       return encoded
     }),
   )
   return yield* Schema.decodeEffect(codec)(committed)
 })
 
+/**
+ * Graph contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Graph {
   readonly conversations: ReadonlyArray<Record.Conversation>
   readonly tasks: ReadonlyArray<Record.Task>
-  readonly submissions?: ReadonlyArray<Record.Submission>
+  readonly submissions?: ReadonlyArray<Record.Submission> | undefined
 }
-export type Target =
-  | { readonly kind: 'conversation'; readonly id: Record.ConversationId }
-  | { readonly kind: 'task'; readonly id: Record.TaskId }
-export interface Reached {
-  /** Children precede parents so native interrupts and compensation can drain bottom-up. */
-  readonly tasks: ReadonlyArray<Record.Task>
-  readonly conversations: ReadonlyArray<Record.Conversation>
-}
+/**
+ * Ownership traversal target constructors.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Target = reach.Target
+/**
+ * Ownership traversal target constructors.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const Target = Data.taggedEnum<Target>()
+/**
+ * Compatibility alias for reach.Reached.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Reached = reach.Reached
 
 /** Read-only ownership traversal. Background roots fence their entire subtree unless explicitly selected or included. */
-export function reach(graph: Graph, target: Target, background = false): Option.Option<Reached> {
-  const tasks = new Map(graph.tasks.map((task) => [task.id, task]))
+function reachImpl(self: Graph, target: Target, background = false): Option.Option<Reached> {
+  const tasks = new Map(self.tasks.map((task) => [task.id, task]))
   const conversations = new Map(
-    graph.conversations.map((conversation) => [conversation.id, conversation]),
+    self.conversations.map((conversation) => [conversation.id, conversation]),
   )
-  if (target.kind === 'task' ? !tasks.has(target.id) : !conversations.has(target.id))
+  if (target._tag === 'task' ? !tasks.has(target.id) : !conversations.has(target.id))
     return Option.none()
   if (
-    target.kind === 'task' &&
+    target._tag === 'task' &&
     Option.exists(
       Option.fromUndefinedOr(tasks.get(target.id)),
       (task) => task.state.status === 'terminal',
@@ -239,33 +323,35 @@ export function reach(graph: Graph, target: Target, background = false): Option.
     return Option.some({ tasks: [], conversations: [] })
   const seenTasks = new Set<Record.TaskId>()
   const seenConversations = new Set<Record.ConversationId>()
-  const ordered: Record.Task[] = []
-  const selected: Record.Conversation[] = []
-  type Work =
-    | { readonly type: 'conversation'; readonly id: Record.ConversationId }
-    | { readonly type: 'task'; readonly id: Record.TaskId; readonly direct: boolean }
-    | { readonly type: 'end'; readonly task: Record.Task }
-  const work: Work[] =
-    target.kind === 'task'
-      ? [{ type: 'task', id: target.id, direct: true }]
-      : [{ type: 'conversation', id: target.id }]
-  while (work.length > 0) {
+  const ordered: Array<Record.Task> = []
+  const selected: Array<Record.Conversation> = []
+  type Work = Data.TaggedEnum<{
+    conversation: { readonly id: Record.ConversationId }
+    task: { readonly id: Record.TaskId; readonly direct: boolean }
+    end: { readonly task: Record.Task }
+  }>
+  const Work = Data.taggedEnum<Work>()
+  const work: Array<Work> =
+    target._tag === 'task'
+      ? [Work.task({ id: target.id, direct: true })]
+      : [Work.conversation({ id: target.id })]
+  while (Arr.isArrayNonEmpty(work)) {
     const item = work.pop()
     if (item === undefined) break
-    if (item.type === 'end') {
+    if (item._tag === 'end') {
       ordered.push(item.task)
       continue
     }
-    if (item.type === 'conversation') {
+    if (item._tag === 'conversation') {
       if (seenConversations.has(item.id)) continue
       const foundConversation = Option.fromUndefinedOr(conversations.get(item.id))
       if (Option.isNone(foundConversation)) continue
       const conversation = foundConversation.value
       seenConversations.add(item.id)
       selected.push(conversation)
-      for (const task of graph.tasks.toReversed())
+      for (const task of self.tasks.toReversed())
         if (task.conversationId === item.id && (task.owner === undefined || !tasks.has(task.owner)))
-          work.push({ type: 'task', id: task.id, direct: false })
+          work.push(Work.task({ id: task.id, direct: false }))
       continue
     }
     if (seenTasks.has(item.id)) continue
@@ -273,27 +359,32 @@ export function reach(graph: Graph, target: Target, background = false): Option.
     if (Option.isNone(foundTask)) continue
     const task = foundTask.value
     if (
-      (target.kind === 'task' && task.state.status === 'terminal') ||
+      (target._tag === 'task' && task.state.status === 'terminal') ||
       (task.background && !background && !item.direct)
     )
       continue
     seenTasks.add(item.id)
-    if (task.state.status !== 'terminal') work.push({ type: 'end', task })
-    for (const conversation of graph.conversations.toReversed())
+    if (task.state.status !== 'terminal') work.push(Work.end({ task }))
+    for (const conversation of self.conversations.toReversed())
       if (conversation.owner?.taskId === task.id)
-        work.push({ type: 'conversation', id: conversation.id })
-    for (const child of graph.tasks.toReversed())
-      if (child.owner === task.id) work.push({ type: 'task', id: child.id, direct: false })
+        work.push(Work.conversation({ id: conversation.id }))
+    for (const child of self.tasks.toReversed())
+      if (child.owner === task.id) work.push(Work.task({ id: child.id, direct: false }))
   }
   return Option.some({ tasks: ordered, conversations: selected })
 }
 
-/** Table reads are collected before any abort marks or inbox withdrawal are written. */
+/**
+ * Table reads are collected before any abort marks or inbox withdrawal are written.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const readGraph = Effect.fnUntraced(function* (
   tx: Session.Transaction,
 ): Effect.fn.Return<Graph, import('./StorageError.ts').StorageError> {
-  const conversations: Record.Conversation[] = []
-  const tasks: Record.Task[] = []
+  const conversations: Array<Record.Conversation> = []
+  const tasks: Array<Record.Task> = []
   let cursor: Record.Cursor | undefined
   do {
     const page = yield* tx.scanConversations({}, 100, cursor)
@@ -306,7 +397,7 @@ export const readGraph = Effect.fnUntraced(function* (
     tasks.push(...page.items)
     cursor = page.next
   } while (cursor !== undefined)
-  const submissions: Record.Submission[] = []
+  const submissions: Array<Record.Submission> = []
   cursor = undefined
   do {
     const page: Record.Page<Record.Submission> = yield* tx.scanSubmissions({}, 100, cursor)
@@ -315,3 +406,84 @@ export const readGraph = Effect.fnUntraced(function* (
   } while (cursor !== undefined)
   return { conversations, tasks, submissions }
 })
+
+/**
+ * Returns the bottom-up ownership closure reachable from a target.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const reach: {
+  (target: Target, background?: boolean): (self: Graph) => Option.Option<Reached>
+  (self: Graph, target: Target, background?: boolean): Option.Option<Reached>
+} = dual((args) => Predicate.hasProperty(args[0], 'tasks'), reachImpl)
+
+/**
+ * Declarations contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export declare namespace Declarations {
+  /**
+   * Services contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export type Services<W extends Workflow.Any> =
+    | W['payloadSchema']['EncodingServices']
+    | W['payloadSchema']['DecodingServices']
+    | W['successSchema']['DecodingServices']
+    | W['errorSchema']['DecodingServices']
+}
+
+/**
+ * Current contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export declare namespace Current {
+  /**
+   * Identity contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface Identity {
+    readonly sessionId: identity.SessionId
+    readonly conversationId: Record.ConversationId
+    readonly taskId: Record.TaskId
+  }
+}
+
+/**
+ * Returns the bottom-up ownership closure reachable from a target.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export declare namespace reach {
+  /**
+   * Ownership traversal target constructors.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export type Target = Data.TaggedEnum<{
+    conversation: { readonly kind: 'conversation'; readonly id: Record.ConversationId }
+    task: { readonly kind: 'task'; readonly id: Record.TaskId }
+  }>
+  /**
+   * Reached contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface Reached {
+    /** Children precede parents so native interrupts and compensation can drain bottom-up. */
+    readonly tasks: ReadonlyArray<Record.Task>
+    readonly conversations: ReadonlyArray<Record.Conversation>
+  }
+}

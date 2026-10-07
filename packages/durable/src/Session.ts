@@ -1,7 +1,15 @@
+/**
+ * Scoped transactions, document drafts and committed read services.
+ *
+ * @since 0.0.0
+ */
+import * as Struct from 'effect/Struct'
+import * as Data from 'effect/Data'
+import * as Predicate from 'effect/Predicate'
 import * as Request from 'effect/Request'
 import * as Arr from 'effect/Array'
 import * as RequestResolver from 'effect/RequestResolver'
-import * as Identity from './Identity.ts'
+import type * as Identity from './Identity.ts'
 import * as Context from 'effect/Context'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
@@ -16,7 +24,7 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as Result from 'effect/Result'
 import * as Semaphore from 'effect/Semaphore'
-import * as Stream from 'effect/Stream'
+import type * as Stream from 'effect/Stream'
 import * as Document from './Document.ts'
 import { address, typed } from './Document.ts'
 import * as Option from 'effect/Option'
@@ -33,6 +41,7 @@ import {
 } from './StorageError.ts'
 import { makeCandidate, Store, type CommitOptions, type UnkeyedOptions } from './Store.ts'
 import {
+  applyOps,
   detached,
   detachedEffect,
   documentsInScope,
@@ -43,27 +52,61 @@ import {
   visibleEntries,
 } from './storage/internal/state.ts'
 
-export interface ConversationQuery {
-  readonly ownerConversationId?: Record.ConversationId
-  readonly ownerTaskId?: Record.TaskId
-}
-export interface EntryQuery {
-  readonly conversationId: Record.ConversationId
-  readonly minEntryId?: Record.EntryId
-  readonly maxEntryId?: Record.EntryId
-}
-export type TaskQuery = Partial<
-  Pick<Record.Task, 'conversationId' | 'kind' | 'abortRequested' | 'background'>
-> & { readonly status?: Record.Task['state']['status'] }
-export type SubmissionQuery = Partial<Pick<Record.Submission, 'conversationId' | 'status'>>
-export interface DocumentQuery {
-  readonly scope: Record.Scope
-  readonly at: Record.Point
-  readonly kind?: string
-}
-export type Ownership =
-  | { readonly kind: 'ownerless' }
-  | { readonly kind: 'task'; readonly taskId: Record.TaskId }
+/**
+ * Compatibility alias for Session.ConversationQuery.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type ConversationQuery = Session.ConversationQuery
+/**
+ * Compatibility alias for Session.EntryQuery.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type EntryQuery = Session.EntryQuery
+/**
+ * Compatibility alias for Session.TaskQuery.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type TaskQuery = Session.TaskQuery
+/**
+ * Compatibility alias for Session.SubmissionQuery.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type SubmissionQuery = Session.SubmissionQuery
+/**
+ * Compatibility alias for Session.DocumentQuery.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type DocumentQuery = Session.DocumentQuery
+/**
+ * Transaction ownership variants.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Ownership = Session.Ownership
+/**
+ * Transaction ownership variants.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const Ownership = Data.taggedEnum<Ownership>()
+/**
+ * Transaction contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Transaction {
   readonly ensureRoot: Effect.Effect<Record.Conversation, StorageError>
   readonly mint: <S extends Schema.Constraint>(
@@ -131,7 +174,11 @@ export interface Transaction {
     id: Record.SubmissionId,
     value:
       | { readonly status: 'done'; readonly answer: Record.EntryId }
-      | { readonly status: 'unanswered'; readonly reason: string; readonly detail?: Record.Json },
+      | {
+          readonly status: 'unanswered'
+          readonly reason: string
+          readonly detail?: Record.Json | undefined
+        },
   ) => Effect.Effect<void, StorageError>
   readonly write: (value: Record.Write) => Effect.Effect<void, StorageError>
   readonly doc: <T extends object>(
@@ -143,93 +190,26 @@ export interface Transaction {
     target?: Document.Target,
   ) => Effect.Effect<void, StorageError>
 }
-export interface TransactionFunction {
-  <A, E, R>(
-    change: (tx: Transaction) => Effect.Effect<A, E, R>,
-    options?: UnkeyedOptions,
-  ): Effect.Effect<A, StorageError | E, R>
-  <A extends Record.Json | void, E, R>(
-    change: (tx: Transaction) => Effect.Effect<A, E, R>,
-    options: CommitOptions,
-  ): Effect.Effect<A, StorageError | E, R>
-}
-export interface Service {
-  /** Physically committed facts, fenced from ambient SQL transaction previews. */
-  readonly committed: Effect.Effect<Record.State, StorageError>
-  readonly root: (
-    initialize?: (tx: Transaction) => Effect.Effect<void, StorageError>,
-  ) => Effect.Effect<Record.Conversation, StorageError>
-  /** Apply the host's recovery initializer to an existing conversation atomically. */
-  readonly initialize: (conversationId: Record.ConversationId) => Effect.Effect<void, StorageError>
-  readonly transaction: TransactionFunction
-  readonly snapshot: <T extends object>(
-    token: Document.Document<T>,
-    target?: Document.Target,
-  ) => Effect.Effect<Option.Option<Document.Snapshot<T>>, StorageError>
-  readonly snapshotAsOf: <T extends object>(
-    token: Document.Document<T>,
-    conversationId: Record.ConversationId,
-    at: Record.EntryId,
-    target?: Omit<Document.Target, 'owner'>,
-  ) => Effect.Effect<Option.Option<Document.Snapshot<T>>, StorageError>
-  readonly state: <T extends object>(
-    token: Document.Document<T>,
-    target?: Document.Target,
-  ) => Effect.Effect<
-    Option.Option<Observation.State<T>>,
-    StorageError,
-    import('effect/Scope').Scope
-  >
-  readonly watchDoc: <T extends object>(
-    token: Document.Document<T>,
-    target?: Document.Target,
-  ) => Effect.Effect<
-    Option.Option<Observation.Watch<T>>,
-    StorageError,
-    import('effect/Scope').Scope
-  >
-  readonly commits: Stream.Stream<Record.Frame, StorageError>
-  readonly conversation: (
-    id: Record.ConversationId,
-  ) => Effect.Effect<Option.Option<Record.Conversation>, StorageError>
-  readonly entry: (
-    id: Record.EntryId,
-    conversationId?: Record.ConversationId,
-  ) => Effect.Effect<
-    Option.Option<{ readonly entry: Record.Entry; readonly commitSeq: Record.Seq }>,
-    StorageError
-  >
-  readonly task: (id: Record.TaskId) => Effect.Effect<Option.Option<Record.Task>, StorageError>
-  readonly submission: (
-    id: Record.SubmissionId,
-  ) => Effect.Effect<Option.Option<Record.Submission>, StorageError>
-  readonly submissionByRequest: Transaction['submissionByRequest']
-  readonly latestHeadMarker: Transaction['latestHeadMarker']
-  readonly scanConversations: Transaction['scanConversations']
-  readonly scanEntries: Transaction['scanEntries']
-  readonly scanTasks: Transaction['scanTasks']
-  readonly scanSubmissions: Transaction['scanSubmissions']
-  readonly scanDocuments: (
-    query: DocumentQuery,
-    limit: number,
-    cursor?: Record.Cursor,
-  ) => Effect.Effect<Record.Page<Record.Document>, StorageError>
-  readonly findDocument: (
-    address: Record.Address,
-    at?: Record.Point,
-  ) => Effect.Effect<Option.Option<Record.Document>, StorageError>
-  readonly document: (
-    id: Record.DocumentId,
-    at?: Record.Point,
-  ) => Effect.Effect<Option.Option<Document.Snapshot>, StorageError>
-  /** Sealed at the start of owning Scope release, before handler or storage cleanup finishes. */
-  readonly isClosed: Effect.Effect<boolean>
-  /** Register an owner-local body cleanup in the invocation caller Scope. */
-  readonly onClose: (cleanup: Effect.Effect<void>) => Effect.Effect<void, StorageError, Scope.Scope>
-  /** Observe both persistent cleanup receipts after Scope release; cancelling only abandons this wait. */
-  readonly awaitClosed: Effect.Effect<void, StorageError>
-}
-/** Optional atomically executed initializer for every newly created conversation. */
+/**
+ * Compatibility alias for Transaction.Function.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type TransactionFunction = Transaction.Function
+/**
+ * Compatibility alias for Session.Service.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Service = Session.Service
+/**
+ * Optional atomically executed initializer for every newly created conversation.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class CreationHook extends Context.Service<
   CreationHook,
   {
@@ -237,12 +217,17 @@ export class CreationHook extends Context.Service<
       tx: Transaction,
       conversation: Record.Conversation,
     ) => Effect.Effect<void, StorageError>
-    readonly recover?: (
-      tx: Transaction,
-      conversation: Record.Conversation,
-    ) => Effect.Effect<void, StorageError>
+    readonly recover?:
+      | ((tx: Transaction, conversation: Record.Conversation) => Effect.Effect<void, StorageError>)
+      | undefined
   }
->()('@effect-harness/durable/CreationHook') {}
+>()('@effect-harness/durable/Session/CreationHook') {}
+/**
+ * Session service.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class Session extends Context.Service<Session, Service>()(
   '@effect-harness/durable/Session',
 ) {}
@@ -254,7 +239,8 @@ const conversationPage = (
   cursor?: Record.Cursor,
 ) =>
   page(
-    state.conversations.filter(
+    Arr.filter(
+      state.conversations,
       (item) =>
         (query.ownerConversationId === undefined ||
           item.owner?.conversationId === query.ownerConversationId) &&
@@ -265,7 +251,8 @@ const conversationPage = (
   )
 const taskPage = (state: Record.State, query: TaskQuery, limit: number, cursor?: Record.Cursor) =>
   page(
-    state.tasks.filter(
+    Arr.filter(
+      state.tasks,
       (item) =>
         (query.conversationId === undefined || item.conversationId === query.conversationId) &&
         (query.kind === undefined || item.kind === query.kind) &&
@@ -283,7 +270,8 @@ const submissionPage = (
   cursor?: Record.Cursor,
 ) =>
   page(
-    state.submissions.filter(
+    Arr.filter(
+      state.submissions,
       (item) =>
         (query.conversationId === undefined || item.conversationId === query.conversationId) &&
         (query.status === undefined || item.status === query.status),
@@ -303,12 +291,10 @@ const entryPage = Effect.fnUntraced(function* (
     (cursor !== undefined && !Number.isSafeInteger(cursor.after))
   )
     return yield* rejected('Invalid entry scan size or cursor')
-  const entries = (yield* visibleEntries(
-    state,
-    query.conversationId,
-    query.minEntryId,
-    query.maxEntryId,
-  )).filter((item) => cursor === undefined || item.id < cursor.after)
+  const entries = Arr.filter(
+    yield* visibleEntries(state, query.conversationId, query.minEntryId, query.maxEntryId),
+    (item) => cursor === undefined || item.id < cursor.after,
+  )
   const items = entries.slice(0, limit)
   const last = items.at(-1)
   return Record.makePage({
@@ -331,7 +317,7 @@ class DraftMutationError extends Schema.TaggedError<DraftMutationError>(
 // Native synchronous Proxy traps cannot return Effect/Result failures. Only this private
 // sentinel is thrown for invalid draft operations and translated by transaction's
 // targeted catchDefect. All unrelated defects retain their original Cause.
-const draftValue = (input: unknown): Record.Json =>
+const draftValueUnsafe = (input: unknown): Record.Json =>
   Result.match(
     Result.try({
       try: () => Schema.decodeUnknownSync(Schema.Json)(input),
@@ -344,14 +330,14 @@ const draftValue = (input: unknown): Record.Json =>
       },
     },
   )
-const draftObject = (value: unknown): Record.JsonObject =>
+const draftObjectUnsafe = (value: unknown): Record.JsonObject =>
   Result.match(Schema.decodeUnknownResult(Schema.JsonObject)(value), {
-    onSuccess: (value) => cloneDraft(value),
+    onSuccess: (value) => cloneDraftUnsafe(value),
     onFailure: (cause) => {
       throw new DraftMutationError({ message: 'Document draft must remain JSON', cause })
     },
   })
-const cloneDraft = <A>(value: A): A =>
+const cloneDraftUnsafe = <A>(value: A): A =>
   Result.match(detached(value), {
     onSuccess: (value) => value,
     onFailure: (error) => {
@@ -361,15 +347,15 @@ const cloneDraft = <A>(value: A): A =>
 interface Acquired {
   readonly definition: {
     readonly version: number
-    readonly history?: 'latest' | 'rewindable'
-    readonly fork?: 'asOf' | 'current' | 'initial'
+    readonly history?: 'latest' | 'rewindable' | undefined
+    readonly fork?: 'asOf' | 'current' | 'initial' | undefined
   }
   readonly prepare: Effect.Effect<Record.JsonObject, StorageError>
   readonly checkpoint: Effect.Effect<boolean, StorageError>
   readonly address: Record.Address
   readonly id: Record.DocumentId
-  readonly stored?: Document.Snapshot
-  readonly staged?: Record.DocumentCreate
+  readonly stored?: Document.Snapshot | undefined
+  readonly staged?: Record.DocumentCreate | undefined
   readonly value: object
   readonly ops: Array<Record.Op>
   retire: boolean
@@ -380,12 +366,12 @@ const draft = <T extends object>(value: T, active: () => boolean, ops: Array<Rec
   const wrap = (object: object, path: ReadonlyArray<string | number>): object => {
     const previous = proxies.get(object)
     if (previous !== undefined) return previous
-    const check = () => {
+    const checkUnsafe = () => {
       if (!active()) throw new DraftMutationError({ message: 'Document draft is revoked' })
     }
     const proxy = new Proxy(object, {
       get(target, key, receiver) {
-        check()
+        checkUnsafe()
         const item: unknown = Reflect.get(target, key, receiver)
         if (item !== null && typeof item === 'object') {
           if (!Object.hasOwn(target, key)) return undefined
@@ -394,68 +380,68 @@ const draft = <T extends object>(value: T, active: () => boolean, ops: Array<Rec
         return item
       },
       set(target, key, item: unknown) {
-        check()
+        checkUnsafe()
         if (Array.isArray(target) && key === 'length') {
           if (
-            typeof item !== 'number' ||
+            !Predicate.isNumber(item) ||
             !Number.isSafeInteger(item) ||
             item < 0 ||
             item > 4294967295
           )
             throw new DraftMutationError({ message: 'Invalid array length' })
           Reflect.set(target, key, item)
-          ops.push(['replace', draftObject(value)])
+          ops.push(['replace', draftObjectUnsafe(value)])
           return true
         }
         if (typeof key === 'symbol')
           throw new DraftMutationError({ message: 'Symbol document keys are not JSON' })
-        const valid = draftValue(item)
+        const valid = draftValueUnsafe(item)
         const segment = Array.isArray(target) ? Number(key) : String(key)
         Object.defineProperty(target, key, {
-          value: cloneDraft(valid),
+          value: cloneDraftUnsafe(valid),
           enumerable: true,
           configurable: true,
           writable: true,
         })
-        ops.push(['set', Arr.append(path, segment), cloneDraft(valid)])
+        ops.push(['set', Arr.append(path, segment), cloneDraftUnsafe(valid)])
         return true
       },
       deleteProperty(target, key) {
-        check()
+        checkUnsafe()
         const segment = Array.isArray(target) ? Number(key) : String(key)
         Reflect.deleteProperty(target, key)
         ops.push(['delete', Arr.append(path, segment)])
         return true
       },
       defineProperty(target, key, descriptor) {
-        check()
+        checkUnsafe()
         if (
           typeof key === 'symbol' ||
-          !('value' in descriptor) ||
           descriptor.get !== undefined ||
           descriptor.set !== undefined ||
           descriptor.enumerable === false ||
           descriptor.configurable === false ||
-          descriptor.writable === false
+          descriptor.writable === false ||
+          !Predicate.hasProperty(descriptor, 'value')
         )
           throw new DraftMutationError({
             message: 'Document descriptors must be writable enumerable JSON data',
           })
-        const valid = draftValue(descriptor.value)
+        const valid = draftValueUnsafe(descriptor.value)
         if (Array.isArray(target) && key === 'length') {
           if (
-            typeof valid !== 'number' ||
+            !Predicate.isNumber(valid) ||
             !Number.isSafeInteger(valid) ||
             valid < 0 ||
             valid > 4294967295
           )
             throw new DraftMutationError({ message: 'Invalid array length' })
           Reflect.set(target, key, valid)
-          ops.push(['replace', draftObject(value)])
+          ops.push(['replace', draftObjectUnsafe(value)])
           return true
         }
         Object.defineProperty(target, key, {
-          value: cloneDraft(valid),
+          value: cloneDraftUnsafe(valid),
           enumerable: true,
           configurable: true,
           writable: true,
@@ -463,24 +449,24 @@ const draft = <T extends object>(value: T, active: () => boolean, ops: Array<Rec
         ops.push([
           'set',
           Arr.append(path, Array.isArray(target) ? Number(key) : String(key)),
-          cloneDraft(valid),
+          cloneDraftUnsafe(valid),
         ])
         return true
       },
       setPrototypeOf() {
-        check()
+        checkUnsafe()
         throw new DraftMutationError({ message: 'Document prototypes cannot change' })
       },
       preventExtensions() {
-        check()
+        checkUnsafe()
         throw new DraftMutationError({ message: 'Document drafts must remain mutable' })
       },
       ownKeys(target) {
-        check()
+        checkUnsafe()
         return Reflect.ownKeys(target)
       },
       getOwnPropertyDescriptor(target, key) {
-        check()
+        checkUnsafe()
         return Reflect.getOwnPropertyDescriptor(target, key)
       },
     })
@@ -501,8 +487,15 @@ class SnapshotRead<A> extends Request.Class<
   StorageError
 > {}
 
+/**
+ * Scoped session service acquisition.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.gen(function* () {
   const underlying = yield* Store
+  const creationHook = yield* Effect.serviceOption(CreationHook)
   const cleanupScope = yield* Effect.acquireRelease(Scope.make(), (scope, exit) =>
     Scope.close(scope, exit),
   )
@@ -539,7 +532,7 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             ? state
             : {
                 ...state,
-                cleanups: state.cleanups.filter((entry) => entry !== registration),
+                cleanups: Arr.filter(state.cleanups, (entry) => entry !== registration),
               },
         ),
     ).pipe(Effect.asVoid)
@@ -601,7 +594,6 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
     journal: (after) => usable.pipe(Effect.andThen(underlying.journal(after))),
   })
   const migrationCache = yield* Document.makeMigrationCache
-  const creationHook = yield* Effect.serviceOption(CreationHook)
   // Public overloads constrain keyed results; runtime validation is authoritative at the Store boundary.
   const transact: <A, E, R>(
     change: (state: Record.State) => Effect.Effect<import('./Store.ts').Candidate<A>, E, R>,
@@ -700,8 +692,8 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             yield* open
             let valid = yield* validate(Record.Write, value)
             if (valid.type === 'task' && valid.value.state.status === 'terminal') {
-              const { memos: _memos, ...task } = valid.value
-              valid = { type: 'task', value: task }
+              const task = Struct.omit(valid.value, ['memos'])
+              valid = { _tag: 'task', type: 'task', value: task }
             }
             if (valid.type === 'task') {
               const previous = HashMap.get(yield* Ref.get(localTasks), valid.value.id)
@@ -818,6 +810,7 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
                         return yield* rejected('Staged copy source is not alive', NotFound)
                       const sourceValue = sourceValueOption.value
                       content = {
+                        _tag: 'base',
                         kind: 'base',
                         version: sourceValue.version,
                         value: sourceValue.value,
@@ -902,7 +895,7 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             )
             if (Option.isSome(existing)) return yield* detachedEffect(existing.value)
             const root = { id: Record.ROOT_CONVERSATION_ID }
-            return yield* write({ type: 'conversation', value: root }).pipe(
+            return yield* write({ _tag: 'conversation', type: 'conversation', value: root }).pipe(
               Effect.andThen(
                 Option.match(creationHook, {
                   onNone: () => Effect.void,
@@ -972,7 +965,7 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             const ownership = yield* owner(options.ownership)
             const id = yield* mint(Record.ConversationId)
             const value = { id, ...ownership }
-            yield* write({ type: 'conversation', value })
+            yield* write({ _tag: 'conversation', type: 'conversation', value })
             if (Option.isSome(creationHook)) yield* creationHook.value.run(tx, value)
             return yield* detachedEffect(value)
           }),
@@ -1003,7 +996,7 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
                 selected.set(
                   Record.addressKey({
                     ...record,
-                    scope: { kind: 'conversation', conversationId: id },
+                    scope: { _tag: 'conversation', kind: 'conversation', conversationId: id },
                   }),
                   { document, at: committed.commitSeq },
                 )
@@ -1014,7 +1007,7 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
               ) {
                 const key = Record.addressKey({
                   ...record,
-                  scope: { kind: 'conversation', conversationId: id },
+                  scope: { _tag: 'conversation', kind: 'conversation', conversationId: id },
                 })
                 if (selected.has(key))
                   return yield* rejected('Fork selects ambiguous document source')
@@ -1024,19 +1017,20 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             for (const source of selected.values()) {
               yield* Ref.update(forkDocuments, HashSet.add(source.document.record.id))
               const documentId = yield* mint(Record.DocumentId)
-              const { createdAt: _created, retiredAt: _retired, ...record } = source.document.record
+              const record = Struct.omit(source.document.record, ['createdAt', 'retiredAt'])
               yield* write({
+                _tag: 'document.copy',
                 type: 'document.copy',
                 record: {
                   ...record,
                   id: documentId,
-                  scope: { kind: 'conversation', conversationId: id },
+                  scope: { _tag: 'conversation', kind: 'conversation', conversationId: id },
                 },
                 source: { id: source.document.record.id, at: source.at },
               })
             }
             const value = { id, parent: { conversationId: parent, at }, ...ownership }
-            yield* write({ type: 'conversation', value })
+            yield* write({ _tag: 'conversation', type: 'conversation', value })
             if (Option.isSome(creationHook)) yield* creationHook.value.run(tx, value)
             return yield* detachedEffect(value)
           }),
@@ -1045,14 +1039,14 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             if (!HashMap.has(yield* Ref.get(localConversations), conversationId))
               return yield* rejected('Entry conversation is absent', NotFound)
             const id = yield* mint(Record.EntryId)
-            const { head, ...draftValue } = input
+            const { head, ...draftValueUnsafe } = input
             const value = {
-              ...draftValue,
+              ...draftValueUnsafe,
               id,
               conversationId,
               ...(head === undefined ? {} : { head: head === 'self' ? id : head }),
             }
-            yield* write({ type: 'entry', value })
+            yield* write({ _tag: 'entry', type: 'entry', value })
             return yield* detachedEffect(value)
           }),
           createTask: Effect.fnUntraced(function* (input) {
@@ -1075,7 +1069,7 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
                 return yield* rejected('Invalid task owner')
             }
             const id = yield* mint(Record.TaskId)
-            yield* write({ type: 'task', value: { ...input, id } })
+            yield* write({ _tag: 'task', type: 'task', value: { ...input, id } })
             return id
           }),
           createSubmission: Effect.fnUntraced(function* (input) {
@@ -1085,8 +1079,8 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             if (yield* abortingAncestor(input.conversationId))
               return yield* rejected('Submission conversation has an aborting ancestor')
             const id = yield* mint(Record.SubmissionId)
-            const value = { ...input, id }
-            yield* write({ type: 'submission', value })
+            const value = yield* validate(Record.Submission, { ...input, id })
+            yield* write({ _tag: 'submission', type: 'submission', value })
             return yield* detachedEffect(value)
           }),
           placeSubmission: Effect.fnUntraced(function* (id, entry) {
@@ -1098,11 +1092,13 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             if (current.status === 'done' || current.status === 'unanswered') return
             if (current.status !== 'queued')
               return yield* rejected('Only queued submissions may be placed')
-            const value: Record.Submission =
+            const value = yield* validate(
+              Record.Submission,
               current.type === 'input'
                 ? { ...current, entry, status: 'placed' }
-                : { ...current, entry, status: 'done' }
-            yield* write({ type: 'submission', value })
+                : { ...current, entry, status: 'done' },
+            )
+            yield* write({ _tag: 'submission', type: 'submission', value })
           }),
           settleSubmission: Effect.fnUntraced(function* (id, settlement) {
             yield* open
@@ -1117,7 +1113,7 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             )
               return yield* rejected('Only placed input may be answered')
             const value = yield* validate(Record.Submission, { ...current, ...settlement })
-            yield* write({ type: 'submission', value })
+            yield* write({ _tag: 'submission', type: 'submission', value })
           }),
           retire: Effect.fnUntraced(function* (token, target = {}) {
             yield* open
@@ -1130,7 +1126,7 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
               yield* Ref.update(acquisitions, HashMap.remove(key))
               yield* Ref.update(acquired, HashMap.remove(key))
               yield* Ref.update(acquiredOrder, (keys) => [
-                ...keys.filter((entry) => entry !== key),
+                ...Arr.filter(keys, (entry) => entry !== key),
                 `${key}\0retired:${item.id}`,
               ])
               yield* Ref.update(acquired, (entries) =>
@@ -1145,7 +1141,11 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
                 (write) => write.type === 'document.retire' && write.id === stored.value.record.id,
               )
             )
-              yield* write({ type: 'document.retire', id: stored.value.record.id })
+              yield* write({
+                _tag: 'document.retire',
+                type: 'document.retire',
+                id: stored.value.record.id,
+              })
           }),
         }
         const tx: Transaction = {
@@ -1193,20 +1193,23 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
           const definition = item.definition
           const value = yield* item.prepare
           if (item.staged !== undefined) {
-            const previousIndex = writes.findIndex(
+            const previousIndex = Arr.findFirstIndex(
+              writes,
               (write) =>
                 (write.type === 'document.create' || write.type === 'document.copy') &&
                 write.record.id === item.id,
-            )
+            ).pipe(Option.getOrElse(() => -1))
             if (previousIndex >= 0) writes.splice(previousIndex, 1)
             writes.push({
+              _tag: 'document.create',
               type: 'document.create',
               record: item.staged,
-              content: { kind: 'base', version: definition.version, value },
+              content: { _tag: 'base', kind: 'base', version: definition.version, value },
             })
           } else if (item.stored === undefined) {
             yield* validate(Record.DocumentId, item.id)
             writes.push({
+              _tag: 'document.create',
               type: 'document.create',
               record: {
                 ...item.address,
@@ -1214,32 +1217,44 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
                 ...(definition.history === undefined ? {} : { history: definition.history }),
                 ...(definition.fork === undefined ? {} : { fork: definition.fork }),
               },
-              content: { kind: 'base', version: definition.version, value },
+              content: { _tag: 'base', kind: 'base', version: definition.version, value },
             })
           } else if (item.stored.version !== definition.version)
             writes.push({
+              _tag: 'document.change',
               type: 'document.change',
               id: item.id,
-              content: { kind: 'base', version: definition.version, value },
+              content: { _tag: 'base', kind: 'base', version: definition.version, value },
             })
-          else if (item.ops.length > 0) {
+          else if (Arr.isReadonlyArrayNonEmpty(item.ops)) {
             const checkpoint = yield* item.checkpoint
             // Preserve the exact draft operation batch unless array methods changed index structure.
             const hasArrayMutation = item.ops.some(
               (op) =>
                 op[0] === 'replace' || (op[0] === 'delete' && typeof op[1].at(-1) === 'number'),
             )
-            const ops: ReadonlyArray<Record.Op> = hasArrayMutation ? [['replace', value]] : item.ops
+            // Domain codecs may omit decoded tags or transform native values. Replay
+            // remains granular only when it produces the exact encoded final value.
+            const replayed = hasArrayMutation
+              ? undefined
+              : yield* applyOps(item.stored.value, item.ops)
+            const preservesEncoding =
+              replayed !== undefined && Schema.toEquivalence(Schema.JsonObject)(replayed, value)
+            const ops: ReadonlyArray<Record.Op> = preservesEncoding
+              ? item.ops
+              : [['replace', value]]
             writes.push({
+              _tag: 'document.change',
               type: 'document.change',
               id: item.id,
               content: checkpoint
-                ? { kind: 'base', version: definition.version, value }
-                : { kind: 'delta', version: definition.version, ops },
+                ? { _tag: 'base', kind: 'base', version: definition.version, value }
+                : { _tag: 'delta', kind: 'delta', version: definition.version, ops },
               ...(checkpoint ? { publicationOps: ops } : {}),
             })
           }
-          if (item.retire) writes.push({ type: 'document.retire', id: item.id })
+          if (item.retire)
+            writes.push({ _tag: 'document.retire', type: 'document.retire', id: item.id })
         }
         for (const write of writes) {
           if (
@@ -1304,7 +1319,11 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
                   (write) => write.type === 'document.retire' && write.id === document.record.id,
                 )
               )
-                writes.push({ type: 'document.retire', id: document.record.id })
+                writes.push({
+                  _tag: 'document.retire',
+                  type: 'document.retire',
+                  id: document.record.id,
+                })
             for (const write of writes)
               if (
                 write.type === 'document.create' &&
@@ -1314,7 +1333,11 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
                   (item) => item.type === 'document.retire' && item.id === write.record.id,
                 )
               )
-                writes.push({ type: 'document.retire', id: write.record.id })
+                writes.push({
+                  _tag: 'document.retire',
+                  type: 'document.retire',
+                  id: write.record.id,
+                })
           }
         }
         return makeCandidate({
@@ -1466,9 +1489,10 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
     scanDocuments: (query, limit, cursor) =>
       project((state) =>
         page(
-          documentsInScope(state, query.scope, query.at)
-            .map((item) => item.record)
-            .filter((item) => query.kind === undefined || item.kind === query.kind),
+          Arr.filter(
+            documentsInScope(state, query.scope, query.at).map((item) => item.record),
+            (item) => query.kind === undefined || item.kind === query.kind,
+          ),
           limit,
           cursor,
         ),
@@ -1496,4 +1520,188 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
   })
   return service
 })
+/**
+ * layer service Layer.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer: Layer.Layer<Session, never, Store> = Layer.effect(Session, make)
+
+/**
+ * Session contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export declare namespace Session {
+  /**
+   * ConversationQuery contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface ConversationQuery {
+    readonly ownerConversationId?: Record.ConversationId | undefined
+    readonly ownerTaskId?: Record.TaskId | undefined
+  }
+  /**
+   * EntryQuery contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface EntryQuery {
+    readonly conversationId: Record.ConversationId
+    readonly minEntryId?: Record.EntryId | undefined
+    readonly maxEntryId?: Record.EntryId | undefined
+  }
+  /**
+   * TaskQuery contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export type TaskQuery = Partial<
+    Pick<Record.Task, 'conversationId' | 'kind' | 'abortRequested' | 'background'>
+  > & { readonly status?: Record.Task['state']['status'] | undefined }
+  /**
+   * SubmissionQuery contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export type SubmissionQuery = Partial<Pick<Record.Submission, 'conversationId' | 'status'>>
+  /**
+   * DocumentQuery contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface DocumentQuery {
+    readonly scope: Record.Scope
+    readonly at: Record.Point
+    readonly kind?: string | undefined
+  }
+  /**
+   * Transaction ownership variants.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export type Ownership = Data.TaggedEnum<{
+    ownerless: { readonly kind: 'ownerless' }
+    task: { readonly kind: 'task'; readonly taskId: Record.TaskId }
+  }>
+  /**
+   * Service contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface Service {
+    /** Physically committed facts, fenced from ambient SQL transaction previews. */
+    readonly committed: Effect.Effect<Record.State, StorageError>
+    readonly root: (
+      initialize?: (tx: Transaction) => Effect.Effect<void, StorageError>,
+    ) => Effect.Effect<Record.Conversation, StorageError>
+    /** Apply the host's recovery initializer to an existing conversation atomically. */
+    readonly initialize: (
+      conversationId: Record.ConversationId,
+    ) => Effect.Effect<void, StorageError>
+    readonly transaction: TransactionFunction
+    readonly snapshot: <T extends object>(
+      token: Document.Document<T>,
+      target?: Document.Target,
+    ) => Effect.Effect<Option.Option<Document.Snapshot<T>>, StorageError>
+    readonly snapshotAsOf: <T extends object>(
+      token: Document.Document<T>,
+      conversationId: Record.ConversationId,
+      at: Record.EntryId,
+      target?: Omit<Document.Target, 'owner'>,
+    ) => Effect.Effect<Option.Option<Document.Snapshot<T>>, StorageError>
+    readonly state: <T extends object>(
+      token: Document.Document<T>,
+      target?: Document.Target,
+    ) => Effect.Effect<
+      Option.Option<Observation.State<T>>,
+      StorageError,
+      import('effect/Scope').Scope
+    >
+    readonly watchDoc: <T extends object>(
+      token: Document.Document<T>,
+      target?: Document.Target,
+    ) => Effect.Effect<
+      Option.Option<Observation.Watch<T>>,
+      StorageError,
+      import('effect/Scope').Scope
+    >
+    readonly commits: Stream.Stream<Record.Frame, StorageError>
+    readonly conversation: (
+      id: Record.ConversationId,
+    ) => Effect.Effect<Option.Option<Record.Conversation>, StorageError>
+    readonly entry: (
+      id: Record.EntryId,
+      conversationId?: Record.ConversationId,
+    ) => Effect.Effect<
+      Option.Option<{ readonly entry: Record.Entry; readonly commitSeq: Record.Seq }>,
+      StorageError
+    >
+    readonly task: (id: Record.TaskId) => Effect.Effect<Option.Option<Record.Task>, StorageError>
+    readonly submission: (
+      id: Record.SubmissionId,
+    ) => Effect.Effect<Option.Option<Record.Submission>, StorageError>
+    readonly submissionByRequest: Transaction['submissionByRequest']
+    readonly latestHeadMarker: Transaction['latestHeadMarker']
+    readonly scanConversations: Transaction['scanConversations']
+    readonly scanEntries: Transaction['scanEntries']
+    readonly scanTasks: Transaction['scanTasks']
+    readonly scanSubmissions: Transaction['scanSubmissions']
+    readonly scanDocuments: (
+      query: DocumentQuery,
+      limit: number,
+      cursor?: Record.Cursor,
+    ) => Effect.Effect<Record.Page<Record.Document>, StorageError>
+    readonly findDocument: (
+      address: Record.Address,
+      at?: Record.Point,
+    ) => Effect.Effect<Option.Option<Record.Document>, StorageError>
+    readonly document: (
+      id: Record.DocumentId,
+      at?: Record.Point,
+    ) => Effect.Effect<Option.Option<Document.Snapshot>, StorageError>
+    /** Sealed at the start of owning Scope release, before handler or storage cleanup finishes. */
+    readonly isClosed: Effect.Effect<boolean>
+    /** Register an owner-local body cleanup in the invocation caller Scope. */
+    readonly onClose: (
+      cleanup: Effect.Effect<void>,
+    ) => Effect.Effect<void, StorageError, Scope.Scope>
+    /** Observe both persistent cleanup receipts after Scope release; cancelling only abandons this wait. */
+    readonly awaitClosed: Effect.Effect<void, StorageError>
+  }
+}
+
+/**
+ * Transaction contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export declare namespace Transaction {
+  /**
+   * Function contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface Function {
+    <A, E, R>(
+      change: (tx: Transaction) => Effect.Effect<A, E, R>,
+      options?: UnkeyedOptions,
+    ): Effect.Effect<A, StorageError | E, R>
+    <A extends Record.Json | void, E, R>(
+      change: (tx: Transaction) => Effect.Effect<A, E, R>,
+      options: CommitOptions,
+    ): Effect.Effect<A, StorageError | E, R>
+  }
+}

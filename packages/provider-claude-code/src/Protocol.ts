@@ -1,13 +1,21 @@
+/**
+ * Validated Claude Code protocol frames and accounting fields.
+ *
+ * @since 0.0.0
+ */
 import type * as AiError from 'effect/ai/AiError'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Tool from 'effect/ai/Tool'
-import { protocol } from './Error.ts'
+import { protocol } from './ClaudeCodeError.ts'
 
-const Count = Schema.Int.check(
-  Schema.isGreaterThanOrEqualTo(0),
-  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
-)
+const Count = Schema.Natural.check(Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER))
+/**
+ * Defines Usage for the Protocol boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const Usage = Schema.Struct({
   input_tokens: Schema.optionalKey(Count),
   output_tokens: Schema.optionalKey(Count),
@@ -15,7 +23,19 @@ export const Usage = Schema.Struct({
   cache_creation_input_tokens: Schema.optionalKey(Count),
 })
 export type Usage = typeof Usage.Type
-export const isUsage: (value: unknown) => value is Usage = Schema.is(Usage)
+/**
+ * Tests whether an unknown value satisfies the decoded Usage schema.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isUsage: (u: unknown) => u is Usage = Schema.is(Usage)
+/**
+ * Defines ModelUsage for the Protocol boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const ModelUsage = Schema.Struct({
   inputTokens: Count,
   outputTokens: Count,
@@ -27,6 +47,13 @@ export const ModelUsage = Schema.Struct({
   contextWindow: Count,
   maxOutputTokens: Count,
 })
+export type ModelUsage = typeof ModelUsage.Type
+/**
+ * Defines Block for the Protocol boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const Block = Schema.Union([
   Schema.Struct({ type: Schema.Literal('text'), text: Schema.String }),
   Schema.Struct({
@@ -43,7 +70,13 @@ export const Block = Schema.Union([
   }),
 ])
 export type Block = typeof Block.Type
-export const isBlock: (value: unknown) => value is Block = Schema.is(Block)
+/**
+ * Tests whether an unknown value satisfies the decoded Block schema.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isBlock: (u: unknown) => u is Block = Schema.is(Block)
 const Message = Schema.Struct({
   id: Schema.NonEmptyString,
   model: Schema.String,
@@ -75,6 +108,12 @@ const Partial = Schema.Union([
   Schema.Struct({ type: Schema.Literal('ping') }),
   Schema.Struct({ type: Schema.Literal('error'), error: Schema.Struct({ type: Schema.String }) }),
 ])
+/**
+ * Defines Event for the Protocol boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const Event = Schema.Union([
   Schema.Struct({
     type: Schema.Literal('system'),
@@ -104,6 +143,10 @@ export const Event = Schema.Union([
     stop_reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
     usage: Usage,
     total_cost_usd: Schema.optionalKey(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+    // effect-review-allow B-no-lazy-unknown: native CLI modelUsage extension objects
+    // remain unchanged in provider metadata; Turn decodes accounting fields once
+    // with Schema.Record(Schema.String, Protocol.ModelUsage) before accounting
+    // and never uses unchecked provider extension fields for totals.
     modelUsage: Schema.optionalKey(Schema.Record(Schema.String, Schema.JsonObject)),
     session_id: Schema.optionalKey(Schema.String),
     num_turns: Schema.optionalKey(Count),
@@ -117,9 +160,24 @@ export const Event = Schema.Union([
   }),
 ])
 export type Event = typeof Event.Type
-export const isEvent: (value: unknown) => value is Event = Schema.is(Event)
+/**
+ * Tests whether an unknown value satisfies the decoded Event schema.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isEvent: (u: unknown) => u is Event = Schema.is(Event)
 
-/** The protocol boundary never includes raw stdout/stderr or prompts in failures. */
+/**
+ * Decodes a native CLI event into its validated protocol representation.
+ *
+ * **Details**
+ *
+ * The protocol boundary never includes raw stdout/stderr or prompts in failures.
+ *
+ * @category decoding
+ * @since 0.0.0
+ */
 export const decode = Effect.fnUntraced(function* (
   line: string,
 ): Effect.fn.Return<Event, AiError.AiError> {

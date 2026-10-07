@@ -1,5 +1,11 @@
+/**
+ * Structured task ownership, joins and completion holds.
+ *
+ * @since 0.0.0
+ */
+import * as Arr from 'effect/Array'
 import * as Outcome from './Outcome.ts'
-import * as Identity from '../Identity.ts'
+import type * as Identity from '../Identity.ts'
 import * as Cause from 'effect/Cause'
 import * as Fiber from 'effect/Fiber'
 import * as Exit from 'effect/Exit'
@@ -12,7 +18,7 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Ownership from '../Ownership.ts'
-import * as Record from '../Record.ts'
+import type * as Record from '../Record.ts'
 import type * as Session from '../Session.ts'
 import * as Cancellation from './Cancellation.ts'
 import type { StorageError } from '../StorageError.ts'
@@ -23,7 +29,12 @@ const invalid = (message: string, cause?: unknown) =>
     reason: new InvalidState({ message, ...(cause === undefined ? {} : { cause }) }),
   })
 
-/** Attach native Workflow identity to an already created domain task in the same transaction. */
+/**
+ * Attaches native Workflow identity to an already created domain task in the same transaction.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const domainBinding = Effect.fnUntraced(function* <
   N extends string,
   P extends Workflow.AnyStructSchema,
@@ -38,7 +49,16 @@ export const domainBinding = Effect.fnUntraced(function* <
   return Ownership.Binding.make({ workflow: workflow._tag, executionId, payload: encoded })
 })
 
-/** The caller prefetches the task before any transaction table writes. */
+/**
+ * Binds a task to its replayable native Workflow execution.
+ *
+ * **Details**
+ *
+ * The caller prefetches the task before any transaction table writes.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const bind = Effect.fnUntraced(function* <
   N extends string,
   P extends Workflow.AnyStructSchema,
@@ -51,19 +71,29 @@ export const bind = Effect.fnUntraced(function* <
   payload: P['Type'],
 ): Effect.fn.Return<Ownership.Binding, StorageError | Schema.SchemaError, P['EncodingServices']> {
   const binding = yield* domainBinding(workflow, payload)
-  yield* tx.write({ type: 'task', value: { ...task, input: binding } })
+  yield* tx.write({ _tag: 'task', type: 'task', value: { ...task, input: binding } })
   return binding
 })
 
-/** Outcome classification is shared by holds and fail-fast joins. */
-export const failed = Outcome.failed
+/**
+ * Outcome classification is shared by holds and fail-fast joins.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isFailed = Outcome.failed
 
 const heldFailure = (task: Record.Task | undefined) =>
   task !== undefined &&
   (task.state.status === 'completing' || task.state.status === 'terminal') &&
-  failed(task.state.outcome)
+  isFailed(task.state.outcome)
 
-/** A captured domain callback dispatches pending submissions through ordinary native workflows. */
+/**
+ * A captured domain callback dispatches pending submissions through ordinary native workflows.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class DrainConversations extends Context.Service<
   DrainConversations,
   {
@@ -75,31 +105,44 @@ export class DrainConversations extends Context.Service<
       sessionId: Identity.SessionId,
     ) => Effect.Effect<void, ExecutionError | import('../StorageError.ts').StorageError>
   }
->()('@effect-harness/durable/Structured/DrainConversations') {}
+>()('@effect-harness/durable/workflow/Structured/DrainConversations') {}
+/**
+ * layerDrainConversations service Layer.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerDrainConversations = (
   drain: DrainConversations['Service']['drain'],
 ): Layer.Layer<DrainConversations> =>
   Layer.succeed(DrainConversations, DrainConversations.of({ drain }))
 
 const pendingConversations = (graph: Ownership.Graph, reached: Option.Option<Ownership.Reached>) =>
-  reached
-    .pipe(
+  Arr.flatMap(
+    reached.pipe(
       Option.map((value) => value.conversations),
       Option.getOrElse(() => []),
-    )
-    .flatMap((conversation) => {
-      const submissions =
-        graph.submissions?.filter(
-          (submission) =>
-            submission.conversationId === conversation.id &&
-            (submission.status === 'queued' || submission.status === 'placed'),
-        ) ?? []
-      return submissions.length === 0 ? [] : [{ conversation, submissions }]
-    })
+    ),
+    (conversation) => {
+      const submissions = Arr.filter(
+        graph.submissions ?? [],
+        (submission) =>
+          submission.conversationId === conversation.id &&
+          (submission.status === 'queued' || submission.status === 'placed'),
+      )
+      return Arr.isReadonlyArrayEmpty(submissions) ? [] : [{ conversation, submissions }]
+    },
+  )
 
 /**
- * Persist a held outcome. Pass a graph collected before any table writes when
- * composing this with entry/document mutations in an executor's atomic commit.
+ * Persists a held outcome.
+ *
+ * **Details**
+ *
+ * Pass a graph collected before any table writes when composing this with entry/document mutations in an executor's atomic commit.
+ *
+ * @category combinators
+ * @since 0.0.0
  */
 export const hold = Effect.fnUntraced(function* (
   tx: Session.Transaction,
@@ -108,20 +151,23 @@ export const hold = Effect.fnUntraced(function* (
   graph: Ownership.Graph,
 ): Effect.fn.Return<Record.Task, StorageError> {
   if (task.state.status === 'terminal' || task.state.status === 'completing') return task
-  const reached = Ownership.reach(graph, { kind: 'task', id: task.id })
+  const reached = Ownership.reach(graph, { _tag: 'task', kind: 'task', id: task.id })
   const children = reached.pipe(
-    Option.map((value) => value.tasks.filter((child) => child.id !== task.id)),
+    Option.map((value) => Arr.filter(value.tasks, (child) => child.id !== task.id)),
     Option.getOrElse(() => []),
   )
   const pending = pendingConversations(graph, reached)
   const value: Record.Task = {
     ...task,
     state: {
-      status: children.length === 0 && pending.length === 0 ? 'terminal' : 'completing',
+      status:
+        Arr.isReadonlyArrayEmpty(children) && Arr.isReadonlyArrayEmpty(pending)
+          ? 'terminal'
+          : 'completing',
       outcome,
     },
   }
-  yield* tx.write({ type: 'task', value })
+  yield* tx.write({ _tag: 'task', type: 'task', value })
   return value
 })
 
@@ -160,12 +206,18 @@ const execute = Effect.fnUntraced(function* (
     )
     return
   }
-  yield* Ownership.execute(binding).pipe(Effect.catch(() => Effect.void))
+  yield* Ownership.execute(binding).pipe(Effect.ignore)
 })
 
 /**
- * Native joins retain input order. Fail-fast marks only listed owned siblings;
- * held failures trigger the same mark before their descendants finish draining.
+ * Joins native executions in input order.
+ *
+ * **Details**
+ *
+ * Fail-fast marks only listed owned siblings; held failures trigger the same mark before their descendants finish draining.
+ *
+ * @category combinators
+ * @since 0.0.0
  */
 export const join = Effect.fnUntraced(function* (
   session: Session.Service,
@@ -173,35 +225,49 @@ export const join = Effect.fnUntraced(function* (
   ids: ReadonlyArray<Record.TaskId>,
   policy: 'failFast' | 'allSettled' = 'allSettled',
 ): Effect.fn.Return<
-  Record.Json[],
+  Array<Record.Json>,
   StorageError | ExecutionError,
   Cancellation.Cancellation | WorkflowEngine.WorkflowEngine | Ownership.Declarations
 > {
   const state = yield* session.committed
-  const owner = state.tasks.find((task) => task.id === ownerId)
-  if (owner === undefined) return yield* invalid('Join owner is absent')
+  const owner = Arr.findFirst(state.tasks, (task) => task.id === ownerId)
+  if (Option.isNone(owner)) return yield* invalid('Join owner is absent')
   const ancestors = new Set<Record.TaskId>([ownerId])
   let ancestor =
-    owner.owner ??
-    state.conversations.find((conversation) => conversation.id === owner.conversationId)?.owner
-      ?.taskId
+    owner.value.owner ??
+    Option.getOrUndefined(
+      Option.flatMap(
+        Arr.findFirst(
+          state.conversations,
+          (conversation) => conversation.id === owner.value.conversationId,
+        ),
+        (conversation) => Option.fromUndefinedOr(conversation.owner?.taskId),
+      ),
+    )
   while (ancestor !== undefined && !ancestors.has(ancestor)) {
     ancestors.add(ancestor)
-    const parent = state.tasks.find((task) => task.id === ancestor)
-    if (parent === undefined) break
+    const parent = Arr.findFirst(state.tasks, (task) => task.id === ancestor)
+    if (Option.isNone(parent)) break
     ancestor =
-      parent.owner ??
-      state.conversations.find((conversation) => conversation.id === parent.conversationId)?.owner
-        ?.taskId
+      parent.value.owner ??
+      Option.getOrUndefined(
+        Option.flatMap(
+          Arr.findFirst(
+            state.conversations,
+            (conversation) => conversation.id === parent.value.conversationId,
+          ),
+          (conversation) => Option.fromUndefinedOr(conversation.owner?.taskId),
+        ),
+      )
   }
-  const tasks: Record.Task[] = []
+  const tasks: Array<Record.Task> = []
   for (const id of ids) {
-    const task = state.tasks.find((task) => task.id === id)
-    if (task === undefined) return yield* invalid(`Awaited task ${id} is absent`)
+    const task = Arr.findFirst(state.tasks, (task) => task.id === id)
+    if (Option.isNone(task)) return yield* invalid(`Awaited task ${id} is absent`)
     if (ancestors.has(id)) return yield* invalid('A task cannot await itself or its owner')
-    if (policy === 'failFast' && task.owner !== ownerId)
+    if (policy === 'failFast' && task.value.owner !== ownerId)
       return yield* invalid('Fail-fast requires directly owned tasks')
-    tasks.push(task)
+    tasks.push(task.value)
   }
   yield* session.transaction(
     Effect.fnUntraced(function* (tx) {
@@ -215,6 +281,7 @@ export const join = Effect.fnUntraced(function* (
         return yield* invalid('Join requires a live owner')
       const current = currentOption.value
       yield* tx.write({
+        _tag: 'task',
         type: 'task',
         value: {
           ...current,
@@ -227,14 +294,23 @@ export const join = Effect.fnUntraced(function* (
   const failFast = Effect.gen(function* () {
     if ((yield* Ref.get(marked)) || policy !== 'failFast') return
     const latest = yield* session.committed
-    if (!ids.some((id) => heldFailure(latest.tasks.find((task) => task.id === id)))) return
+    if (
+      !ids.some((id) =>
+        Option.exists(
+          Arr.findFirst(latest.tasks, (task) => task.id === id),
+          heldFailure,
+        ),
+      )
+    )
+      return
     if (yield* Ref.getAndSet(marked, true)) return
     const current = yield* Effect.serviceOption(Ownership.Current)
     if (Option.isNone(current)) return yield* invalid('Fail-fast requires a scoped owner identity')
     for (const id of ids) {
-      const task = latest.tasks.find((task) => task.id === id)
-      if (task === undefined || task.state.status === 'terminal' || heldFailure(task)) continue
-      const reached = yield* Cancellation.mark(session, { kind: 'task', id })
+      const task = Arr.findFirst(latest.tasks, (task) => task.id === id)
+      if (Option.isNone(task) || task.value.state.status === 'terminal' || heldFailure(task.value))
+        continue
+      const reached = yield* Cancellation.mark(session, { _tag: 'task', kind: 'task', id })
       yield* Cancellation.cancel(current.value.sessionId, reached)
     }
   })
@@ -263,6 +339,7 @@ export const join = Effect.fnUntraced(function* (
           if (Option.isNone(currentOption) || currentOption.value.state.status !== 'waiting') return
           const current = currentOption.value
           yield* tx.write({
+            _tag: 'task',
             type: 'task',
             value: {
               ...current,
@@ -277,9 +354,9 @@ export const join = Effect.fnUntraced(function* (
         }),
       )
       return yield* Effect.forEach(ids, (id) => {
-        const task = latest.tasks.find((task) => task.id === id)
-        return task?.state.status === 'terminal'
-          ? Effect.succeed(task.state.outcome ?? null)
+        const task = Arr.findFirst(latest.tasks, (task) => task.id === id)
+        return Option.isSome(task) && task.value.state.status === 'terminal'
+          ? Effect.succeed(task.value.state.outcome ?? null)
           : Effect.fail(
               invalid(`Native execution ${id} ended before its domain projection settled`),
             )
@@ -289,9 +366,14 @@ export const join = Effect.fnUntraced(function* (
 })
 
 /**
- * Join owned native executions and atomically release a completing outcome.
- * Re-reading each committed graph admits ordinary new work in owned conversations
- * during the hold; transaction validation seals the final drain race.
+ * Joins owned native executions and atomically releases a completing outcome.
+ *
+ * **Details**
+ *
+ * Re-reading each committed graph admits ordinary new work in owned conversations during the hold; transaction validation seals the final drain race.
+ *
+ * @category combinators
+ * @since 0.0.0
  */
 export const drain = Effect.fnUntraced(function* (
   session: Session.Service,
@@ -304,29 +386,30 @@ export const drain = Effect.fnUntraced(function* (
 > {
   while (true) {
     const state = yield* session.committed
-    const task = state.tasks.find((task) => task.id === taskId)
-    if (task === undefined) return yield* invalid('Completing task is absent')
-    if (task.state.status === 'terminal') return task.state.outcome ?? null
-    if (task.state.status !== 'completing') return yield* invalid('Task has no held outcome')
-    const reached = Ownership.reach(state, { kind: 'task', id: taskId })
+    const task = Arr.findFirst(state.tasks, (task) => task.id === taskId)
+    if (Option.isNone(task)) return yield* invalid('Completing task is absent')
+    if (task.value.state.status === 'terminal') return task.value.state.outcome ?? null
+    if (task.value.state.status !== 'completing') return yield* invalid('Task has no held outcome')
+    const reached = Ownership.reach(state, { _tag: 'task', kind: 'task', id: taskId })
     const children = reached.pipe(
-      Option.map((value) => value.tasks.filter((child) => child.id !== taskId)),
+      Option.map((value) => Arr.filter(value.tasks, (child) => child.id !== taskId)),
       Option.getOrElse(() => []),
     )
     const pending = pendingConversations(state, reached)
-    if (pending.length > 0) {
+    if (Arr.isReadonlyArrayNonEmpty(pending)) {
       const callback = yield* Effect.serviceOption(DrainConversations)
       if (Option.isNone(callback))
         return yield* invalid('Owned conversation submissions require a native drain callback')
       const currentIdentity = yield* Effect.serviceOption(Ownership.Current)
       const identity =
-        sessionId ?? (Option.isSome(currentIdentity) ? currentIdentity.value.sessionId : undefined)
+        sessionId ??
+        Option.getOrUndefined(Option.map(currentIdentity, (current) => current.sessionId))
       if (identity === undefined)
         return yield* invalid('Owned conversation drain requires a session identity')
       yield* Effect.forEach(
         pending,
         ({ conversation, submissions }) =>
-          callback.value.drain(session, task, conversation, submissions, identity),
+          callback.value.drain(session, task.value, conversation, submissions, identity),
         {
           // P5-explicit-concurrency-option: native frontier members may await a later
           // member; all joins must start together to avoid stranding that dependency.
@@ -336,7 +419,7 @@ export const drain = Effect.fnUntraced(function* (
       )
       const refreshed = yield* session.committed
       const dispatched = new Set(
-        pending.flatMap(({ submissions }) => submissions.map((submission) => submission.id)),
+        Arr.flatMap(pending, ({ submissions }) => submissions.map((submission) => submission.id)),
       )
       if (
         refreshed.submissions.some(
@@ -347,16 +430,20 @@ export const drain = Effect.fnUntraced(function* (
       )
         return yield* invalid('Owned conversation drain returned before its submissions settled')
     }
-    if (children.length > 0) {
-      if (failed(task.state.outcome)) {
+    if (Arr.isReadonlyArrayNonEmpty(children)) {
+      if (isFailed(task.value.state.outcome)) {
         const currentIdentity = yield* Effect.serviceOption(Ownership.Current)
         const identity =
           sessionId ??
-          (Option.isSome(currentIdentity) ? currentIdentity.value.sessionId : undefined)
+          Option.getOrUndefined(Option.map(currentIdentity, (current) => current.sessionId))
         if (identity === undefined)
           return yield* invalid('Cancellation requires a session identity')
         for (const child of children) {
-          const marked = yield* Cancellation.mark(session, { kind: 'task', id: child.id })
+          const marked = yield* Cancellation.mark(session, {
+            _tag: 'task',
+            kind: 'task',
+            id: child.id,
+          })
           yield* Cancellation.cancel(identity, marked)
         }
       }
@@ -364,8 +451,11 @@ export const drain = Effect.fnUntraced(function* (
         children,
         Effect.fnUntraced(function* (child) {
           yield* execute(session, child, sessionId)
-          const settled = (yield* session.committed).tasks.find((task) => task.id === child.id)
-          if (settled?.state.status !== 'terminal')
+          const settled = Arr.findFirst(
+            (yield* session.committed).tasks,
+            (task) => task.id === child.id,
+          )
+          if (Option.isNone(settled) || settled.value.state.status !== 'terminal')
             return yield* invalid(
               `Native execution ${child.id} ended before its domain projection settled`,
             )
@@ -382,30 +472,36 @@ export const drain = Effect.fnUntraced(function* (
     const result = yield* session.transaction(
       Effect.fnUntraced(function* (tx) {
         const graph = yield* Ownership.readGraph(tx)
-        const current = graph.tasks.find((item) => item.id === taskId)
-        if (current === undefined) return yield* invalid('Completing task is absent')
-        if (current.state.status === 'terminal')
-          return { done: true, outcome: current.state.outcome ?? null }
-        const remaining = Ownership.reach(graph, { kind: 'task', id: taskId })
+        const current = Arr.findFirst(graph.tasks, (item) => item.id === taskId)
+        if (Option.isNone(current)) return yield* invalid('Completing task is absent')
+        if (current.value.state.status === 'terminal')
+          return { done: true, outcome: current.value.state.outcome ?? null }
+        const remaining = Ownership.reach(graph, { _tag: 'task', kind: 'task', id: taskId })
         const pending =
           Option.exists(remaining, (value) => value.tasks.some((item) => item.id !== taskId)) ||
-          pendingConversations(graph, remaining).length > 0
+          Arr.isReadonlyArrayNonEmpty(pendingConversations(graph, remaining))
         if (pending) return { done: false, outcome: null }
         yield* tx.write({
+          _tag: 'task',
           type: 'task',
           value: {
-            ...current,
-            state: { status: 'terminal', outcome: current.state.outcome ?? null },
+            ...current.value,
+            state: { status: 'terminal', outcome: current.value.state.outcome ?? null },
           },
         })
-        return { done: true, outcome: current.state.outcome ?? null }
+        return { done: true, outcome: current.value.state.outcome ?? null }
       }),
     )
     if (result.done) return result.outcome
   }
 })
 
-/** Commit a result and release it only after all ordinary owned native work drains. */
+/**
+ * Commits a result and releases it only after all ordinary owned native work drains.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const complete = Effect.fnUntraced(function* (
   session: Session.Service,
   taskId: Record.TaskId,
@@ -419,17 +515,23 @@ export const complete = Effect.fnUntraced(function* (
   yield* session.transaction(
     Effect.fnUntraced(function* (tx) {
       const graph = yield* Ownership.readGraph(tx)
-      const task = graph.tasks.find((task) => task.id === taskId)
-      if (task === undefined) return yield* invalid('Completing task is absent')
-      return yield* hold(tx, task, outcome, graph)
+      const task = Arr.findFirst(graph.tasks, (task) => task.id === taskId)
+      if (Option.isNone(task)) return yield* invalid('Completing task is absent')
+      return yield* hold(tx, task.value, outcome, graph)
     }),
   )
   return yield* drain(session, taskId, sessionId)
 })
 
 /**
- * Reserve a directly owned child with a replayable native binding. The stable
- * key belongs to the caller's native Activity; execution remains workflow.execute.
+ * Reserves a directly owned child with a replayable native binding.
+ *
+ * **Details**
+ *
+ * The stable key belongs to the caller's native Activity; execution remains workflow.execute.
+ *
+ * @category combinators
+ * @since 0.0.0
  */
 export const child = Effect.fnUntraced(function* <
   N extends string,
@@ -478,9 +580,14 @@ export const child = Effect.fnUntraced(function* <
 })
 
 /**
- * A domain outcome helper used inside an ordinary Workflow.toLayer handler.
- * Native suspension/abandonment remains interruption so the engine can replay;
- * completed bodies, typed failures and defects acquire an owned completing hold.
+ * Evaluates a domain body inside an ordinary Workflow.toLayer handler.
+ *
+ * **Details**
+ *
+ * Native suspension/abandonment remains interruption so the engine can replay; completed bodies, typed failures and defects acquire an owned completing hold.
+ *
+ * @category combinators
+ * @since 0.0.0
  */
 export const evaluate = Effect.fnUntraced(function* <E, R>(
   identity: Ownership.Identity,
@@ -499,8 +606,12 @@ export const evaluate = Effect.fnUntraced(function* <E, R>(
   if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
     if (Option.isSome(instance) && (instance.value.suspended || instance.value.abandoned))
       return yield* Effect.failCause(exit.cause)
-    const task = (yield* session.committed).tasks.find((task) => task.id === identity.taskId)
-    if (!task?.abortRequested) return yield* Effect.failCause(exit.cause)
+    const task = Arr.findFirst(
+      (yield* session.committed).tasks,
+      (task) => task.id === identity.taskId,
+    )
+    if (!Option.exists(task, (found) => found.abortRequested))
+      return yield* Effect.failCause(exit.cause)
   }
   let outcome: Record.Json
   if (Exit.isSuccess(exit))

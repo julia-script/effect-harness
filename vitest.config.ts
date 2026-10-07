@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config'
 
+// effect-review-allow PX-no-default-export: Vitest loads its configuration through this default export.
 export default defineConfig({
   resolve: {
     alias: [
@@ -19,6 +20,8 @@ export default defineConfig({
   },
   test: {
     include: ['packages/*/test/**/*.test.ts', 'apps/*/test/**/*.test.ts'],
+    // The seeded storage workload and native restart fixtures share host CPU/process resources.
+    maxWorkers: 1,
     testTimeout: 30000,
     hookTimeout: 30000,
   },

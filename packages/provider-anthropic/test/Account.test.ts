@@ -15,7 +15,7 @@ import * as Layer from 'effect/Layer'
 import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
-import * as NativeLanguageModel from 'effect/ai/LanguageModel'
+import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
@@ -23,9 +23,9 @@ import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientError from 'effect/http/HttpClientError'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
-import * as Account from '../src/Account.ts'
-import * as OAuth from '../src/OAuth.ts'
-import * as Catalog from '../src/Catalog.ts'
+import * as Account from '@effect-harness/provider-anthropic/Account'
+import * as OAuth from '@effect-harness/provider-anthropic/OAuth'
+import * as Catalog from '@effect-harness/provider-anthropic/Catalog'
 
 const message = {
   id: 'msg_test',
@@ -197,349 +197,387 @@ const fixture = (stream = false, denied: boolean | AuthError = false) => {
   return { requests, auth, http, client, layer, credentials: () => credentials }
 }
 
-describe('direct Pi-compatible Anthropic account transport', () => {
-  it.effect(
-    'native saved multi-turn roles/images/thinking/tool results remain structured and canonical names reverse to the native Toolkit',
-    () => {
-      const f = fixture()
-      let executions = 0
-      return Effect.gen(function* () {
-        const response = yield* NativeLanguageModel.generateText({
-          prompt: history,
-          toolkit,
-          disableToolCallResolution: true,
-        })
-        assert.strictEqual(executions, 0)
-        assert.strictEqual(response.toolCalls[0]?.name, 'read')
-        assert.deepEqual(response.toolCalls[0]?.params, { path: 'answer' })
-        assert.strictEqual(response.usage.inputTokens.total, 11)
-        const request = f.requests[0]
-        if (request === undefined) return yield* Effect.die('Missing request')
-        assert.strictEqual(request.url, 'https://test.example/v1/messages?beta=true')
-        assert.strictEqual(request.headers.authorization, 'Bearer private-token-1')
-        assert.strictEqual(request.headers['x-api-key'], undefined)
-        assert.strictEqual(request.headers['x-app'], 'cli')
-        assert.strictEqual(request.headers['user-agent'], `claude-cli/${Account.cliVersion}`)
-        assert.strictEqual(request.headers['anthropic-dangerous-direct-browser-access'], 'true')
-        assert.strictEqual(request.headers['anthropic-version'], 'custom-version')
-        assert.strictEqual(request.headers['x-transform'], 'preserved')
-        for (const beta of Account.betas) assert.include(request.headers['anthropic-beta'], beta)
-        assert.include(request.headers['anthropic-beta'], 'interleaved-thinking-2025-05-14')
-        const sent = body(request)
-        assert.deepEqual(sent.system, [
-          { type: 'text', text: Account.identity, cache_control: { type: 'ephemeral', ttl: '1h' } },
-          { type: 'text', text: 'Saved instructions', cache_control: null },
-        ])
-        assert.deepEqual(sent.thinking, { type: 'enabled', budget_tokens: 1024 })
-        assert.deepEqual(sent.messages, [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: 'First question', cache_control: null },
+describe('Account', () => {
+  describe('direct Pi-compatible Anthropic account transport', () => {
+    it.effect(
+      'native saved multi-turn roles/images/thinking/tool results remain structured and canonical names reverse to the native Toolkit',
+      () =>
+        Effect.gen(function* () {
+          const f = fixture()
+          let executions = 0
+          return yield* Effect.gen(function* () {
+            const response = yield* LanguageModel.generateText({
+              prompt: history,
+              toolkit,
+              disableToolCallResolution: true,
+            })
+            assert.strictEqual(executions, 0)
+            assert.strictEqual(response.toolCalls[0]?.name, 'read')
+            assert.deepStrictEqual(response.toolCalls[0]?.params, { path: 'answer' })
+            assert.strictEqual(response.usage.inputTokens.total, 11)
+            const request = f.requests[0]
+            if (request === undefined) return yield* Effect.die('Missing request')
+            assert.strictEqual(request.url, 'https://test.example/v1/messages?beta=true')
+            assert.strictEqual(request.headers.authorization, 'Bearer private-token-1')
+            assert.strictEqual(request.headers['x-api-key'], undefined)
+            assert.strictEqual(request.headers['x-app'], 'cli')
+            assert.strictEqual(request.headers['user-agent'], `claude-cli/${Account.cliVersion}`)
+            assert.strictEqual(request.headers['anthropic-dangerous-direct-browser-access'], 'true')
+            assert.strictEqual(request.headers['anthropic-version'], 'custom-version')
+            assert.strictEqual(request.headers['x-transform'], 'preserved')
+            for (const beta of Account.betas)
+              assert.include(request.headers['anthropic-beta'], beta)
+            assert.include(request.headers['anthropic-beta'], 'interleaved-thinking-2025-05-14')
+            const sent = body(request)
+            assert.deepStrictEqual(sent.system, [
               {
-                type: 'image',
-                cache_control: null,
-                source: { type: 'base64', media_type: 'image/png', data: 'AQID' },
+                type: 'text',
+                text: Account.identity,
+                cache_control: { type: 'ephemeral', ttl: '1h' },
               },
-            ],
-          },
-          {
-            role: 'assistant',
-            content: [
-              { type: 'thinking', thinking: 'Saved reasoning', signature: 'saved-signature' },
-              { type: 'redacted_thinking', data: 'encrypted-thinking' },
-              { type: 'text', text: 'Prior response' },
+              { type: 'text', text: 'Saved instructions', cache_control: null },
+            ])
+            assert.deepStrictEqual(sent.thinking, { type: 'enabled', budget_tokens: 1024 })
+            assert.deepStrictEqual(sent.messages, [
               {
-                type: 'tool_use',
-                id: 'call_old',
-                name: 'Read',
-                input: { path: 'old', nested: { type: 'tool_use', name: 'read' } },
+                role: 'user',
+                content: [
+                  { type: 'text', text: 'First question', cache_control: null },
+                  {
+                    type: 'image',
+                    cache_control: null,
+                    source: { type: 'base64', media_type: 'image/png', data: 'AQID' },
+                  },
+                ],
               },
-            ],
-          },
-          {
-            role: 'user',
-            content: [
               {
-                type: 'tool_result',
-                tool_use_id: 'call_old',
-                content: JSON.stringify({ ok: true }),
-                is_error: false,
-                cache_control: null,
+                role: 'assistant',
+                content: [
+                  { type: 'thinking', thinking: 'Saved reasoning', signature: 'saved-signature' },
+                  { type: 'redacted_thinking', data: 'encrypted-thinking' },
+                  { type: 'text', text: 'Prior response' },
+                  {
+                    type: 'tool_use',
+                    id: 'call_old',
+                    name: 'Read',
+                    input: { path: 'old', nested: { type: 'tool_use', name: 'read' } },
+                  },
+                ],
               },
-              { type: 'text', text: 'Continue from saved context', cache_control: null },
-            ],
-          },
-        ])
-        assert.strictEqual(f.credentials(), 1)
-      }).pipe(
-        Effect.provide(
-          Layer.merge(
-            f.layer,
-            toolkit.toLayer({
-              read: () =>
-                Effect.sync(() => {
-                  executions++
-                  return 'must-not-execute'
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'tool_result',
+                    tool_use_id: 'call_old',
+                    content: JSON.stringify({ ok: true }),
+                    is_error: false,
+                    cache_control: null,
+                  },
+                  { type: 'text', text: 'Continue from saved context', cache_control: null },
+                ],
+              },
+            ])
+            assert.strictEqual(f.credentials(), 1)
+          }).pipe(
+            Effect.provide(
+              Layer.merge(
+                f.layer,
+                toolkit.toLayer({
+                  read: () =>
+                    Effect.sync(() => {
+                      executions++
+                      return 'must-not-execute'
+                    }),
                 }),
-            }),
-          ),
-        ),
-      )
-    },
-  )
-  it.effect(
-    'streamed partial tool-use aliases are reversed before native Effect AI schema/tool intent processing',
-    () => {
-      const f = fixture(true)
-      return Effect.gen(function* () {
-        const parts = yield* NativeLanguageModel.streamText({
-          prompt: history,
-          toolkit,
-          disableToolCallResolution: true,
-        }).pipe(Stream.runCollect)
-        const tool = parts.find((part) => part.type === 'tool-call')
-        assert.strictEqual(tool?.name, 'read')
-        assert.deepEqual(tool?.params, { path: 'answer' })
-        const start = parts.find((part) => part.type === 'tool-params-start')
-        assert.strictEqual(start?.name, 'read')
-        const finish = parts.find((part) => part.type === 'finish')
-        assert.strictEqual(finish?.reason, 'tool-calls')
-        assert.strictEqual(finish?.usage.outputTokens.total, 3)
-        assert.strictEqual(body(f.requests[0]!).stream, true)
-      }).pipe(Effect.provide(f.layer))
-    },
-  )
-  it.effect(
-    'public native Catalogue composes with account client and preserves selected model/thinking/cache/session controls',
-    () => {
-      const f = fixture()
-      const catalog = Catalog.layer({
-        models: [
-          {
-            modelId: 'declared-model',
-            contextWindow: 200000,
-            maxOutputTokens: 32000,
-            thinking: { mode: 'adaptive' },
-            efforts: ['high'],
-            cache: true,
-          },
-        ],
-      }).pipe(Layer.provide(f.client))
-      return Effect.gen(function* () {
-        const descriptor = yield* Model.Catalog.use((catalog) =>
-          catalog.resolve({ provider: 'anthropic', modelId: 'declared-model' }),
-        )
-        const context = yield* descriptor.configure({
-          thinking: 'high',
-          options: {},
-          sessionId: '019a08e0-7c00-7000-8000-000000000001',
-          maxTokens: 6000,
-          cache: 'long',
-        })
-        yield* descriptor.model
-          .generateText({ prompt: history, toolkit, disableToolCallResolution: true })
-          .pipe(Effect.provideContext(context))
-        const sent = body(f.requests[0]!)
-        assert.strictEqual(sent.model, 'declared-model')
-        assert.strictEqual(sent.max_tokens, 6000)
-        assert.deepEqual(sent.thinking, { type: 'adaptive' })
-        assert.deepEqual(sent.output_config, { effort: 'high' })
-        assert.deepEqual(sent.metadata, { user_id: '019a08e0-7c00-7000-8000-000000000001' })
-      }).pipe(Effect.provide(catalog))
-    },
-  )
-  it.effect('typed credential failure occurs before inference and is redacted', () => {
-    const f = fixture(false, true)
-    return Effect.gen(function* () {
-      const error = yield* NativeLanguageModel.generateText({ prompt: 'Hello' }).pipe(Effect.flip)
-      assert.strictEqual(error.reason._tag, 'AuthenticationError')
-      assert.isFalse(JSON.stringify(error).includes('private-token'))
-      assert.strictEqual(f.requests.length, 0)
-    }).pipe(Effect.provide(f.layer))
-  })
-  it.effect(
-    'canonical alias collisions reject before transport while forced choices preserve custom schema and caller beta headers',
-    () => {
-      const f = fixture()
-      return Effect.gen(function* () {
-        const client = yield* AnthropicClient.AnthropicClient
-        const payload = {
-          model: 'declared-model',
-          max_tokens: 2000,
-          messages: [{ role: 'user', content: 'Hello' }],
-          tools: [
-            { name: 'read', input_schema: { type: 'object' } },
-            { name: 'Read', input_schema: { type: 'object' } },
-          ],
-        } as const
-        const error = yield* client.createMessage({ payload }).pipe(Effect.flip)
-        assert.strictEqual(error.reason._tag, 'InvalidRequestError')
-        assert.strictEqual(f.requests.length, 0)
-        yield* client.createMessage({
-          payload: {
-            ...payload,
-            tools: [payload.tools[0]],
-            tool_choice: { type: 'tool', name: 'read' },
-          },
-          params: { 'anthropic-beta': 'caller-beta,oauth-2025-04-20' },
-        })
-        assert.deepEqual(body(f.requests[0]!).tool_choice, { type: 'tool', name: 'Read' })
-        assert.strictEqual(
-          f.requests[0]?.headers['anthropic-beta'],
-          'claude-code-20250219,oauth-2025-04-20,caller-beta',
-        )
-      }).pipe(Effect.provide(f.layer))
-    },
-  )
-  it.effect(
-    'generated native SDK client stays available with refreshed bearer auth per HTTP request',
-    () => {
-      const f = fixture()
-      return Effect.gen(function* () {
-        const client = yield* AnthropicClient.AnthropicClient
-        for (let index = 0; index < 2; index++)
-          yield* client.client.betaMessagesPost({
-            payload: {
-              model: 'declared-model',
-              max_tokens: 2000,
-              messages: [{ role: 'user', content: 'SDK injection' }],
-            },
-          })
-        assert.strictEqual(f.credentials(), 2)
-        assert.strictEqual(f.requests[0]?.headers.authorization, 'Bearer private-token-1')
-        assert.strictEqual(f.requests[1]?.headers.authorization, 'Bearer private-token-2')
-        assert.strictEqual(f.requests[0]?.headers['x-api-key'], undefined)
-        assert.strictEqual(f.requests[0]?.headers['x-app'], 'cli')
-      }).pipe(Effect.provide(f.layer))
-    },
-  )
-  it.effect(
-    'raw generated native account client retains its caught AuthError transport cause',
-    () => {
-      const original = new AuthError({
-        reason: new AuthNetworkError({
-          message: 'Sanitized credential failure',
-          cause: new Error('private-token-diagnostic'),
+              ),
+            ),
+          )
         }),
-      })
-      const f = fixture(false, original)
-      return Effect.gen(function* () {
-        const client = yield* AnthropicClient.AnthropicClient
-        const error = yield* client.client
-          .betaMessagesPost({
-            payload: {
+    )
+    it.effect(
+      'streamed partial tool-use aliases are reversed before native Effect AI schema/tool intent processing',
+      () =>
+        Effect.gen(function* () {
+          const f = fixture(true)
+          return yield* Effect.gen(function* () {
+            const parts = yield* LanguageModel.streamText({
+              prompt: history,
+              toolkit,
+              disableToolCallResolution: true,
+            }).pipe(Stream.runCollect)
+            const tool = parts.find((part) => part.type === 'tool-call')
+            assert.strictEqual(tool?.name, 'read')
+            assert.deepStrictEqual(tool?.params, { path: 'answer' })
+            const start = parts.find((part) => part.type === 'tool-params-start')
+            assert.strictEqual(start?.name, 'read')
+            const finish = parts.find((part) => part.type === 'finish')
+            assert.strictEqual(finish?.reason, 'tool-calls')
+            assert.strictEqual(finish?.usage.outputTokens.total, 3)
+            assert.strictEqual(body(f.requests[0]!).stream, true)
+          }).pipe(Effect.provide(f.layer))
+        }),
+    )
+    it.effect(
+      'public native Catalogue composes with account client and preserves selected model/thinking/cache/session controls',
+      () =>
+        Effect.gen(function* () {
+          const f = fixture()
+          const catalog = Catalog.layer({
+            models: [
+              {
+                modelId: 'declared-model',
+                contextWindow: 200000,
+                maxOutputTokens: 32000,
+                thinking: { _tag: 'adaptive' },
+                efforts: ['high'],
+                cache: true,
+              },
+            ],
+          }).pipe(Layer.provide(f.client))
+          return yield* Effect.gen(function* () {
+            const descriptor = yield* Model.Catalog.use((catalog) =>
+              catalog.resolve({ provider: 'anthropic', modelId: 'declared-model' }),
+            )
+            const context = yield* descriptor.configure({
+              thinking: 'high',
+              options: {},
+              sessionId: '019a08e0-7c00-7000-8000-000000000001',
+              maxTokens: 6000,
+              cache: 'long',
+            })
+            yield* descriptor.model
+              .generateText({ prompt: history, toolkit, disableToolCallResolution: true })
+              .pipe(Effect.provideContext(context))
+            const sent = body(f.requests[0]!)
+            assert.strictEqual(sent.model, 'declared-model')
+            assert.strictEqual(sent.max_tokens, 6000)
+            assert.deepStrictEqual(sent.thinking, { type: 'adaptive' })
+            assert.deepStrictEqual(sent.output_config, { effort: 'high' })
+            assert.deepStrictEqual(sent.metadata, {
+              user_id: '019a08e0-7c00-7000-8000-000000000001',
+            })
+          }).pipe(Effect.provide(catalog))
+        }),
+    )
+    it.effect('typed credential failure occurs before inference and is redacted', () =>
+      Effect.gen(function* () {
+        const f = fixture(false, true)
+        return yield* Effect.gen(function* () {
+          const error = yield* LanguageModel.generateText({ prompt: 'Hello' }).pipe(Effect.flip)
+          assert.strictEqual(error.reason._tag, 'AuthenticationError')
+          assert.isFalse(JSON.stringify(error).includes('private-token'))
+          assert.strictEqual(f.requests.length, 0)
+        }).pipe(Effect.provide(f.layer))
+      }),
+    )
+    it.effect(
+      'canonical alias collisions reject before transport while forced choices preserve custom schema and caller beta headers',
+      () =>
+        Effect.gen(function* () {
+          const f = fixture()
+          return yield* Effect.gen(function* () {
+            const client = yield* AnthropicClient.AnthropicClient
+            const payload = {
               model: 'declared-model',
               max_tokens: 2000,
               messages: [{ role: 'user', content: 'Hello' }],
+              tools: [
+                { name: 'read', input_schema: { type: 'object' } },
+                { name: 'Read', input_schema: { type: 'object' } },
+              ],
+            } as const
+            const error = yield* client.createMessage({ payload }).pipe(Effect.flip)
+            assert.strictEqual(error.reason._tag, 'InvalidRequestError')
+            assert.strictEqual(f.requests.length, 0)
+            yield* client.createMessage({
+              payload: {
+                ...payload,
+                tools: [payload.tools[0]],
+                tool_choice: { type: 'tool', name: 'read' },
+              },
+              params: { 'anthropic-beta': 'caller-beta,oauth-2025-04-20' },
+            })
+            assert.deepStrictEqual(body(f.requests[0]!).tool_choice, { type: 'tool', name: 'Read' })
+            assert.strictEqual(
+              f.requests[0]?.headers['anthropic-beta'],
+              'claude-code-20250219,oauth-2025-04-20,caller-beta',
+            )
+          }).pipe(Effect.provide(f.layer))
+        }),
+    )
+    it.effect(
+      'generated native SDK client stays available with refreshed bearer auth per HTTP request',
+      () =>
+        Effect.gen(function* () {
+          const f = fixture()
+          return yield* Effect.gen(function* () {
+            const client = yield* AnthropicClient.AnthropicClient
+            for (let index = 0; index < 2; index++)
+              yield* client.client.betaMessagesPost({
+                payload: {
+                  model: 'declared-model',
+                  max_tokens: 2000,
+                  messages: [{ role: 'user', content: 'SDK injection' }],
+                },
+              })
+            assert.strictEqual(f.credentials(), 2)
+            assert.strictEqual(f.requests[0]?.headers.authorization, 'Bearer private-token-1')
+            assert.strictEqual(f.requests[1]?.headers.authorization, 'Bearer private-token-2')
+            assert.strictEqual(f.requests[0]?.headers['x-api-key'], undefined)
+            assert.strictEqual(f.requests[0]?.headers['x-app'], 'cli')
+          }).pipe(Effect.provide(f.layer))
+        }),
+    )
+    it.effect(
+      'raw generated native account client retains its caught AuthError transport cause',
+      () =>
+        Effect.gen(function* () {
+          const original = new AuthError({
+            reason: new AuthNetworkError({
+              message: 'Sanitized credential failure',
+              cause: new Error('private-token-diagnostic'),
+            }),
+          })
+          const f = fixture(false, original)
+          return yield* Effect.gen(function* () {
+            const client = yield* AnthropicClient.AnthropicClient
+            const error = yield* client.client
+              .betaMessagesPost({
+                payload: {
+                  model: 'declared-model',
+                  max_tokens: 2000,
+                  messages: [{ role: 'user', content: 'Hello' }],
+                },
+              })
+              .pipe(Effect.flip)
+            if (!HttpClientError.isHttpClientError(error)) {
+              return yield* Effect.die('Expected raw HTTP client failure')
+            }
+            assert.strictEqual(error.reason._tag, 'TransportError')
+            assert.strictEqual(error.reason.cause, original)
+            assert.isFalse(JSON.stringify(error).includes('private-token-diagnostic'))
+            assert.strictEqual(f.requests.length, 0)
+          }).pipe(Effect.provide(f.layer))
+        }),
+    )
+
+    it.effect(
+      'native provider-built tool names retain their schema literals; canonicalization applies to custom client tools',
+      () =>
+        Effect.gen(function* () {
+          const f = fixture()
+          return yield* Effect.gen(function* () {
+            const client = yield* AnthropicClient.AnthropicClient
+            yield* client.createMessage({
+              payload: {
+                model: 'declared-model',
+                max_tokens: 2000,
+                messages: [{ role: 'user', content: 'Hello' }],
+                tools: [{ type: 'bash_20250124', name: 'bash' }],
+                tool_choice: { type: 'tool', name: 'bash' },
+              },
+            })
+            assert.deepStrictEqual(body(f.requests[0]!).tools, [
+              { type: 'bash_20250124', name: 'bash' },
+            ])
+            assert.deepStrictEqual(body(f.requests[0]!).tool_choice, { type: 'tool', name: 'bash' })
+          }).pipe(Effect.provide(f.layer))
+        }),
+    )
+    it.effect(
+      'transient token network, rate limit and server faults remain native retryable reasons before inference',
+      () =>
+        Effect.forEach(
+          [
+            new AuthError({
+              reason: new AuthNetworkError({ message: 'Token endpoint unavailable' }),
+            }),
+            new AuthError({
+              reason: new AuthTokenError({ message: 'Grant temporarily rejected', status: 429 }),
+            }),
+            new AuthError({
+              reason: new AuthTokenError({ message: 'Grant temporarily rejected', status: 503 }),
+            }),
+          ],
+          (failure) => {
+            const f = fixture(false, failure)
+            return Effect.gen(function* () {
+              const error = yield* LanguageModel.generateText({ prompt: 'Hello' }).pipe(Effect.flip)
+              assert.isTrue(error.isRetryable)
+              assert.strictEqual(f.requests.length, 0)
+              assert.isFalse(JSON.stringify(error).includes('private-token'))
+            }).pipe(Effect.provide(f.layer))
+          },
+        ),
+    )
+    it.effect(
+      'permission and uncertain storage failures remain permanent despite server status',
+      () =>
+        Effect.forEach(
+          [
+            new AuthPermissionError({ message: '503 please retry', status: 503 }),
+            new AuthStorageError({ message: '503 please retry', status: 503 }),
+            new AuthTokenError({ message: 'Invalid grant', status: 401 }),
+            new AuthTokenError({ message: 'Unknown status', status: 600 }),
+          ],
+          (reason) => {
+            const f = fixture(false, new AuthError({ reason }))
+            return Effect.gen(function* () {
+              const error = yield* LanguageModel.generateText({ prompt: 'Hello' }).pipe(Effect.flip)
+              assert.strictEqual(error.reason._tag, 'AuthenticationError')
+              assert.isFalse(error.isRetryable)
+              assert.strictEqual(f.requests.length, 0)
+            }).pipe(Effect.provide(f.layer))
+          },
+        ),
+    )
+  })
+
+  it.effect(
+    'generated nested tool references rename while opaque tool input protocol-shaped values remain untouched',
+    () =>
+      Effect.gen(function* () {
+        const f = fixture()
+        const opaque = {
+          type: 'tool_use',
+          name: 'read',
+          input: { type: 'tool_reference', tool_name: 'read' },
+          content: [{ type: 'tool_reference', tool_name: 'read' }],
+        }
+        return yield* Effect.gen(function* () {
+          const client = yield* AnthropicClient.AnthropicClient
+          yield* client.createMessage({
+            payload: {
+              model: 'declared-model',
+              max_tokens: 2000,
+              tools: [{ name: 'read', input_schema: { type: 'object' } }],
+              messages: [
+                {
+                  role: 'assistant',
+                  content: [{ type: 'tool_use', id: 'call', name: 'read', input: opaque }],
+                },
+                {
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'tool_result',
+                      tool_use_id: 'call',
+                      content: [
+                        { type: 'tool_reference', tool_name: 'read' },
+                        { type: 'text', text: 'read' },
+                      ],
+                    },
+                  ],
+                },
+              ],
             },
           })
-          .pipe(Effect.flip)
-        if (!HttpClientError.isHttpClientError(error)) {
-          return yield* Effect.die('Expected raw HTTP client failure')
-        }
-        assert.strictEqual(error.reason._tag, 'TransportError')
-        assert.strictEqual(error.reason.cause, original)
-        assert.isFalse(JSON.stringify(error).includes('private-token-diagnostic'))
-        assert.strictEqual(f.requests.length, 0)
-      }).pipe(Effect.provide(f.layer))
-    },
-  )
-
-  it.effect(
-    'native provider-built tool names retain their schema literals; canonicalization applies to custom client tools',
-    () => {
-      const f = fixture()
-      return Effect.gen(function* () {
-        const client = yield* AnthropicClient.AnthropicClient
-        yield* client.createMessage({
-          payload: {
-            model: 'declared-model',
-            max_tokens: 2000,
-            messages: [{ role: 'user', content: 'Hello' }],
-            tools: [{ type: 'bash_20250124', name: 'bash' }],
-            tool_choice: { type: 'tool', name: 'bash' },
-          },
-        })
-        assert.deepEqual(body(f.requests[0]!).tools, [{ type: 'bash_20250124', name: 'bash' }])
-        assert.deepEqual(body(f.requests[0]!).tool_choice, { type: 'tool', name: 'bash' })
-      }).pipe(Effect.provide(f.layer))
-    },
-  )
-  it.effect(
-    'transient token network, rate limit and server faults remain native retryable reasons before inference',
-    () =>
-      Effect.forEach(
-        [
-          new AuthError({
-            reason: new AuthNetworkError({ message: 'Token endpoint unavailable' }),
-          }),
-          new AuthError({
-            reason: new AuthTokenError({ message: 'Grant temporarily rejected', status: 429 }),
-          }),
-          new AuthError({
-            reason: new AuthTokenError({ message: 'Grant temporarily rejected', status: 503 }),
-          }),
-        ],
-        (failure) => {
-          const f = fixture(false, failure)
-          return Effect.gen(function* () {
-            const error = yield* NativeLanguageModel.generateText({ prompt: 'Hello' }).pipe(
-              Effect.flip,
-            )
-            assert.isTrue(error.isRetryable)
-            assert.strictEqual(f.requests.length, 0)
-            assert.isFalse(JSON.stringify(error).includes('private-token'))
-          }).pipe(Effect.provide(f.layer))
-        },
-      ),
-  )
-  it.effect(
-    'permission and uncertain storage failures remain permanent despite server status',
-    () =>
-      Effect.forEach(
-        [
-          new AuthPermissionError({ message: '503 please retry', status: 503 }),
-          new AuthStorageError({ message: '503 please retry', status: 503 }),
-          new AuthTokenError({ message: 'Invalid grant', status: 401 }),
-          new AuthTokenError({ message: 'Unknown status', status: 600 }),
-        ],
-        (reason) => {
-          const f = fixture(false, new AuthError({ reason }))
-          return Effect.gen(function* () {
-            const error = yield* NativeLanguageModel.generateText({ prompt: 'Hello' }).pipe(
-              Effect.flip,
-            )
-            assert.strictEqual(error.reason._tag, 'AuthenticationError')
-            assert.isFalse(error.isRetryable)
-            assert.strictEqual(f.requests.length, 0)
-          }).pipe(Effect.provide(f.layer))
-        },
-      ),
-  )
-})
-
-it.effect(
-  'generated nested tool references rename while opaque tool input protocol-shaped values remain untouched',
-  () => {
-    const f = fixture()
-    const opaque = {
-      type: 'tool_use',
-      name: 'read',
-      input: { type: 'tool_reference', tool_name: 'read' },
-      content: [{ type: 'tool_reference', tool_name: 'read' }],
-    }
-    return Effect.gen(function* () {
-      const client = yield* AnthropicClient.AnthropicClient
-      yield* client.createMessage({
-        payload: {
-          model: 'declared-model',
-          max_tokens: 2000,
-          tools: [{ name: 'read', input_schema: { type: 'object' } }],
-          messages: [
+          const sent = body(f.requests[0]!)
+          assert.deepStrictEqual(sent.messages, [
             {
               role: 'assistant',
-              content: [{ type: 'tool_use', id: 'call', name: 'read', input: opaque }],
+              content: [{ type: 'tool_use', id: 'call', name: 'Read', input: opaque }],
             },
             {
               role: 'user',
@@ -548,35 +586,14 @@ it.effect(
                   type: 'tool_result',
                   tool_use_id: 'call',
                   content: [
-                    { type: 'tool_reference', tool_name: 'read' },
+                    { type: 'tool_reference', tool_name: 'Read' },
                     { type: 'text', text: 'read' },
                   ],
                 },
               ],
             },
-          ],
-        },
-      })
-      const sent = body(f.requests[0]!)
-      assert.deepEqual(sent.messages, [
-        {
-          role: 'assistant',
-          content: [{ type: 'tool_use', id: 'call', name: 'Read', input: opaque }],
-        },
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'tool_result',
-              tool_use_id: 'call',
-              content: [
-                { type: 'tool_reference', tool_name: 'Read' },
-                { type: 'text', text: 'read' },
-              ],
-            },
-          ],
-        },
-      ])
-    }).pipe(Effect.provide(f.layer))
-  },
-)
+          ])
+        }).pipe(Effect.provide(f.layer))
+      }),
+  )
+})

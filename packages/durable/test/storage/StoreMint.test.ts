@@ -29,55 +29,53 @@ const checkedId = Record.TaskId.pipe(
 const allocate: Effect.Effect<Record.TaskId, StorageError, Store.Store | Policy> =
   Store.mintId(checkedId)
 
-describe('Store.mintId accessor', () => {
+describe('StoreMint', () => {
   it.effect(
     'preserves service-dependent precommit and postallocation validation and exhaustion',
     () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const store = yield* Store.Store
-          const before = Policy.of({ calls: 0, rejectAt: 1 })
-          assert.strictEqual(
-            (yield* allocate.pipe(Effect.provideService(Policy, before), Effect.flip)).reason._tag,
-            'Invalid',
-          )
-          assert.strictEqual(before.calls, 1)
-          assert.strictEqual((yield* store.read).nextId, 2)
-          const after = Policy.of({ calls: 0, rejectAt: 2 })
-          assert.strictEqual(
-            (yield* allocate.pipe(Effect.provideService(Policy, after), Effect.flip)).reason._tag,
-            'Invalid',
-          )
-          assert.strictEqual(after.calls, 2)
-          assert.strictEqual((yield* store.read).nextId, 3)
-          const allowed = Policy.of({ calls: 0 })
-          const ids = yield* Effect.forEach([1, 2, 3], () => allocate, {
-            concurrency: 'unbounded',
-          }).pipe(Effect.provideService(Policy, allowed))
-          assert.deepStrictEqual(
-            [...ids].sort((a, b) => a - b),
-            [3, 4, 5],
-          )
-          assert.strictEqual(allowed.calls, 6)
-          yield* store.transact((state) =>
-            Effect.succeed(
-              Store.makeCandidate({
-                state: { ...state, nextId: Number.MAX_SAFE_INTEGER },
-                writes: [],
-                result: null,
-              }),
-            ),
-          )
-          assert.strictEqual(
-            yield* allocate.pipe(Effect.provideService(Policy, allowed)),
-            Number.MAX_SAFE_INTEGER,
-          )
-          assert.strictEqual(
-            (yield* allocate.pipe(Effect.provideService(Policy, allowed), Effect.flip)).reason._tag,
-            'Invalid',
-          )
-          assert.strictEqual(allowed.calls, 8)
-        }).pipe(Effect.provide(Memory.layer)),
-      ),
+      Effect.gen(function* () {
+        const store = yield* Store.Store
+        const before = Policy.of({ calls: 0, rejectAt: 1 })
+        assert.strictEqual(
+          (yield* allocate.pipe(Effect.provideService(Policy, before), Effect.flip)).reason._tag,
+          'Invalid',
+        )
+        assert.strictEqual(before.calls, 1)
+        assert.strictEqual((yield* store.read).nextId, 2)
+        const after = Policy.of({ calls: 0, rejectAt: 2 })
+        assert.strictEqual(
+          (yield* allocate.pipe(Effect.provideService(Policy, after), Effect.flip)).reason._tag,
+          'Invalid',
+        )
+        assert.strictEqual(after.calls, 2)
+        assert.strictEqual((yield* store.read).nextId, 3)
+        const allowed = Policy.of({ calls: 0 })
+        const ids = yield* Effect.forEach([1, 2, 3], () => allocate, {
+          concurrency: 'unbounded',
+        }).pipe(Effect.provideService(Policy, allowed))
+        assert.deepStrictEqual(
+          [...ids].sort((a, b) => a - b),
+          [3, 4, 5],
+        )
+        assert.strictEqual(allowed.calls, 6)
+        yield* store.transact((state) =>
+          Effect.succeed(
+            Store.makeCandidate({
+              state: { ...state, nextId: Number.MAX_SAFE_INTEGER },
+              writes: [],
+              result: null,
+            }),
+          ),
+        )
+        assert.strictEqual(
+          yield* allocate.pipe(Effect.provideService(Policy, allowed)),
+          Number.MAX_SAFE_INTEGER,
+        )
+        assert.strictEqual(
+          (yield* allocate.pipe(Effect.provideService(Policy, allowed), Effect.flip)).reason._tag,
+          'Invalid',
+        )
+        assert.strictEqual(allowed.calls, 8)
+      }).pipe(Effect.provide(Memory.layer)),
   )
 })

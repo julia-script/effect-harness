@@ -1,5 +1,15 @@
+/**
+ * Scoped journal observers and consumed-value watch handles.
+ *
+ * @since 0.0.0
+ */
+import * as handle from './internal/handle.ts'
+const WatchProto = handle.prototype('@effect-harness/durable/Observation/Watch')
+const StateProto = handle.prototype('@effect-harness/durable/Observation/State')
+import type * as Pipeable from 'effect/Pipeable'
+import type * as Inspectable from 'effect/Inspectable'
 import { identity } from 'effect/Function'
-import * as Types from 'effect/Types'
+import type * as Types from 'effect/Types'
 import * as Predicate from 'effect/Predicate'
 import * as Option from 'effect/Option'
 import * as Arr from 'effect/Array'
@@ -8,16 +18,28 @@ import * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Ref from 'effect/Ref'
-import * as Scope from 'effect/Scope'
+import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as Document from './Document.ts'
-import * as Record from './Record.ts'
+import type * as Record from './Record.ts'
 import { rejected, type StorageError, Corrupt } from './StorageError.ts'
 import type { Service as StoreService } from './Store.ts'
 import { findDocument, materialize } from './storage/internal/state.ts'
 
+/**
+ * End contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type End = 'stopped' | 'cancelled' | 'session_closed' | 'retired' | 'listener_error'
 const ChangeTypeId = '~@effect-harness/durable/Observation/Change'
+/**
+ * Change contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Change<out T extends object> {
   readonly [ChangeTypeId]: { readonly _T: Types.Covariant<T> }
   readonly seq: Record.Seq
@@ -26,7 +48,13 @@ export interface Change<out T extends object> {
   readonly reset: boolean
 }
 const WatchTypeId = '~@effect-harness/durable/Observation/Watch'
-export interface Watch<out T extends object> {
+/**
+ * Watch contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export interface Watch<out T extends object> extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [WatchTypeId]: { readonly _T: Types.Covariant<T> }
   readonly value: Readonly<T> | null
   readonly record: Record.Document
@@ -38,6 +66,12 @@ export interface Watch<out T extends object> {
     listener: (change: Change<T>) => Effect.Effect<void, E, R>,
   ) => Effect.Effect<void, StorageError | E, R>
 }
+/**
+ * Creates a scoped document watch from a detached baseline.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const watch = Effect.fnUntraced(function* <T extends object>(
   store: StoreService,
   token: Document.Document<T>,
@@ -99,7 +133,7 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
           let after = cursor.after
           const pending = [...cursor.pending]
           let refresh = true
-          while ((refresh || pending.length === 0) && !(yield* Ref.get(ended))) {
+          while ((refresh || Arr.isArrayEmpty(pending)) && !(yield* Ref.get(ended))) {
             refresh = false
             const journal = yield* store.journal(after).pipe(
               Effect.catchIf(
@@ -109,10 +143,11 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
             )
             if (journal === undefined) return undefined
             after = yield* journalCursor(journal.state.nextSeq)
-            const relevant = journal.frames.flatMap((frame) =>
-              frame.documents
-                .filter((publication) => publication.record.id === persisted.record.id)
-                .map((publication) => ({ frame, publication })),
+            const relevant = Arr.flatMap(journal.frames, (frame) =>
+              Arr.filter(
+                frame.documents,
+                (publication) => publication.record.id === persisted.record.id,
+              ).map((publication) => ({ frame, publication })),
             )
             if (pending.length + relevant.length > 100) {
               pending.length = 0
@@ -175,7 +210,7 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
                   }),
                 )
               }
-            if (pending.length === 0) yield* Effect.sleep('20 millis')
+            if (Arr.isArrayEmpty(pending)) yield* Effect.sleep('20 millis')
           }
           if (yield* Ref.get(ended)) return undefined
           const next = pending.shift()
@@ -210,6 +245,12 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
   )
 })
 
+/**
+ * Streams committed journal frames with bounded overflow resets.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const commits = (store: StoreService): Stream.Stream<Record.Frame, StorageError> =>
   Stream.unwrap(
     Effect.gen(function* () {
@@ -224,11 +265,11 @@ export const commits = (store: StoreService): Stream.Stream<Record.Frame, Storag
         Effect.fnUntraced(function* (cursor) {
           const pending = [...cursor.pending]
           let after = cursor.after
-          while (pending.length === 0) {
+          while (Arr.isReadonlyArrayEmpty(pending)) {
             const journal = yield* store.journal(after)
             pending.push(...journal.frames)
             after = yield* journalCursor(journal.state.nextSeq)
-            if (pending.length === 0) yield* Effect.sleep('20 millis')
+            if (Arr.isReadonlyArrayEmpty(pending)) yield* Effect.sleep('20 millis')
           }
           const frame = pending.shift()
           if (frame === undefined) return undefined
@@ -240,13 +281,25 @@ export const commits = (store: StoreService): Stream.Stream<Record.Frame, Storag
 
 /** An immediately hydrated, scoped view bound to one durable incarnation. */
 const StateTypeId = '~@effect-harness/durable/Observation/State'
-export interface State<out T extends object> {
+/**
+ * State contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export interface State<out T extends object> extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [StateTypeId]: { readonly _T: Types.Covariant<T> }
   readonly value: Readonly<T> | null
   readonly record: Record.Document
   readonly cursor: number
   readonly closed: Effect.Effect<End>
 }
+/**
+ * Creates a scoped mutable state view of consumed document changes.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const state = Effect.fnUntraced(function* <T extends object>(
   store: StoreService,
   token: Document.Document<T>,
@@ -274,6 +327,12 @@ export const state = Effect.fnUntraced(function* <T extends object>(
   )
 })
 
+/**
+ * Creates a document change carrier without changing its input.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const makeChange = <T extends object>(
   input: Omit<Change<T>, typeof ChangeTypeId>,
 ): Change<T> => {
@@ -282,47 +341,55 @@ export const makeChange = <T extends object>(
   Object.defineProperty(value, ChangeTypeId, { enumerable: false })
   return value
 }
+/**
+ * Returns whether the value satisfies Change.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
 export const isChange = (input: unknown): input is Change<object> =>
   Predicate.hasProperty(input, ChangeTypeId)
 
+/**
+ * Creates a watch handle with live getters and shared inspection.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const makeWatch = <T extends object>(
-  input: Omit<Watch<T>, typeof WatchTypeId>,
+  input: handle.Input<Watch<T>, typeof WatchTypeId>,
 ): Watch<T> => {
-  const value: Watch<T> = {
-    [WatchTypeId]: { _T: identity },
-    get value() {
-      return input.value
-    },
-    record: input.record,
-    changes: input.changes,
-    closed: input.closed,
-    stop: input.stop,
-    listen: input.listen,
-  }
-  Object.defineProperty(value, WatchTypeId, { enumerable: false })
+  const value = handle.make(WatchProto, handle.marked(input, WatchTypeId, { _T: identity }))
   return value
 }
 
+/**
+ * Returns whether the value satisfies Watch.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
 export const isWatch = (input: unknown): input is Watch<object> =>
   Predicate.hasProperty(input, WatchTypeId)
 
+/**
+ * Creates a state handle with live getters and shared inspection.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const makeState = <T extends object>(
-  input: Omit<State<T>, typeof StateTypeId>,
+  input: handle.Input<State<T>, typeof StateTypeId>,
 ): State<T> => {
-  const value: State<T> = {
-    [StateTypeId]: { _T: identity },
-    get value() {
-      return input.value
-    },
-    record: input.record,
-    get cursor() {
-      return input.cursor
-    },
-    closed: input.closed,
-  }
-  Object.defineProperty(value, StateTypeId, { enumerable: false })
+  const value = handle.make(StateProto, handle.marked(input, StateTypeId, { _T: identity }))
   return value
 }
 
+/**
+ * Returns whether the value satisfies State.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
 export const isState = (input: unknown): input is State<object> =>
   Predicate.hasProperty(input, StateTypeId)

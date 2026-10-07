@@ -1,3 +1,8 @@
+/**
+ * JOSE-backed JWT verification with fresh key reads and Effect-clock expiry checks.
+ *
+ * @since 0.0.0
+ */
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -7,6 +12,12 @@ import * as HttpClient from 'effect/http/HttpClient'
 import { createLocalJWKSet, jwtVerify } from 'jose'
 import { AuthIdentityError, AuthNetworkError, AuthError } from './Credential.ts'
 import { Identity, Jwt } from './Jwt.ts'
+/**
+ * Defines KeySet for the JoseJwt boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const KeySet = Schema.Struct({
   keys: Schema.Array(
     Schema.Struct({
@@ -23,7 +34,19 @@ export const KeySet = Schema.Struct({
   ),
 })
 export type KeySet = typeof KeySet.Type
-export const isKeySet: (value: unknown) => value is KeySet = Schema.is(KeySet)
+/**
+ * Tests whether an unknown value satisfies the decoded KeySet schema.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isKeySet: (u: unknown) => u is KeySet = Schema.is(KeySet)
+/**
+ * Defines Claims for the JoseJwt boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const Claims = Schema.Struct({
   sub: Schema.NonEmptyString,
   iss: Schema.NonEmptyString,
@@ -32,7 +55,19 @@ export const Claims = Schema.Struct({
   email: Schema.optionalKey(Schema.String),
 })
 export type Claims = typeof Claims.Type
-export const isClaims: (value: unknown) => value is Claims = Schema.is(Claims)
+/**
+ * Tests whether an unknown value satisfies the decoded Claims schema.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isClaims: (u: unknown) => u is Claims = Schema.is(Claims)
+/**
+ * Constructs JoseJwt with the caller-provided services.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClient> = Effect.gen(
   function* () {
     const client = yield* HttpClient.HttpClient
@@ -102,6 +137,7 @@ export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClien
               audience: options.audience,
               algorithms: [...(options.algorithms ?? ['RS256', 'ES256'])],
               requiredClaims: ['sub', 'iss', 'aud', 'exp'],
+              // effect-review-allow P5-clock-not-date-now: jose requires a Date at its verification boundary; the value comes from the injected Effect clock.
               currentDate: DateTime.toDateUtc(now),
             }),
           catch: (cause) =>
@@ -141,4 +177,10 @@ export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClien
   },
 )
 
+/**
+ * Provides JoseJwt services with the declared native dependencies.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer: Layer.Layer<Jwt, never, HttpClient.HttpClient> = Layer.effect(Jwt, make)

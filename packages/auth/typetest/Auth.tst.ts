@@ -1,6 +1,7 @@
 import { expect, test } from 'tstyche'
 import * as Credential from '@effect-harness/auth/Credential'
-import * as Store from '@effect-harness/auth/CredentialStore'
+import * as CredentialStore from '@effect-harness/auth/CredentialStore'
+// effect-review-allow P9-namespace-alias-equals-module: @effect-harness/auth/Duration and effect/Duration both bind Duration; DurationInput distinguishes the concepts.
 import * as DurationInput from '@effect-harness/auth/Duration'
 import * as JoseJwt from '@effect-harness/auth/JoseJwt'
 import * as Jwt from '@effect-harness/auth/Jwt'
@@ -20,14 +21,16 @@ import type * as HttpClient from 'effect/http/HttpClient'
 class Caller extends Context.Service<Caller, { readonly token: string }>()(
   'typetest/Auth/Caller',
 ) {}
-declare const store: Store.Service
+declare const store: CredentialStore.Service
 declare const unknownValue: unknown
 
 test('credential layers and transaction callbacks preserve exact channels', () => {
-  expect(Store.layerMemory).type.toBe<Layer.Layer<Store.CredentialStore, never, Crypto.Crypto>>()
-  expect(Store.layerProtectedFile({ path: 'credentials' })).type.toBe<
+  expect(CredentialStore.layerMemory).type.toBe<
+    Layer.Layer<CredentialStore.CredentialStore, never, Crypto.Crypto>
+  >()
+  expect(CredentialStore.layerProtectedFile({ path: 'credentials' })).type.toBe<
     Layer.Layer<
-      Store.CredentialStore,
+      CredentialStore.CredentialStore,
       Credential.AuthError,
       Crypto.Crypto | FileSystem.FileSystem | Path.Path
     >
@@ -39,7 +42,7 @@ test('credential layers and transaction callbacks preserve exact channels', () =
   expect(changed).type.toBe<
     Effect.Effect<Credential.Credential | undefined, Credential.AuthError, Caller>
   >()
-  expect(Store.layerProtectedFile).type.not.toBeCallableWith({ path: 1 })
+  expect(CredentialStore.layerProtectedFile).type.not.toBeCallableWith({ path: 1 })
   expect(store.modify).type.not.toBeCallableWith('key', () =>
     Effect.succeed('unvalidated credential'),
   )
@@ -59,4 +62,13 @@ test('portable JWT, crypto and token boundaries retain native service errors', (
   if (Jwt.isIdentity(unknownValue)) expect(unknownValue).type.toBe<Jwt.Identity>()
   if (Credential.isCredential(unknownValue)) expect(unknownValue).type.toBe<Credential.Credential>()
   if (Token.isTokenResponse(unknownValue)) expect(unknownValue).type.toBe<Token.TokenResponse>()
+})
+
+declare const apiKey: Credential.ApiKey
+declare const encodedApiKey: typeof Credential.ApiKey.Encoded
+test('credential domain tags and legacy wire kinds remain distinct exact public types', () => {
+  expect(apiKey._tag).type.toBe<'apiKey'>()
+  expect(encodedApiKey.kind).type.toBe<'apiKey'>()
+  expect(apiKey.apiKey).type.toBe<Redacted.Redacted<string>>()
+  expect(Credential.accountKey).type.not.toBeCallableWith({ provider: 'x', subject: 'x' })
 })

@@ -1,3 +1,13 @@
+/**
+ * Committed agent event projections and bounded observation streams.
+ *
+ * @since 0.0.0
+ */
+import * as Order from 'effect/Order'
+import * as Arr from 'effect/Array'
+import * as Predicate from 'effect/Predicate'
+import { dual } from 'effect/Function'
+import { tagged } from './internal/legacyTag.ts'
 import * as Time from '@effect-harness/harness/Time'
 import * as DateTime from 'effect/DateTime'
 import * as Outcome from './workflow/Outcome.ts'
@@ -7,13 +17,13 @@ import * as Option from 'effect/Option'
 // Semantic commit ordering adapted from pi-durable (MIT), pinned 636703a0.
 import * as Agent from '@effect-harness/harness/Agent'
 import * as Invocation from '@effect-harness/harness/Invocation'
-import * as Totals from '@effect-harness/harness/Usage'
+import * as Usage from '@effect-harness/harness/Usage'
 import * as Context from 'effect/Context'
 import * as Ref from 'effect/Ref'
 import * as HashSet from 'effect/HashSet'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
-import * as Scope from 'effect/Scope'
+import type * as Scope from 'effect/Scope'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
 import * as Inbox from './Inbox.ts'
@@ -21,33 +31,83 @@ import * as Record from './Record.ts'
 import { rejected, type StorageError, Corrupt } from './StorageError.ts'
 import * as View from './View.ts'
 
+/**
+ * QueuedItem schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const QueuedItem = Schema.Struct({
   id: Record.SubmissionId,
   mode: Schema.Literals(['steer', 'followUp', 'write']),
 })
-export type QueuedItem = typeof QueuedItem.Type
+/**
+ * Compatibility alias for Event.QueuedItem.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type QueuedItem = Event.QueuedItem
+/**
+ * MessageChange schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const MessageChange = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literals(['text_start', 'thinking_start', 'toolcall_start', 'block']),
+  tagged('text_start', {
+    type: Schema.tag('text_start'),
     contentIndex: Schema.Int,
     block: Prompt.AssistantMessagePart,
   }),
-  Schema.Struct({
-    type: Schema.Literals(['text_delta', 'thinking_delta']),
+  tagged('thinking_start', {
+    type: Schema.tag('thinking_start'),
+    contentIndex: Schema.Int,
+    block: Prompt.AssistantMessagePart,
+  }),
+  tagged('toolcall_start', {
+    type: Schema.tag('toolcall_start'),
+    contentIndex: Schema.Int,
+    block: Prompt.AssistantMessagePart,
+  }),
+  tagged('block', {
+    type: Schema.tag('block'),
+    contentIndex: Schema.Int,
+    block: Prompt.AssistantMessagePart,
+  }),
+  tagged('text_delta', {
+    type: Schema.tag('text_delta'),
     contentIndex: Schema.Int,
     delta: Schema.String,
   }),
-  Schema.Struct({
-    type: Schema.Literal('toolcall_delta'),
+  tagged('thinking_delta', {
+    type: Schema.tag('thinking_delta'),
+    contentIndex: Schema.Int,
+    delta: Schema.String,
+  }),
+  tagged('toolcall_delta', {
+    type: Schema.tag('toolcall_delta'),
     contentIndex: Schema.Int,
     path: View.Path,
     delta: Schema.String,
   }),
-  Schema.Struct({ type: Schema.Literal('message'), message: Prompt.AssistantMessage }),
+  tagged('message', { type: Schema.tag('message'), message: Prompt.AssistantMessage }),
 ])
-export type MessageChange = typeof MessageChange.Type
-export const Snapshot = Schema.Struct({
-  type: Schema.Literal('snapshot'),
+/**
+ * Compatibility alias for Event.MessageChange.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type MessageChange = Event.MessageChange
+/**
+ * Snapshot schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
+export const Snapshot = tagged('snapshot', {
+  type: Schema.tag('snapshot'),
   entries: Schema.Array(Record.Entry),
   run: Schema.optionalKey(Schema.Struct({ inputs: Schema.Array(Record.SubmissionId) })),
   generation: Schema.optionalKey(
@@ -57,42 +117,60 @@ export const Snapshot = Schema.Struct({
       retry: Inbox.LiveDomain.fields.generation.schema.fields.retry,
       deferred: Inbox.LiveDomain.fields.generation.schema.fields.deferred,
       message: Schema.optionalKey(Prompt.AssistantMessage),
-      usage: Schema.optionalKey(Totals.Usage),
+      usage: Schema.optionalKey(Usage.Usage),
     }),
   ),
   tools: Schema.Array(Inbox.ToolSlot),
   compactions: Inbox.LiveDomain.fields.compactions.schema,
   inbox: Schema.Array(QueuedItem),
   agent: Agent.State,
-  usage: Totals.State,
+  usage: Usage.State,
 })
-export type Snapshot = typeof Snapshot.Type
+/**
+ * Compatibility alias for Event.Snapshot.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Snapshot = Event.Snapshot
 const toolIdentity = { toolCallId: Schema.String, toolName: Schema.String }
 const compactionIdentity = {
   taskId: Record.TaskId,
   reason: Schema.Literals(['manual', 'threshold', 'overflow', 'background']),
 }
+/**
+ * AgentEvent schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const AgentEvent = Schema.Union([
   Snapshot,
-  Schema.Struct({
-    type: Schema.Literals(['run_start', 'run_end']),
+  tagged('run_start', {
+    type: Schema.tag('run_start'),
     inputs: Schema.Array(Record.SubmissionId),
   }),
-  Schema.Struct({ type: Schema.Literals(['turn_start', 'turn_end']) }),
-  Schema.Struct({ type: Schema.Literal('message_start'), message: Prompt.Message }),
-  Schema.Struct({
-    type: Schema.Literal('message_update'),
-    usage: Totals.Usage,
+  tagged('run_end', {
+    type: Schema.tag('run_end'),
+    inputs: Schema.Array(Record.SubmissionId),
+  }),
+  tagged('turn_start', { type: Schema.tag('turn_start') }),
+  tagged('turn_end', { type: Schema.tag('turn_end') }),
+  tagged('message_start', { type: Schema.tag('message_start'), message: Prompt.Message }),
+  tagged('message_update', {
+    type: Schema.tag('message_update'),
+    usage: Usage.Usage,
     changes: Schema.Array(MessageChange),
   }),
-  Schema.Struct({ type: Schema.Literals(['message_end', 'entry_appended']), entry: Record.Entry }),
-  Schema.Struct({
-    type: Schema.Literal('tool_execution_start'),
+  tagged('message_end', { type: Schema.tag('message_end'), entry: Record.Entry }),
+  tagged('entry_appended', { type: Schema.tag('entry_appended'), entry: Record.Entry }),
+  tagged('tool_execution_start', {
+    type: Schema.tag('tool_execution_start'),
     ...toolIdentity,
     args: Schema.Json,
   }),
-  Schema.Struct({
-    type: Schema.Literal('tool_execution_update'),
+  tagged('tool_execution_update', {
+    type: Schema.tag('tool_execution_update'),
     ...toolIdentity,
     output: Schema.optionalKey(
       Schema.Union([
@@ -106,47 +184,84 @@ export const AgentEvent = Schema.Union([
     details: Schema.optionalKey(Schema.Json),
     diagnostics: Schema.optionalKey(Schema.Array(Invocation.Diagnostic)),
   }),
-  Schema.Struct({
-    type: Schema.Literal('tool_execution_end'),
+  tagged('tool_execution_end', {
+    type: Schema.tag('tool_execution_end'),
     ...toolIdentity,
     entry: Schema.optionalKey(Record.Entry),
   }),
-  Schema.Struct({ type: Schema.Literal('inbox_update'), items: Schema.Array(QueuedItem) }),
-  Schema.Struct({ type: Schema.Literal('submission'), record: Record.Submission }),
-  Schema.Struct({
-    type: Schema.Literal('auto_retry_start'),
+  tagged('inbox_update', { type: Schema.tag('inbox_update'), items: Schema.Array(QueuedItem) }),
+  tagged('submission', { type: Schema.tag('submission'), record: Record.Submission }),
+  tagged('auto_retry_start', {
+    type: Schema.tag('auto_retry_start'),
     attempt: Schema.Int,
     at: Time.EpochMillis,
     errorMessage: Schema.String,
   }),
-  Schema.Struct({ type: Schema.Literal('auto_retry_end'), attempt: Schema.Int }),
-  Schema.Struct({ type: Schema.Literal('deferred_poll'), pollAt: Time.EpochMillis }),
-  Schema.Struct({ type: Schema.Literal('agent_changed'), agent: Agent.State }),
-  Schema.Struct({ type: Schema.Literal('usage_changed'), usage: Totals.State }),
-  Schema.Struct({
-    type: Schema.Literal('task_failed'),
+  tagged('auto_retry_end', { type: Schema.tag('auto_retry_end'), attempt: Schema.Int }),
+  tagged('deferred_poll', { type: Schema.tag('deferred_poll'), pollAt: Time.EpochMillis }),
+  tagged('agent_changed', { type: Schema.tag('agent_changed'), agent: Agent.State }),
+  tagged('usage_changed', { type: Schema.tag('usage_changed'), usage: Usage.State }),
+  tagged('task_failed', {
+    type: Schema.tag('task_failed'),
     taskId: Record.TaskId,
     kind: Schema.String,
     message: Schema.String,
   }),
-  Schema.Struct({
-    type: Schema.Literal('compaction_start'),
+  tagged('compaction_start', {
+    type: Schema.tag('compaction_start'),
     ...compactionIdentity,
     blocking: Schema.Boolean,
   }),
-  Schema.Struct({ type: Schema.Literal('compaction_end'), ...compactionIdentity }),
+  tagged('compaction_end', { type: Schema.tag('compaction_end'), ...compactionIdentity }),
 ])
+/**
+ * AgentEvent contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type AgentEvent = typeof AgentEvent.Type
+/**
+ * Batch schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Batch = Schema.Array(AgentEvent)
-export type Batch = typeof Batch.Type
+/**
+ * Compatibility alias for Event.Batch.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Batch = Event.Batch
+/**
+ * BatchJson schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const BatchJson = Schema.toCodecJson(Batch)
-export interface Watch extends View.ProjectionWatch<Batch> {
-  readonly snapshot: Snapshot
-}
-export interface Service {
-  readonly watch: (id: Record.ConversationId) => Effect.Effect<Watch, StorageError, Scope.Scope>
-}
-/** Ordered semantic batches derived exclusively from committed conversation mounts. */
+/**
+ * Compatibility alias for Event.Watch.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Watch = Event.Watch
+/**
+ * Compatibility alias for Event.Service.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Service = Event.Service
+/**
+ * Ordered semantic batches derived exclusively from committed conversation mounts.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class Event extends Context.Service<Event, Service>()('@effect-harness/durable/Event') {}
 
 const decode = <S extends Schema.Constraint>(schema: S, value: unknown) =>
@@ -155,7 +270,7 @@ const decode = <S extends Schema.Constraint>(schema: S, value: unknown) =>
   )
 const messageCodec = Schema.toCodecJson(Prompt.Message)
 const assistantCodec = Schema.toCodecJson(Prompt.AssistantMessage)
-const queued = (inbox: typeof Inbox.State.Type | undefined): ReadonlyArray<QueuedItem> =>
+const queued = (inbox: Inbox.State | undefined): ReadonlyArray<QueuedItem> =>
   (inbox?.items ?? []).map(({ id, mode }) => ({ id, mode }))
 const parts = Effect.fnUntraced(function* (view: View.Value) {
   const live = Inbox.domain(view.docs['harness.live'] ?? {})
@@ -169,14 +284,21 @@ const parts = Effect.fnUntraced(function* (view: View.Value) {
   const currentUsage = live.generation?.usage
   return { live, inbox, agent, usage, partial, currentUsage }
 })
+/**
+ * Projects a committed conversation view into an agent snapshot.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const snapshot = Effect.fnUntraced(function* (
-  view: View.Value,
+  self: View.Value,
 ): Effect.fn.Return<Snapshot, StorageError> {
-  const { live, inbox, agent, usage, partial, currentUsage } = yield* parts(view)
+  const { live, inbox, agent, usage, partial, currentUsage } = yield* parts(self)
   const generation = live.generation
   return {
+    _tag: 'snapshot',
     type: 'snapshot',
-    entries: view.entries,
+    entries: self.entries,
     ...(live.run === undefined ? {} : { run: { inputs: live.run.inputs } }),
     ...(generation === undefined
       ? {}
@@ -193,7 +315,7 @@ export const snapshot = Effect.fnUntraced(function* (
     compactions: live.compactions ?? [],
     inbox: queued(inbox),
     agent: agent ?? {},
-    usage: usage ?? Totals.empty(),
+    usage: usage ?? Usage.empty(),
   }
 })
 const samePart = Schema.toEquivalence(Prompt.AssistantMessagePart)
@@ -207,28 +329,29 @@ const startsWith = (path: View.Path, prefix: View.Path) =>
 const partialPath = ['docs', 'harness.live', 'generation', 'message']
 
 /** Compact changes within a committed native assistant partial; ancestor replacements use one complete message. */
-export function messageChanges(
-  ops: ReadonlyArray<View.Op>,
+function messageChangesImpl(
+  self: ReadonlyArray<View.Op>,
   before: Prompt.AssistantMessage,
   message: Prompt.AssistantMessage,
-): ReadonlyArray<MessageChange> {
+): Array<MessageChange> {
   // Coalesce paths against the complete committed values. Keep the first-touch
   // order, but decide every block fallback before publishing any narrow delta.
   const touched = new Map<number, Map<string, View.Path>>()
   const whole = new Set<number>()
   const starts = new Set<number>()
-  for (const op of ops) {
-    if (op[0] === 'replace') return [{ type: 'message', message }]
+  for (const op of self) {
+    if (op[0] === 'replace') return [{ _tag: 'message', type: 'message', message }]
     const path = op[1]
     if (!startsWith(path, partialPath)) {
-      if (startsWith(partialPath, path)) return [{ type: 'message', message }]
+      if (startsWith(partialPath, path)) return [{ _tag: 'message', type: 'message', message }]
       continue
     }
     const rest = path.slice(partialPath.length)
     if (rest[0] === 'usage' || rest[0] === 'options') continue
-    if (rest[0] !== 'content') return [{ type: 'message', message }]
+    if (rest[0] !== 'content') return [{ _tag: 'message', type: 'message', message }]
     if (rest.length === 1) {
-      if (message.content.length < before.content.length) return [{ type: 'message', message }]
+      if (message.content.length < before.content.length)
+        return [{ _tag: 'message', type: 'message', message }]
       for (let index = 0; index < message.content.length; index++) {
         const block = message.content[index]
         const previous = before.content[index]
@@ -240,8 +363,8 @@ export function messageChanges(
       continue
     }
     const index = rest[1]
-    if (typeof index !== 'number') continue
-    if (message.content[index] === undefined) return [{ type: 'message', message }]
+    if (!Predicate.isNumber(index)) continue
+    if (message.content[index] === undefined) return [{ _tag: 'message', type: 'message', message }]
     let paths = touched.get(index)
     if (paths === undefined) {
       paths = new Map()
@@ -251,11 +374,11 @@ export function messageChanges(
     paths.set(JSON.stringify(tail), tail)
     if (op[0] !== 'set') whole.add(index)
   }
-  const changes: MessageChange[] = []
+  const changes: Array<MessageChange> = []
   const at = (value: unknown, path: View.Path): unknown => {
     for (const segment of path)
       value =
-        value !== null && typeof value === 'object' && Object.hasOwn(value, segment)
+        Predicate.isObjectOrArray(value) && Object.hasOwn(value, segment)
           ? Reflect.get(value, segment)
           : undefined
     return value
@@ -263,22 +386,32 @@ export function messageChanges(
   for (const [index, paths] of touched) {
     const block = message.content[index]
     const previous = before.content[index]
-    if (block === undefined) return [{ type: 'message', message }]
-    const deltas: MessageChange[] = []
+    if (block === undefined) return [{ _tag: 'message', type: 'message', message }]
+    const deltas: Array<MessageChange> = []
     for (const path of paths.values()) {
       if (
         path.length === 1 &&
         path[0] === 'text' &&
         (block.type === 'text' || block.type === 'reasoning') &&
         previous?.type === block.type &&
-        'text' in previous &&
+        Predicate.hasProperty(previous, 'text') &&
         block.text.startsWith(previous.text)
       ) {
-        deltas.push({
-          type: block.type === 'reasoning' ? 'thinking_delta' : 'text_delta',
-          contentIndex: index,
-          delta: block.text.slice(previous.text.length),
-        })
+        deltas.push(
+          block.type === 'reasoning'
+            ? {
+                _tag: 'thinking_delta',
+                type: 'thinking_delta',
+                contentIndex: index,
+                delta: block.text.slice(previous.text.length),
+              }
+            : {
+                _tag: 'text_delta',
+                type: 'text_delta',
+                contentIndex: index,
+                delta: block.text.slice(previous.text.length),
+              },
+        )
       } else if (
         path[0] === 'params' &&
         block.type === 'tool-call' &&
@@ -293,6 +426,7 @@ export function messageChanges(
           finalValue.startsWith(previousValue)
         )
           deltas.push({
+            _tag: 'toolcall_delta',
             type: 'toolcall_delta',
             contentIndex: index,
             path: paramPath,
@@ -305,48 +439,58 @@ export function messageChanges(
       let type: 'text_start' | 'thinking_start' | 'toolcall_start' = 'toolcall_start'
       if (block.type === 'text') type = 'text_start'
       else if (block.type === 'reasoning') type = 'thinking_start'
-      changes.push(
-        starts.has(index) &&
-          (block.type === 'text' || block.type === 'reasoning' || block.type === 'tool-call')
-          ? { type, contentIndex: index, block }
-          : { type: 'block', contentIndex: index, block },
+      if (
+        !starts.has(index) ||
+        (block.type !== 'text' && block.type !== 'reasoning' && block.type !== 'tool-call')
       )
+        changes.push({ _tag: 'block', type: 'block', contentIndex: index, block })
+      else if (type === 'text_start')
+        changes.push({ _tag: 'text_start', type: 'text_start', contentIndex: index, block })
+      else if (type === 'thinking_start')
+        changes.push({ _tag: 'thinking_start', type: 'thinking_start', contentIndex: index, block })
+      else
+        changes.push({ _tag: 'toolcall_start', type: 'toolcall_start', contentIndex: index, block })
     } else changes.push(...deltas)
   }
-  return changes.length === 0 && !sameParts(before.content, message.content)
-    ? [{ type: 'message', message }]
+  return Arr.isArrayEmpty(changes) && !sameParts(before.content, message.content)
+    ? [{ _tag: 'message', type: 'message', message }]
     : changes
 }
 /** A retained output window is a front trim followed by an append when its overlap is known. */
-export function outputChange(
-  before: string | undefined,
-  after: string | undefined,
+function outputChangeImpl(
+  self: string | undefined,
+  that: string | undefined,
 ): Option.Option<NonNullable<Extract<AgentEvent, { type: 'tool_execution_update' }>['output']>> {
-  if (before === after) return Option.none()
-  if (before === undefined || after === undefined) return Option.some({ set: after ?? '' })
-  const prefix = new Uint32Array(after.length)
-  for (let index = 1; index < after.length; index++) {
+  if (self === that) return Option.none()
+  if (self === undefined || that === undefined) return Option.some({ set: that ?? '' })
+  const prefix = new Uint32Array(that.length)
+  for (let index = 1; index < that.length; index++) {
     let matched = prefix[index - 1] ?? 0
-    while (matched > 0 && after[index] !== after[matched]) matched = prefix[matched - 1] ?? 0
-    if (after[index] === after[matched]) matched++
+    while (matched > 0 && that[index] !== that[matched]) matched = prefix[matched - 1] ?? 0
+    if (that[index] === that[matched]) matched++
     prefix[index] = matched
   }
   let overlap = 0
-  for (let index = 0; index < before.length; index++) {
-    while (overlap > 0 && before[index] !== after[overlap]) overlap = prefix[overlap - 1] ?? 0
-    if (before[index] === after[overlap]) overlap++
+  for (let index = 0; index < self.length; index++) {
+    while (overlap > 0 && self[index] !== that[overlap]) overlap = prefix[overlap - 1] ?? 0
+    if (self[index] === that[overlap]) overlap++
   }
   if (overlap > 0) {
-    const trimStart = before.length - overlap
+    const trimStart = self.length - overlap
     return Option.some({
       ...(trimStart === 0 ? {} : { trimStart }),
-      ...(overlap === after.length ? {} : { append: after.slice(overlap) }),
+      ...(overlap === that.length ? {} : { append: that.slice(overlap) }),
     })
   }
-  return Option.some({ set: after })
+  return Option.some({ set: that })
 }
 
-/** Translate one domain commit in progress/end/submission/state/start order; held generations end their turn once. */
+/**
+ * Translates one domain commit in progress/end/submission/state/start order; held generations end their turn once.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const translate = Effect.fnUntraced(function* (
   id: Record.ConversationId,
   change: View.Change,
@@ -354,7 +498,7 @@ export const translate = Effect.fnUntraced(function* (
 ): Effect.fn.Return<Batch, StorageError> {
   const frame = change.publication
   if (frame === undefined) return [yield* snapshot(change.value)]
-  const entries: Record.Entry[] = []
+  const entries: Array<Record.Entry> = []
   const tasks = new Map<Record.TaskId, Record.Task>()
   const submissions = new Map<Record.SubmissionId, Record.Submission>()
   for (const write of frame.writes) {
@@ -364,7 +508,8 @@ export const translate = Effect.fnUntraced(function* (
     if (write.type === 'submission' && write.value.conversationId === id)
       submissions.set(write.value.id, write.value)
   }
-  entries.sort((a, b) => a.id - b.id)
+  // effect-review-allow P1-order-equivalence-params: entries is a newly allocated local buffer; its ordering is updated before event publication.
+  entries.sort(Order.mapInput(Order.Number, (item: Record.Entry) => item.id))
   const touchedPartial =
     !change.rebased ||
     frame.documents.some(
@@ -391,7 +536,7 @@ export const translate = Effect.fnUntraced(function* (
     )
   const was = yield* parts(change.before)
   const now = yield* parts(change.value)
-  const events: AgentEvent[] = []
+  const events: Array<AgentEvent> = []
   const previousSlots = new Map((was.live.tools ?? []).map((slot) => [slot.callId, slot]))
   const slots = now.live.tools ?? []
   for (const slot of slots) {
@@ -407,6 +552,7 @@ export const translate = Effect.fnUntraced(function* (
     if (Option.isSome(payload))
       args = Option.isSome(checkpoint) ? checkpoint.value.arguments : payload.value.arguments
     events.push({
+      _tag: 'tool_execution_start',
       type: 'tool_execution_start',
       toolCallId: slot.callId,
       toolName: slot.name,
@@ -414,7 +560,7 @@ export const translate = Effect.fnUntraced(function* (
     })
   }
   if (touchedPartial && now.partial !== undefined && was.partial === undefined)
-    events.push({ type: 'message_start', message: now.partial })
+    events.push({ _tag: 'message_start', type: 'message_start', message: now.partial })
   else if (
     now.partial !== undefined &&
     was.partial !== undefined &&
@@ -422,8 +568,9 @@ export const translate = Effect.fnUntraced(function* (
       (touchedUsage && now.live.generation?.usage !== was.live.generation?.usage))
   ) {
     events.push({
+      _tag: 'message_update',
       type: 'message_update',
-      usage: now.currentUsage ?? Totals.zero(),
+      usage: now.currentUsage ?? Usage.zero(),
       changes: messageChanges(change.ops, was.partial, now.partial),
     })
   }
@@ -435,6 +582,7 @@ export const translate = Effect.fnUntraced(function* (
     const diagnosticsChanged = previous.diagnostics !== slot.diagnostics
     if (Option.isNone(output) && !detailsChanged && !diagnosticsChanged) continue
     events.push({
+      _tag: 'tool_execution_update',
       type: 'tool_execution_update',
       toolCallId: slot.callId,
       toolName: slot.name,
@@ -447,19 +595,28 @@ export const translate = Effect.fnUntraced(function* (
   const generationBefore = was.live.generation
   if (generation?.retry !== undefined && generationBefore?.retry === undefined)
     events.push({
+      _tag: 'auto_retry_start',
       type: 'auto_retry_start',
       attempt: generation.attempt,
       at: generation.retry.at,
       errorMessage: generation.retry.error,
     })
   if (generationBefore?.retry !== undefined && generation?.retry === undefined)
-    events.push({ type: 'auto_retry_end', attempt: generationBefore.attempt })
+    events.push({
+      _tag: 'auto_retry_end',
+      type: 'auto_retry_end',
+      attempt: generationBefore.attempt,
+    })
   if (
     generation?.deferred !== undefined &&
     (generationBefore?.deferred === undefined ||
       !DateTime.Equivalence(generation.deferred.pollAt, generationBefore.deferred.pollAt))
   )
-    events.push({ type: 'deferred_poll', pollAt: generation.deferred.pollAt })
+    events.push({
+      _tag: 'deferred_poll',
+      type: 'deferred_poll',
+      pollAt: generation.deferred.pollAt,
+    })
   const decodedEntries = yield* Effect.forEach(
     entries,
     Effect.fnUntraced(function* (entry) {
@@ -472,27 +629,34 @@ export const translate = Effect.fnUntraced(function* (
   )
   const ends: Array<Extract<AgentEvent, { type: 'tool_execution_end' }>> = []
   const end = (callId: string, name: string, entryId?: Record.EntryId) => {
-    const entry = entries.find((item) => item.id === entryId)
+    const entry = Arr.findFirst(entries, (item) => item.id === entryId)
     ends.push({
+      _tag: 'tool_execution_end',
       type: 'tool_execution_end',
       toolCallId: callId,
       toolName: name,
-      ...(entry === undefined ? {} : { entry }),
+      ...(Option.isNone(entry) ? {} : { entry: entry.value }),
     })
   }
   for (const previous of previousSlots.values()) {
     if (previous.status === 'done') continue
-    const slot = slots.find((item) => item.callId === previous.callId)
-    if (slot?.status === 'done') end(previous.callId, previous.name, slot.entry)
-    else if (slot === undefined) {
-      const result = decodedEntries.find(
+    const slot = Arr.findFirst(slots, (item) => item.callId === previous.callId)
+    if (Option.isSome(slot) && slot.value.status === 'done')
+      end(previous.callId, previous.name, slot.value.entry)
+    else if (Option.isNone(slot)) {
+      const result = Arr.findFirst(
+        decodedEntries,
         ({ message }) =>
           message?.role === 'tool' &&
           message.content.some(
             (part) => part.type === 'tool-result' && part.id === previous.callId,
           ),
       )
-      end(previous.callId, previous.name, result?.entry.id)
+      end(
+        previous.callId,
+        previous.name,
+        Option.getOrUndefined(Option.map(result, (found) => found.entry.id)),
+      )
     }
   }
   for (const slot of slots)
@@ -500,22 +664,22 @@ export const translate = Effect.fnUntraced(function* (
       end(slot.callId, slot.name, slot.entry)
   let assistantAppended = false
   for (const { entry, message } of decodedEntries) {
-    events.push(...ends.filter((item) => item.entry === entry))
+    events.push(...Arr.filter(ends, (item) => item.entry === entry))
     if (message === undefined) {
-      events.push({ type: 'entry_appended', entry })
+      events.push({ _tag: 'entry_appended', type: 'entry_appended', entry })
       continue
     }
     const streamed = message.role === 'assistant' && was.partial !== undefined && !assistantAppended
     if (message.role === 'assistant') assistantAppended = true
-    if (!streamed) events.push({ type: 'message_start', message })
-    events.push({ type: 'message_end', entry })
+    if (!streamed) events.push({ _tag: 'message_start', type: 'message_start', message })
+    events.push({ _tag: 'message_end', type: 'message_end', entry })
   }
-  events.push(...ends.filter((item) => item.entry === undefined))
+  events.push(...Arr.filter(ends, (item) => item.entry === undefined))
   const compactionsBefore = was.live.compactions ?? []
   const compactions = now.live.compactions ?? []
   for (const { taskId, reason } of compactionsBefore)
     if (!compactions.some((item) => item.taskId === taskId))
-      events.push({ type: 'compaction_end', taskId, reason })
+      events.push({ _tag: 'compaction_end', type: 'compaction_end', taskId, reason })
   let turnEnded = false
   for (const task of tasks.values()) {
     if (
@@ -535,6 +699,7 @@ export const translate = Effect.fnUntraced(function* (
     const status = outcome?.directStatus
     if (status === 'faulted' || status === 'orphaned') {
       events.push({
+        _tag: 'task_failed',
         type: 'task_failed',
         taskId: task.id,
         kind: task.kind,
@@ -542,32 +707,39 @@ export const translate = Effect.fnUntraced(function* (
       })
     }
   }
-  if (turnEnded) events.push({ type: 'turn_end' })
+  if (turnEnded) events.push({ _tag: 'turn_end', type: 'turn_end' })
   const run = now.live.run
   const runBefore = was.live.run
   const runChanged = run?.inputs[0] !== runBefore?.inputs[0]
   if (runBefore !== undefined && runChanged)
-    events.push({ type: 'run_end', inputs: runBefore.inputs })
-  for (const record of [...submissions.values()].sort((a, b) => a.id - b.id))
-    events.push({ type: 'submission', record })
+    events.push({ _tag: 'run_end', type: 'run_end', inputs: runBefore.inputs })
+  for (const record of Arr.sortWith([...submissions.values()], (item) => item.id, Order.Number))
+    events.push({ _tag: 'submission', type: 'submission', record })
   if (change.value.docs['harness.inbox'] !== change.before.docs['harness.inbox'])
-    events.push({ type: 'inbox_update', items: queued(now.inbox) })
+    events.push({ _tag: 'inbox_update', type: 'inbox_update', items: queued(now.inbox) })
   if (change.value.docs['harness.agent'] !== change.before.docs['harness.agent'])
-    events.push({ type: 'agent_changed', agent: now.agent ?? {} })
+    events.push({ _tag: 'agent_changed', type: 'agent_changed', agent: now.agent ?? {} })
   if (change.value.docs['harness.usage'] !== change.before.docs['harness.usage'])
-    events.push({ type: 'usage_changed', usage: now.usage ?? Totals.empty() })
+    events.push({ _tag: 'usage_changed', type: 'usage_changed', usage: now.usage ?? Usage.empty() })
   for (const { taskId, reason, blocking } of compactions)
     if (!compactionsBefore.some((item) => item.taskId === taskId))
-      events.push({ type: 'compaction_start', taskId, reason, blocking })
-  if (run !== undefined && runChanged) events.push({ type: 'run_start', inputs: run.inputs })
+      events.push({ _tag: 'compaction_start', type: 'compaction_start', taskId, reason, blocking })
+  if (run !== undefined && runChanged)
+    events.push({ _tag: 'run_start', type: 'run_start', inputs: run.inputs })
   if (
     run !== undefined &&
     run.taskId !== runBefore?.taskId &&
     generationKind(tasks.get(run.taskId)?.kind ?? '')
   )
-    events.push({ type: 'turn_start' })
+    events.push({ _tag: 'turn_start', type: 'turn_start' })
   return events
 })
+/**
+ * Scoped agent-event service acquisition.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const make: Effect.Effect<Service, never, View.View> = Effect.gen(function* () {
   const views = yield* View.View
   return Event.of({
@@ -578,9 +750,10 @@ export const make: Effect.Effect<Service, never, View.View> = Effect.gen(functio
         Ref.set(
           held,
           HashSet.fromIterable(
-            tasks
-              .filter((task) => generationKind(task.kind) && task.state.status === 'completing')
-              .map((task) => task.id),
+            Arr.filter(
+              tasks,
+              (task) => generationKind(task.kind) && task.state.status === 'completing',
+            ).map((task) => task.id),
           ),
         )
       const subscription = yield* views.observe<Batch>(
@@ -593,7 +766,7 @@ export const make: Effect.Effect<Service, never, View.View> = Effect.gen(functio
           }),
           project: (change) =>
             translate(id, change, held).pipe(
-              Effect.map((batch) => (batch.length === 0 ? undefined : batch)),
+              Effect.map((batch) => (Arr.isReadonlyArrayEmpty(batch) ? undefined : batch)),
             ),
           reset: Effect.fnUntraced(function* (value, _seq, tasks) {
             yield* seedHeld(tasks)
@@ -618,4 +791,104 @@ export const make: Effect.Effect<Service, never, View.View> = Effect.gen(functio
     }),
   })
 })
+/**
+ * layer service Layer.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer: Layer.Layer<Event, never, View.View> = Layer.effect(Event, make)
+
+/**
+ * Coalesces draft operations into final assistant-message changes.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const messageChanges: {
+  (
+    before: Prompt.AssistantMessage,
+    message: Prompt.AssistantMessage,
+  ): (self: ReadonlyArray<View.Op>) => Array<MessageChange>
+  (
+    self: ReadonlyArray<View.Op>,
+    before: Prompt.AssistantMessage,
+    message: Prompt.AssistantMessage,
+  ): Array<MessageChange>
+} = dual(3, messageChangesImpl)
+
+/**
+ * Returns the final output change between two assistant messages.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const outputChange: {
+  (
+    that: string | undefined,
+  ): (
+    self: string | undefined,
+  ) => Option.Option<NonNullable<Extract<AgentEvent, { type: 'tool_execution_update' }>['output']>>
+  (
+    self: string | undefined,
+    that: string | undefined,
+  ): Option.Option<NonNullable<Extract<AgentEvent, { type: 'tool_execution_update' }>['output']>>
+} = dual(2, outputChangeImpl)
+
+/**
+ * Event contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export declare namespace Event {
+  /**
+   * QueuedItem contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface QueuedItem {
+    readonly id: Record.SubmissionId
+    readonly mode: Inbox.Item['mode']
+  }
+  /**
+   * MessageChange contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export type MessageChange = typeof MessageChange.Type
+  /**
+   * Snapshot contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export type Snapshot = typeof Snapshot.Type
+  /**
+   * Batch contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export type Batch = typeof Batch.Type
+  /**
+   * Watch contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface Watch extends View.ProjectionWatch<Batch> {
+    readonly snapshot: Snapshot
+  }
+  /**
+   * Service contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface Service {
+    readonly watch: (id: Record.ConversationId) => Effect.Effect<Watch, StorageError, Scope.Scope>
+  }
+}

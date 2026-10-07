@@ -1,4 +1,11 @@
-import * as Arrays from 'effect/Array'
+/**
+ * Reusable scoped environment fixtures and capability conformance cases.
+ *
+ * @since 0.0.0
+ */
+import { dual } from 'effect/Function'
+import * as Arr from 'effect/Array'
+import { constTrue, constFalse } from 'effect/Function'
 import * as Option from 'effect/Option'
 import * as Deferred from 'effect/Deferred'
 import * as Duration from 'effect/Duration'
@@ -14,32 +21,44 @@ import * as Layer from 'effect/Layer'
 import * as Ref from 'effect/Ref'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
-import {
-  Env,
-  type FileError,
-  type ExecutionError,
-  type WatchChange,
-  type WatchTarget,
-} from '../Env.ts'
+import { Env, type FileError, type ExecutionError, WatchChange, type WatchTarget } from '../Env.ts'
 
+/**
+ * EnvConformance assertions contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Assertions {
   readonly strictEqual: (actual: unknown, expected: unknown) => void
   readonly deepStrictEqual: (actual: unknown, expected: unknown) => void
   readonly ok: (condition: unknown, message?: string) => void
 }
-export interface Options {
-  readonly assertions: Assertions
-  /** Program and arguments that accept a POSIX script as the next argument. */
-  readonly shell?: ReadonlyArray<string> | undefined
-  readonly symlinks?: boolean | undefined
-}
+/**
+ * EnvConformance options contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Options = makeEnvConformance.Options
+/**
+ * EnvConformance case contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Case {
   readonly name: string
   readonly timeoutMs?: Duration.Input | undefined
   readonly run: Effect.Effect<void, FileError | ExecutionError, Env>
 }
 
-/** Acquires a fresh writable cwd per Layer build; resource scope closes before directory removal. */
+/**
+ * Acquires a fresh writable cwd per Layer build; resource scope closes before directory removal.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const freshLayer = <E, R>(
   make: (cwd: string) => Layer.Layer<Env, E, R>,
 ): Layer.Layer<Env, E | import('effect/PlatformError').PlatformError, R | FileSystem.FileSystem> =>
@@ -57,30 +76,46 @@ export const freshLayer = <E, R>(
   )
 
 /** Runs once per resource scope. Adapter errors and caller service requirements stay visible. */
-export const withEnv = <A, E, R, E2, R2>(
+const withEnvImpl = <A, E, R, E2, R2>(
   effect: Effect.Effect<A, E, R>,
   layer: Layer.Layer<Env, E2, R2>,
 ): Effect.Effect<A, E | E2, Exclude<R, Env> | R2> =>
   Effect.scoped(effect.pipe(Effect.provide(layer)))
+/**
+ * Runs an operation once in a fresh adapter resource scope.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const withEnv: {
+  <E2, R2>(
+    layer: Layer.Layer<Env, E2, R2>,
+  ): <A, E, R>(self: Effect.Effect<A, E, R>) => Effect.Effect<A, E | E2, Exclude<R, Env> | R2>
+  <A, E, R, E2, R2>(
+    self: Effect.Effect<A, E, R>,
+    layer: Layer.Layer<Env, E2, R2>,
+  ): Effect.Effect<A, E | E2, Exclude<R, Env> | R2>
+} = dual(2, withEnvImpl)
 
 const failure = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<E, never, R> =>
   effect.pipe(
-    Effect.match({
-      onFailure: (error) => error,
-      onSuccess: () => {
-        throw new Error('Expected adapter failure')
-      },
+    Effect.matchEffect({
+      onFailure: Effect.succeed,
+      onSuccess: () => Effect.die(new Error('Expected adapter failure')),
     }),
   )
 
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes)
-const covers = (change: WatchChange, path: string): boolean =>
-  'overflow' in change ||
-  ('paths' in change &&
-    change.paths.some(
-      (reported) =>
-        path === reported || path.startsWith(`${reported}/`) || path.startsWith(`${reported}\\`),
-    ))
+const covers = (self: WatchChange, path: string): boolean =>
+  WatchChange.$match(self, {
+    Overflow: constTrue,
+    Error: constFalse,
+    Paths: ({ paths }) =>
+      paths.some(
+        (reported) =>
+          path === reported || path.startsWith(`${reported}/`) || path.startsWith(`${reported}\\`),
+      ),
+  })
 
 interface Watching {
   readonly changes: Ref.Ref<ReadonlyArray<WatchChange>>
@@ -109,8 +144,11 @@ const watching = Effect.fnUntraced(function* <E, R>(
     yield* change
     const deadline = DateTime.addDuration(yield* DateTime.now, '3 seconds')
     while (!(yield* Ref.get(changes)).slice(from).some((value) => covers(value, absolute))) {
-      const error = Arrays.findFirst(yield* Ref.get(changes), (value) => 'error' in value)
-      if (Option.isSome(error) && 'error' in error.value) return yield* error.value.error
+      const error = Arr.findFirst(yield* Ref.get(changes), WatchChange.$is('Error'))
+      yield* Option.match(error, {
+        onNone: () => Effect.void,
+        onSome: (self) => Effect.fail(self.error),
+      })
       if (DateTime.isGreaterThanOrEqualTo(yield* DateTime.now, deadline))
         return yield* Effect.die(`No watch change reported ${absolute}`)
       yield* Effect.sleep('20 millis')
@@ -119,8 +157,17 @@ const watching = Effect.fnUntraced(function* <E, R>(
   yield* run({ changes, expectChange })
 }, Effect.scoped)
 
-/** Runner-independent native Effects. Supply a fresh empty Env Layer separately for every case. */
-export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
+/**
+ * Runner-independent native Effects.
+ *
+ * **Details**
+ *
+ * Supply a fresh empty Env Layer separately for every case.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
+export const makeEnvConformance = (options: Options): Array<Case> => {
   const assert = options.assertions
   const shell = options.shell ?? ['sh', '-c']
   const test = (
@@ -145,7 +192,7 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
     })
     return { result, ...(yield* Ref.get(output)) }
   })
-  const cases: Case[] = [
+  const cases: Array<Case> = [
     test(
       'binary reader reads byte ranges of the opened file',
       Effect.gen(function* () {
@@ -247,7 +294,7 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
         for (const name of names) yield* env.writeFile(name, name)
         yield* env.createDir('sub')
         const reader = yield* env.openDirReader('.')
-        const found: string[] = []
+        const found: Array<string> = []
         let done = false
         for (let index = 0; index < 1000 && !done; index++) {
           const page = yield* reader.next(2)
@@ -379,7 +426,7 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
               (path) => env.absolutePath(path),
             )
             for (const change of yield* Ref.get(changes))
-              if ('paths' in change)
+              if (WatchChange.$is('Paths')(change))
                 for (const path of change.paths)
                   assert.ok(
                     !excluded.some((target) => path === target || path.startsWith(`${target}/`)),
@@ -522,7 +569,7 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
               }),
           },
         )
-        const expected = Array.from({ length: 2000 }, (_, index) => `line-${index}\n`)
+        const expected = Arr.makeBy(2000, (index) => `line-${index}\n`)
         assert.strictEqual(result.exitCode, 0)
         const { bytes, newlines, tail } = yield* Ref.get(counted)
         assert.strictEqual(bytes, expected.join('').length)
@@ -605,4 +652,25 @@ export const createEnvConformance = (options: Options): ReadonlyArray<Case> => {
       ),
     )
   return cases
+}
+
+/**
+ * Type contracts owned by makeEnvConformance.
+ *
+ * @category utility types
+ * @since 0.0.0
+ */
+export declare namespace makeEnvConformance {
+  /**
+   * Configuration for makeEnvConformance.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface Options {
+    readonly assertions: Assertions
+    /** Program and arguments that accept a POSIX script as the next argument. */
+    readonly shell?: ReadonlyArray<string> | undefined
+    readonly symlinks?: boolean | undefined
+  }
 }

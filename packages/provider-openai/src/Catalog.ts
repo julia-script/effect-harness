@@ -1,3 +1,10 @@
+/**
+ * Validated model catalogues with pinned request configuration and usage accounting.
+ *
+ * @since 0.0.0
+ */
+import { dual } from 'effect/Function'
+import * as Arr from 'effect/Array'
 import * as HashMap from 'effect/HashMap'
 import * as Option from 'effect/Option'
 import type * as HttpClient from 'effect/http/HttpClient'
@@ -7,7 +14,7 @@ import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
 import * as OpenAiLanguageModel from '@effect/ai-openai/OpenAiLanguageModel'
 import * as OpenAiSchema from '@effect/ai-openai/OpenAiSchema'
 import * as Model from '@effect-harness/harness/Model'
-import { ModelError, ModelNoModel, ModelUnsupported } from '@effect-harness/harness/Error'
+import { ModelError, ModelNoModel, ModelUnsupported } from '@effect-harness/harness/ModelError'
 import * as Usage from '@effect-harness/harness/Usage'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -15,7 +22,9 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import type * as Response from 'effect/ai/Response'
 import type * as Redacted from 'effect/Redacted'
-import * as Provider from './LanguageModel.ts'
+// effect-review-allow P9-namespace-alias-equals-module: @effect/ai-openai/OpenAiLanguageModel and ./OpenAiLanguageModel.ts both bind OpenAiLanguageModel; openAiLanguageModel distinguishes the owned model constructor.
+import * as openAiLanguageModel from './OpenAiLanguageModel.ts'
+import * as ChatGptClient from './ChatGptClient.ts'
 
 const fail = (message: string, cause?: unknown) =>
   new ModelError({
@@ -46,7 +55,12 @@ const Options = Schema.Struct({
   fileIdPrefixes: Schema.optional(Schema.Array(Schema.String)),
 })
 const Price = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
-/** Caller-declared USD rates per million tokens; no prices or model limits are guessed. */
+/**
+ * Caller-declared USD rates per million tokens; no prices or model limits are guessed.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const Prices = Schema.Struct({
   input: Price,
   output: Price,
@@ -58,6 +72,12 @@ const Limit = Schema.Int.check(
   Schema.isGreaterThan(0),
   Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
 )
+/**
+ * Defines Entry for the Catalog boundary.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const Entry = Schema.Struct({
   modelId: Schema.NonEmptyString,
   contextWindow: Limit,
@@ -86,8 +106,11 @@ const decode = (value: unknown) =>
 const session = Schema.String.check(Schema.isUUID(7))
 const positive = (value: number) => Number.isSafeInteger(value) && value > 0
 const validate = Effect.fnUntraced(function* (entry: Entry) {
+  yield* Schema.decodeEffect(Schema.toType(Entry))(entry).pipe(
+    Effect.mapError((cause) => fail('Invalid OpenAI catalogue entry or defaults', cause)),
+  )
   const defaults = yield* decode(entry.config ?? {})
-  yield* Schema.decodeEffect(Entry)({ ...entry, config: defaults }).pipe(
+  yield* Schema.decodeEffect(Schema.toType(Entry))({ ...entry, config: defaults }).pipe(
     Effect.mapError((cause) => fail('Invalid OpenAI catalogue entry or defaults', cause)),
   )
   return defaults
@@ -129,6 +152,12 @@ const priced = (value: Response.Usage, prices?: Prices): Usage.Usage => {
   }
 }
 
+/**
+ * Describes the Descriptor contract.
+ *
+ * @category types
+ * @since 0.0.0
+ */
 export interface Descriptor {
   readonly ref: { provider: string; modelId: string }
   readonly model: Model.Descriptor['model']
@@ -142,19 +171,19 @@ export interface Descriptor {
 }
 
 /** Captures the native client now; configuration pins each request to this exact model ID. */
-export const descriptor = Effect.fnUntraced(function* (
-  entry: Entry,
+const descriptorImpl = Effect.fnUntraced(function* (
+  self: Entry,
   options?: { readonly provider?: string | undefined; readonly account?: boolean | undefined },
 ): Effect.fn.Return<Descriptor, ModelError, OpenAiClient.OpenAiClient> {
-  const defaults = yield* validate(entry)
+  const defaults = yield* validate(self)
   const account = options?.account === true
   if (account && defaults.store === true)
     return yield* fail('ChatGPT account Responses require store:false')
-  const model = yield* Provider.make({
-    model: entry.modelId,
+  const model = yield* openAiLanguageModel.make({
+    model: self.modelId,
     config: {
       ...defaults,
-      max_output_tokens: defaults.max_output_tokens ?? entry.maxOutputTokens,
+      max_output_tokens: defaults.max_output_tokens ?? self.maxOutputTokens,
       ...(account ? { store: false, useItemReferences: false } : {}),
     },
   })
@@ -165,8 +194,8 @@ export const descriptor = Effect.fnUntraced(function* (
       )
     const supplied = yield* decode(request.options)
     const merged = { ...defaults, ...supplied }
-    const max = request.maxTokens ?? merged.max_output_tokens ?? entry.maxOutputTokens
-    if (!positive(max) || max > entry.maxOutputTokens)
+    const max = request.maxTokens ?? merged.max_output_tokens ?? self.maxOutputTokens
+    if (!positive(max) || max > self.maxOutputTokens)
       return yield* fail(
         'maxTokens must be a positive integer within the declared model output limit',
       )
@@ -179,17 +208,17 @@ export const descriptor = Effect.fnUntraced(function* (
     let effort: string | undefined = request.thinking
     if (request.thinking === 'off') {
       effort = undefined
-      if (entry.reasoningEfforts?.includes('none')) effort = 'none'
+      if (self.reasoningEfforts?.includes('none')) effort = 'none'
     }
-    if (effort !== undefined && !entry.reasoningEfforts?.some((value) => value === effort))
+    if (effort !== undefined && !self.reasoningEfforts?.some((value) => value === effort))
       return yield* fail('Requested reasoning effort is not declared supported by this model')
     if (supplied.reasoning?.effort !== undefined && supplied.reasoning.effort !== effort)
       return yield* fail('Use the pinned thinking field for reasoning effort')
     if (effort === undefined && supplied.reasoning !== undefined)
       return yield* fail('Reasoning options require a declared reasoning capability')
-    if (request.cache !== undefined && entry.cache !== 'prompt-cache-options')
+    if (request.cache !== undefined && self.cache !== 'prompt-cache-options')
       return yield* fail('This model does not declare native prompt-cache-options support')
-    if (merged.prompt_cache_options !== undefined && entry.cache !== 'prompt-cache-options')
+    if (merged.prompt_cache_options !== undefined && self.cache !== 'prompt-cache-options')
       return yield* fail('Native cache options are not declared supported')
     let cacheOptions = merged.prompt_cache_options
     if (request.cache === 'none') cacheOptions = { mode: 'explicit' }
@@ -214,23 +243,60 @@ export const descriptor = Effect.fnUntraced(function* (
         request.cache === 'none' ? undefined : (request.sessionId ?? merged.prompt_cache_key),
       ...(account ? { store: false, useItemReferences: false } : {}),
     })
-    return Context.make(OpenAiLanguageModel.Config, { ...config, model: entry.modelId })
+    return Context.make(OpenAiLanguageModel.Config, { ...config, model: self.modelId })
   })
   return {
     ref: {
       provider: options?.provider ?? (account ? 'openai-chatgpt' : 'openai'),
-      modelId: entry.modelId,
+      modelId: self.modelId,
     },
     model,
-    contextWindow: entry.contextWindow,
-    maxOutputTokens: entry.maxOutputTokens,
+    contextWindow: self.contextWindow,
+    maxOutputTokens: self.maxOutputTokens,
     configure,
-    usage: (value, _metadata) => priced(value, entry.prices),
+    usage: (value, _metadata) => priced(value, self.prices),
     classify: (error) => Model.classify(error, 'openai'),
   } satisfies Model.Descriptor
 })
 
-/** Normal Catalog Layer requiring an already-selected standard OpenAiClient. */
+/**
+ * Captures a validated catalogue entry with the already-selected native OpenAI client.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
+export const descriptor: {
+  (): (self: Entry) => ReturnType<typeof descriptorImpl>
+  (
+    options: NonNullable<Parameters<typeof descriptorImpl>[1]> &
+      (
+        | { readonly provider: NonNullable<Parameters<typeof descriptorImpl>[1]>['provider'] }
+        | { readonly account: NonNullable<Parameters<typeof descriptorImpl>[1]>['account'] }
+      ),
+  ): (self: Entry) => ReturnType<typeof descriptorImpl>
+  (self: Entry, options?: Parameters<typeof descriptorImpl>[1]): ReturnType<typeof descriptorImpl>
+  // Empty objects are malformed subjects, not meaningful curried options.
+  // The data-last form requires a known supplied option key, or no argument for defaults.
+} = dual(
+  (args) =>
+    args.length >= 2 ||
+    (args.length === 1 &&
+      args[0] !== undefined &&
+      !(
+        typeof args[0] === 'object' &&
+        args[0] !== null &&
+        !('modelId' in args[0]) &&
+        ('provider' in args[0] || 'account' in args[0])
+      )),
+  descriptorImpl,
+)
+
+/**
+ * Provides Catalog services with the declared native dependencies.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer = (options: {
   readonly models: ReadonlyArray<Entry>
   readonly provider?: string | undefined
@@ -238,26 +304,35 @@ export const layer = (options: {
 }): Layer.Layer<Model.Catalog, ModelError, OpenAiClient.OpenAiClient> =>
   Layer.effect(Model.Catalog)(
     Effect.gen(function* () {
-      if (new Set(options.models.map((entry) => entry.modelId)).size !== options.models.length)
+      if (Arr.dedupe(options.models.map((entry) => entry.modelId)).length !== options.models.length)
         return yield* fail('Duplicate OpenAI catalogue model IDs')
       const entries = yield* Effect.forEach(options.models, (entry) => descriptor(entry, options))
       const byId = HashMap.fromIterable(entries.map((entry) => [entry.ref.modelId, entry]))
       return Model.Catalog.of({
         resolve: (ref) => {
           const found = HashMap.get(byId, ref.modelId)
-          return Option.isSome(found) && found.value.ref.provider === ref.provider
-            ? Effect.succeed(found.value)
-            : Effect.fail(
-                new ModelError({
-                  reason: new ModelNoModel({
-                    message: 'OpenAI model is not available in this catalogue',
-                  }),
+          return Effect.fromOption(
+            Option.filter(found, (self) => self.ref.provider === ref.provider),
+            () =>
+              new ModelError({
+                reason: new ModelNoModel({
+                  message: 'OpenAI model is not available in this catalogue',
                 }),
-              )
+              }),
+          )
         },
       })
     }),
   )
+// effect-review-allow P4-layer-provide-vs-provideMerge: the public catalogue
+// exposes the exact captured native client alongside its descriptors, so callers
+// share one transport lifecycle and retain per-request native Config injection.
+/**
+ * Provides Catalog services with the declared native dependencies.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerApiKey = (
   options: OpenAiClient.Options & {
     readonly apiKey: Redacted.Redacted<string>
@@ -266,6 +341,13 @@ export const layerApiKey = (
   },
 ): Layer.Layer<Model.Catalog | OpenAiClient.OpenAiClient, ModelError, HttpClient.HttpClient> =>
   layer(options).pipe(Layer.provideMerge(OpenAiClient.layer(options)))
+// effect-review-allow P4-layer-provide-vs-provideMerge: catalogue descriptors and callers share the exact native account client and its lifecycle; per-call Config remains open.
+/**
+ * Provides Catalog services with the declared native dependencies.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerChatGpt = (options: {
   readonly account: string
   readonly models: ReadonlyArray<Entry>
@@ -276,10 +358,15 @@ export const layerChatGpt = (options: {
   ChatGpt | HttpClient.HttpClient
 > =>
   layer({ ...options, account: true }).pipe(
-    Layer.provideMerge(Provider.layerChatGptClient({ account: options.account })),
+    Layer.provideMerge(ChatGptClient.layer({ account: options.account })),
   )
 
-/** Resolves all layer options through the caller's ConfigProvider. */
+/**
+ * Resolves all layer options through the caller's ConfigProvider.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
 ): Layer.Layer<Model.Catalog, ModelError | Config.ConfigError, OpenAiClient.OpenAiClient> =>
@@ -289,7 +376,12 @@ export const layerConfig = (
     }),
   )
 
-/** Resolves all layerApiKey options through the caller's ConfigProvider. */
+/**
+ * Resolves all layerApiKey options through the caller's ConfigProvider.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerApiKeyConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layerApiKey>[0]>>,
 ): Layer.Layer<
@@ -303,7 +395,12 @@ export const layerApiKeyConfig = (
     }),
   )
 
-/** Resolves all layerChatGpt options through the caller's ConfigProvider. */
+/**
+ * Resolves all layerChatGpt options through the caller's ConfigProvider.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layerChatGptConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layerChatGpt>[0]>>,
 ): Layer.Layer<

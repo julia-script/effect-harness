@@ -1,3 +1,9 @@
+/**
+ * Atomic inbox admission and generation creation.
+ *
+ * @since 0.0.0
+ */
+import * as Arr from 'effect/Array'
 import * as Option from 'effect/Option'
 import * as Identity from '../Identity.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
@@ -11,7 +17,7 @@ import * as DurableDeferred from 'effect/workflow/DurableDeferred'
 import * as Conversation from '../Conversation.ts'
 import * as Document from '../Document.ts'
 import * as Inbox from '../Inbox.ts'
-import * as Ownership from '../Ownership.ts'
+import type * as Ownership from '../Ownership.ts'
 import * as Record from '../Record.ts'
 import type * as Session from '../Session.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
@@ -30,16 +36,28 @@ import { Generation } from './Generation.ts'
 import { Submission, Result } from './Submission.ts'
 import * as Prompt from 'effect/ai/Prompt'
 
+/**
+ * Submission settlement notification schema.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const Settled = DurableDeferred.make('submission/settled/v1', {
   success: Result,
   error: ExecutionErrorCodec,
 })
+/**
+ * Links schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Links = Document.familyUnsafe({
   kind: 'harness.submission-links',
   version: 1,
   scope: 'session',
   schema: Schema.Struct({ executions: Schema.Array(Schema.String) }),
-  initial: (): { executions: string[] } => ({ executions: [] }),
+  initial: (): { executions: Array<string> } => ({ executions: [] }),
 })
 const Admission = Schema.Struct({
   id: Record.SubmissionId,
@@ -47,6 +65,12 @@ const Admission = Schema.Struct({
   generation: Schema.optionalKey(Generation.payloadSchema),
   receipt: Schema.optionalKey(Result),
 })
+/**
+ * Wraps a storage failure in a workflow execution failure.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const storageError = (error: StorageError): ExecutionError =>
   new ExecutionError({
     reason: new (error.reason._tag === 'Closed' ? Closed : Storage)({
@@ -56,8 +80,13 @@ export const storageError = (error: StorageError): ExecutionError =>
     }),
   })
 
-/** A task record is an inspectable projection of a normal native Workflow execution. */
-export const createGeneration = Effect.fnUntraced(function* (
+/**
+ * A task record is an inspectable projection of a normal native Workflow execution.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
+export const makeGeneration = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   sessionId: Identity.SessionId,
   conversationId: Record.ConversationId,
@@ -75,6 +104,7 @@ export const createGeneration = Effect.fnUntraced(function* (
   const executionId = yield* Generation.executionId(payload)
   const binding: Ownership.Binding = { workflow: Generation._tag, executionId, payload }
   yield* tx.write({
+    _tag: 'task',
     type: 'task',
     value: {
       id: taskId,
@@ -94,7 +124,16 @@ export const createGeneration = Effect.fnUntraced(function* (
   return payload
 })
 
-/** Repeating a deferred completion is safe. Called after the cached admission/settlement Activity physically commits. */
+/**
+ * Repeating a deferred completion is safe.
+ *
+ * **Details**
+ *
+ * Called after the cached admission/settlement Activity physically commits.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const notify = Effect.fnUntraced(function* (
   session: Session.Service,
   ids: ReadonlyArray<Record.SubmissionId>,
@@ -104,7 +143,7 @@ export const notify = Effect.fnUntraced(function* (
     (id) => session.submission(id).pipe(Effect.mapError(storageError)),
     { concurrency: 16 },
   )
-  const settled = receipts.flatMap((receipt) =>
+  const settled = Arr.flatMap(receipts, (receipt) =>
     Option.isSome(receipt) &&
     (receipt.value.status === 'done' || receipt.value.status === 'unanswered')
       ? [receipt.value]
@@ -142,7 +181,12 @@ export const notify = Effect.fnUntraced(function* (
   }
 })
 
-/** Shared admission commit for native submission and compaction Activities. */
+/**
+ * Shared admission commit for native submission and compaction Activities.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const admitInTransaction = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   config: Conversation.Configuration['Service'],
@@ -160,7 +204,7 @@ export const admitInTransaction = Effect.fnUntraced(function* (
         }),
       })
     const links = yield* tx.doc(Links, { key: String(existing.id) })
-    if (!links.executions.includes(executionId)) links.executions.push(executionId)
+    if (!Arr.contains(links.executions, executionId)) links.executions.push(executionId)
     if (existing.status === 'done' || existing.status === 'unanswered')
       return { id: existing.id, notify: [], receipt: existing }
     return { id: existing.id, notify: [] }
@@ -189,6 +233,7 @@ export const admitInTransaction = Effect.fnUntraced(function* (
   links.executions.push(executionId)
   if (payload.submission.type === 'write')
     boundary.inbox.items.push({
+      _tag: 'write',
       id: submission.id,
       mode: 'write',
       entry: yield* Document.copyEffect(payload.submission.entry),
@@ -205,6 +250,7 @@ export const admitInTransaction = Effect.fnUntraced(function* (
       ),
     )
     boundary.inbox.items.push({
+      _tag: 'input',
       id: submission.id,
       mode: payload.submission.whenBusy === 'steer' ? 'steer' : 'followUp',
       message: yield* Document.copyEffect(message),
@@ -212,10 +258,9 @@ export const admitInTransaction = Effect.fnUntraced(function* (
   }
   if (live.run !== undefined) return { id: submission.id, notify: [] }
   const selected = yield* Inbox.apply(tx, boundary, 'final', yield* DateTime.now)
-  const generation =
-    selected.users.length === 0
-      ? undefined
-      : yield* createGeneration(tx, payload.sessionId, payload.conversationId, selected.users)
+  const generation = Arr.isReadonlyArrayEmpty(selected.users)
+    ? undefined
+    : yield* makeGeneration(tx, payload.sessionId, payload.conversationId, selected.users)
   return {
     id: submission.id,
     notify: selected.settled,
@@ -223,26 +268,34 @@ export const admitInTransaction = Effect.fnUntraced(function* (
   }
 })
 
-const admit = Effect.fnUntraced(function* (
+const admit = (
   session: Session.Service,
   config: Conversation.Configuration['Service'],
   payload: typeof Submission.payloadSchema.Type,
   executionId: string,
-) {
-  return yield* session
-    .transaction((tx) => admitInTransaction(tx, config, payload, executionId), {
-      key: `workflow/submission/admit/${executionId}`,
-      fingerprint: JSON.stringify([
-        payload.sessionId,
-        payload.conversationId,
-        payload.requestId,
-        payload.submission.type,
-      ]),
-    })
-    .pipe(Effect.mapError((error) => (error._tag === 'StorageError' ? storageError(error) : error)))
-})
+) =>
+  Effect.suspend(() =>
+    session
+      .transaction((tx) => admitInTransaction(tx, config, payload, executionId), {
+        key: `workflow/submission/admit/${executionId}`,
+        fingerprint: JSON.stringify([
+          payload.sessionId,
+          payload.conversationId,
+          payload.requestId,
+          payload.submission.type,
+        ]),
+      })
+      .pipe(
+        Effect.mapError((error) => (error._tag === 'StorageError' ? storageError(error) : error)),
+      ),
+  )
 
-/** Registers the standard Submission workflow; applications provide their ordinary WorkflowEngine Layer. */
+/**
+ * Registers the standard Submission workflow; applications provide their ordinary WorkflowEngine Layer.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer: Layer.Layer<
   never,
   never,

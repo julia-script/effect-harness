@@ -1,3 +1,9 @@
+/**
+ * Ordered Claude Code stream translation and completed-turn collection.
+ *
+ * @since 0.0.0
+ */
+import { dual } from 'effect/Function'
 import * as Arr from 'effect/Array'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -6,7 +12,7 @@ import * as Stream from 'effect/Stream'
 import type * as AiError from 'effect/ai/AiError'
 import type * as Response from 'effect/ai/Response'
 import * as Tool from 'effect/ai/Tool'
-import { authentication, processError, protocol, unsupported } from './Error.ts'
+import { authentication, processError, protocol, unsupported } from './ClaudeCodeError.ts'
 import * as Protocol from './Protocol.ts'
 
 type Part = Response.StreamPartEncoded
@@ -61,8 +67,8 @@ const reason = (stop: string | null | undefined): Response.FinishReason => {
 }
 
 /** One model turn. MCP handlers remain blocked; all tool calls are emitted only after the complete turn. */
-export const translate = <E, R>(
-  events: Stream.Stream<Protocol.Event, E, R>,
+const translateImpl = <E, R>(
+  self: Stream.Stream<Protocol.Event, E, R>,
   aliases: ReadonlyMap<string, string>,
 ): Stream.Stream<Part, E | AiError.AiError, R> =>
   Stream.suspend(() => {
@@ -121,7 +127,7 @@ export const translate = <E, R>(
           const name = Option.fromUndefinedOr(aliases.get(source.name))
           if (Option.isNone(name))
             return yield* protocol('Claude Code requested a tool outside the supplied toolkit')
-          if ([...blocks.values()].filter((b) => b.id === id).length > 1)
+          if (Arr.countBy(blocks.values(), (b) => b.id === id) > 1)
             return yield* protocol('Duplicate Claude Code tool call ID')
           return [{ type: 'tool-params-start', id, name: name.value }]
         }
@@ -225,7 +231,7 @@ export const translate = <E, R>(
           if (values.some((value) => (value.thinkingTokens ?? 0) > value.outputTokens))
             return yield* protocol('Invalid Claude Code reasoning token count')
           if (values.length > 0) {
-            const total = (select: (value: typeof Protocol.ModelUsage.Type) => number) =>
+            const total = (select: (value: Protocol.ModelUsage) => number) =>
               values.reduce((sum, value) => sum + select(value), 0)
             const uncached = total((value) => value.inputTokens)
             const cacheRead = total((value) => value.cacheReadInputTokens)
@@ -374,7 +380,7 @@ export const translate = <E, R>(
         }
       }
     })
-    return events.pipe(
+    return self.pipe(
       // P2-fn-pipeline-args-not-pipe: this validation captures tokenUsage allocated per stream execution; moving it to module scope would share accounting between turns.
       Stream.mapEffect((event) =>
         consume(event).pipe(
@@ -427,13 +433,18 @@ export const translate = <E, R>(
     )
   })
 
-/** Consolidates the same validated stream used by streaming generation. */
+/**
+ * Consolidates the same validated stream used by streaming generation.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const collect = Effect.fnUntraced(function* <E, R>(
-  stream: Stream.Stream<Part, E, R>,
+  self: Stream.Stream<Part, E, R>,
 ): Effect.fn.Return<Array<Response.PartEncoded>, E, R> {
   const parts: Array<Response.PartEncoded> = []
   const positions = new Map<string, number>()
-  yield* stream.pipe(
+  yield* self.pipe(
     Stream.runForEach((part) =>
       Effect.sync(() => {
         if (part.type === 'text-start' || part.type === 'reasoning-start') {
@@ -478,3 +489,21 @@ export const collect = Effect.fnUntraced(function* <E, R>(
   )
   return parts
 })
+
+/**
+ * Translates a validated ordered protocol stream into native response parts.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const translate: {
+  (
+    aliases: ReadonlyMap<string, string>,
+  ): <E, R>(
+    self: Stream.Stream<Protocol.Event, E, R>,
+  ) => Stream.Stream<Part, E | AiError.AiError, R>
+  <E, R>(
+    self: Stream.Stream<Protocol.Event, E, R>,
+    aliases: ReadonlyMap<string, string>,
+  ): Stream.Stream<Part, E | AiError.AiError, R>
+} = dual(2, translateImpl)

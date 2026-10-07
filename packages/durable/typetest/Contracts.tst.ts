@@ -1,4 +1,6 @@
 import { expect, test } from 'tstyche'
+import * as Event from '@effect-harness/durable/Event'
+import type * as Prompt from 'effect/ai/Prompt'
 import * as Document from '@effect-harness/durable/Document'
 import * as Identity from '@effect-harness/durable/Identity'
 import type * as Runner from '@effect-harness/durable/testing/Runner'
@@ -15,10 +17,10 @@ import * as Executor from '@effect-harness/durable/Executor'
 import * as Conversation from '@effect-harness/durable/Conversation'
 import * as Directory from '@effect-harness/durable/SessionDirectory'
 import * as Memory from '@effect-harness/durable/storage/Memory'
-import * as Sqlite from '@effect-harness/durable/storage/Sqlite'
-import * as Node from '@effect-harness/durable/storage/Node'
-import * as Bun from '@effect-harness/durable/storage/Bun'
-import * as Jsonl from '@effect-harness/durable/storage/Jsonl'
+import * as Sqlite from '@effect-harness/durable/storage/SqliteStore'
+import * as Node from '@effect-harness/durable/storage/NodeSqliteStore'
+import * as Bun from '@effect-harness/durable/storage/BunSqliteStore'
+import * as Jsonl from '@effect-harness/durable/storage/JsonlStore'
 import * as Cancellation from '@effect-harness/durable/workflow/Cancellation'
 import { Generation } from '@effect-harness/durable/workflow/Generation'
 import { ToolCall } from '@effect-harness/durable/workflow/ToolCall'
@@ -138,9 +140,12 @@ test('native ownership helpers retain supplied schema and caller requirements', 
       Caller | Ownership.Declarations | Cancellation.Cancellation | WorkflowEngine.WorkflowEngine
     >
   >()
-  expect(Ownership.reach({ tasks: [], conversations: [] }, { kind: 'conversation', id })).type.toBe<
-    Option.Option<Ownership.Reached>
-  >()
+  expect(
+    Ownership.reach(
+      { tasks: [], conversations: [] },
+      Ownership.Target.conversation({ kind: 'conversation', id }),
+    ),
+  ).type.toBe<Option.Option<Ownership.Reached>>()
 })
 
 test('all native storage and executor layers expose full inputs and acquisition errors', () => {
@@ -298,4 +303,71 @@ test('migrated runtime compiler proofs retain native metadata, schema services a
   >()
   expect(brandedDraft.id).type.toBe<Record.TaskId>()
   expect(brandedDraft.items[0]).type.toBe<Record.SubmissionId | undefined>()
+})
+
+declare const snapshot: Document.Snapshot
+declare const graph: Ownership.Graph
+declare const target: Ownership.Target
+declare const view: View.Value
+declare const ops: ReadonlyArray<View.Op>
+declare const beforeMessage: Prompt.AssistantMessage
+declare const afterMessage: Prompt.AssistantMessage
+
+test('dual public operations preserve exact results with optional tails in both forms', () => {
+  expect(Document.address(document)).type.toBe<
+    Effect.Effect<Record.Address, StorageError.StorageError>
+  >()
+  expect(Document.address()(document)).type.toBe<
+    Effect.Effect<Record.Address, StorageError.StorageError>
+  >()
+  expect(Document.address({ owner: id })(document)).type.toBe<
+    Effect.Effect<Record.Address, StorageError.StorageError>
+  >()
+  expect(Document.typed(document, snapshot)).type.toBe<
+    Effect.Effect<Document.Snapshot<{ readonly count: number }>, StorageError.StorageError>
+  >()
+  expect(Document.typed(snapshot)(document)).type.toBe<
+    Effect.Effect<Document.Snapshot<{ readonly count: number }>, StorageError.StorageError>
+  >()
+  expect(Record.isAlive('current')).type.toBe<(self: Record.Document) => boolean>()
+  expect(Ownership.reach(graph, target, true)).type.toBe<Option.Option<Ownership.Reached>>()
+  expect(Ownership.reach(target, true)(graph)).type.toBe<Option.Option<Ownership.Reached>>()
+  expect(View.apply(view, ops)).type.toBe<Result.Result<View.Value, View.ViewOperationError>>()
+  expect(View.apply(ops)(view)).type.toBe<Result.Result<View.Value, View.ViewOperationError>>()
+  expect(View.applyUnsafe(ops)(view)).type.toBe<View.Value>()
+  expect(Event.messageChanges([], beforeMessage, afterMessage)).type.toBe<
+    Array<Event.MessageChange>
+  >()
+  expect(Event.messageChanges(beforeMessage, afterMessage)([])).type.toBe<
+    Array<Event.MessageChange>
+  >()
+  expect(Document.address).type.not.toBeCallableWith({
+    kind: 'markerless',
+    family: false,
+    definition: document.definition,
+  })
+  expect(View.apply).type.not.toBeCallableWith(view, [['delete', []]])
+})
+
+test('owner companions preserve compatibility alias equality and scoped memory channels', () => {
+  expect<Document.Definition<{ count: number }>>().type.toBe<
+    Document.Document.Definition<{ count: number }>
+  >()
+  expect<Document.DefinitionInput<{ count: number }>>().type.toBe<
+    Document.Document.DefinitionInput<{ count: number }>
+  >()
+  expect<Document.Snapshot<{ count: number }>>().type.toBe<
+    Document.Document.Snapshot<{ count: number }>
+  >()
+  expect<Record.EntryToken<'custom'>>().type.toBe<Record.Entry.Token<'custom'>>()
+  expect<Record.EntryDraft>().type.toBe<Record.Entry.Draft>()
+  expect<Record.SubmissionCreate>().type.toBe<Record.Submission.Create>()
+  expect<Conversation.Options>().type.toBe<Conversation.Conversation.Options>()
+  expect<Store.Candidate<number>>().type.toBe<Store.Store.Candidate<number>>()
+  expect<Session.ConversationQuery>().type.toBe<Session.Session.ConversationQuery>()
+  expect<View.ProjectionWatch<number>>().type.toBe<View.View.ProjectionWatch<number>>()
+  expect(Store.makeMemory).type.toBe<Effect.Effect<Store.Service, never, Scope.Scope>>()
+  expect(Store.layerMemory).type.toBe<Layer.Layer<Store.Store>>()
+  expect(Sqlite.layerStoreMemory).type.toBe<Layer.Layer<Store.Store>>()
+  expect(Observation.makeWatch).type.not.toBeCallableWith({ value: {}, stop: Effect.void })
 })

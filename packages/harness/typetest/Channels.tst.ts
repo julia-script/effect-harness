@@ -17,7 +17,8 @@ import * as Output from '@effect-harness/harness/Output'
 import * as Progress from '@effect-harness/harness/Progress'
 import * as Registry from '@effect-harness/harness/Registry'
 import * as ToolResult from '@effect-harness/harness/ToolResult'
-import type { RegistryError, OutputError } from '@effect-harness/harness/Error'
+import type { RegistryError } from '@effect-harness/harness/RegistryError'
+import type { OutputError } from '@effect-harness/harness/OutputError'
 
 class Example extends Context.Service<Example, string>()('typetest/Example') {}
 declare const prompt: Prompt.Prompt
@@ -76,7 +77,7 @@ test('partial selections and buffer/progress channels are exact', () => {
   expect(Invocation.layerSilent).type.toBe<Layer.Layer<Invocation.Invocation>>()
   expect(Output.push(Output.make(), 'text')).type.toBe<Effect.Effect<boolean, OutputError>>()
   expect(Output.makeWindow()).type.toBe<Effect.Effect<Output.Window>>()
-  expect(Progress.make(writer, '10 millis')).type.toBe<
+  expect(Progress.make(writer, { minIntervalMs: '10 millis' })).type.toBe<
     Effect.Effect<Progress.Progress<'write-failed'>, Schema.SchemaError, Example | Scope.Scope>
   >()
   expect(Registry.make()).type.toBe<Effect.Effect<Registry.Registry['Service'], RegistryError>>()

@@ -23,7 +23,12 @@
     "typetest": "cd ../.. && tstyche packages/auth/typetest"
   },
   "dependencies": {
-    "effect": "catalog:",
     "jose": "6.2.12"
+  },
+  "devDependencies": {
+    "effect": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "^4.0.1"
   }
 }

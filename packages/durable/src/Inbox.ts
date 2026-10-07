@@ -1,3 +1,12 @@
+/**
+ * Persisted inbox documents and atomic message admission.
+ *
+ * @since 0.0.0
+ */
+import * as Result from 'effect/Result'
+import * as Order from 'effect/Order'
+import * as Arr from 'effect/Array'
+import { tagged } from './internal/legacyTag.ts'
 import type { StorageError } from './StorageError.ts'
 import * as Option from 'effect/Option'
 import * as Time from '@effect-harness/harness/Time'
@@ -14,27 +23,65 @@ import * as Record from './Record.ts'
 import type * as Session from './Session.ts'
 import { EntryDraft } from './workflow/Submission.ts'
 
+/**
+ * Item schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Item = Schema.Union([
-  Schema.Struct({
+  tagged('input', {
     id: Record.SubmissionId,
     mode: Schema.Literals(['steer', 'followUp']),
     message: Schema.toEncoded(Schema.toCodecJson(Prompt.UserMessage)),
   }),
-  Schema.Struct({ id: Record.SubmissionId, mode: Schema.Literal('write'), entry: EntryDraft }),
+  tagged('write', { id: Record.SubmissionId, mode: Schema.tag('write'), entry: EntryDraft }),
 ])
+/**
+ * Item contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type Item = typeof Item.Type
+/**
+ * State schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const State = Schema.Struct({ items: Schema.Array(Item) })
+/**
+ * Decoded State values.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type State = typeof State.Type
+
+/**
+ * Queued submission document definition.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const InboxDoc = Document.defineUnsafe({
   kind: 'harness.inbox',
   version: 1,
   scope: 'conversation',
   history: 'latest',
   fork: 'initial',
-  schema: State,
-  initial: (): typeof State.Type => ({ items: [] }),
-  checkpointWhen: (value) => value.items.length === 0,
+  schema: Document.jsonObjectCodec(State),
+  initial: (): State => ({ items: [] }),
+  checkpointWhen: (value) => Arr.isReadonlyArrayEmpty(value.items),
 })
 
+/**
+ * ToolSlot schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const ToolSlot = Schema.Struct({
   callId: Schema.String,
   name: Schema.String,
@@ -47,6 +94,20 @@ export const ToolSlot = Schema.Struct({
   diagnostics: Schema.optionalKey(Schema.Array(Invocation.Diagnostic)),
   entry: Schema.optionalKey(Record.EntryId),
 })
+/**
+ * Decoded ToolSlot values.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type ToolSlot = typeof ToolSlot.Type
+
+/**
+ * LiveState schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const LiveState = Schema.Struct({
   run: Schema.optionalKey(
     Schema.Struct({ taskId: Record.TaskId, inputs: Schema.Array(Record.SubmissionId) }),
@@ -74,7 +135,12 @@ export const LiveState = Schema.Struct({
     ),
   ),
 })
-/** Decoded deadlines for read/event adapters; LiveDoc and its Proxy drafts retain numeric JSON. */
+/**
+ * Decoded deadlines for read/event adapters; LiveDoc and its Proxy drafts retain numeric JSON.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const LiveDomain = LiveState.mapFields((fields) => ({
   ...fields,
   generation: Schema.optionalKey(
@@ -93,7 +159,12 @@ export const LiveDomain = LiveState.mapFields((fields) => ({
     ),
   ),
 }))
-/** Preserve opaque mounted references while adapting only the known numeric time leaves. */
+/**
+ * Preserves opaque mounted references while adapting only the known numeric time leaves.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const domain = (value: LiveState): typeof LiveDomain.Type => {
   const { generation, compactions, ...rest } = value
   const generationDomain =
@@ -129,7 +200,19 @@ export const domain = (value: LiveState): typeof LiveDomain.Type => {
         }),
   }
 }
+/**
+ * LiveState contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type LiveState = typeof LiveState.Type
+/**
+ * Committed generation and tool progress document definition.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export const LiveDoc = Document.defineUnsafe({
   kind: 'harness.live',
   version: 1,
@@ -143,14 +226,29 @@ export const LiveDoc = Document.defineUnsafe({
     !(value.tools ?? []).some((slot) => slot.status === 'running'),
 })
 
+/**
+ * Boundary contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Boundary {
   readonly conversationId: Record.ConversationId
-  readonly inbox: Document.Draft<typeof State.Type>
+  readonly inbox: Document.Draft<State>
   readonly modes: Pick<Agent.Settings, 'steeringMode' | 'followUpMode'>
   head: Record.EntryId | undefined
 }
 
-/** Read table state before the commit's first table write. Queue modes are supplied at this deciding commit. */
+/**
+ * Reads table state before the commit's first table write.
+ *
+ * **Details**
+ *
+ * Queue modes are supplied at this deciding commit.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const prepare = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   conversationId: Record.ConversationId,
@@ -165,29 +263,41 @@ export const prepare = Effect.fnUntraced(function* (
   return { conversationId, inbox, modes, head } satisfies Boundary
 })
 
-/** Place all writes first, then selected inputs; a reset also admits follow-ups at a post-tools boundary. */
+/**
+ * Validates and replays view operations while preserving unchanged branches.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const apply = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   boundary: Boundary,
   at: 'postTools' | 'final',
   now: DateTime.Utc,
 ): Effect.fn.Return<
-  { users: Record.SubmissionId[]; settled: Record.SubmissionId[]; reset: boolean },
+  { users: Array<Record.SubmissionId>; settled: Array<Record.SubmissionId>; reset: boolean },
   StorageError
 > {
   const items = boundary.inbox.items
   const reset = items.some((item) => item.mode === 'write' && item.entry.head === 'self')
   const final = at === 'final' || reset
   const pick = (mode: 'steer' | 'followUp', queueMode: 'one-at-a-time' | 'all') => {
-    const indexes = items.flatMap((item, index) => (item.mode === mode ? [index] : []))
+    const indexes = Arr.filterMap(items, (item, index) =>
+      item.mode === mode ? Result.succeed(index) : Result.failVoid,
+    )
     return queueMode === 'all' ? indexes : indexes.slice(0, 1)
   }
-  const writes = items.flatMap((item, index) => (item.mode === 'write' ? [index] : []))
-  const users = [
-    ...pick('steer', boundary.modes.steeringMode),
-    ...(final ? pick('followUp', boundary.modes.followUpMode) : []),
-  ].sort((a, b) => a - b)
-  const settled: Record.SubmissionId[] = []
+  const writes = Arr.filterMap(items, (item, index) =>
+    item.mode === 'write' ? Result.succeed(index) : Result.failVoid,
+  )
+  const users = Arr.sort(
+    [
+      ...pick('steer', boundary.modes.steeringMode),
+      ...(final ? pick('followUp', boundary.modes.followUpMode) : []),
+    ],
+    Order.Number,
+  )
+  const settled: Array<Record.SubmissionId> = []
   for (const index of writes) {
     const item = items[index]
     if (item?.mode !== 'write') continue
@@ -205,7 +315,7 @@ export const apply = Effect.fnUntraced(function* (
     }
     settled.push(item.id)
   }
-  const placed: Record.SubmissionId[] = []
+  const placed: Array<Record.SubmissionId> = []
   for (const index of users) {
     const item = items[index]
     if (item === undefined || item.mode === 'write') continue
@@ -217,16 +327,23 @@ export const apply = Effect.fnUntraced(function* (
     yield* tx.placeSubmission(item.id, entry.id)
     placed.push(item.id)
   }
-  for (const index of [...writes, ...users].sort((a, b) => b - a)) items.splice(index, 1)
+  for (const index of Arr.sort([...writes, ...users], Order.flip(Order.Number)))
+    items.splice(index, 1)
   return { users: placed, settled, reset }
 })
 
+/**
+ * Withdraws queued submissions from an inbox boundary.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const withdraw = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   conversationId: Record.ConversationId,
-): Effect.fn.Return<Record.SubmissionId[], StorageError> {
+): Effect.fn.Return<Array<Record.SubmissionId>, StorageError> {
   const inbox = yield* tx.doc(InboxDoc, { owner: conversationId })
-  const settled: Record.SubmissionId[] = []
+  const settled: Array<Record.SubmissionId> = []
   for (let index = inbox.items.length - 1; index >= 0; index--) {
     const item = inbox.items[index]
     if (item === undefined || item.mode === 'write') continue
@@ -234,17 +351,22 @@ export const withdraw = Effect.fnUntraced(function* (
     settled.push(item.id)
     inbox.items.splice(index, 1)
   }
-  return settled.sort((a, b) => a - b)
+  return Arr.sort(settled, Order.Number)
 })
 
-/** Settle exactly the inputs owned by this run; an earlier generation cannot end its successor's run. */
+/**
+ * Settles exactly the inputs owned by this run; an earlier generation cannot end its successor's run.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const endRun = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   live: Document.Draft<LiveState>,
   taskId: Record.TaskId,
   settlement: Parameters<Session.Transaction['settleSubmission']>[1],
-): Effect.fn.Return<Record.SubmissionId[], StorageError> {
-  const settled: Record.SubmissionId[] = []
+): Effect.fn.Return<Array<Record.SubmissionId>, StorageError> {
+  const settled: Array<Record.SubmissionId> = []
   if (live.run?.taskId === taskId) {
     for (const id of live.run.inputs) {
       yield* tx.settleSubmission(id, settlement)

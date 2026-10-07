@@ -10,12 +10,12 @@ import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
 import * as Anthropic from '@effect-harness/provider-anthropic/Anthropic'
 import * as Catalog from '@effect-harness/provider-anthropic/Catalog'
-import * as Provider from '@effect-harness/provider-anthropic/Prompt'
+import * as Prompt from '@effect-harness/provider-anthropic/Prompt'
 import * as OAuth from '@effect-harness/provider-anthropic/OAuth'
 import * as Account from '@effect-harness/provider-anthropic/Account'
 import type * as Layer from 'effect/Layer'
 import type * as HttpClient from 'effect/http/HttpClient'
-import type { ModelError } from '@effect-harness/harness/Error'
+import type { ModelError } from '@effect-harness/harness/ModelError'
 class Audit extends Context.Service<
   Audit,
   { readonly record: (value: number) => Effect.Effect<void> }
@@ -28,7 +28,7 @@ const convert = Tool.make('convert', {
 })
 const toolkit = Toolkit.make(convert)
 declare const withHandlers: Toolkit.WithHandler<Toolkit.Tools<typeof toolkit>>
-declare const model: Effect.Success<ReturnType<typeof Provider.make>>
+declare const model: Effect.Success<ReturnType<typeof Prompt.make>>
 
 test('public native model retains toolkit mode, handler errors and invocation services', () => {
   const handled = model.generateText({ prompt: 'question', toolkit: withHandlers })
@@ -61,14 +61,14 @@ test('public native model retains toolkit mode, handler errors and invocation se
 })
 
 test('owned construction pins native client outputs and account inputs', () => {
-  expect(Provider.make({ model: 'declared' })).type.toBe<
+  expect(Prompt.make({ model: 'declared' })).type.toBe<
     Effect.Effect<
       typeof LanguageModel.LanguageModel.Service,
       never,
       AnthropicClient.AnthropicClient
     >
   >()
-  expect(Provider.layer({ model: 'declared' })).type.toBe<
+  expect(Prompt.layer({ model: 'declared' })).type.toBe<
     Layer.Layer<
       LanguageModel.LanguageModel | AnthropicClient.AnthropicClient,
       never,
@@ -102,4 +102,23 @@ test('both native config override forms retain caller services and foreign error
   expect<[Effect.Success<typeof request>]>().type.toBe<[never]>()
   expect(Anthropic.withConfigOverride).type.toBe<typeof AnthropicLanguageModel.withConfigOverride>()
   expect(Anthropic.withConfigOverride).type.not.toBeCallableWith(request, { max_tokens: 'wrong' })
+})
+
+test('curried catalogue projection retains captured native client channels', () => {
+  const entry = { modelId: 'declared', contextWindow: 200000, maxOutputTokens: 32000 }
+  expect(Catalog.descriptor('custom')(entry)).type.toBe<
+    Effect.Effect<Catalog.Descriptor, ModelError, AnthropicClient.AnthropicClient>
+  >()
+  expect(Catalog.descriptor()(entry)).type.toBe<
+    Effect.Effect<Catalog.Descriptor, ModelError, AnthropicClient.AnthropicClient>
+  >()
+})
+
+import * as ProviderAnthropic from '@effect-harness/provider-anthropic'
+
+test('root namespaces expose native client and canonical account model channels', () => {
+  expect(ProviderAnthropic.AnthropicClient.AnthropicClient).type.toBe<
+    typeof AnthropicClient.AnthropicClient
+  >()
+  expect(ProviderAnthropic.AnthropicAccountLanguageModel.layer).type.toBe<typeof Account.layer>()
 })

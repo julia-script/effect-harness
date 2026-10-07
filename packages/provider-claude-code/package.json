@@ -23,7 +23,12 @@
     "typetest": "cd ../.. && tstyche packages/provider-claude-code/typetest"
   },
   "dependencies": {
-    "@effect-harness/harness": "workspace:*",
+    "@effect-harness/harness": "workspace:^"
+  },
+  "devDependencies": {
     "effect": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "^4.0.1"
   }
 }

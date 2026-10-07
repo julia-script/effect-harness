@@ -1,5 +1,17 @@
+/**
+ * Shared committed conversation mounts and bounded subscriber projections.
+ *
+ * @since 0.0.0
+ */
+import * as Order from 'effect/Order'
+import { dual } from 'effect/Function'
+import * as handle from './internal/handle.ts'
+const ProjectionWatchProto = handle.prototype('@effect-harness/durable/View/ProjectionWatch')
+const StateProto = handle.prototype('@effect-harness/durable/View/State')
+import type * as Pipeable from 'effect/Pipeable'
+import type * as Inspectable from 'effect/Inspectable'
 import { identity } from 'effect/Function'
-import * as Types from 'effect/Types'
+import type * as Types from 'effect/Types'
 import * as Predicate from 'effect/Predicate'
 import * as Option from 'effect/Option'
 import { cursor as journalCursor } from './storage/internal/state.ts'
@@ -14,7 +26,7 @@ import * as RcMap from 'effect/RcMap'
 import * as HashMap from 'effect/HashMap'
 import * as Ref from 'effect/Ref'
 import * as Agent from '@effect-harness/harness/Agent'
-import * as Totals from '@effect-harness/harness/Usage'
+import * as Usage from '@effect-harness/harness/Usage'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -32,26 +44,67 @@ import type * as Observation from './Observation.ts'
 import * as Record from './Record.ts'
 import { rejected, type StorageError, NotFound, Corrupt, Closed } from './StorageError.ts'
 import * as Store from './Store.ts'
-import * as Usage from './Usage.ts'
+import { UsageDoc } from './Usage.ts'
 import { findDocument, materialize, visibleEntries } from './storage/internal/state.ts'
 
-/** Schema-derived singleton document values retain their mounted reference identity. */
+/**
+ * Schema-derived singleton document values retain their mounted reference identity.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Documents = Schema.Struct({
   'harness.agent': Schema.optionalKey(Agent.State),
   'harness.live': Schema.optionalKey(Inbox.LiveState),
   'harness.inbox': Schema.optionalKey(Inbox.State),
   'harness.provider': Schema.optionalKey(Conversation.ProviderState),
-  'harness.usage': Schema.optionalKey(Totals.State),
+  'harness.usage': Schema.optionalKey(Usage.State),
 })
+/**
+ * Documents contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type Documents = typeof Documents.Type
+/**
+ * Value schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Value = Schema.Struct({
   conversation: Record.Conversation,
   entries: Schema.Array(Record.Entry),
   docs: Documents,
 })
-export type Value = typeof Value.Type
+/**
+ * Compatibility alias for View.Value.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Value = View.Value
+/**
+ * Path schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Path = Schema.Array(Schema.Union([Schema.String, Schema.Finite]))
-export type Path = typeof Path.Type
+/**
+ * Compatibility alias for View.Path.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Path = View.Path
+/**
+ * Op schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Op = Schema.Union([
   Schema.Tuple([Schema.Literal('replace'), Value]),
   Schema.Tuple([Schema.Literal('set'), Path, Schema.Unknown]),
@@ -67,7 +120,19 @@ export const Op = Schema.Union([
     Schema.Array(Record.Entry),
   ]),
 ])
-export type Op = typeof Op.Type
+/**
+ * Compatibility alias for View.Op.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Op = View.Op
+/**
+ * Change schema.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Change = Schema.Struct({
   seq: Record.JournalCursor,
   before: Value,
@@ -77,51 +142,63 @@ export const Change = Schema.Struct({
   reset: Schema.Boolean,
   rebased: Schema.optionalKey(Schema.Boolean),
 })
-export type Change = typeof Change.Type
-/** Structural set values are opaque decoded field values; the JSON client codec validates their wire representation without changing mounted references. */
+/**
+ * Compatibility alias for View.Change.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Change = View.Change
+/**
+ * Structural set values are opaque decoded field values; the JSON client codec validates their wire representation without changing mounted references.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const ChangeJson = Schema.toCodecJson(Change)
 const ProjectionWatchTypeId = '~@effect-harness/durable/View/ProjectionWatch'
-export interface ProjectionWatch<out A> {
-  readonly [ProjectionWatchTypeId]: { readonly _A: Types.Covariant<A> }
-  readonly value: A
-  readonly changes: Stream.Stream<A, StorageError>
-  readonly closed: Effect.Effect<Observation.End>
-  /** effect-review-allow P3-scope-in-r-not-dispose-method: semantic subscription completion stops future deliveries and resolves closed as stopped; resource release remains owned by Scope. */
-  readonly stop: Effect.Effect<void>
-  readonly listen: <E, R>(
-    listener: (value: A) => Effect.Effect<void, E, R>,
-  ) => Effect.Effect<void, E | StorageError, R>
-}
-export interface Watch extends Omit<ProjectionWatch<Change>, 'value'> {
-  readonly value: Value
-}
+/**
+ * Compatibility alias for View.ProjectionWatch.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type ProjectionWatch<A> = View.ProjectionWatch<A>
+/**
+ * Compatibility alias for View.Watch.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Watch = View.Watch
 const ProjectionTypeId = '~@effect-harness/durable/View/Projection'
-export interface Projection<out A> {
-  readonly [ProjectionTypeId]: { readonly _A: Types.Covariant<A> }
-  readonly initial: (
-    view: Value,
-    tasks: ReadonlyArray<Record.Task>,
-  ) => Effect.Effect<A, StorageError>
-  readonly project: (change: Change) => Effect.Effect<A | undefined, StorageError>
-  readonly reset: (
-    view: Value,
-    seq: Record.Seq | 0,
-    tasks: ReadonlyArray<Record.Task>,
-  ) => Effect.Effect<A, StorageError>
-}
-export interface State {
-  readonly value: Value
-  readonly cursor: number
-  readonly closed: Effect.Effect<Observation.End>
-}
-export interface Service {
-  readonly observe: <A>(
-    id: Record.ConversationId,
-    projection: Projection<A>,
-  ) => Effect.Effect<ProjectionWatch<A>, StorageError, Scope.Scope>
-  readonly watch: (id: Record.ConversationId) => Effect.Effect<Watch, StorageError, Scope.Scope>
-  readonly state: (id: Record.ConversationId) => Effect.Effect<State, StorageError, Scope.Scope>
-}
+/**
+ * Compatibility alias for View.Projection.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Projection<A> = View.Projection<A>
+/**
+ * Compatibility alias for View.State.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type State = View.State
+/**
+ * Compatibility alias for View.Service.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Service = View.Service
+/**
+ * View service.
+ *
+ * @category services
+ * @since 0.0.0
+ */
 export class View extends Context.Service<View, Service>()('@effect-harness/durable/View') {}
 
 interface MountedDocument {
@@ -153,7 +230,7 @@ const mounted = [
   descriptor('harness.live', Inbox.LiveDoc),
   descriptor('harness.inbox', Inbox.InboxDoc),
   descriptor('harness.provider', Conversation.ProviderDoc),
-  descriptor('harness.usage', Usage.UsageDoc),
+  descriptor('harness.usage', UsageDoc),
 ]
 const mountedByKind: ReadonlyMap<string, (typeof mounted)[number]> = new Map(
   mounted.map((item) => [item.kind, item]),
@@ -166,14 +243,19 @@ const own = (object: object, key: string | number, value: unknown) =>
     writable: true,
   })
 
-/** Replay structural deltas while preserving all unchanged branches and safe own-property keys. */
-export function applyUnsafe(value: Value, ops: ReadonlyArray<Op>): Value {
+/**
+ * Replays structural deltas while preserving all unchanged branches and safe own-property keys.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
+function applyUnsafeImpl(self: Value, ops: ReadonlyArray<Op>): Value {
+  const value = self
   if (!Schema.is(Schema.Array(Op))(ops)) throw new TypeError('Invalid view operation')
   let result: unknown = value
   const edit = (node: unknown, path: Path, update: (leaf: unknown) => unknown): unknown => {
-    if (path.length === 0) return update(node)
-    if (node === null || typeof node !== 'object')
-      throw new TypeError('Invalid view operation path')
+    if (Arr.isReadonlyArrayEmpty(path)) return update(node)
+    if (!Predicate.isObjectOrArray(node)) throw new TypeError('Invalid view operation path')
     const key = path[0]
     if (key === undefined) throw new TypeError('Missing view operation path')
     const copy: object = Array.isArray(node) ? [...node] : { ...node }
@@ -194,10 +276,9 @@ export function applyUnsafe(value: Value, ops: ReadonlyArray<Op>): Value {
     else {
       const key = Arr.lastNonEmpty(op[1])
       result = edit(result, op[1].slice(0, -1), (parent) => {
-        if (parent === null || typeof parent !== 'object')
-          throw new TypeError('Invalid view deletion')
+        if (!Predicate.isObjectOrArray(parent)) throw new TypeError('Invalid view deletion')
         const copy: object = Array.isArray(parent) ? [...parent] : { ...parent }
-        if (Array.isArray(copy) && typeof key === 'number') copy.splice(key, 1)
+        if (Array.isArray(copy) && Predicate.isNumber(key)) copy.splice(key, 1)
         else Reflect.deleteProperty(copy, key)
         return copy
       })
@@ -206,15 +287,18 @@ export function applyUnsafe(value: Value, ops: ReadonlyArray<Op>): Value {
   // Every delta is produced from a validated mount and preserves its structural shape.
   return result as Value
 }
+/**
+ * ViewOperationError schema.
+ *
+ * @category errors
+ * @since 0.0.0
+ */
 export class ViewOperationError extends Schema.TaggedError<ViewOperationError>(
   '@effect-harness/durable/View/ViewOperationError',
 )('ViewOperationError', { message: Schema.String, cause: Schema.Defect() }) {}
-export const apply = (
-  value: Value,
-  ops: ReadonlyArray<Op>,
-): Result.Result<Value, ViewOperationError> =>
+const applyImpl = (self: Value, ops: ReadonlyArray<Op>): Result.Result<Value, ViewOperationError> =>
   Result.try({
-    try: () => applyUnsafe(value, ops),
+    try: () => applyUnsafe(self, ops),
     catch: (cause) => new ViewOperationError({ message: 'Invalid view operation', cause }),
   })
 
@@ -226,19 +310,22 @@ const hydrate = Effect.fnUntraced(function* (state: Record.State, id: Record.Con
   const visible = (yield* visibleEntries(state, id)).toReversed()
   const head = Arr.findLast(visible, (entry) => entry.head !== undefined)
   const cutoff = head.pipe(Option.flatMap((entry) => Option.fromUndefinedOr(entry.head)))
-  const range = visible.filter((entry) =>
+  const range = Arr.filter(visible, (entry) =>
     Option.match(cutoff, { onNone: () => true, onSome: (id) => entry.id >= id }),
   )
   const entries = Option.match(head, {
     onNone: () => range,
-    onSome: (head) => [head, ...range.filter((entry) => entry.head === undefined)],
+    onSome: (head) => [head, ...Arr.filter(range, (entry) => entry.head === undefined)],
   })
   const docs: Documents = {}
   const documents = new Map<string, MountedDocument>()
   for (const item of mounted) {
     const persisted = findDocument(
       state,
-      { kind: item.kind, scope: { kind: 'conversation', conversationId: id } },
+      {
+        kind: item.kind,
+        scope: { _tag: 'conversation', kind: 'conversation', conversationId: id },
+      },
       'current',
     )
     if (Option.isNone(persisted)) continue
@@ -252,7 +339,7 @@ const hydrate = Effect.fnUntraced(function* (state: Record.State, id: Record.Con
     value: { conversation, entries, docs },
     documents: HashMap.fromIterable(documents),
     tasks: HashMap.fromIterable(
-      state.tasks.filter((task) => task.conversationId === id).map((task) => [task.id, task]),
+      Arr.filter(state.tasks, (task) => task.conversationId === id).map((task) => [task.id, task]),
     ),
     seq: yield* journalCursor(state.nextSeq),
   } satisfies MountedState
@@ -276,7 +363,7 @@ const structuralTouch = (frame: Record.Frame, id: Record.ConversationId) =>
       publication.record.scope.conversationId === id &&
       mountedByKind.has(publication.record.kind) &&
       publication.record.key === undefined &&
-      (publication.ops.length > 0 || publication.value === null),
+      (Arr.isReadonlyArrayNonEmpty(publication.ops) || publication.value === null),
   )
 const touches = (frame: Record.Frame, id: Record.ConversationId) =>
   structuralTouch(frame, id) ||
@@ -297,9 +384,9 @@ const advance = Effect.fnUntraced(function* (
     tasks: new Map(previous.tasks),
   }
   const id = mount.value.conversation.id
-  const docOps: Op[] = []
+  const docOps: Array<Op> = []
   let rebased = false
-  const entryOps: Op[] = []
+  const entryOps: Array<Op> = []
   let entries = mount.value.entries
   for (const publication of frame.documents) {
     if (
@@ -343,20 +430,24 @@ const advance = Effect.fnUntraced(function* (
       mount.documents.set(item.kind, { id: publication.record.id, version: converted.version })
     }
   }
-  const writes = frame.writes
-    .filter(
+  const writes = Arr.sortWith(
+    Arr.filter(
+      frame.writes,
       (write): write is Extract<Record.Write, { type: 'entry' }> =>
         write.type === 'entry' && write.value.conversationId === id,
-    )
-    .sort((a, b) => a.value.id - b.value.id)
+    ),
+    (item: Extract<Record.Write, { type: 'entry' }>) => item.value.id,
+    Order.Number,
+  )
   for (const { value: entry } of writes) {
     if (entry.head === undefined) {
       entryOps.push(['splice', ['entries'], entries.length, 0, [entry]])
       entries = [...entries, entry]
     } else {
-      const found = entries.findIndex(
+      const found = Arr.findFirstIndex(
+        entries,
         (candidate) => candidate.head === undefined && candidate.id >= entry.head!,
-      )
+      ).pipe(Option.getOrElse(() => -1))
       const kept = found < 0 ? entries.length : found
       entryOps.push(['splice', ['entries'], 0, kept, [entry]])
       entries = [entry, ...entries.slice(kept)]
@@ -391,6 +482,12 @@ const advance = Effect.fnUntraced(function* (
   }
 })
 
+/**
+ * Scoped committed view service acquisition.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Effect.gen(
   function* () {
     const store = yield* Store.Store
@@ -444,13 +541,14 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
           Effect.gen(function* () {
             const mount = yield* RcMap.get(mounts, id)
             let current = yield* Ref.get(mount.state)
-            const relevant = journal.frames.filter(
+            const relevant = Arr.filter(
+              journal.frames,
               (frame) => frame.seq > current.seq && touches(frame, id),
             )
             const rebasing = (journal.reset || gapped) && relevant.length > 100
             const rebase = rebasing
               ? new Set(
-                  relevant.flatMap((frame) =>
+                  Arr.flatMap(relevant, (frame) =>
                     frame.documents.map((publication) => publication.record.id),
                   ),
                 )
@@ -487,7 +585,11 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
               yield* PubSub.publish(mount.events, {
                 type: 'resync',
                 change,
-                tasks: [...HashMap.values(hydrated.tasks)].sort((a, b) => a.id - b.id),
+                tasks: Arr.sortWith(
+                  [...HashMap.values(hydrated.tasks)],
+                  (item) => item.id,
+                  Order.Number,
+                ),
               })
             }
             // New subscribers receive the final authoritative sequence and task baseline.
@@ -495,9 +597,9 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
               ...current,
               seq: yield* journalCursor(journal.state.nextSeq),
               tasks: HashMap.fromIterable(
-                journal.state.tasks
-                  .filter((task) => task.conversationId === id)
-                  .map((task) => [task.id, task]),
+                Arr.filter(journal.state.tasks, (task) => task.conversationId === id).map(
+                  (task) => [task.id, task],
+                ),
               ),
             }
             yield* Ref.set(mount.state, current)
@@ -538,7 +640,7 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
             const value = yield* Ref.make(
               yield* projection.initial(
                 baseline.value,
-                [...HashMap.values(baseline.tasks)].sort((a, b) => a.id - b.id),
+                Arr.sortWith([...HashMap.values(baseline.tasks)], (item) => item.id, Order.Number),
               ),
             )
             const ended = yield* Ref.make(false)
@@ -645,7 +747,8 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
           initial: Effect.fnUntraced(function* (value) {
             return { seq: yield* Ref.get(after), before: value, value, ops: [], reset: false }
           }),
-          project: (change) => Effect.succeed(change.ops.length === 0 ? undefined : change),
+          project: (change) =>
+            Effect.succeed(Arr.isReadonlyArrayEmpty(change.ops) ? undefined : change),
           reset: (value, seq) =>
             Effect.succeed({ seq, before: value, value, ops: [['replace', value]], reset: true }),
         }),
@@ -669,7 +772,7 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
         yield* subscription
           .listen(() => Ref.update(cursor, (value) => value + 1))
           .pipe(Effect.ignore, Effect.forkScoped)
-        return {
+        return handle.make(StateProto, {
           get value() {
             return subscription.value
           },
@@ -677,33 +780,50 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
             return Ref.getUnsafe(cursor)
           },
           closed: subscription.closed,
-        }
+        })
       }),
     })
   },
 )
+/**
+ * layer service Layer.
+ *
+ * @category layers
+ * @since 0.0.0
+ */
 export const layer: Layer.Layer<View, never, Store.Store> = Layer.effect(View, make)
 
+/**
+ * Creates a projection watch with live getters and shared inspection.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const makeProjectionWatch = <A>(
-  input: Omit<ProjectionWatch<A>, typeof ProjectionWatchTypeId>,
+  input: handle.Input<ProjectionWatch<A>, typeof ProjectionWatchTypeId>,
 ): ProjectionWatch<A> => {
-  const value: ProjectionWatch<A> = {
-    [ProjectionWatchTypeId]: { _A: identity },
-    get value() {
-      return input.value
-    },
-    changes: input.changes,
-    closed: input.closed,
-    stop: input.stop,
-    listen: input.listen,
-  }
-  Object.defineProperty(value, ProjectionWatchTypeId, { enumerable: false })
+  const value = handle.make(
+    ProjectionWatchProto,
+    handle.marked(input, ProjectionWatchTypeId, { _A: identity }),
+  )
   return value
 }
 
+/**
+ * Returns whether the value satisfies ProjectionWatch.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
 export const isProjectionWatch = (input: unknown): input is ProjectionWatch<unknown> =>
   Predicate.hasProperty(input, ProjectionWatchTypeId)
 
+/**
+ * Creates a typed conversation projection.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
 export const makeProjection = <A>(
   input: Omit<Projection<A>, typeof ProjectionTypeId>,
 ): Projection<A> => {
@@ -712,20 +832,154 @@ export const makeProjection = <A>(
   Object.defineProperty(value, ProjectionTypeId, { enumerable: false })
   return value
 }
+/**
+ * Returns whether the value satisfies Projection.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
 export const isProjection = (input: unknown): input is Projection<unknown> =>
   Predicate.hasProperty(input, ProjectionTypeId)
 
-export const makeWatch = (input: Omit<Watch, typeof ProjectionWatchTypeId>): Watch => {
-  const value: Watch = {
-    [ProjectionWatchTypeId]: { _A: identity },
-    get value() {
-      return input.value
-    },
-    changes: input.changes,
-    closed: input.closed,
-    stop: input.stop,
-    listen: input.listen,
-  }
-  Object.defineProperty(value, ProjectionWatchTypeId, { enumerable: false })
+/**
+ * Creates a watch handle with live getters and shared inspection.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
+export const makeWatch = (input: handle.Input<Watch, typeof ProjectionWatchTypeId>): Watch => {
+  const value = handle.make(
+    ProjectionWatchProto,
+    handle.marked(input, ProjectionWatchTypeId, { _A: identity }),
+  )
   return value
 }
+
+/**
+ * Validates and replays view operations while preserving unchanged branches.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const apply: {
+  (ops: ReadonlyArray<Op>): (self: Value) => Result.Result<Value, ViewOperationError>
+  (self: Value, ops: ReadonlyArray<Op>): Result.Result<Value, ViewOperationError>
+} = dual(2, applyImpl)
+
+/**
+ * View contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export declare namespace View {
+  /**
+   * Value contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export type Value = typeof Value.Type
+  /**
+   * Path contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export type Path = typeof Path.Type
+  /**
+   * Op contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export type Op = typeof Op.Type
+  /**
+   * Change contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export type Change = typeof Change.Type
+  /**
+   * ProjectionWatch contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface ProjectionWatch<out A> extends Pipeable.Pipeable, Inspectable.Inspectable {
+    readonly [ProjectionWatchTypeId]: { readonly _A: Types.Covariant<A> }
+    readonly value: A
+    readonly changes: Stream.Stream<A, StorageError>
+    readonly closed: Effect.Effect<Observation.End>
+    /** effect-review-allow P3-scope-in-r-not-dispose-method: semantic subscription completion stops future deliveries and resolves closed as stopped; resource release remains owned by Scope. */
+    readonly stop: Effect.Effect<void>
+    readonly listen: <E, R>(
+      listener: (value: A) => Effect.Effect<void, E, R>,
+    ) => Effect.Effect<void, E | StorageError, R>
+  }
+  /**
+   * Watch contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface Watch extends Omit<ProjectionWatch<Change>, 'value'> {
+    readonly value: Value
+  }
+  /**
+   * Projection contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface Projection<out A> {
+    readonly [ProjectionTypeId]: { readonly _A: Types.Covariant<A> }
+    readonly initial: (
+      view: Value,
+      tasks: ReadonlyArray<Record.Task>,
+    ) => Effect.Effect<A, StorageError>
+    readonly project: (change: Change) => Effect.Effect<A | undefined, StorageError>
+    readonly reset: (
+      view: Value,
+      seq: Record.Seq | 0,
+      tasks: ReadonlyArray<Record.Task>,
+    ) => Effect.Effect<A, StorageError>
+  }
+  /**
+   * State contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface State extends Pipeable.Pipeable, Inspectable.Inspectable {
+    readonly value: Value
+    readonly cursor: number
+    readonly closed: Effect.Effect<Observation.End>
+  }
+  /**
+   * Service contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  export interface Service {
+    readonly observe: <A>(
+      id: Record.ConversationId,
+      projection: Projection<A>,
+    ) => Effect.Effect<ProjectionWatch<A>, StorageError, Scope.Scope>
+    readonly watch: (id: Record.ConversationId) => Effect.Effect<Watch, StorageError, Scope.Scope>
+    readonly state: (id: Record.ConversationId) => Effect.Effect<State, StorageError, Scope.Scope>
+  }
+}
+
+/**
+ * Replays view operations or throws for an invalid operation.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const applyUnsafe: {
+  (ops: ReadonlyArray<Op>): (self: Value) => Value
+  (self: Value, ops: ReadonlyArray<Op>): Value
+} = dual(2, applyUnsafeImpl)

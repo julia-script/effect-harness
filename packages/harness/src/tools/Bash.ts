@@ -1,3 +1,9 @@
+/**
+ * Bash and PowerShell tools with bounded output and spill diagnostics.
+ *
+ * @since 0.0.0
+ */
+import * as Result from 'effect/Result'
 import * as Time from '../Time.ts'
 import * as Ref from 'effect/Ref'
 import * as HashSet from 'effect/HashSet'
@@ -5,48 +11,85 @@ import * as SchemaField from '../SchemaField.ts'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as AiTool from 'effect/ai/Tool'
+// effect-review-allow P9-namespace-alias-equals-module: effect/ai/Tool and ../Tool.ts both bind Tool; AiTool preserves the checked imported-name collision.
 import { Env, ExecutionError, ExecutionCallbackError } from '../Env.ts'
-import { ToolError, ToolExecution, ToolInvalidParameters } from '../Error.ts'
-import { Invocation, ToolCall, Result, type ToolResult } from '../Invocation.ts'
+import { ToolError, ToolExecution, ToolInvalidParameters } from '../ToolError.ts'
+import { Invocation, ToolCall, Result as ToolResultSchema, type ToolResult } from '../Invocation.ts'
 import * as Metadata from '../Tool.ts'
+// effect-review-allow P9-namespace-alias-equals-module: ../Tool.ts and effect/ai/Tool both bind Tool; Metadata preserves the checked imported-name collision.
 import * as Truncate from './Truncate.ts'
+/**
+ * Schema for parameters.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Parameters = Schema.Struct({
   command: Schema.String,
   timeout: SchemaField.optional(Time.CommandTimeout),
 })
-export type Input = typeof Parameters.Type
+/**
+ * Bash input contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Input = Parameters
+/**
+ * Bash execution contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Execution {
   command: string
   cwd: string
   env: Record<string, string>
   inheritEnv: boolean
 }
-export interface Options {
-  readonly commandPrefix?: string | undefined
-  readonly prepare?:
-    | ((execution: Execution) => Effect.Effect<void, ToolError, Invocation | ToolCall>)
-    | undefined
-}
-export interface PowerShellOptions extends Options {
-  readonly programs?: ReadonlyArray<string> | undefined
-}
+/**
+ * Bash options contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Options = handler.Options
+/**
+ * Bash power shell options contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type PowerShellOptions = powerShellHandler.Options
 const project = (result: unknown) => Metadata.decodeResult('bash', result)
+/**
+ * Bash tool value.
+ *
+ * @category constants
+ * @since 0.0.0
+ */
 export const tool = AiTool.make('bash', {
   description:
     'Execute a shell command. Combined stdout/stderr streams with a 2000-line/50KB tail; larger complete output spills to a diagnostic temp file.',
   parameters: Parameters,
-  success: Result,
+  success: ToolResultSchema,
   failure: ToolError,
 })
   .addDependency(Env)
   .addDependency(Invocation)
   .addDependency(ToolCall)
   .annotate(Metadata.Metadata, { replay: 'unsafe', output: { retain: 'tail' }, project })
+/**
+ * Native PowerShell tool declaration with bounded output and full-output spill diagnostics.
+ *
+ * @category constants
+ * @since 0.0.0
+ */
 export const powershell = AiTool.make('powershell', {
   description:
     'Execute PowerShell using pwsh or powershell directly with UTF8 output and the same bounded tail/full-output diagnostics.',
   parameters: Parameters,
-  success: Result,
+  success: ToolResultSchema,
   failure: ToolError,
 })
   .addDependency(Env)
@@ -140,8 +183,10 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
           ...(api.outputWindow === undefined ? {} : { window: api.outputWindow }),
         })
         .pipe(Effect.result)
-      const spill =
-        outcome._tag === 'Success' ? outcome.success.spillPath : outcome.failure.spillPath
+      const spill = Result.match(outcome, {
+        onSuccess: (self) => self.spillPath,
+        onFailure: (self) => self.spillPath,
+      })
       if (spill !== undefined)
         yield* diagnostic(spill).pipe(
           Effect.mapError(
@@ -151,11 +196,16 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
               }),
           ),
         )
-      if (outcome._tag === 'Success') {
-        result = outcome.success
+      const next = Result.match(outcome, {
+        onSuccess: (self) => ({ result: self, failure: undefined }),
+        onFailure: (self) => ({ result: undefined, failure: self }),
+      })
+      if (next.result !== undefined) {
+        result = next.result
         break
       }
-      last = outcome.failure
+      last = next.failure
+      if (last === undefined) break
       if (last.code !== 'spawn_error') break
     }
     if (result === undefined)
@@ -172,13 +222,78 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
       })
     return {}
   })
+/**
+ * Creates the Bash handler using supplied shell execution options.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const handler = (
   options: Options = {},
 ): ((input: Input) => Effect.Effect<ToolResult, ToolError, Env | Invocation | ToolCall>) =>
   execute('bash', options)
+/**
+ * Creates the PowerShell handler using supplied shell execution options.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const powerShellHandler = (
   options: PowerShellOptions = {},
 ): ((input: Input) => Effect.Effect<ToolResult, ToolError, Env | Invocation | ToolCall>) =>
   execute('powershell', options)
 
-export const isInput: (input: unknown) => input is typeof Parameters.Type = Schema.is(Parameters)
+/**
+ * Checks whether an unknown value satisfies the Input contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isInput: (u: unknown) => u is Parameters = Schema.is(Parameters)
+
+/**
+ * Bash parameters contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type Parameters = typeof Parameters.Type
+
+/**
+ * Type contracts owned by `handler`.
+ *
+ * @category utility types
+ * @since 0.0.0
+ */
+export declare namespace handler {
+  /**
+   * Configuration accepted by handler.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface Options {
+    readonly commandPrefix?: string | undefined
+    readonly prepare?:
+      | ((execution: Execution) => Effect.Effect<void, ToolError, Invocation | ToolCall>)
+      | undefined
+  }
+}
+
+/**
+ * Type contracts owned by `powerShellHandler`.
+ *
+ * @category utility types
+ * @since 0.0.0
+ */
+export declare namespace powerShellHandler {
+  /**
+   * Configuration accepted by powerShellHandler.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface Options extends handler.Options {
+    readonly programs?: ReadonlyArray<string> | undefined
+  }
+}

@@ -1,11 +1,18 @@
-import * as Array from 'effect/Array'
+/**
+ * Native tool binding, validated projections and replay intent codecs.
+ *
+ * @since 0.0.0
+ */
+import * as Result from 'effect/Result'
+import { dual } from 'effect/Function'
+import * as Arr from 'effect/Array'
 import * as Option from 'effect/Option'
 import * as SchemaField from './SchemaField.ts'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as AiTool from 'effect/ai/Tool'
+import * as Tool from 'effect/ai/Tool'
 import type * as Toolkit from 'effect/ai/Toolkit'
 import type * as AiError from 'effect/ai/AiError'
 import * as Prompt from 'effect/ai/Prompt'
@@ -15,13 +22,19 @@ import {
   ToolInvalidParameters,
   ToolInvalidResult,
   ToolExecution,
-} from './Error.ts'
-import { Invocation, ToolCall, Result, type ToolResult } from './Invocation.ts'
+} from './ToolError.ts'
+import { Invocation, ToolCall, Result as ToolResultSchema, type ToolResult } from './Invocation.ts'
 import * as SystemPatch from './SystemPatch.ts'
 import * as Output from './Output.ts'
 import * as Hook from './Hook.ts'
 import * as Serialization from './Serialization.ts'
 
+/**
+ * Tool metadata contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Metadata {
   readonly replay?: 'safe' | 'unsafe' | undefined
   readonly execution?: 'parallel' | 'sequential' | undefined
@@ -36,17 +49,30 @@ export interface Metadata {
       ) => Effect.Effect<ToolResult, ToolError>)
     | undefined
 }
+/**
+ * Annotation reference for replay, execution, output and typed projection policies.
+ *
+ * @category annotations
+ * @since 0.0.0
+ */
 export const Metadata = Context.Reference<Metadata>('@effect-harness/harness/Tool/Metadata', {
   defaultValue: () => ({}),
 })
-export interface NativeResult {
-  readonly result: unknown
-  readonly encoded: unknown
-  readonly isFailure: boolean
-}
-/** Host dependencies are captured at bind time; explicitly declared request services are supplied by the executor. */
+/**
+ * Tool native result contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
+export type NativeResult = Registration.NativeResult
+/**
+ * Host dependencies are captured at bind time; explicitly declared request services are supplied by the executor.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export interface Registration {
-  readonly tool: AiTool.Any
+  readonly tool: Tool.Any
   readonly metadata: Metadata
   readonly decode: (args: unknown) => Effect.Effect<unknown, ToolError, Invocation | ToolCall>
   readonly encodeArgs: (
@@ -58,41 +84,41 @@ export interface Registration {
   ) => Effect.Effect<NativeResult, ToolError, Invocation | ToolCall>
 }
 const error = (
-  tool: AiTool.Any,
+  self: Tool.Any,
   Reason: typeof ToolInvalidParameters | typeof ToolInvalidResult | typeof ToolExecution,
   cause: unknown,
 ): ToolError =>
   new ToolError({
-    reason: new Reason({ name: tool.name, message: Serialization.errorText(cause), cause }),
+    reason: new Reason({ name: self.name, message: Serialization.errorText(cause), cause }),
   })
 /** Bind ordinary Toolkit.toLayer handlers and codec services. Dynamic lookup erases generic tool names only at this boundary. */
-type Captured<Tools extends Record<string, AiTool.Any>, RequestServices = never> =
-  | AiTool.HandlersFor<Tools>
+type Captured<Tools extends Record<string, Tool.Any>, RequestServices = never> =
+  | Tool.HandlersFor<Tools>
   | Exclude<
-      | AiTool.HandlerServices<Tools[keyof Tools]>
-      | AiTool.ParametersEncodingServices<Tools[keyof Tools]>,
+      | Tool.HandlerServices<Tools[keyof Tools]>
+      | Tool.ParametersEncodingServices<Tools[keyof Tools]>,
       Invocation | ToolCall | RequestServices
     >
-export const bind = Effect.fnUntraced(function* <
-  Tools extends Record<string, AiTool.Any>,
+const bindImpl = Effect.fnUntraced(function* <
+  Tools extends Record<string, Tool.Any>,
   RequestServices = never,
 >(
   toolkit: Toolkit.Toolkit<Tools>,
   metadata: Readonly<Record<string, Metadata>> = {},
   requestServices: ReadonlyArray<Context.Key<RequestServices, unknown>> = [],
-): Effect.fn.Return<ReadonlyArray<Registration>, never, Captured<Tools, RequestServices>> {
+): Effect.fn.Return<Array<Registration>, never, Captured<Tools, RequestServices>> {
   const captured = yield* Effect.context<Captured<Tools, RequestServices>>()
-  const registrations: Registration[] = []
+  const registrations: Array<Registration> = []
   for (const tool of Object.values(toolkit.tools)) {
     // Native Toolkit uses tool.id as its handler Context key. The Handler interface intentionally erases schemas.
     type Services = Captured<Tools, RequestServices> | Invocation | ToolCall | RequestServices
-    type Parameters = AiTool.Parameters<Tools[keyof Tools]>
+    type Parameters = Tool.Parameters<Tools[keyof Tools]>
     type Failure =
-      | AiTool.Failure<Tools[keyof Tools]>
+      | Tool.Failure<Tools[keyof Tools]>
       | AiError.AiError
       | AiError.AiErrorReason
       | ToolError
-    type Success = AiTool.Success<Tools[keyof Tools]>
+    type Success = Tool.Success<Tools[keyof Tools]>
     const nativeHandler = Context.getOption(
       captured,
       Context.Service<{
@@ -130,7 +156,7 @@ export const bind = Effect.fnUntraced(function* <
       Object.hasOwn(metadata, tool.name) ? metadata[tool.name] : undefined,
     )
     const provide = <A, E, R>(
-      effect: Effect.Effect<A, E, R>,
+      self: Effect.Effect<A, E, R>,
     ): Effect.Effect<A, E | ToolError, Invocation | ToolCall> =>
       Effect.flatMap(
         Effect.context<Invocation | ToolCall>(),
@@ -148,7 +174,7 @@ export const bind = Effect.fnUntraced(function* <
           // R was erased by Tool.Any. bind's Captured requirements plus native handler context satisfy codec services;
           // request-local Invocation/ToolCall override captured implementations. Context reconstruction confines erasure here.
           return Effect.provideContext(
-            effect,
+            self,
             Context.makeUnsafe<R>(
               Context.merge(Context.merge(handler.context, captured), current).mapUnsafe,
             ),
@@ -159,26 +185,29 @@ export const bind = Effect.fnUntraced(function* <
       provide(Schema.decodeUnknownEffect(parameters)(args)).pipe(
         Effect.mapError((cause) => error(tool, ToolInvalidParameters, cause)),
       )
-    const encodeArgs = (args: unknown) =>
-      provide(Schema.encodeEffect(parameters)(args as Parameters)).pipe(
+    const encodeArgs = (self: unknown) =>
+      provide(Schema.encodeEffect(parameters)(self as Parameters)).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Schema.Json)),
         Effect.mapError((cause) => error(tool, ToolInvalidParameters, cause)),
       )
     const execute = Effect.fnUntraced(function* (args: unknown, id: string) {
       const invocation = yield* Invocation
       const api = yield* ToolCall
-      const preliminary = (result: unknown): Effect.Effect<void> =>
-        provide(Schema.encodeEffect(success)(result)).pipe(
+      const preliminary = (self: unknown): Effect.Effect<void> =>
+        provide(Schema.encodeEffect(success)(self)).pipe(
           Effect.mapError((cause) => error(tool, ToolInvalidResult, cause)),
           Effect.flatMap((encoded) =>
-            project({ tool, metadata: info }, { result, encoded, isFailure: false }),
+            project({ tool, metadata: info }, { result: self, encoded, isFailure: false }),
           ),
           Effect.flatMap((value) =>
             api.preliminary === undefined
               ? invocation.progress({
-                  output: value.content
-                    ?.flatMap((part) => (part.type === 'text' ? [part.text] : []))
-                    .join(''),
+                  output:
+                    value.content === undefined
+                      ? undefined
+                      : Arr.filterMap(value.content, (part) =>
+                          part.type === 'text' ? Result.succeed(part.text) : Result.failVoid,
+                        ).join(''),
                   details: value.details,
                   ...(value.diagnostics === undefined ? {} : { diagnostics: value.diagnostics }),
                 })
@@ -210,9 +239,39 @@ export const bind = Effect.fnUntraced(function* <
   }
   return registrations
 })
-/** Validate owned tool projections without throwing inside Effect. */
+/**
+ * Captures host dependencies while preserving invocation-time service requirements.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const bind: {
+  <RequestServices = never>(
+    metadata?: Readonly<Record<string, Metadata>>,
+    requestServices?: ReadonlyArray<Context.Key<RequestServices, unknown>>,
+  ): <Tools extends Record<string, Tool.Any>>(
+    self: Toolkit.Toolkit<Tools>,
+  ) => Effect.Effect<Array<Registration>, never, Captured<Tools, RequestServices>>
+  <Tools extends Record<string, Tool.Any>, RequestServices = never>(
+    self: Toolkit.Toolkit<Tools>,
+    metadata?: Readonly<Record<string, Metadata>>,
+    requestServices?: ReadonlyArray<Context.Key<RequestServices, unknown>>,
+  ): Effect.Effect<Array<Registration>, never, Captured<Tools, RequestServices>>
+} = dual(
+  (args) =>
+    args[0] != null &&
+    (typeof args[0] === 'object' || typeof args[0] === 'function') &&
+    'toLayer' in args[0],
+  bindImpl,
+)
+/**
+ * Validates owned tool projections without throwing inside Effect.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const decodeResult = (name: string, value: unknown): Effect.Effect<ToolResult, ToolError> =>
-  Schema.decodeUnknownEffect(Result)(value).pipe(
+  Schema.decodeUnknownEffect(ToolResultSchema)(value).pipe(
     Effect.mapError(
       (cause) =>
         new ToolError({
@@ -220,22 +279,33 @@ export const decodeResult = (name: string, value: unknown): Effect.Effect<ToolRe
         }),
     ),
   )
-/** Run the selected effectful projector; native encoded fallback keeps its existing display policy. */
+/**
+ * Run the selected effectful projector; native encoded fallback keeps its existing display policy.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export const project = (
-  registration: Pick<Registration, 'tool' | 'metadata'>,
+  self: Pick<Registration, 'tool' | 'metadata'>,
   native: NativeResult,
 ): Effect.Effect<ToolResult, ToolError> =>
   Effect.suspend(() =>
-    registration.metadata.project === undefined
+    self.metadata.project === undefined
       ? Effect.succeed(defaultProject(native.result, native.encoded, native.isFailure))
-      : registration.metadata.project(native.result, native.encoded, native.isFailure),
+      : self.metadata.project(native.result, native.encoded, native.isFailure),
   ).pipe(
     Effect.mapError((cause) =>
       cause.reason._tag === 'ToolInvalidResult'
         ? cause
-        : error(registration.tool, ToolInvalidResult, cause),
+        : error(self.tool, ToolInvalidResult, cause),
     ),
   )
+/**
+ * Projects native encoded content with the explicit unencodable display policy.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export function defaultProject(_result: unknown, encoded: unknown, isFailure: boolean): ToolResult {
   return {
     content: [
@@ -246,26 +316,36 @@ export function defaultProject(_result: unknown, encoded: unknown, isFailure: bo
     isError: isFailure,
   }
 }
+/**
+ * Schema for declaration.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export function declaration(
-  registration: Registration,
+  self: Registration,
 ): Effect.Effect<SystemPatch.ToolDeclaration, Schema.SchemaError> {
   return Schema.decodeUnknownEffect(SystemPatch.ToolDeclaration)({
-    name: registration.tool.name,
-    ...(registration.tool.description === undefined
-      ? {}
-      : { description: registration.tool.description }),
-    parameters: AiTool.getJsonSchema(registration.tool),
-    ...(AiTool.isProviderDefined(registration.tool)
+    name: self.tool.name,
+    ...(self.tool.description === undefined ? {} : { description: self.tool.description }),
+    parameters: Tool.getJsonSchema(self.tool),
+    ...(Tool.isProviderDefined(self.tool)
       ? {
           provider: {
-            id: registration.tool.id,
-            name: registration.tool.providerName,
-            args: registration.tool.args,
+            id: self.tool.id,
+            name: self.tool.providerName,
+            args: self.tool.args,
           },
         }
       : {}),
   })
 }
+/**
+ * Schema for intent.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Intent = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -273,19 +353,36 @@ export const Intent = Schema.Struct({
   encodedArgs: SchemaField.optional(Schema.Json),
   replay: Schema.Literals(['safe', 'unsafe']),
 })
+/**
+ * Tool intent contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type Intent = typeof Intent.Type
+/**
+ * Schema for execution.
+ *
+ * @category schemas
+ * @since 0.0.0
+ */
 export const Execution = Schema.Struct({
   outcome: Schema.Literals(['completed', 'failed', 'interrupted', 'unavailable']),
-  result: Result,
+  result: ToolResultSchema,
 })
+/**
+ * Tool execution contract.
+ *
+ * @category models
+ * @since 0.0.0
+ */
 export type Execution = typeof Execution.Type
 /** Persist decoded intent separately from provider encoded params. Native transforms are not re-applied during replay. */
-export const makeIntent = Effect.fnUntraced(function* (
+const makeIntentImpl = Effect.fnUntraced(function* (
   registration: Registration,
-  id: string,
-  decoded: unknown,
-  encoded?: Schema.Json,
+  options: makeIntent.Options,
 ): Effect.fn.Return<Intent, ToolError> {
+  const { id, decoded, encoded } = options
   const args = yield* Schema.decodeUnknownEffect(Schema.Json)(decoded).pipe(
     Effect.mapError((cause) => error(registration.tool, ToolInvalidParameters, cause)),
   )
@@ -297,15 +394,37 @@ export const makeIntent = Effect.fnUntraced(function* (
     replay: registration.metadata.replay ?? 'unsafe',
   } satisfies Intent
 })
-export function interruption(intent: Intent): ToolResult {
+/**
+ * Creates a validated replay intent from decoded and provider-encoded arguments.
+ *
+ * @category constructors
+ * @since 0.0.0
+ */
+export const makeIntent: {
+  (options: makeIntent.Options): (self: Registration) => Effect.Effect<Intent, ToolError>
+  (self: Registration, options: makeIntent.Options): Effect.Effect<Intent, ToolError>
+} = dual(2, makeIntentImpl)
+/**
+ * Creates the model-visible result for an interrupted intent.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export function interruption(self: Intent): ToolResult {
   return {
     isError: true,
     content: [
       Prompt.textPart({ text: 'Tool call interrupted before a durable result was recorded.' }),
     ],
-    details: { reason: 'interrupted', name: intent.name },
+    details: { reason: 'interrupted', name: self.name },
   }
 }
+/**
+ * Creates the model-visible result for an unavailable tool.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export function unavailable(name: string): ToolResult {
   return {
     isError: true,
@@ -314,43 +433,57 @@ export function unavailable(name: string): ToolResult {
   }
 }
 /** Convert handler failures into failed domain results; cancellation remains cancellation. */
-export const settleFailure = (
-  cause: Cause.Cause<ToolError>,
+const settleFailureImpl = (
+  self: Cause.Cause<ToolError>,
   partial: ToolResult,
 ): Effect.Effect<ToolResult> =>
-  Cause.hasInterrupts(cause)
-    ? Effect.failCause(Cause.fromReasons(cause.reasons.filter(Cause.isInterruptReason)))
+  Cause.hasInterrupts(self)
+    ? Effect.failCause(Cause.fromReasons(self.reasons.filter(Cause.isInterruptReason)))
     : Effect.succeed({
         ...partial,
         isError: true,
         diagnostics: [
           ...(partial.diagnostics ?? []),
-          { kind: 'tool_error', message: Serialization.errorText(Cause.squash(cause)) },
+          { kind: 'tool_error', message: Serialization.errorText(Cause.squash(self)) },
         ],
         details: {
           reason: 'execution',
-          error: Serialization.errorText(Cause.squash(cause)),
+          error: Serialization.errorText(Cause.squash(self)),
           partial: partial.details ?? null,
         },
       })
+/**
+ * Converts a caught tool cause to the terminal result while propagating interruption.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const settleFailure: {
+  (partial: ToolResult): (self: Cause.Cause<ToolError>) => Effect.Effect<ToolResult>
+  (self: Cause.Cause<ToolError>, partial: ToolResult): Effect.Effect<ToolResult>
+} = dual(2, settleFailureImpl)
 /** Whole-result text truncation preserves non-text parts and emits one bounded text block. */
-export function boundResult(result: ToolResult, limits: Output.OutputLimits): ToolResult {
-  const content = result.content ?? []
-  const text = content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
+function boundResultImpl(self: ToolResult, limits: Output.OutputLimits): ToolResult {
+  const content = self.content ?? []
+  const text = Arr.filterMap(content, (part) =>
+    part.type === 'text' ? Result.succeed(part.text) : Result.failVoid,
+  ).join('')
   const bounded = Output.boundOutput(text, limits)
-  if (bounded.droppedBytes === 0 && bounded.droppedLines === 0) return result
+  if (bounded.droppedBytes === 0 && bounded.droppedLines === 0) return self
   const anchor =
     limits.retain === 'head'
-      ? Array.findFirstIndex(content, (part) => part.type === 'text')
-      : Array.findLastIndex(content, (part) => part.type === 'text')
+      ? Arr.findFirstIndex(content, (part) => part.type === 'text')
+      : Arr.findLastIndex(content, (part) => part.type === 'text')
   return {
-    ...result,
-    content: content.flatMap((part, index): ReadonlyArray<Prompt.UserMessagePart> => {
-      if (part.type !== 'text') return [part]
-      return Option.contains(anchor, index) ? [{ ...part, text: bounded.text }] : []
+    ...self,
+    content: Arr.filterMap(content, (part, index): Result.Result<Prompt.UserMessagePart, void> => {
+      if (part.type !== 'text') return Result.succeed(part)
+      return Option.contains(anchor, index)
+        ? Result.succeed({ ...part, text: bounded.text })
+        : Result.failVoid
     }),
     diagnostics: [
-      ...(result.diagnostics ?? []),
+      ...(self.diagnostics ?? []),
       {
         kind: 'truncated',
         detail: { droppedBytes: bounded.droppedBytes, droppedLines: bounded.droppedLines },
@@ -358,33 +491,54 @@ export function boundResult(result: ToolResult, limits: Output.OutputLimits): To
     ],
   }
 }
+/**
+ * Bounds model-visible text while preserving non-text native content.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export const boundResult: {
+  (limits: Output.OutputLimits): (self: ToolResult) => ToolResult
+  (self: ToolResult, limits: Output.OutputLimits): ToolResult
+} = dual(2, boundResultImpl)
+/**
+ * Selects sequential or parallel execution from settings and tool metadata.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
 export function executionMode(
-  registrations: ReadonlyArray<Registration>,
+  self: ReadonlyArray<Registration>,
   mode: 'parallel' | 'sequential',
 ): 'parallel' | 'sequential' {
   return mode === 'sequential' ||
-    registrations.some((registration) => registration.metadata.execution === 'sequential')
+    self.some((registration) => registration.metadata.execution === 'sequential')
     ? 'sequential'
     : 'parallel'
 }
 
-/** Controls are reduced in original call order, not finish order; noncompleted/unavailable slots defeat unanimity. */
-export function controls(executions: ReadonlyArray<Execution>): {
+/**
+ * Controls are reduced in original call order, not finish order; noncompleted/unavailable slots defeat unanimity.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export function controls(self: ReadonlyArray<Execution>): {
   readonly terminate: boolean
   readonly reset?: { readonly note?: string | undefined } | undefined
   readonly addTools: ReadonlyArray<string>
 } {
   let reset: { readonly note?: string | undefined } | undefined
   const names = new Set<string>()
-  for (const execution of executions) {
+  for (const execution of self) {
     if (execution.outcome !== 'completed') continue
     if (execution.result.control?.reset !== undefined) reset = execution.result.control.reset
     for (const name of execution.result.control?.addTools ?? []) names.add(name)
   }
   return {
     terminate:
-      executions.length > 0 &&
-      executions.every(
+      self.length > 0 &&
+      self.every(
         (execution) =>
           execution.outcome === 'completed' && execution.result.control?.terminate === true,
       ),
@@ -393,14 +547,72 @@ export function controls(executions: ReadonlyArray<Execution>): {
   }
 }
 
-export function outputLimits(metadata: Metadata): Output.OutputLimits {
+/**
+ * Returns the configured tool output limits merged with defaults.
+ *
+ * @category combinators
+ * @since 0.0.0
+ */
+export function outputLimits(self: Metadata): Output.OutputLimits {
   return {
-    maxBytes: metadata.output?.maxBytes ?? Output.defaults.maxBytes,
-    maxLines: metadata.output?.maxLines ?? Output.defaults.maxLines,
-    retain: metadata.output?.retain ?? Output.defaults.retain,
+    maxBytes: self.output?.maxBytes ?? Output.defaults.maxBytes,
+    maxLines: self.output?.maxLines ?? Output.defaults.maxLines,
+    retain: self.output?.retain ?? Output.defaults.retain,
   }
 }
 
-export const isIntent: (input: unknown) => input is Intent = Schema.is(Intent)
+/**
+ * Checks whether an unknown value satisfies the Intent contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isIntent: (u: unknown) => u is Intent = Schema.is(Intent)
 
-export const isExecution: (input: unknown) => input is Execution = Schema.is(Execution)
+/**
+ * Checks whether an unknown value satisfies the Execution contract.
+ *
+ * @category guards
+ * @since 0.0.0
+ */
+export const isExecution: (u: unknown) => u is Execution = Schema.is(Execution)
+
+/**
+ * Type contracts owned by `makeIntent`.
+ *
+ * @category utility types
+ * @since 0.0.0
+ */
+export declare namespace makeIntent {
+  /**
+   * Configuration accepted by makeIntent.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface Options {
+    readonly id: string
+    readonly decoded: unknown
+    readonly encoded?: Schema.Json | undefined
+  }
+}
+
+/**
+ * Type contracts owned by `Registration`.
+ *
+ * @category utility types
+ * @since 0.0.0
+ */
+export declare namespace Registration {
+  /**
+   * Registration native result type contract.
+   *
+   * @category models
+   * @since 0.0.0
+   */
+  interface NativeResult {
+    readonly result: unknown
+    readonly encoded: unknown
+    readonly isFailure: boolean
+  }
+}
