@@ -32,7 +32,7 @@ import * as View from '../../src/View.ts'
 import * as Memory from '../../src/storage/Memory.ts'
 import * as Sqlite from '../../src/storage/Sqlite.ts'
 import { StrictReceiptJson } from '../../src/storage/StrictReceiptJson.ts'
-import { cursor } from '../../src/storage/State.ts'
+import { cursor } from '../../src/storage/internal/state.ts'
 import * as Outcome from '../../src/workflow/Outcome.ts'
 import * as Submission from '../../src/workflow/Submission.ts'
 

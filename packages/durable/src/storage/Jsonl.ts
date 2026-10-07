@@ -9,8 +9,8 @@ import * as Schema from 'effect/Schema'
 import * as Record from '../Record.ts'
 import { rejected, uncertain, Io, Corrupt, Invalid, type StorageError } from '../StorageError.ts'
 import { Store } from '../Store.ts'
-import * as Backend from './Backend.ts'
-import { detachedEffect, validateState } from './State.ts'
+import * as Backend from './internal/backend.ts'
+import { detachedEffect, validateState } from './internal/state.ts'
 
 export interface Options {
   readonly directory: string

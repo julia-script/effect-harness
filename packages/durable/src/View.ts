@@ -2,7 +2,7 @@ import { identity } from 'effect/Function'
 import * as Types from 'effect/Types'
 import * as Predicate from 'effect/Predicate'
 import * as Option from 'effect/Option'
-import { cursor as journalCursor } from './storage/State.ts'
+import { cursor as journalCursor } from './storage/internal/state.ts'
 import * as Outcome from './workflow/Outcome.ts'
 // Committed mounts adapted from pi-durable (MIT), pinned 636703a0.
 import * as Cause from 'effect/Cause'
@@ -33,7 +33,7 @@ import * as Record from './Record.ts'
 import { rejected, type StorageError, NotFound, Corrupt, Closed } from './StorageError.ts'
 import * as Store from './Store.ts'
 import * as Usage from './Usage.ts'
-import { findDocument, materialize, visibleEntries } from './storage/State.ts'
+import { findDocument, materialize, visibleEntries } from './storage/internal/state.ts'
 
 /** Schema-derived singleton document values retain their mounted reference identity. */
 export const Documents = Schema.Struct({

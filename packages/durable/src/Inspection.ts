@@ -1,5 +1,5 @@
 import type { StorageError } from './StorageError.ts'
-import { cursor as journalCursor } from './storage/State.ts'
+import { cursor as journalCursor } from './storage/internal/state.ts'
 import * as Outcome from './workflow/Outcome.ts'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'

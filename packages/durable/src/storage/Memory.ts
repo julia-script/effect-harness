@@ -4,8 +4,8 @@ import type * as Scope from 'effect/Scope'
 import * as Layer from 'effect/Layer'
 import * as Record from '../Record.ts'
 import { Store } from '../Store.ts'
-import * as Backend from './Backend.ts'
-import { detachedEffect } from './State.ts'
+import * as Backend from './internal/backend.ts'
+import { detachedEffect } from './internal/state.ts'
 
 export const make: Effect.Effect<Store['Service'], never, Scope.Scope> = Effect.gen(function* () {
   const snapshot = yield* Ref.make<Backend.Snapshot>({ state: Record.emptyState(), frames: [] })

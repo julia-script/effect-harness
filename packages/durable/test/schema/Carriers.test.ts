@@ -10,7 +10,7 @@ import * as Record from '../../src/Record.ts'
 import * as Store from '../../src/Store.ts'
 import * as Observation from '../../src/Observation.ts'
 import * as View from '../../src/View.ts'
-import * as State from '../../src/storage/State.ts'
+import * as State from '../../src/storage/internal/state.ts'
 
 const record: Record.Document = {
   id: Record.DocumentId.make(2),

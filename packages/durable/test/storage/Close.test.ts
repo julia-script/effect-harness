@@ -9,7 +9,7 @@ import * as Cause from 'effect/Cause'
 import * as Record from '@effect-harness/durable/Record'
 import * as Session from '@effect-harness/durable/Session'
 import * as Store from '@effect-harness/durable/Store'
-import * as Backend from '@effect-harness/durable/storage/Backend'
+import * as Backend from '../../src/storage/internal/backend.ts'
 import * as Cancellation from '@effect-harness/durable/workflow/Cancellation'
 import { rejected, Io } from '@effect-harness/durable/StorageError'
 

@@ -1,17 +1,17 @@
 import * as Option from 'effect/Option'
-import * as Outcome from '../workflow/Outcome.ts'
+import * as Outcome from '../../workflow/Outcome.ts'
 import * as Effect from 'effect/Effect'
 import * as FiberHandle from 'effect/FiberHandle'
 import * as Deferred from 'effect/Deferred'
 import * as Ref from 'effect/Ref'
 import * as Scope from 'effect/Scope'
 import * as Schema from 'effect/Schema'
-import { StrictReceiptJson } from './StrictReceiptJson.ts'
+import { StrictReceiptJson } from '../StrictReceiptJson.ts'
 import * as Semaphore from 'effect/Semaphore'
-import * as Record from '../Record.ts'
-import { rejected, StorageError, Invalid, Closed, Poisoned, Conflict } from '../StorageError.ts'
-import { makeCandidate, Store, type CommitOptions, type Candidate } from '../Store.ts'
-import { applyWrites, detachedEffect, materialize, validate } from './State.ts'
+import * as Record from '../../Record.ts'
+import { rejected, StorageError, Invalid, Closed, Poisoned, Conflict } from '../../StorageError.ts'
+import { makeCandidate, Store, type CommitOptions, type Candidate } from '../../Store.ts'
+import { applyWrites, detachedEffect, materialize, validate } from './state.ts'
 
 export interface Snapshot {
   readonly state: Record.State

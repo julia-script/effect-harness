@@ -6,7 +6,7 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Record from './Record.ts'
 import { rejected, type StorageError } from './StorageError.ts'
-import { validate } from './storage/State.ts'
+import { validate } from './storage/internal/state.ts'
 
 export interface UnkeyedOptions {
   readonly key?: never

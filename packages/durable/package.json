@@ -11,6 +11,18 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./storage/State": null,
+    "./storage/Backend": null,
+    "./storage/State/*": null,
+    "./storage/Backend/*": null,
+    "./internal": null,
+    "./internal/*": null,
+    "./storage/internal": null,
+    "./storage/internal/*": null,
+    "./workflow/internal": null,
+    "./workflow/internal/*": null,
+    "./testing/internal": null,
+    "./testing/internal/*": null,
     "./*": {
       "types": "./dist/*.d.ts",
       "default": "./dist/*.js"

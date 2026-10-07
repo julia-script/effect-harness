@@ -1,5 +1,5 @@
 import * as Option from 'effect/Option'
-import { validate } from '../storage/State.ts'
+import { validate } from '../storage/internal/state.ts'
 import * as Effect from 'effect/Effect'
 import * as Record from '../Record.ts'
 import { Session } from '../Session.ts'

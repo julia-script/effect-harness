@@ -18,8 +18,8 @@ import {
   detachedEffect,
   validate,
   type CloneError,
-} from './storage/State.ts'
-export { CloneError } from './storage/State.ts'
+} from './storage/internal/state.ts'
+export { CloneError } from './storage/internal/state.ts'
 
 const DefinitionTypeId = '~@effect-harness/durable/Document/Definition'
 const TypeId = '~@effect-harness/durable/Document'

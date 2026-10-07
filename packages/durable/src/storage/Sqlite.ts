@@ -8,8 +8,8 @@ import * as SqlClient from 'effect/sql/SqlClient'
 import * as Record from '../Record.ts'
 import { rejected, StorageError, uncertain, Corrupt, Io, Invalid } from '../StorageError.ts'
 import { Store } from '../Store.ts'
-import * as Backend from './Backend.ts'
-import { validateState } from './State.ts'
+import * as Backend from './internal/backend.ts'
+import { validateState } from './internal/state.ts'
 
 export const MetadataRow = Schema.Struct({ name: Schema.String })
 export const VersionRow = Schema.Struct({

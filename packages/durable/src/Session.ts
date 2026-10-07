@@ -41,7 +41,7 @@ import {
   page,
   validate,
   visibleEntries,
-} from './storage/State.ts'
+} from './storage/internal/state.ts'
 
 export interface ConversationQuery {
   readonly ownerConversationId?: Record.ConversationId

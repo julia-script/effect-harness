@@ -3,9 +3,9 @@ import * as Effect from 'effect/Effect'
 import * as Arr from 'effect/Array'
 import * as Schema from 'effect/Schema'
 import * as Result from 'effect/Result'
-import * as Record from '../Record.ts'
-import * as Document from '../Document.ts'
-import { rejected, StorageError, Invalid, Corrupt, NotFound, Conflict } from '../StorageError.ts'
+import * as Record from '../../Record.ts'
+import * as Document from '../../Document.ts'
+import { rejected, StorageError, Invalid, Corrupt, NotFound, Conflict } from '../../StorageError.ts'
 
 export class CloneError extends Schema.TaggedError<CloneError>(
   '@effect-harness/durable/storage/State/CloneError',
@@ -116,7 +116,7 @@ export const applyOps = Effect.fnUntraced(function* (
 export const materialize = Effect.fnUntraced(function* (
   document: Record.StoredDocument,
   at: Record.Point,
-): Effect.fn.Return<Option.Option<import('../Document.ts').Snapshot>, StorageError> {
+): Effect.fn.Return<Option.Option<import('../../Document.ts').Snapshot>, StorageError> {
   if (at !== 'current' && Record.currentOnly(document.record))
     return yield* rejected('Document does not retain historical content')
   if (!Record.isAlive(document.record, at)) return Option.none()
