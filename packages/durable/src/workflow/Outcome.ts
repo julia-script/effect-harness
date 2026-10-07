@@ -1,7 +1,5 @@
 /**
  * Schema-derived task outcomes and classification.
- *
- * @since 0.0.0
  */
 import * as Tool from '@effect-harness/harness/Tool'
 import { Result as GenerationResult } from './Generation.ts'
@@ -12,41 +10,36 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
 /**
- * Completed schema.
+ * Schema for a completed owned task with its JSON result.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Completed = Schema.Struct({ status: Schema.Literal('completed'), result: Schema.Json })
 /**
- * Failed schema.
+ * Schema for failed, faulted or aborted owned work with a diagnostic message.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Failed = Schema.Struct({
   status: Schema.Literals(['failed', 'faulted', 'aborted']),
   error: Schema.Struct({ message: Schema.String }),
 })
 /**
- * Orphaned schema.
+ * Schema for owned work whose required execution code is unavailable.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Orphaned = Schema.Struct({ status: Schema.Literal('orphaned'), reason: Schema.String })
 /**
- * StructuredOutcome schema.
+ * Schema for completed, failed or orphaned owned-task outcomes.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const StructuredOutcome = Schema.Union([Completed, Failed, Orphaned])
 /**
- * StructuredOutcome contract.
+ * Decoded value validated by the `StructuredOutcome` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type StructuredOutcome = typeof StructuredOutcome.Type
 /**
@@ -57,7 +50,6 @@ export type StructuredOutcome = typeof StructuredOutcome.Type
  * Custom results remain opaque Json.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ExtensionEnvelope = Schema.Struct({
   status: Schema.optionalKey(Schema.Json),
@@ -74,10 +66,9 @@ const error = Schema.decodeUnknownOption(
   Schema.Struct({ message: Schema.optionalKey(Schema.Json) }),
 )
 /**
- * Classification contract.
+ * Direct and interpreted outcome status with an optional diagnostic message.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Classification {
   readonly rawDirectStatus: Schema.Json | undefined
@@ -89,7 +80,6 @@ export interface Classification {
  * Recognizes a structured task outcome without decoding arbitrary extensions.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const classify = (input: unknown): Classification | undefined => {
   const decoded = envelope(input)
@@ -113,7 +103,6 @@ export const classify = (input: unknown): Classification | undefined => {
  * Returns whether a task outcome represents failure.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const failed = (input: unknown): boolean => {
   const status = classify(input)?.status
@@ -122,18 +111,16 @@ export const failed = (input: unknown): boolean => {
   )
 }
 /**
- * ToolCheckpoint schema.
+ * Schema for pinned decoded arguments saved before tool execution.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ToolCheckpoint = Schema.Struct({ arguments: Schema.Json })
 
 /**
- * ToolOutcome schema.
+ * Schema for an encoded tool execution and its native terminal receipt.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ToolOutcome = Schema.Struct({
   execution: Schema.toCodecJson(Tool.Execution),
@@ -151,7 +138,6 @@ const compaction = Schema.decodeUnknownOption(CompactionResult)
  * Legacy/custom metadata uses the explicit extension convention; no result payload is claimed by that fallback.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const classifyTask = (
   task: Pick<Record.Task, 'kind' | 'state'>,

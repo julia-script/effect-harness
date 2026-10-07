@@ -1,7 +1,5 @@
 /**
  * Exact and tolerant text matching with unchanged-line preservation.
- *
- * @since 0.0.0
  */
 import * as Serialization from '../Serialization.ts'
 import { identity } from 'effect/Function'
@@ -23,7 +21,6 @@ import * as Schema from 'effect/Schema'
  * Semantic edit error with its retained cause.
  *
  * @category errors
- * @since 0.0.0
  */
 export class EditError extends Schema.TaggedError<EditError>(
   '@effect-harness/harness/tools/EditDiff/EditError',
@@ -46,7 +43,6 @@ function atUnsafe<A>(self: ReadonlyArray<A>, index: number): A {
  * Detects the first newline convention in text.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function detectLineEnding(self: string): '\r\n' | '\n' {
   const crlfIdx = self.indexOf('\r\n')
@@ -60,7 +56,6 @@ export function detectLineEnding(self: string): '\r\n' | '\n' {
  * Normalizes CRLF and CR line endings to LF.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function normalizeToLF(self: string): string {
   return self.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
@@ -70,7 +65,6 @@ export function normalizeToLF(self: string): string {
  * Restores the selected newline convention in LF text.
  *
  * @category combinators
- * @since 0.0.0
  */
 function restoreLineEndingsImpl(self: string, ending: '\r\n' | '\n'): string {
   return ending === '\r\n' ? self.replace(/\n/g, '\r\n') : self
@@ -88,7 +82,6 @@ function restoreLineEndingsImpl(self: string, ending: '\r\n' | '\n'): string {
  * - Normalize special Unicode spaces to regular space
  *
  * @category combinators
- * @since 0.0.0
  */
 export function normalizeForFuzzyMatch(self: string): string {
   return (
@@ -265,7 +258,6 @@ function applyReplacementsPreservingUnchangedLinesImpl(
  * Applies normalized replacements while retaining unchanged original line bytes.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const applyReplacementsPreservingUnchangedLines: {
   (
@@ -285,10 +277,9 @@ export const applyReplacementsPreservingUnchangedLines: {
 )
 
 /**
- * EditDiff fuzzy match result contract.
+ * Match location and exact or normalized content used for replacement.
  *
  * @category models
- * @since 0.0.0
  */
 export interface FuzzyMatchResult {
   /** The index where the match starts (in the content that should be used for replacement) */
@@ -305,10 +296,9 @@ export interface FuzzyMatchResult {
 }
 
 /**
- * EditDiff edit contract.
+ * Old/new text replacement requiring a unique match.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Edit {
   readonly oldText: string
@@ -316,10 +306,9 @@ export interface Edit {
 }
 
 /**
- * EditDiff applied edits result contract.
+ * Normalized source and resulting text after validated edits.
  *
  * @category models
- * @since 0.0.0
  */
 export interface AppliedEditsResult {
   readonly baseContent: string
@@ -336,7 +325,6 @@ export interface AppliedEditsResult {
  * Unicode quotes/dashes normalized to ASCII).
  *
  * @category combinators
- * @since 0.0.0
  */
 export function fuzzyFindText(self: string, oldText: string): Option.Option<FuzzyMatchResult> {
   if (normalizeForFuzzyMatch(oldText).length === 0) return Option.none()
@@ -373,7 +361,6 @@ export function fuzzyFindText(self: string, oldText: string): Option.Option<Fuzz
  * Strip UTF-8 BOM if present, return both the BOM (if any) and the text without it
  *
  * @category combinators
- * @since 0.0.0
  */
 export function stripBom(self: string): StripBomResult {
   return self.startsWith('\uFEFF')
@@ -532,7 +519,6 @@ function applyEditsToNormalizedContentImpl(
  * Validates disjoint original-content matches and applies replacements in reverse offset order.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const applyEditsToNormalizedContent: {
   (
@@ -555,7 +541,6 @@ export const applyEditsToNormalizedContent: {
  * Generates a standard unified patch.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function generateUnifiedPatch(
   path: string,
@@ -702,7 +687,6 @@ function generateDiffStringImpl(
  * Formats a display diff with line numbers and the first changed line.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const generateDiffString: {
   (newContent: string, contextLines?: number): (self: string) => DiffStringResult
@@ -713,7 +697,6 @@ export const generateDiffString: {
  * Applies normalized replacements while retaining unchanged original line bytes. This synchronous operation can throw.
  *
  * @category unsafe
- * @since 0.0.0
  */
 export const applyReplacementsPreservingUnchangedLinesUnsafe: {
   (baseContent: string, replacements: ReadonlyArray<TextReplacement>): (self: string) => string
@@ -727,7 +710,6 @@ export const applyReplacementsPreservingUnchangedLinesUnsafe: {
  * Validates disjoint original-content matches and applies replacements in reverse offset order. This synchronous operation can throw.
  *
  * @category unsafe
- * @since 0.0.0
  */
 export const applyEditsToNormalizedContentUnsafe: {
   (edits: ReadonlyArray<Edit>, path: string): (self: string) => AppliedEditsResult
@@ -758,14 +740,12 @@ const getReplacementLineRange = (
  * Initial byte-order mark and remaining text.
  *
  * @category models
- * @since 0.0.0
  */
 export type StripBomResult = stripBom.Result
 /**
  * Display diff and the first modified source line when present.
  *
  * @category models
- * @since 0.0.0
  */
 export type DiffStringResult = generateDiffString.Result
 
@@ -773,7 +753,6 @@ export type DiffStringResult = generateDiffString.Result
  * Restores LF text to the selected newline convention.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const restoreLineEndings: {
   (ending: '\r\n' | '\n'): (self: string) => string
@@ -781,17 +760,15 @@ export const restoreLineEndings: {
 } = dual(2, restoreLineEndingsImpl)
 
 /**
- * Type contracts owned by stripBom.
+ * Type-level contracts for `stripBom`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace stripBom {
   /**
-   * Type contract for stripBom.
+   * Content without its initial BOM and whether that BOM was present.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Result {
     readonly bom: string
@@ -800,17 +777,15 @@ export declare namespace stripBom {
 }
 
 /**
- * Type contracts owned by generateDiffString.
+ * Type-level contracts for `generateDiffString`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace generateDiffString {
   /**
-   * Type contract for generateDiffString.
+   * Rendered unified diff and its first changed line.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Result {
     readonly diff: string

@@ -1,7 +1,5 @@
 /**
  * Native coding toolkits, handler layers and executable extensions.
- *
- * @since 0.0.0
  */
 import type * as AiTool from 'effect/ai/Tool'
 // effect-review-allow P9-namespace-alias-equals-module: effect/ai/Tool and ../Tool.ts both bind Tool; AiTool preserves the checked imported-name collision.
@@ -21,14 +19,17 @@ import * as Bash from './Bash.ts'
  * Native toolkit containing read, write, edit and Bash declarations.
  *
  * @category constants
- * @since 0.0.0
  */
 export const toolkit = Toolkit.make(Read.tool, Write.tool, Edit.tool, Bash.tool)
 /**
- * Layer for CodingTools handlers capabilities.
+ * Provides native Toolkit handlers for the portable coding tools.
+ *
+ * **Details**
+ *
+ * Tool.bind captures Env and the shared MutationLocks service when constructing harness
+ * registrations from these handlers.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerHandlers = (
   options: Bash.Options = {},
@@ -40,10 +41,19 @@ export const layerHandlers = (
     bash: Bash.handler(options),
   })
 /**
- * Binds coding handlers to host services and returns the executable coding extension.
+ * Binds portable read, write, edit and bash tools as a named extension.
+ *
+ * **Details**
+ *
+ * Consumes Env and the shared MutationLocks service. Native Toolkit handlers and their
+ * codecs are captured for later invocation.
+ *
+ * **Gotchas**
+ *
+ * Built-in tools use unsafe replay. File and shell effects may have happened before a
+ * durable receipt is saved.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = (
   options: Bash.Options = {},
@@ -53,35 +63,35 @@ export const make = (
     Effect.map((tools) => CodingTools.of({ name: 'coding-tools', tools })),
   )
 /**
- * Service for codingtools capabilities.
+ * Service holding the bound portable coding-tools extension.
  *
  * @category services
- * @since 0.0.0
  */
 export class CodingTools extends Context.Service<CodingTools, Extension.Extension>()(
   '@effect-harness/harness/tools/CodingTools',
 ) {}
 /**
- * Layer for CodingTools capabilities.
+ * Provides a CodingTools extension using native handlers and the supplied environment.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (
   options: Bash.Options = {},
 ): Layer.Layer<CodingTools, never, Env | MutationLocks> => Layer.effect(CodingTools, make(options))
 /**
- * Native toolkit containing read, write, edit and PowerShell declarations.
+ * Native Toolkit containing the PowerShell tool declaration.
+ *
+ * **Gotchas**
+ *
+ * This Toolkit contains only the PowerShell tool; read, write and edit are in toolkit.
  *
  * @category constants
- * @since 0.0.0
  */
 export const powerShellToolkit = Toolkit.make(Bash.powershell)
 /**
  * Binds PowerShell coding handlers and returns the executable coding extension.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makePowerShell = (
   options: Bash.PowerShellOptions = {},

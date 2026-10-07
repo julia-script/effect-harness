@@ -1,18 +1,22 @@
 /**
  * Public namespaces for the retained sibling concepts.
- *
- * @since 0.0.0
  */
 // @barrel
 /**
- * @since 0.0.0
+ * Synchronous assertion adapters for portable environment conformance.
+ *
+ * @category re-exports
  */
 export * as Assertions from './Assertions.ts'
 /**
- * @since 0.0.0
+ * Reusable scoped environment fixtures and capability conformance cases.
+ *
+ * @category re-exports
  */
 export * as EnvConformance from './EnvConformance.ts'
 /**
- * @since 0.0.0
+ * Runner adapters that register portable environment conformance cases.
+ *
+ * @category re-exports
  */
 export * as Runner from './Runner.ts'

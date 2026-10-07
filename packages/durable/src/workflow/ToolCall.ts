@@ -1,7 +1,5 @@
 /**
  * Native tool-call Workflow declaration and result schema.
- *
- * @since 0.0.0
  */
 import * as Identity from '../Identity.ts'
 import * as Schema from 'effect/Schema'
@@ -10,10 +8,9 @@ import * as Record from '../Record.ts'
 import { ExecutionErrorCodec } from './ExecutionError.ts'
 
 /**
- * Native workflow result schema.
+ * Schema for terminal tool settlement, committed result entry and optional controls.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Result = Schema.Struct({
   status: Schema.Literals(['completed', 'failed', 'aborted']),
@@ -21,18 +18,26 @@ export const Result = Schema.Struct({
   control: Schema.optionalKey(Schema.JsonObject),
 })
 /**
- * Native workflow result schema.
+ * Decoded value validated by the `Result` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type Result = typeof Result.Type
 
 /**
- * Native child workflow whose durable intent governs safe and unsafe tool recovery.
+ * Native child Workflow settling one tool intent under its replay policy.
+ *
+ * **Details**
+ *
+ * Register ToolExecutor before executing. The session/task pair determines replay identity;
+ * arguments and call identity are pinned in the durable intent.
+ *
+ * **Gotchas**
+ *
+ * Unsafe intents without a saved receipt are interrupted rather than blindly repeated. Safe
+ * replay permits repetition and must match the tool’s actual external effects.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ToolCall = Workflow.make('@effect-harness/durable/ToolCall/v1', {
   payload: {

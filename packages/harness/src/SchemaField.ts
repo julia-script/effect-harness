@@ -1,7 +1,5 @@
 /**
  * Compatible optional domain fields with encoded omission semantics.
- *
- * @since 0.0.0
  */
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
@@ -11,7 +9,6 @@ import * as SchemaGetter from 'effect/SchemaGetter'
  * Optional domain fields admit undefined and omit it from their encoded object.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const optional = <S extends Schema.Constraint>(
   schema: S,

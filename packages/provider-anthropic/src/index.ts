@@ -1,50 +1,71 @@
 /**
  * Public concept namespaces for this package.
- *
- * @since 0.0.0
  */
 // @barrel
 /**
- * @since 0.0.0
+ * Compatibility constructors and transport identity for Anthropic account clients and
+ * models.
+ *
+ * @category re-exports
  */
 export * as Account from './Account.ts'
 /**
- * @since 0.0.0
+ * Compatibility constructors for the Anthropic API-key language model.
+ *
+ * @category re-exports
  */
 export * as Anthropic from './Anthropic.ts'
 /**
- * @since 0.0.0
+ * Authenticated native Anthropic clients with account protocol adaptation.
+ *
+ * @category re-exports
  */
 export * as AnthropicAccountClient from './AnthropicAccountClient.ts'
 /**
- * @since 0.0.0
+ * Anthropic account model construction sharing its captured native client.
+ *
+ * @category re-exports
  */
 export * as AnthropicAccountLanguageModel from './AnthropicAccountLanguageModel.ts'
 /**
- * @since 0.0.0
+ * Native Effect AI Anthropic client service and protocol facade.
+ *
+ * @category re-exports
  */
 export * as AnthropicClient from './AnthropicClient.ts'
 /**
- * @since 0.0.0
+ * Captured native Anthropic models and API-key transport composition.
+ *
+ * @category re-exports
  */
 export * as AnthropicLanguageModel from './AnthropicLanguageModel.ts'
 /**
- * @since 0.0.0
+ * Native Effect AI Anthropic tool constructors and schemas.
+ *
+ * @category re-exports
  */
 export * as AnthropicTool from './AnthropicTool.ts'
 /**
- * @since 0.0.0
+ * Validated model catalogues with pinned request configuration and usage accounting.
+ *
+ * @category re-exports
  */
 export * as Catalog from './Catalog.ts'
 /**
- * @since 0.0.0
+ * Single-use Anthropic OAuth consent, refresh and scoped browser callbacks.
+ *
+ * @category re-exports
  */
 export * as OAuth from './OAuth.ts'
 /**
- * @since 0.0.0
+ * Provider prompt projections that retain native message roles and opaque protocol data.
+ *
+ * @category re-exports
  */
 export * as Prompt from './Prompt.ts'
 /**
- * @since 0.0.0
+ * Canonical tool-media translation at the captured native client boundary.
+ *
+ * @category re-exports
  */
 export * as ToolResult from './ToolResult.ts'

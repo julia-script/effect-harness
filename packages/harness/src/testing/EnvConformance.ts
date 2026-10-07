@@ -1,7 +1,5 @@
 /**
  * Reusable scoped environment fixtures and capability conformance cases.
- *
- * @since 0.0.0
  */
 import { dual } from 'effect/Function'
 import * as Arr from 'effect/Array'
@@ -24,10 +22,9 @@ import * as Stream from 'effect/Stream'
 import { Env, type FileError, type ExecutionError, WatchChange, type WatchTarget } from '../Env.ts'
 
 /**
- * EnvConformance assertions contract.
+ * Assertions consumed by shared environment conformance cases.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Assertions {
   readonly strictEqual: (actual: unknown, expected: unknown) => void
@@ -35,17 +32,15 @@ export interface Assertions {
   readonly ok: (condition: unknown, message?: string) => void
 }
 /**
- * EnvConformance options contract.
+ * Fresh environment Layers and assertions used by shared adapter cases.
  *
  * @category models
- * @since 0.0.0
  */
 export type Options = makeEnvConformance.Options
 /**
- * EnvConformance case contract.
+ * Named Effect-based environment conformance case.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Case {
   readonly name: string
@@ -57,7 +52,6 @@ export interface Case {
  * Acquires a fresh writable cwd per Layer build; resource scope closes before directory removal.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const freshLayer = <E, R>(
   make: (cwd: string) => Layer.Layer<Env, E, R>,
@@ -85,7 +79,6 @@ const withEnvImpl = <A, E, R, E2, R2>(
  * Runs an operation once in a fresh adapter resource scope.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const withEnv: {
   <E2, R2>(
@@ -165,7 +158,6 @@ const watching = Effect.fnUntraced(function* <E, R>(
  * Supply a fresh empty Env Layer separately for every case.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeEnvConformance = (options: Options): Array<Case> => {
   const assert = options.assertions
@@ -655,17 +647,15 @@ export const makeEnvConformance = (options: Options): Array<Case> => {
 }
 
 /**
- * Type contracts owned by makeEnvConformance.
+ * Type-level contracts for `makeEnvConformance`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace makeEnvConformance {
   /**
    * Configuration for makeEnvConformance.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Options {
     readonly assertions: Assertions

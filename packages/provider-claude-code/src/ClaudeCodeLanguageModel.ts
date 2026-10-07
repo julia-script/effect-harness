@@ -1,7 +1,5 @@
 /**
  * Claude Code language models with scoped transport and intent-session ownership.
- *
- * @since 0.0.0
  */
 import * as Config from 'effect/Config'
 import * as Context from 'effect/Context'
@@ -18,17 +16,15 @@ import * as RequestOptions from './RequestOptions.ts'
 import { unsupported } from './ClaudeCodeError.ts'
 
 /**
- * Describes the Options contract.
+ * Type-level contracts for `ClaudeCodeLanguageModel`.
  *
- * @category types
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace ClaudeCodeLanguageModel {
   /**
-   * Describes the Options contract.
+   * Selected CLI model, cwd, effort and canonical-history import policy.
    *
-   * @category types
-   * @since 0.0.0
+   * @category models
    */
   export interface Options {
     readonly model: string
@@ -38,18 +34,27 @@ export declare namespace ClaudeCodeLanguageModel {
   }
 }
 /**
- * Describes the Options contract.
+ * Selected CLI model, cwd, effort and canonical-history import policy.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export type Options = ClaudeCodeLanguageModel.Options
 
 /**
- * Native Effect AI provider. The caller supplies CLI transport and a scoped intent-only MCP server.
+ * Creates a native LanguageModel backed by the installed CLI and intent server.
+ *
+ * **Details**
+ *
+ * Consumes Cli and IntentServer. model, cwd and effort configure each request. historyMode
+ * defaults to rejecting canonical history the CLI cannot faithfully import.
+ *
+ * **Gotchas**
+ *
+ * transcript mode renders saved messages as input data; it does not resume a native CLI
+ * session. Unsupported media, options and structured-object generation fail with native
+ * AiError.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = Effect.fnUntraced(function* (
   options: Options,
@@ -96,10 +101,14 @@ export const make = Effect.fnUntraced(function* (
 })
 
 /**
- * Provides ClaudeCodeLanguageModel services with the declared native dependencies.
+ * Provides the CLI-backed native LanguageModel and captured Cli service.
  *
+ * **Details**
+ *
+ * Consumes Cli and IntentServer. Their owning scopes must remain alive for requests.
+ *
+ * @see {@link make} for history and capability constraints.
  * @category layers
- * @since 0.0.0
  */
 export const layer = (
   options: Options,
@@ -120,7 +129,6 @@ export const layer = (
  * Resolves all layer options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,

@@ -1,7 +1,5 @@
 /**
  * Incremental byte scanning for exact text-line selection offsets.
- *
- * @since 0.0.0
  */
 import { identity } from 'effect/Function'
 import * as Pipeable from 'effect/Pipeable'
@@ -17,10 +15,9 @@ const encoder = new TextEncoder()
 const decodedBytes = (self: string): number => encoder.encode(self).length
 const TypeId = '~@effect-harness/harness/env/LineScan'
 /**
- * LineScan state contract.
+ * Incremental newline and byte-offset accumulator for a selected line window.
  *
  * @category models
- * @since 0.0.0
  */
 export interface State extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [TypeId]: typeof TypeId
@@ -41,10 +38,13 @@ export interface State extends Pipeable.Pipeable, Inspectable.Inspectable {
   bom: boolean
 }
 /**
- * Checks whether an unknown value satisfies the State contract.
+ * Checks whether a value carries the nominal `State` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isState = (u: unknown): u is State => Predicate.hasProperty(u, TypeId)
 function makeImpl(startLine: number, options: make.Options = {}): Result.Result<State, FileError> {
@@ -84,7 +84,6 @@ function makeImpl(startLine: number, options: make.Options = {}): Result.Result<
  * Scans byte data synchronously and mutates offsets; native decoder and accessor faults can throw.
  *
  * @category unsafe
- * @since 0.0.0
  */
 export function pushUnsafe(self: State, chunk: Uint8Array): void {
   if (self.head !== undefined) {
@@ -130,7 +129,6 @@ function process(self: State, chunk: Uint8Array): void {
  * Completes scanner offsets synchronously; native decoder and accessor faults can throw.
  *
  * @category unsafe
- * @since 0.0.0
  */
 export function finishUnsafe(self: State): LineScan {
   if (self.head !== undefined) releaseHead(self)
@@ -192,7 +190,6 @@ function feed(self: State, chunk: Uint8Array, base: number, from: number, to: nu
  * Admits incremental data through the typed failure boundary.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const push = (self: State, chunk: Uint8Array): Effect.Effect<void, FileError> =>
   Effect.try({
@@ -206,7 +203,6 @@ export const push = (self: State, chunk: Uint8Array): Effect.Effect<void, FileEr
  * Returns completed scanner offsets through the typed file error boundary.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const finish = (self: State): Effect.Effect<LineScan, FileError> =>
   Effect.try({
@@ -218,22 +214,19 @@ export const finish = (self: State): Effect.Effect<LineScan, FileError> =>
  * Creates a mutable line scanner or synchronously throws the typed range failure.
  *
  * @category unsafe
- * @since 0.0.0
  */
 export const makeUnsafe = (startLine: number, options: make.Options = {}): State =>
   Result.getOrThrow(make(startLine, options))
 /**
- * Type contracts owned by `make`.
+ * Type-level contracts for `make`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace make {
   /**
    * Configuration accepted by make.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Options {
     readonly endLine?: number | undefined
@@ -252,7 +245,6 @@ const StateProto = {
  * Validates the line range and returns a mutable byte scanner with typed failures.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = (
   startLine: number,

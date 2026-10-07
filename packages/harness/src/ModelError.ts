@@ -1,16 +1,13 @@
 /**
  * Semantic model failure reasons and their permanent wrapper.
- *
- * @since 0.0.0
  */
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
 import * as Usage from './Usage.ts'
 /**
- * Semantic model no model with its retained cause.
+ * Failure reporting a provider/model reference absent from the catalogue.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ModelNoModel extends Schema.TaggedError<ModelNoModel>(
   '@effect-harness/harness/ModelError/ModelNoModel',
@@ -24,10 +21,9 @@ export class ModelNoModel extends Schema.TaggedError<ModelNoModel>(
   }
 }
 /**
- * Semantic model unsupported with its retained cause.
+ * Failure reporting request options or behavior unsupported by a model descriptor.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ModelUnsupported extends Schema.TaggedError<ModelUnsupported>(
   '@effect-harness/harness/ModelError/ModelUnsupported',
@@ -41,10 +37,9 @@ export class ModelUnsupported extends Schema.TaggedError<ModelUnsupported>(
   }
 }
 /**
- * Semantic model invalid response with its retained cause.
+ * Failure reporting a provider response that violates the model contract.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ModelInvalidResponse extends Schema.TaggedError<ModelInvalidResponse>(
   '@effect-harness/harness/ModelError/ModelInvalidResponse',
@@ -61,21 +56,23 @@ export class ModelInvalidResponse extends Schema.TaggedError<ModelInvalidRespons
  * Schema for model error reason.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ModelErrorReason = Schema.Union([ModelNoModel, ModelUnsupported, ModelInvalidResponse])
 /**
- * ModelError model error reason contract.
+ * Decoded value validated by the `ModelErrorReason` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type ModelErrorReason = typeof ModelErrorReason.Type
 /**
- * Semantic model error with its retained cause.
+ * Structured model-selection, capability or response failure.
+ *
+ * **Details**
+ *
+ * The reason discriminator separates missing models, unsupported options and invalid
+ * responses. Provider request errors may instead retain their native AiError contract.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ModelError extends Schema.TaggedError<ModelError>(
   '@effect-harness/harness/ModelError/ModelError',

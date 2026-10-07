@@ -1,141 +1,205 @@
 /**
  * Public namespaces for the retained sibling concepts.
- *
- * @since 0.0.0
  */
 // @barrel
 /**
- * @since 0.0.0
+ * Agent configuration, selection policies and validated execution settings.
+ *
+ * @category re-exports
  */
 export * as Agent from './Agent.ts'
 /**
- * @since 0.0.0
+ * Conversation cut selection and native summarization prompts.
+ *
+ * @category re-exports
  */
 export * as Compaction from './Compaction.ts'
 /**
- * @since 0.0.0
+ * Committed transcript projection, compatible edit codecs and token estimates.
+ *
+ * @category re-exports
  */
 export * as Context from './Context.ts'
 /**
- * @since 0.0.0
+ * Portable scoped file, directory, watch and process capabilities.
+ *
+ * @category re-exports
  */
 export * as Env from './Env.ts'
 /**
- * @since 0.0.0
+ * Native model and tool execution with admitted progress settlement.
+ *
+ * @category re-exports
  */
 export * as Executor from './Executor.ts'
 /**
- * @since 0.0.0
+ * Executable extension declarations and prompt-section callbacks.
+ *
+ * @category re-exports
  */
 export * as Extension from './Extension.ts'
 /**
- * @since 0.0.0
+ * Ordered extension hooks with interruption-preserving recovery.
+ *
+ * @category re-exports
  */
 export * as Hook from './Hook.ts'
 /**
- * @since 0.0.0
+ * Extension callback failures with their original causes.
+ *
+ * @category re-exports
  */
 export * as HookError from './HookError.ts'
 /**
- * @since 0.0.0
+ * Canonical conversation and entry identity codecs with numeric wire bounds.
+ *
+ * @category re-exports
  */
 export * as Identity from './Identity.ts'
 /**
- * @since 0.0.0
+ * Invocation context, execution callbacks and model-visible tool results.
+ *
+ * @category re-exports
  */
 export * as Invocation from './Invocation.ts'
 /**
- * @since 0.0.0
+ * Structural equivalence for validated JSON values.
+ *
+ * @category re-exports
  */
 export * as Json from './Json.ts'
 /**
- * @since 0.0.0
+ * Native model catalogs, deferred capabilities and semantic provider failures.
+ *
+ * @category re-exports
  */
 export * as Model from './Model.ts'
 /**
- * @since 0.0.0
+ * Semantic model failure reasons and their permanent wrapper.
+ *
+ * @category re-exports
  */
 export * as ModelError from './ModelError.ts'
 /**
- * @since 0.0.0
+ * Host-owned canonical file mutation admission shared across runtimes.
+ *
+ * @category re-exports
  */
 export * as MutationLocks from './MutationLocks.ts'
 /**
- * @since 0.0.0
+ * Incremental output retention with exact UTF-8 limits and UTF-16 deltas.
+ *
+ * @category re-exports
  */
 export * as Output from './Output.ts'
 /**
- * @since 0.0.0
+ * Output conversion failures with their original causes.
+ *
+ * @category re-exports
  */
 export * as OutputError from './OutputError.ts'
 /**
- * @since 0.0.0
+ * Scoped progress pacing and terminal acknowledgement settlement.
+ *
+ * @category re-exports
  */
 export * as Progress from './Progress.ts'
 /**
- * @since 0.0.0
+ * Managed section and tool deltas for native model prompts.
+ *
+ * @category re-exports
  */
 export * as Prompt from './Prompt.ts'
 /**
- * @since 0.0.0
+ * Extension installation, snapshot resolution and prompt rendering.
+ *
+ * @category re-exports
  */
 export * as Registry from './Registry.ts'
 /**
- * @since 0.0.0
+ * Extension registry failures with their original causes.
+ *
+ * @category re-exports
  */
 export * as RegistryError from './RegistryError.ts'
 /**
- * @since 0.0.0
+ * Immutable native response accumulation and ordered partial publication.
+ *
+ * @category re-exports
  */
 export * as Response from './Response.ts'
 /**
- * @since 0.0.0
+ * Compatible optional domain fields with encoded omission semantics.
+ *
+ * @category re-exports
  */
 export * as SchemaField from './SchemaField.ts'
 /**
- * @since 0.0.0
+ * Typed arbitrary-value conversion and explicit unencodable display markers.
+ *
+ * @category re-exports
  */
 export * as Serialization from './Serialization.ts'
 /**
- * @since 0.0.0
+ * Canonical managed-section and tool-declaration codecs.
+ *
+ * @category re-exports
  */
 export * as SystemPatch from './SystemPatch.ts'
 /**
- * @since 0.0.0
+ * Fractional epoch-time and duration codecs at numeric wire boundaries.
+ *
+ * @category re-exports
  */
 export * as Time from './Time.ts'
 /**
- * @since 0.0.0
+ * Native tool binding, validated projections and replay intent codecs.
+ *
+ * @category re-exports
  */
 export * as Tool from './Tool.ts'
 /**
- * @since 0.0.0
+ * Semantic tool failure reasons with preserved caught causes.
+ *
+ * @category re-exports
  */
 export * as ToolError from './ToolError.ts'
 /**
- * @since 0.0.0
+ * Model-visible tool envelopes and rendered execution diagnostics.
+ *
+ * @category re-exports
  */
 export * as ToolResult from './ToolResult.ts'
 /**
- * @since 0.0.0
+ * Token and price ledgers with explicit partial-cost metadata.
+ *
+ * @category re-exports
  */
 export * as Usage from './Usage.ts'
 // effect-review-allow P9-barrel-namespace-only: NodeEnv and NodeNativeFiles are optional Node host adapters. They remain explicit public leaf imports so the portable root does not eagerly load host-only dependencies.
 
 /**
- * @since 0.0.0
+ * Public namespaces for the retained sibling concepts.
+ *
+ * @category re-exports
  */
 export * as testing from './testing/index.ts'
 /**
- * @since 0.0.0
+ * Public namespaces for the retained sibling concepts.
+ *
+ * @category re-exports
  */
 export * as tools from './tools/index.ts'
 
 /**
- * @since 0.0.0
+ * Semantic file operation failures with retained native causes and paths.
+ *
+ * @category re-exports
  */
 export * as FileError from './FileError.ts'
 /**
- * @since 0.0.0
+ * Semantic process execution failures with retained native causes and spill metadata.
+ *
+ * @category re-exports
  */
 export * as ExecutionError from './ExecutionError.ts'

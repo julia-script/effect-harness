@@ -1,7 +1,5 @@
 /**
  * Scoped text and image reading through portable Env capabilities.
- *
- * @since 0.0.0
  */
 import * as Option from 'effect/Option'
 import * as DateTime from 'effect/DateTime'
@@ -23,10 +21,9 @@ import * as Image from './Image.ts'
 import * as path from './internal/path.ts'
 import * as Truncate from './Truncate.ts'
 /**
- * Schema for parameters.
+ * Schema for file path and optional one-based text window.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Parameters = Schema.Struct({
   path: Schema.String,
@@ -34,17 +31,24 @@ export const Parameters = Schema.Struct({
   limit: SchemaField.optional(Schema.Finite),
 })
 /**
- * Read input contract.
+ * Decoded parameters passed to the coding-tool handler.
  *
  * @category models
- * @since 0.0.0
  */
 export type Input = Parameters
 /**
- * Native read tool declaration with scoped text and image capabilities.
+ * Native read tool for bounded text line windows.
+ *
+ * **Details**
+ *
+ * Paths resolve through Env. Text windows use one-based offsets and library byte/line
+ * limits.
+ *
+ * **Gotchas**
+ *
+ * Recognized images return unsupported_image; this tool does not decode or resize them.
  *
  * @category constants
- * @since 0.0.0
  */
 export const tool = AiTool.make('read', {
   description:
@@ -188,7 +192,6 @@ class FileChanged extends Schema.TaggedError<FileChanged>(
  * Reads bounded text or image data and retries a changed inode once within the same reader scope.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const handler = Effect.fnUntraced(function* (
   input: Input,
@@ -244,17 +247,20 @@ export const handler = Effect.fnUntraced(function* (
 })
 
 /**
- * Checks whether an unknown value satisfies the Input contract.
+ * Checks whether a value satisfies the decoded `Parameters` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isInput: (u: unknown) => u is Parameters = Schema.is(Parameters)
 
 /**
- * Read parameters contract.
+ * File path and optional one-based text window.
  *
  * @category models
- * @since 0.0.0
  */
 export type Parameters = typeof Parameters.Type

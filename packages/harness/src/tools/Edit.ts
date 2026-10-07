@@ -1,7 +1,5 @@
 /**
  * Validated disjoint edits that preserve unchanged text bytes.
- *
- * @since 0.0.0
  */
 import { constUndefined } from 'effect/Function'
 import * as Option from 'effect/Option'
@@ -20,20 +18,18 @@ import * as EditDiff from './EditDiff.ts'
 import * as mutation from './internal/mutation.ts'
 import * as path from './internal/path.ts'
 /**
- * Schema for parameters.
+ * Schema for file path and unique old/new text replacement.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Parameters = Schema.Struct({
   path: Schema.String,
   edits: Schema.Array(Schema.Struct({ oldText: Schema.String, newText: Schema.String })),
 })
 /**
- * Edit input contract.
+ * Decoded parameters passed to the coding-tool handler.
  *
  * @category models
- * @since 0.0.0
  */
 export type Input = Parameters
 const isEdit = Schema.is(Parameters.fields.edits.value)
@@ -50,7 +46,6 @@ const isLegacyEdit = Schema.is(LegacyEdit)
  * Repairs supported legacy argument shapes without discarding unknown keys.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const repair = Effect.fnUntraced(function* (input: unknown): Effect.fn.Return<unknown> {
   if (!isRepairObject(input)) return input
@@ -78,10 +73,19 @@ export const repair = Effect.fnUntraced(function* (input: unknown): Effect.fn.Re
   return args
 })
 /**
- * Native edit tool declaration with disjoint matching and preserved unchanged bytes.
+ * Native edit tool applying a unique old/new text replacement.
+ *
+ * **Details**
+ *
+ * Preserves BOM and line endings and reports a diff in result details. Controlled
+ * whitespace/typography normalization can locate a fuzzy match.
+ *
+ * **Gotchas**
+ *
+ * Missing or ambiguous matches fail rather than replacing arbitrary occurrences. Mutation
+ * requires the shared MutationLocks manager.
  *
  * @category constants
- * @since 0.0.0
  */
 export const tool = AiTool.make('edit', {
   description:
@@ -102,7 +106,6 @@ export const tool = AiTool.make('edit', {
  * Applies validated edits under canonical mutation admission and reports the resulting diff.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const handler = Effect.fnUntraced(function* (input: Input): Effect.fn.Return<
   {
@@ -198,17 +201,20 @@ export const handler = Effect.fnUntraced(function* (input: Input): Effect.fn.Ret
 })
 
 /**
- * Checks whether an unknown value satisfies the Input contract.
+ * Checks whether a value satisfies the decoded `Parameters` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isInput: (u: unknown) => u is Parameters = Schema.is(Parameters)
 
 /**
- * Edit parameters contract.
+ * File path and unique old/new text replacement.
  *
  * @category models
- * @since 0.0.0
  */
 export type Parameters = typeof Parameters.Type

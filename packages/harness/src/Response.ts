@@ -1,7 +1,5 @@
 /**
  * Immutable native response accumulation and ordered partial publication.
- *
- * @since 0.0.0
  */
 import * as HashMap from 'effect/HashMap'
 import { dual } from 'effect/Function'
@@ -15,10 +13,9 @@ const samePart = Schema.toEquivalence(Prompt.AssistantMessagePart)
 const sameOptions = Schema.toEquivalence(Prompt.ProviderOptions)
 
 /**
- * Response state contract.
+ * Accumulated native response parts and their stream order.
  *
  * @category models
- * @since 0.0.0
  */
 export interface State {
   readonly parts: ReadonlyArray<Response.AnyPart>
@@ -39,7 +36,6 @@ export interface State {
  * Creates an empty response state.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const empty = (): State => ({
   parts: [],
@@ -163,7 +159,6 @@ function appendImpl(self: State, part: Part): State {
  * Copies streaming response data while preserving block start order.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const append: {
   (part: Part): (self: State) => State
@@ -177,7 +172,6 @@ export const append: {
  * It is UI history, never model context.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function partial(self: State): Option.Option<Prompt.AssistantMessage> {
   const content: Array<Prompt.AssistantMessagePart> = []
@@ -229,14 +223,12 @@ export function partial(self: State): Option.Option<Prompt.AssistantMessage> {
  * Converts completed native response parts to a prompt.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const message = (self: State): Prompt.Prompt => Prompt.fromResponseParts(self.parts)
 /**
- * Response change contract.
+ * Incremental model-message change produced from accumulated response state.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Change {
   readonly path: ReadonlyArray<string | number>
@@ -302,7 +294,6 @@ function deltaImpl(
  * Returns incremental changes between the previous and current values.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const delta: {
   (

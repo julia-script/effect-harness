@@ -1,7 +1,5 @@
 /**
  * Output conversion failures with their original causes.
- *
- * @since 0.0.0
  */
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
@@ -9,7 +7,6 @@ import * as Schema from 'effect/Schema'
  * Semantic output failure with its retained cause.
  *
  * @category errors
- * @since 0.0.0
  */
 export class OutputFailure extends Schema.TaggedError<OutputFailure>(
   '@effect-harness/harness/OutputError/OutputFailure',
@@ -18,21 +15,18 @@ export class OutputFailure extends Schema.TaggedError<OutputFailure>(
  * Schema for output error reason.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const OutputErrorReason = Schema.Union([OutputFailure])
 /**
- * OutputError output error reason contract.
+ * Decoded value validated by the `OutputErrorReason` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type OutputErrorReason = typeof OutputErrorReason.Type
 /**
  * Semantic output error with its retained cause.
  *
  * @category errors
- * @since 0.0.0
  */
 export class OutputError extends Schema.TaggedError<OutputError>(
   '@effect-harness/harness/OutputError/OutputError',

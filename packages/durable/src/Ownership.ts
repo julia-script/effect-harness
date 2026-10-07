@@ -1,7 +1,5 @@
 /**
  * Native Workflow declaration metadata and pure ownership traversal.
- *
- * @since 0.0.0
  */
 import * as Arr from 'effect/Array'
 import { constFalse, constant } from 'effect/Function'
@@ -27,7 +25,6 @@ import { ExecutionError, InvalidState, Closed, Aborted } from './workflow/Execut
  * Durable references identify native Workflow executions; they contain no custom scheduler state.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Binding = Schema.Struct({
   workflow: Schema.String,
@@ -35,10 +32,9 @@ export const Binding = Schema.Struct({
   payload: Schema.Json,
 })
 /**
- * Binding contract.
+ * Native Workflow name, execution identity and encoded payload bound to a task.
  *
  * @category models
- * @since 0.0.0
  */
 export type Binding = typeof Binding.Type
 
@@ -46,7 +42,6 @@ export type Binding = typeof Binding.Type
  * Declarations for cancellation and inspection; execution registration is each declaration's ordinary toLayer.
  *
  * @category services
- * @since 0.0.0
  */
 export class Declarations extends Context.Service<
   Declarations,
@@ -57,18 +52,26 @@ export class Declarations extends Context.Service<
   }
 >()('@effect-harness/durable/Ownership/Declarations') {}
 /**
- * Schema services retained structurally across heterogeneous native declarations. Compatibility alias for Declarations.Services.
+ * Type alias for `Declarations.Services`.
  *
  * @category models
- * @since 0.0.0
  */
 export type DeclarationServices<W extends Workflow.Any> = Declarations.Services<W>
 
 /**
- * layerDeclarations service Layer.
+ * Provides the native Workflow declarations permitted for owned task bindings.
+ *
+ * **Details**
+ *
+ * Captures payload schema services supplied during construction. The service exposes
+ * declaration metadata without acquiring a WorkflowEngine.
+ *
+ * **Gotchas**
+ *
+ * Include all built-in declarations when extending the set for custom owned work. A missing
+ * declaration prevents its persisted binding from executing.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerDeclarations = <const W extends ReadonlyArray<Workflow.Any>>(
   workflows: W,
@@ -92,7 +95,6 @@ export const layerDeclarations = <const W extends ReadonlyArray<Workflow.Any>>(
  * Executes native declarations with their captured schema context and the caller's optional WorkflowInstance.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const execute = Effect.fnUntraced(function* (
   binding: Binding,
@@ -154,17 +156,15 @@ export const execute = Effect.fnUntraced(function* (
 })
 
 /**
- * Compatibility alias for Current.Identity.
+ * Session, conversation and task identities for an owned invocation.
  *
  * @category models
- * @since 0.0.0
  */
 export type Identity = Current.Identity
 /**
  * A scoped domain identity for tools and user-defined native Workflow activities.
  *
  * @category services
- * @since 0.0.0
  */
 export class Current extends Context.Service<
   Current,
@@ -175,10 +175,14 @@ export class Current extends Context.Service<
 >()('@effect-harness/durable/Ownership/Current') {}
 
 /**
- * layerCurrent service Layer.
+ * Provides invocation identity and checks for an owned task in its exact Session.
+ *
+ * **Details**
+ *
+ * The supplied Session must be the invocation’s domain Session. check fences abort-marked or
+ * terminal work before it can continue.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerCurrent = (identity: Identity): Layer.Layer<Current, never, Session.Session> =>
   Layer.effect(Current)(
@@ -227,7 +231,6 @@ function writable(option: Option.Option<Record.Task>): Effect.Effect<Record.Task
  * The producer can repeat after a crash; memoization does not promise remote exactly-once effects.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const memo = Effect.fnUntraced(function* <S extends Schema.Constraint, E, R>(
   name: string,
@@ -273,10 +276,9 @@ export const memo = Effect.fnUntraced(function* <S extends Schema.Constraint, E,
 })
 
 /**
- * Graph contract.
+ * Committed tasks and conversations used for ownership traversal.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Graph {
   readonly conversations: ReadonlyArray<Record.Conversation>
@@ -287,21 +289,18 @@ export interface Graph {
  * Ownership traversal target constructors.
  *
  * @category models
- * @since 0.0.0
  */
 export type Target = reach.Target
 /**
  * Ownership traversal target constructors.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const Target = Data.taggedEnum<Target>()
 /**
- * Compatibility alias for reach.Reached.
+ * Owned tasks and conversations reachable from a selected root.
  *
  * @category models
- * @since 0.0.0
  */
 export type Reached = reach.Reached
 
@@ -378,7 +377,6 @@ function reachImpl(self: Graph, target: Target, background = false): Option.Opti
  * Table reads are collected before any abort marks or inbox withdrawal are written.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const readGraph = Effect.fnUntraced(function* (
   tx: Session.Transaction,
@@ -411,7 +409,6 @@ export const readGraph = Effect.fnUntraced(function* (
  * Returns the bottom-up ownership closure reachable from a target.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const reach: {
   (target: Target, background?: boolean): (self: Graph) => Option.Option<Reached>
@@ -419,17 +416,15 @@ export const reach: {
 } = dual((args) => Predicate.hasProperty(args[0], 'tasks'), reachImpl)
 
 /**
- * Declarations contract.
+ * Type-level contracts for `Declarations`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Declarations {
   /**
-   * Services contract.
+   * Payload schema services required by the registered Workflow declaration set.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Services<W extends Workflow.Any> =
     | W['payloadSchema']['EncodingServices']
@@ -439,17 +434,15 @@ export declare namespace Declarations {
 }
 
 /**
- * Current contract.
+ * Type-level contracts for `Current`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Current {
   /**
-   * Identity contract.
+   * Session, conversation and task identities for an owned invocation.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Identity {
     readonly sessionId: identity.SessionId
@@ -459,27 +452,24 @@ export declare namespace Current {
 }
 
 /**
- * Returns the bottom-up ownership closure reachable from a target.
+ * Type-level contracts for `reach`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace reach {
   /**
    * Ownership traversal target constructors.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Target = Data.TaggedEnum<{
     conversation: { readonly kind: 'conversation'; readonly id: Record.ConversationId }
     task: { readonly kind: 'task'; readonly id: Record.TaskId }
   }>
   /**
-   * Reached contract.
+   * Owned tasks and conversations reachable from a selected root.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Reached {
     /** Children precede parents so native interrupts and compensation can drain bottom-up. */

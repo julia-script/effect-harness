@@ -1,7 +1,5 @@
 /**
  * Validated model catalogues with pinned request configuration and usage accounting.
- *
- * @since 0.0.0
  */
 import { dual, constUndefined } from 'effect/Function'
 import * as HashMap from 'effect/HashMap'
@@ -57,10 +55,14 @@ const Options = Schema.Struct({
 })
 const Price = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
 /**
- * Defines Prices for the Catalog boundary.
+ * Schema for USD prices per million input, output and cached tokens.
+ *
+ * **Gotchas**
+ *
+ * Prices are declarations supplied by the host. Unknown prices stay unknown in usage
+ * accounting.
  *
  * @category models
- * @since 0.0.0
  */
 export const Prices = Schema.Struct({
   input: Price,
@@ -69,6 +71,11 @@ export const Prices = Schema.Struct({
   cacheWrite: Price,
   cacheWrite1h: Schema.optional(Price),
 })
+/**
+ * Declared USD prices per million input, output and cache tokens.
+ *
+ * @category models
+ */
 export type Prices = typeof Prices.Type
 const Limit = Schema.Int.check(
   Schema.isGreaterThan(0),
@@ -82,10 +89,19 @@ const EntryOptions = Schema.Struct({
   midConversationSystemMessages: Schema.optional(Schema.Boolean),
 })
 /**
- * Defines Entry for the Catalog boundary.
+ * Schema for a caller-declared model and its supported request capabilities.
+ *
+ * **Details**
+ *
+ * contextWindow and maxOutputTokens must be positive and the output limit cannot exceed the
+ * context window. Optional capability fields control accepted request options.
+ *
+ * **Gotchas**
+ *
+ * Entries describe application policy; they do not discover current remote models or account
+ * entitlements.
  *
  * @category models
- * @since 0.0.0
  */
 export const Entry = Schema.Struct({
   modelId: Schema.NonEmptyString,
@@ -140,6 +156,11 @@ export const Entry = Schema.Struct({
       Object.values(entry.thinking.budgets).every((budget) => budget < entry.maxOutputTokens),
   ),
 )
+/**
+ * Caller-declared model identity, token limits and supported request capabilities.
+ *
+ * @category models
+ */
 export type Entry = typeof Entry.Type
 const decode = (value: unknown) =>
   Schema.decodeUnknownEffect(Options, { onExcessProperty: 'error' })(
@@ -217,10 +238,10 @@ const usage = (
 }
 
 /**
- * Describes the Descriptor contract.
+ * Native model with validated provider configuration, usage accounting and error
+ * classification.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export interface Descriptor {
   readonly ref: { provider: string; modelId: string }
@@ -355,10 +376,14 @@ const descriptorImpl = Effect.fnUntraced(function* (
   } satisfies Model.Descriptor
 })
 /**
- * Captures a validated catalogue entry and pins its model and request configuration.
+ * Creates a model descriptor from a validated catalogue entry.
+ *
+ * **Details**
+ *
+ * Binds native model configuration, usage accounting and error classification to declared
+ * capabilities. Unsupported request options fail with ModelError.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const descriptor: {
   (provider?: string): (self: Entry) => ReturnType<typeof descriptorImpl>
@@ -366,10 +391,19 @@ export const descriptor: {
 } = dual((args) => typeof args[0] === 'object' && args[0] !== null, descriptorImpl)
 
 /**
- * Provides Catalog services with the declared native dependencies.
+ * Provides a Model.Catalog from declared provider model entries.
+ *
+ * **Details**
+ *
+ * Validates entries and resolves only the registered provider/model pairs. Duplicate model
+ * IDs are rejected; unknown references fail with ModelNoModel.
+ *
+ * **Gotchas**
+ *
+ * Supply the required native client or CLI services. Catalogue construction does not
+ * authorize a remote account.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (options: {
   readonly models: ReadonlyArray<Entry>
@@ -403,10 +437,14 @@ export const layer = (options: {
 // exposes the exact captured native client alongside its descriptors, so callers
 // share one transport lifecycle and retain per-request native Config injection.
 /**
- * Provides Catalog services with the declared native dependencies.
+ * Provides a declared model catalogue and native API-key client.
+ *
+ * **Details**
+ *
+ * Consumes HttpClient and a Redacted API key. Model entries still supply limits and
+ * supported request capabilities.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerApiKey = (
   options: AnthropicClient.Options & {
@@ -424,7 +462,6 @@ export const layerApiKey = (
  * Resolves all layer options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
@@ -439,7 +476,6 @@ export const layerConfig = (
  * Resolves all layerApiKey options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerApiKeyConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layerApiKey>[0]>>,

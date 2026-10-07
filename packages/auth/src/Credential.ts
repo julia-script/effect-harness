@@ -1,7 +1,5 @@
 /**
  * Typed authentication failures and redacted credential codecs with compatible persisted wire representations.
- *
- * @since 0.0.0
  */
 import * as Time from './Time.ts'
 import * as Schema from 'effect/Schema'
@@ -30,10 +28,9 @@ const diagnostic = (reason: {
 })
 
 /**
- * Carries the AuthStorageError reason with its original failure provenance.
+ * Failure reading or replacing application-owned credential storage.
  *
  * @category errors
- * @since 0.0.0
  */
 export class AuthStorageError extends Schema.Error<AuthStorageError>(
   '@effect-harness/auth/Credential/AuthStorageError',
@@ -53,10 +50,9 @@ export class AuthStorageError extends Schema.Error<AuthStorageError>(
 }
 
 /**
- * Carries the AuthBusyError reason with its original failure provenance.
+ * Failure acquiring the credential store’s cross-process update lock.
  *
  * @category errors
- * @since 0.0.0
  */
 export class AuthBusyError extends Schema.Error<AuthBusyError>(
   '@effect-harness/auth/Credential/AuthBusyError',
@@ -76,10 +72,9 @@ export class AuthBusyError extends Schema.Error<AuthBusyError>(
 }
 
 /**
- * Carries the AuthConfigurationError reason with its original failure provenance.
+ * Failure caused by invalid authentication configuration or unavailable cryptographic setup.
  *
  * @category errors
- * @since 0.0.0
  */
 export class AuthConfigurationError extends Schema.Error<AuthConfigurationError>(
   '@effect-harness/auth/Credential/AuthConfigurationError',
@@ -99,10 +94,9 @@ export class AuthConfigurationError extends Schema.Error<AuthConfigurationError>
 }
 
 /**
- * Carries the AuthMissingError reason with its original failure provenance.
+ * Failure reporting an absent credential or account registration.
  *
  * @category errors
- * @since 0.0.0
  */
 export class AuthMissingError extends Schema.Error<AuthMissingError>(
   '@effect-harness/auth/Credential/AuthMissingError',
@@ -122,10 +116,9 @@ export class AuthMissingError extends Schema.Error<AuthMissingError>(
 }
 
 /**
- * Carries the AuthCallbackError reason with its original failure provenance.
+ * Failure validating a consent callback or its pending authorization.
  *
  * @category errors
- * @since 0.0.0
  */
 export class AuthCallbackError extends Schema.Error<AuthCallbackError>(
   '@effect-harness/auth/Credential/AuthCallbackError',
@@ -145,10 +138,9 @@ export class AuthCallbackError extends Schema.Error<AuthCallbackError>(
 }
 
 /**
- * Carries the AuthDeniedError reason with its original failure provenance.
+ * Failure reporting consent denied by the authorization server.
  *
  * @category errors
- * @since 0.0.0
  */
 export class AuthDeniedError extends Schema.Error<AuthDeniedError>(
   '@effect-harness/auth/Credential/AuthDeniedError',
@@ -168,10 +160,9 @@ export class AuthDeniedError extends Schema.Error<AuthDeniedError>(
 }
 
 /**
- * Carries the AuthTokenError reason with its original failure provenance.
+ * Failure exchanging, refreshing or validating an account token grant.
  *
  * @category errors
- * @since 0.0.0
  */
 export class AuthTokenError extends Schema.Error<AuthTokenError>(
   '@effect-harness/auth/Credential/AuthTokenError',
@@ -193,10 +184,9 @@ export class AuthTokenError extends Schema.Error<AuthTokenError>(
 }
 
 /**
- * Carries the AuthNetworkError reason with its original failure provenance.
+ * Failure communicating with an authentication endpoint.
  *
  * @category errors
- * @since 0.0.0
  */
 export class AuthNetworkError extends Schema.Error<AuthNetworkError>(
   '@effect-harness/auth/Credential/AuthNetworkError',
@@ -216,10 +206,9 @@ export class AuthNetworkError extends Schema.Error<AuthNetworkError>(
 }
 
 /**
- * Carries the AuthIdentityError reason with its original failure provenance.
+ * Failure verifying an identity token or its expected claims.
  *
  * @category errors
- * @since 0.0.0
  */
 export class AuthIdentityError extends Schema.Error<AuthIdentityError>(
   '@effect-harness/auth/Credential/AuthIdentityError',
@@ -239,10 +228,9 @@ export class AuthIdentityError extends Schema.Error<AuthIdentityError>(
 }
 
 /**
- * Carries the AuthPermissionError reason with its original failure provenance.
+ * Failure reporting missing granted permission for the requested provider operation.
  *
  * @category errors
- * @since 0.0.0
  */
 export class AuthPermissionError extends Schema.Error<AuthPermissionError>(
   '@effect-harness/auth/Credential/AuthPermissionError',
@@ -262,10 +250,9 @@ export class AuthPermissionError extends Schema.Error<AuthPermissionError>(
 }
 
 /**
- * Carries the AuthExpiredError reason with its original failure provenance.
+ * Failure reporting an expired authorization or token state.
  *
  * @category errors
- * @since 0.0.0
  */
 export class AuthExpiredError extends Schema.Error<AuthExpiredError>(
   '@effect-harness/auth/Credential/AuthExpiredError',
@@ -285,10 +272,9 @@ export class AuthExpiredError extends Schema.Error<AuthExpiredError>(
 }
 
 /**
- * Carries the AuthProtocolError reason with its original failure provenance.
+ * Failure reporting an unexpected authentication protocol response.
  *
  * @category errors
- * @since 0.0.0
  */
 export class AuthProtocolError extends Schema.Error<AuthProtocolError>(
   '@effect-harness/auth/Credential/AuthProtocolError',
@@ -308,10 +294,9 @@ export class AuthProtocolError extends Schema.Error<AuthProtocolError>(
 }
 
 /**
- * Defines AuthErrorReason for the Credential boundary.
+ * Schema for structured authentication, consent, token, identity and storage failures.
  *
  * @category models
- * @since 0.0.0
  */
 export const AuthErrorReason = Schema.Union([
   AuthStorageError,
@@ -327,12 +312,16 @@ export const AuthErrorReason = Schema.Union([
   AuthExpiredError,
   AuthProtocolError,
 ])
-export type AuthErrorReason = typeof AuthErrorReason.Type
 /**
- * Defines AuthErrorCode for the Credential boundary.
+ * Decoded value validated by the `AuthErrorReason` schema.
  *
  * @category models
- * @since 0.0.0
+ */
+export type AuthErrorReason = typeof AuthErrorReason.Type
+/**
+ * Schema for legacy authentication reason codes.
+ *
+ * @category models
  */
 export const AuthErrorCode = Schema.Literals([
   'storage',
@@ -348,12 +337,16 @@ export const AuthErrorCode = Schema.Literals([
   'expired',
   'protocol',
 ])
+/**
+ * Decoded value validated by the `AuthErrorCode` schema.
+ *
+ * @category models
+ */
 export type AuthErrorCode = typeof AuthErrorCode.Type
 /**
- * Describes the LegacyAuthErrorInput contract.
+ * Legacy error code and details accepted when constructing a structured auth reason.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export interface LegacyAuthErrorInput {
   readonly reason: AuthErrorCode
@@ -370,7 +363,6 @@ export interface LegacyAuthErrorInput {
  * Explicit input adapter; the runtime reason is always a tagged leaf, never a literal code.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeAuthErrorReason = ({
   reason,
@@ -405,10 +397,19 @@ export const makeAuthErrorReason = ({
 }
 
 /**
- * Carries the AuthError reason with its original failure provenance.
+ * Structured account authorization, token, identity or credential-storage failure.
+ *
+ * **Details**
+ *
+ * Match reason._tag for the stable failure category. Runtime causes remain available for
+ * diagnosis; ordinary JSON inspection redacts foreign diagnostics that may contain secrets.
+ *
+ * **Gotchas**
+ *
+ * Explicit schema encoding can retain diagnostic causes. Treat encoded authentication
+ * failures as sensitive data.
  *
  * @category errors
- * @since 0.0.0
  */
 export class AuthError extends Schema.Error<AuthError>('@effect-harness/auth/Credential/AuthError')(
   {
@@ -443,19 +444,22 @@ export class AuthError extends Schema.Error<AuthError>('@effect-harness/auth/Cre
 }
 
 /**
- * Defines Secret for the Credential boundary.
+ * Nonempty secret decoded to a Redacted value.
  *
  * @category models
- * @since 0.0.0
  */
 export const Secret = Schema.RedactedFromValue(Schema.NonEmptyString)
+/**
+ * Nonempty secret decoded to a Redacted value.
+ *
+ * @category models
+ */
 export type Secret = typeof Secret.Type
 const ApiKeyFields = { provider: Schema.NonEmptyString, apiKey: Secret }
 /**
- * Defines ApiKey for the Credential boundary.
+ * Provider API key stored under an application-owned account key.
  *
  * @category models
- * @since 0.0.0
  */
 export const ApiKey = Schema.Struct({ kind: Schema.tag('apiKey'), ...ApiKeyFields }).pipe(
   Schema.decodeTo(
@@ -475,12 +479,21 @@ export const ApiKey = Schema.Struct({ kind: Schema.tag('apiKey'), ...ApiKeyField
     },
   ),
 )
+/**
+ * Provider API key stored under an application-owned account key.
+ *
+ * @category models
+ */
 export type ApiKey = typeof ApiKey.Type
 /**
- * Tests whether an unknown value satisfies the decoded ApiKey schema.
+ * Checks whether a value satisfies the decoded `ApiKey` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isApiKey: (u: unknown) => u is ApiKey = Schema.is(ApiKey)
 const RegistrationFields = {
@@ -493,10 +506,9 @@ const RegistrationFields = {
   redirectUri: Schema.optional(Schema.String),
 }
 /**
- * Defines Registration for the Credential boundary.
+ * Dynamic OAuth client registration retained for later sign-in.
  *
  * @category models
- * @since 0.0.0
  */
 export const Registration = Schema.Struct({
   kind: Schema.tag('registration'),
@@ -513,12 +525,21 @@ export const Registration = Schema.Struct({
     })),
   }),
 )
+/**
+ * Dynamic OAuth client registration retained for later sign-in.
+ *
+ * @category models
+ */
 export type Registration = typeof Registration.Type
 /**
- * Tests whether an unknown value satisfies the decoded Registration schema.
+ * Checks whether a value satisfies the decoded `Registration` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isRegistration: (u: unknown) => u is Registration = Schema.is(Registration)
 const OAuthFields = {
@@ -531,10 +552,9 @@ const OAuthFields = {
   earliestRefreshAt: Schema.optional(Time.EpochMillis),
 }
 /**
- * Defines OAuth for the Credential boundary.
+ * Verified OAuth account identity and refreshable token grant.
  *
  * @category models
- * @since 0.0.0
  */
 export const OAuth = Schema.Struct({ kind: Schema.tag('oauth'), ...OAuthFields }).pipe(
   Schema.decodeTo(
@@ -559,12 +579,21 @@ export const OAuth = Schema.Struct({ kind: Schema.tag('oauth'), ...OAuthFields }
     },
   ),
 )
+/**
+ * Verified OAuth account identity and refreshable token grant.
+ *
+ * @category models
+ */
 export type OAuth = typeof OAuth.Type
 /**
- * Tests whether an unknown value satisfies the decoded OAuth schema.
+ * Checks whether a value satisfies the decoded `OAuth` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isOAuth: (u: unknown) => u is OAuth = Schema.is(OAuth)
 /** Opaque OAuth grants carry no verified OIDC subject or identity token. The caller owns the storage key. */
@@ -579,10 +608,14 @@ const OpaqueOAuthFields = {
   redirectUri: Schema.optional(Schema.String),
 }
 /**
- * Defines OpaqueOAuth for the Credential boundary.
+ * Schema for an OAuth grant under a caller-selected account key.
+ *
+ * **Details**
+ *
+ * Stores provider, authorization server and refreshable secrets without claiming a verified
+ * OIDC subject. Anthropic account authorization uses this representation.
  *
  * @category models
- * @since 0.0.0
  */
 export const OpaqueOAuth = Schema.Struct({
   kind: Schema.tag('opaqueOAuth'),
@@ -611,38 +644,54 @@ export const OpaqueOAuth = Schema.Struct({
     },
   ),
 )
-export type OpaqueOAuth = typeof OpaqueOAuth.Type
 /**
- * Tests whether an unknown value satisfies the decoded OpaqueOAuth schema.
- *
- * @category guards
- * @since 0.0.0
- */
-export const isOpaqueOAuth: (u: unknown) => u is OpaqueOAuth = Schema.is(OpaqueOAuth)
-/**
- * Defines Credential for the Credential boundary.
+ * Refreshable OAuth grant under a caller-selected key without an OIDC identity claim.
  *
  * @category models
- * @since 0.0.0
  */
-export const Credential = Schema.Union([ApiKey, OAuth, Registration, OpaqueOAuth])
-export type Credential = typeof Credential.Type
+export type OpaqueOAuth = typeof OpaqueOAuth.Type
 /**
- * Tests whether an unknown value satisfies the decoded Credential schema.
- *
- * @category guards
- * @since 0.0.0
- */
-export const isCredential: (u: unknown) => u is Credential = Schema.is(Credential)
-/**
- * Returns the stable storage key for a verified account registration.
+ * Checks whether a value satisfies the decoded `OpaqueOAuth` schema.
  *
  * **Details**
  *
- * Registration identity is provider, issued client and verified account, never email.
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
+ *
+ * @category guards
+ */
+export const isOpaqueOAuth: (u: unknown) => u is OpaqueOAuth = Schema.is(OpaqueOAuth)
+/**
+ * API key, client registration or account token grant.
+ *
+ * @category models
+ */
+export const Credential = Schema.Union([ApiKey, OAuth, Registration, OpaqueOAuth])
+/**
+ * API key, client registration or account token grant.
+ *
+ * @category models
+ */
+export type Credential = typeof Credential.Type
+/**
+ * Checks whether a value satisfies the decoded `Credential` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
+ *
+ * @category guards
+ */
+export const isCredential: (u: unknown) => u is Credential = Schema.is(Credential)
+/**
+ * Builds an account key from provider and verified issuer/client/subject identity.
+ *
+ * **Gotchas**
+ *
+ * Do not substitute email or an unverified claim for the identity tuple.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const accountKey = (
   self: Pick<OAuth, 'provider' | 'issuer' | 'clientId' | 'subject'>,

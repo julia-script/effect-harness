@@ -1,12 +1,9 @@
 /**
  * Native Effect AI Anthropic tool constructors and schemas.
- *
- * @since 0.0.0
  */
 /**
- * Forwards the supported public declarations from their owning concept.
+ * Public APIs from `@effect/ai-anthropic/AnthropicTool`.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export * from '@effect/ai-anthropic/AnthropicTool'

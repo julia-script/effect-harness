@@ -1,7 +1,5 @@
 /**
  * Scoped journal observers and consumed-value watch handles.
- *
- * @since 0.0.0
  */
 import * as handle from './internal/handle.ts'
 const WatchProto = handle.prototype('@effect-harness/durable/Observation/Watch')
@@ -27,18 +25,16 @@ import type { Service as StoreService } from './Store.ts'
 import { findDocument, materialize } from './storage/internal/state.ts'
 
 /**
- * End contract.
+ * Reason a scoped document or conversation observation ended.
  *
  * @category models
- * @since 0.0.0
  */
 export type End = 'stopped' | 'cancelled' | 'session_closed' | 'retired' | 'listener_error'
 const ChangeTypeId = '~@effect-harness/durable/Observation/Change'
 /**
- * Change contract.
+ * Committed document value, mutation operations, sequence and reset flag.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Change<out T extends object> {
   readonly [ChangeTypeId]: { readonly _T: Types.Covariant<T> }
@@ -49,10 +45,9 @@ export interface Change<out T extends object> {
 }
 const WatchTypeId = '~@effect-harness/durable/Observation/Watch'
 /**
- * Watch contract.
+ * Scoped initial document value and stream of committed changes.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Watch<out T extends object> extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [WatchTypeId]: { readonly _T: Types.Covariant<T> }
@@ -70,7 +65,6 @@ export interface Watch<out T extends object> extends Pipeable.Pipeable, Inspecta
  * Creates a scoped document watch from a detached baseline.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const watch = Effect.fnUntraced(function* <T extends object>(
   store: StoreService,
@@ -249,7 +243,6 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
  * Streams committed journal frames with bounded overflow resets.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const commits = (store: StoreService): Stream.Stream<Record.Frame, StorageError> =>
   Stream.unwrap(
@@ -282,10 +275,9 @@ export const commits = (store: StoreService): Stream.Stream<Record.Frame, Storag
 /** An immediately hydrated, scoped view bound to one durable incarnation. */
 const StateTypeId = '~@effect-harness/durable/Observation/State'
 /**
- * State contract.
+ * Live document value and cursor maintained by a scoped subscription.
  *
  * @category models
- * @since 0.0.0
  */
 export interface State<out T extends object> extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [StateTypeId]: { readonly _T: Types.Covariant<T> }
@@ -298,7 +290,6 @@ export interface State<out T extends object> extends Pipeable.Pipeable, Inspecta
  * Creates a scoped mutable state view of consumed document changes.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const state = Effect.fnUntraced(function* <T extends object>(
   store: StoreService,
@@ -331,7 +322,6 @@ export const state = Effect.fnUntraced(function* <T extends object>(
  * Creates a document change carrier without changing its input.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeChange = <T extends object>(
   input: Omit<Change<T>, typeof ChangeTypeId>,
@@ -342,10 +332,13 @@ export const makeChange = <T extends object>(
   return value
 }
 /**
- * Returns whether the value satisfies Change.
+ * Checks whether a value carries the nominal `Change` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isChange = (input: unknown): input is Change<object> =>
   Predicate.hasProperty(input, ChangeTypeId)
@@ -354,7 +347,6 @@ export const isChange = (input: unknown): input is Change<object> =>
  * Creates a watch handle with live getters and shared inspection.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeWatch = <T extends object>(
   input: handle.Input<Watch<T>, typeof WatchTypeId>,
@@ -364,10 +356,13 @@ export const makeWatch = <T extends object>(
 }
 
 /**
- * Returns whether the value satisfies Watch.
+ * Checks whether a value carries the nominal `Watch` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isWatch = (input: unknown): input is Watch<object> =>
   Predicate.hasProperty(input, WatchTypeId)
@@ -376,7 +371,6 @@ export const isWatch = (input: unknown): input is Watch<object> =>
  * Creates a state handle with live getters and shared inspection.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeState = <T extends object>(
   input: handle.Input<State<T>, typeof StateTypeId>,
@@ -386,10 +380,13 @@ export const makeState = <T extends object>(
 }
 
 /**
- * Returns whether the value satisfies State.
+ * Checks whether a value carries the nominal `State` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isState = (input: unknown): input is State<object> =>
   Predicate.hasProperty(input, StateTypeId)

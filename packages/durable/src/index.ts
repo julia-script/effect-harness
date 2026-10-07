@@ -1,90 +1,130 @@
 /**
  * Durable sessions, documents, observations and native Workflow integration.
- *
- * @since 0.0.0
  */
 // @barrel
 /**
- * @since 0.0.0
+ * Agent and provider documents, conversation projections and configuration.
+ *
+ * @category re-exports
  */
 export * as Conversation from './Conversation.ts'
 /**
- * @since 0.0.0
+ * Validated document definitions, scoped draft values and detached snapshots.
+ *
+ * @category re-exports
  */
 export * as Document from './Document.ts'
 /**
- * @since 0.0.0
+ * Schema-derived conversation entry data and typed entry tokens.
+ *
+ * @category re-exports
  */
 export * as Entry from './Entry.ts'
 /**
- * @since 0.0.0
+ * Committed agent event projections and bounded observation streams.
+ *
+ * @category re-exports
  */
 export * as Event from './Event.ts'
 /**
- * @since 0.0.0
+ * Native Workflow executor Layer composition.
+ *
+ * @category re-exports
  */
 export * as Executor from './Executor.ts'
 /**
- * @since 0.0.0
+ * Nominal session, request and run identifiers.
+ *
+ * @category re-exports
  */
 export * as Identity from './Identity.ts'
 /**
- * @since 0.0.0
+ * Persisted inbox documents and atomic message admission.
+ *
+ * @category re-exports
  */
 export * as Inbox from './Inbox.ts'
 /**
- * @since 0.0.0
+ * Committed task inspection and structurally shared ownership graph projections.
+ *
+ * @category re-exports
  */
 export * as Inspection from './Inspection.ts'
 /**
- * @since 0.0.0
+ * Scoped journal observers and consumed-value watch handles.
+ *
+ * @category re-exports
  */
 export * as Observation from './Observation.ts'
 /**
- * @since 0.0.0
+ * Native Workflow declaration metadata and pure ownership traversal.
+ *
+ * @category re-exports
  */
 export * as Ownership from './Ownership.ts'
 /**
- * @since 0.0.0
+ * Durable facts, identifiers, journal frames and legacy-compatible codecs.
+ *
+ * @category re-exports
  */
 export * as Record from './Record.ts'
 /**
- * @since 0.0.0
+ * Strict JSON codec boundaries for durable persistence.
+ *
+ * @category re-exports
  */
 export * as Serialization from './Serialization.ts'
 /**
- * @since 0.0.0
+ * Scoped transactions, document drafts and committed read services.
+ *
+ * @category re-exports
  */
 export * as Session from './Session.ts'
 /**
- * @since 0.0.0
+ * Identity-keyed registration and resolution of scoped sessions.
+ *
+ * @category re-exports
  */
 export * as SessionDirectory from './SessionDirectory.ts'
 /**
- * @since 0.0.0
+ * Structured storage failure reasons and certainty projections.
+ *
+ * @category re-exports
  */
 export * as StorageError from './StorageError.ts'
 /**
- * @since 0.0.0
+ * Scoped storage service, allocation accessors and memory acquisition.
+ *
+ * @category re-exports
  */
 export * as Store from './Store.ts'
 /**
- * @since 0.0.0
+ * Persisted model and tool accounting documents.
+ *
+ * @category re-exports
  */
 export * as Usage from './Usage.ts'
 /**
- * @since 0.0.0
+ * Shared committed conversation mounts and bounded subscriber projections.
+ *
+ * @category re-exports
  */
 export * as View from './View.ts'
 /**
- * @since 0.0.0
+ * Platform-neutral storage constructors.
+ *
+ * @category re-exports
  */
 export * as Storage from './storage/index.ts'
 /**
- * @since 0.0.0
+ * Storage conformance fixtures, assertions and benchmark runners.
+ *
+ * @category re-exports
  */
 export * as Testing from './testing/index.ts'
 /**
- * @since 0.0.0
+ * Native Workflow declarations, executors and task lifecycle operations.
+ *
+ * @category re-exports
  */
 export * as Workflow from './workflow/index.ts'

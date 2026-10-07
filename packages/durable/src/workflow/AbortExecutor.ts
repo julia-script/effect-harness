@@ -1,7 +1,5 @@
 /**
  * Native abort execution and domain cancellation settlement.
- *
- * @since 0.0.0
  */
 import * as Arr from 'effect/Array'
 import * as Option from 'effect/Option'
@@ -46,7 +44,6 @@ const domainError = (error: import('../StorageError.ts').StorageError | Executio
  * Durable intent precedes cancellation; bottom-up reconciliation also handles suspended or absent code.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<
   never,

@@ -1,7 +1,5 @@
 /**
  * JOSE-backed JWT verification with fresh key reads and Effect-clock expiry checks.
- *
- * @since 0.0.0
  */
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
@@ -13,10 +11,9 @@ import { createLocalJWKSet, jwtVerify } from 'jose'
 import { AuthIdentityError, AuthNetworkError, AuthError } from './Credential.ts'
 import { Identity, Jwt } from './Jwt.ts'
 /**
- * Defines KeySet for the JoseJwt boundary.
+ * Supported public JSON Web Keys fetched for signature verification.
  *
  * @category models
- * @since 0.0.0
  */
 export const KeySet = Schema.Struct({
   keys: Schema.Array(
@@ -33,19 +30,27 @@ export const KeySet = Schema.Struct({
     }),
   ),
 })
+/**
+ * Supported public JSON Web Keys fetched for signature verification.
+ *
+ * @category models
+ */
 export type KeySet = typeof KeySet.Type
 /**
- * Tests whether an unknown value satisfies the decoded KeySet schema.
+ * Checks whether a value satisfies the decoded `KeySet` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isKeySet: (u: unknown) => u is KeySet = Schema.is(KeySet)
 /**
- * Defines Claims for the JoseJwt boundary.
+ * Required identity-token claims and optional nonce/email fields.
  *
  * @category models
- * @since 0.0.0
  */
 export const Claims = Schema.Struct({
   sub: Schema.NonEmptyString,
@@ -54,19 +59,32 @@ export const Claims = Schema.Struct({
   nonce: Schema.optionalKey(Schema.String),
   email: Schema.optionalKey(Schema.String),
 })
+/**
+ * Required identity-token claims and optional nonce/email fields.
+ *
+ * @category models
+ */
 export type Claims = typeof Claims.Type
 /**
- * Tests whether an unknown value satisfies the decoded Claims schema.
+ * Checks whether a value satisfies the decoded `Claims` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isClaims: (u: unknown) => u is Claims = Schema.is(Claims)
 /**
- * Constructs JoseJwt with the caller-provided services.
+ * Creates a JWT verifier using the supplied HttpClient and remote JWKS.
+ *
+ * **Details**
+ *
+ * Checks signatures and expected issuer, client, nonce and expiry before constructing the
+ * identity. Verification errors use the structured AuthError channel.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClient> = Effect.gen(
   function* () {
@@ -178,9 +196,12 @@ export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClien
 )
 
 /**
- * Provides JoseJwt services with the declared native dependencies.
+ * Provides signature and claim verification through the native HttpClient.
+ *
+ * **Details**
+ *
+ * Use this Jwt service when account authorization requires a verified OIDC identity.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<Jwt, never, HttpClient.HttpClient> = Layer.effect(Jwt, make)

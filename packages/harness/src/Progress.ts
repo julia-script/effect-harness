@@ -1,7 +1,5 @@
 /**
  * Scoped progress pacing and terminal acknowledgement settlement.
- *
- * @since 0.0.0
  */
 import { constant } from 'effect/Function'
 import { constUndefined } from 'effect/Function'
@@ -27,15 +25,13 @@ import * as Time from './Time.ts'
  * Default progress throughput allowance in bytes per second.
  *
  * @category constants
- * @since 0.0.0
  */
 export const bytesPerSecond = 100 * 1024
 const TypeId = '~@effect-harness/harness/Progress'
 /**
- * Progress progress contract.
+ * Scoped progress reporter with ordered partial updates and settlement.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Progress<in out E> extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [TypeId]: { readonly _E: Types.Invariant<E> }
@@ -45,17 +41,19 @@ export interface Progress<in out E> extends Pipeable.Pipeable, Inspectable.Inspe
   readonly stop: Effect.Effect<ReadonlyArray<Deferred.Deferred<void, E>>>
 }
 /**
- * Checks whether an unknown value satisfies the Progress contract.
+ * Checks whether a value carries the nominal `Progress` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isProgress = (u: unknown): u is Progress<unknown> => Predicate.hasProperty(u, TypeId)
 /**
  * Creates a fresh progress handle without evaluating its command getters.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeProgress = <E>(
   input: Omit<Progress<E>, typeof TypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable>,
@@ -79,7 +77,6 @@ interface State<E> {
  * First change is immediate; later changes coalesce behind time/size pacing.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = Effect.fnUntraced(function* <E, R>(
   write: Effect.Effect<number, E, R>,
@@ -178,7 +175,6 @@ export const make = Effect.fnUntraced(function* <E, R>(
  * Completes admitted progress acknowledgements with the exact terminal exit.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const settle = <E>(
   waiters: ReadonlyArray<Deferred.Deferred<void, E>>,
@@ -187,17 +183,15 @@ export const settle = <E>(
   Effect.forEach(waiters, (waiter) => Deferred.done(waiter, outcome), { discard: true })
 
 /**
- * Type contracts owned by `make`.
+ * Type-level contracts for `make`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace make {
   /**
    * Configuration accepted by make.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Options<E> {
     readonly minIntervalMs: Duration.Input

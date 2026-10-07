@@ -1,7 +1,5 @@
 /**
  * Provider prompt projections that retain native message roles and opaque protocol data.
- *
- * @since 0.0.0
  */
 import { dual } from 'effect/Function'
 import * as Effect from 'effect/Effect'
@@ -15,17 +13,15 @@ import type * as Tool from 'effect/ai/Tool'
 import { unsupported } from './ClaudeCodeError.ts'
 
 /**
- * Describes the HistoryMode contract.
+ * Choice to reject unimportable history or render it as transcript input.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export type HistoryMode = 'reject' | 'transcript'
 /**
- * Defines ContentBlock for the Prompt boundary.
+ * Text or inline base64 image/document block accepted by the CLI input protocol.
  *
  * @category models
- * @since 0.0.0
  */
 export const ContentBlock = Schema.Union([
   Schema.Struct({ type: Schema.Literal('text'), text: Schema.String }),
@@ -38,12 +34,16 @@ export const ContentBlock = Schema.Union([
     }),
   }),
 ])
-export type ContentBlock = typeof ContentBlock.Type
 /**
- * Defines AttachmentReference for the Prompt boundary.
+ * Text or inline base64 image/document block accepted by the CLI input protocol.
  *
  * @category models
- * @since 0.0.0
+ */
+export type ContentBlock = typeof ContentBlock.Type
+/**
+ * Reference to an encoded attachment within canonical transcript data.
+ *
+ * @category models
  */
 export const AttachmentReference = Schema.Struct({
   type: Schema.Literal('file'),
@@ -52,6 +52,11 @@ export const AttachmentReference = Schema.Struct({
   attachment: Schema.NonEmptyString,
   options: Schema.toEncoded(Prompt.ProviderOptions),
 })
+/**
+ * Reference to an encoded attachment within canonical transcript data.
+ *
+ * @category models
+ */
 export type AttachmentReference = typeof AttachmentReference.Type
 const EncodedPart = Schema.Union([
   Schema.toEncoded(Prompt.TextPart),
@@ -63,10 +68,9 @@ const EncodedPart = Schema.Union([
   AttachmentReference,
 ])
 /**
- * Defines Transcript for the Prompt boundary.
+ * Versioned serialization of canonical prompt history for transcript mode.
  *
  * @category models
- * @since 0.0.0
  */
 export const Transcript = Schema.Struct({
   format: Schema.Literal('effect-harness-transcript/1'),
@@ -78,12 +82,16 @@ export const Transcript = Schema.Struct({
     }),
   ),
 })
-export type Transcript = typeof Transcript.Type
 /**
- * Defines UserFrame for the Prompt boundary.
+ * Versioned serialization of canonical prompt history for transcript mode.
  *
  * @category models
- * @since 0.0.0
+ */
+export type Transcript = typeof Transcript.Type
+/**
+ * CLI stdin user-message envelope with its native session identity.
+ *
+ * @category models
  */
 export const UserFrame = Schema.Struct({
   type: Schema.Literal('user'),
@@ -91,12 +99,16 @@ export const UserFrame = Schema.Struct({
   parent_tool_use_id: Schema.Null,
   message: Schema.Struct({ role: Schema.Literal('user'), content: Schema.Array(ContentBlock) }),
 })
+/**
+ * CLI stdin user-message envelope with its native session identity.
+ *
+ * @category models
+ */
 export type UserFrame = typeof UserFrame.Type
 /**
- * Describes the Input contract.
+ * Prepared system prompt, CLI content blocks and offered native tools.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export interface Input {
   readonly system: string
@@ -108,7 +120,6 @@ const encodeTranscript = Schema.encodeEffect(Schema.fromJsonString(Transcript))
  * Encodes a native user frame without transforming its opaque message parts twice.
  *
  * @category encoding
- * @since 0.0.0
  */
 export const encodeUserFrame: (value: UserFrame) => Effect.Effect<string, Schema.SchemaError> =
   Schema.encodeEffect(Schema.fromJsonString(UserFrame))
@@ -214,10 +225,19 @@ const prepareImpl = Effect.fnUntraced(function* (
 })
 
 /**
- * Prepares a provider request under the selected history policy.
+ * Converts a canonical native Prompt into CLI system/content input.
+ *
+ * **Details**
+ *
+ * Default reject mode accepts only faithfully representable history. Explicit transcript
+ * mode serializes prior messages as input data.
+ *
+ * **Gotchas**
+ *
+ * Transcript mode is not native session restoration. Unsupported remote files, options or
+ * history features fail with native AiError.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const prepare: {
   (

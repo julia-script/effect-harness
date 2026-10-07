@@ -1,7 +1,5 @@
 /**
  * Model-visible tool envelopes and rendered execution diagnostics.
- *
- * @since 0.0.0
  */
 import * as Effect from 'effect/Effect'
 import * as Prompt from 'effect/ai/Prompt'
@@ -10,23 +8,23 @@ import type { Diagnostic, ToolResult } from './Invocation.ts'
 import * as Serialization from './Serialization.ts'
 
 /**
- * Canonical model-visible tool content.
+ * Versioned model-visible tool-content envelope stored in native Prompt JSON.
  *
  * **Details**
  *
- * Providers translate this value at their native client boundary.
+ * Contains ordered native user-message parts and rendered diagnostics. Provider adapters
+ * expand supported media inside the original tool-result item; private details, controls and
+ * usage stay separate.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Envelope = Schema.TaggedStruct('@effect-harness/ToolContent', {
   content: Schema.Array(Prompt.UserMessagePart),
 })
 /**
- * ToolResult envelope contract.
+ * Decoded value validated by the `Envelope` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type Envelope = typeof Envelope.Type
 
@@ -34,7 +32,6 @@ export type Envelope = typeof Envelope.Type
  * Renders execution diagnostics after the tool's original content, without exposing private details or controls.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function renderDiagnostics(self: ReadonlyArray<Diagnostic>): string {
   return `<harness>\n${self
@@ -53,7 +50,6 @@ export function renderDiagnostics(self: ReadonlyArray<Diagnostic>): string {
  * Retains text/file blocks and their native options; bookkeeping stays in the committed entry's data.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const encode = (self: ToolResult): Effect.Effect<Schema.Json, Schema.SchemaError> =>
   Schema.encodeEffect(Schema.toCodecJson(Envelope))({
@@ -70,7 +66,6 @@ export const encode = (self: ToolResult): Effect.Effect<Schema.Json, Schema.Sche
  * Decode only the explicit harness envelope; unrelated native tool results are handled by the native provider.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const decode: (
   input: unknown,
@@ -80,9 +75,13 @@ export const decode: (
 )
 
 /**
- * Checks whether an unknown value satisfies the Envelope contract.
+ * Checks whether a value satisfies the decoded `Envelope` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isEnvelope: (u: unknown) => u is Envelope = Schema.is(Envelope)

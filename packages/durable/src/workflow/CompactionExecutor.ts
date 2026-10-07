@@ -1,7 +1,5 @@
 /**
  * Native compaction execution, retries and atomic summary settlement.
- *
- * @since 0.0.0
  */
 import * as result from 'effect/Result'
 // effect-review-allow P9-namespace-alias-equals-module: the native Workflow Result schema is an imported binding in this module.
@@ -87,7 +85,6 @@ const invalid = (cause?: unknown) =>
  * Creates the domain projection and returns an ordinary Compaction Workflow payload.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = Effect.fnUntraced(function* (
   tx: Session.Transaction,
@@ -152,7 +149,6 @@ export const make = Effect.fnUntraced(function* (
  * Pinned summary requests and absolute retry deadlines are native cached Activities.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<
   never,

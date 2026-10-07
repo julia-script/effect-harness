@@ -1,7 +1,5 @@
 /**
  * Extension installation, snapshot resolution and prompt rendering.
- *
- * @since 0.0.0
  */
 import { constUndefined } from 'effect/Function'
 import * as Exit from 'effect/Exit'
@@ -22,20 +20,18 @@ import { Invocation } from './Invocation.ts'
 import type * as Tool from './Tool.ts'
 
 /**
- * Registry snapshot contract.
+ * Registered named extensions captured by a Registry.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Snapshot {
   readonly revision: number
   readonly extensions: ReadonlyArray<Extension.Extension>
 }
 /**
- * Registry resolved contract.
+ * Selected tools, sections, hooks and model reference for a request.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Resolved {
   readonly snapshot: Snapshot
@@ -47,10 +43,14 @@ export interface Resolved {
   readonly hooks: ReadonlyArray<Hook.Registration>
 }
 /**
- * Service for registry capabilities.
+ * Service resolving named extensions into request-local tools, sections and hooks.
+ *
+ * **Details**
+ *
+ * Resolve selections before preparing a request. Registration snapshots keep host
+ * dependencies captured while invocation services remain dynamic.
  *
  * @category services
- * @since 0.0.0
  */
 export class Registry extends Context.Service<
   Registry,
@@ -108,7 +108,6 @@ function validate(self: ReadonlyArray<Extension.Extension>): Effect.Effect<void,
  * Creates a validated extension registry with atomic immutable revision snapshots.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = Effect.fnUntraced(function* (
   initial: ReadonlyArray<Extension.Extension> = [],
@@ -159,10 +158,15 @@ export const make = Effect.fnUntraced(function* (
   })
 })
 /**
- * Layer for Registry capabilities.
+ * Provides a Registry from already constructed extensions.
  *
+ * **Details**
+ *
+ * Registration validates names and selection conflicts. Build effectful extension values
+ * before supplying this Layer.
+ *
+ * @see {@link layerEffect} for effectful extension construction.
  * @category layers
- * @since 0.0.0
  */
 export const layer = (
   extensions: ReadonlyArray<Extension.Extension> = [],
@@ -171,7 +175,6 @@ export const layer = (
  * The builder captures service implementations at Layer construction, not at request execution.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerEffect = <E, R>(
   self: Effect.Effect<ReadonlyArray<Extension.Extension>, E, R>,
@@ -268,7 +271,6 @@ const resolveImpl = Effect.fnUntraced(function* (
  * Resolves the configured extensions, tools and model-facing sections.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const resolve: {
   (
@@ -287,7 +289,6 @@ const handlersImpl = (self: Resolved, operation: Hook.Operation): Array<Hook.Han
  * Returns registered handlers for the requested lifecycle operation.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const handlers: {
   (operation: Hook.Operation): (self: Resolved) => Array<Hook.Handlers>
@@ -331,7 +332,6 @@ const renderImpl = Effect.fnUntraced(function* (
  * Renders effective managed sections while retaining prior values after hook failure.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const render: {
   (

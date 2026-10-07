@@ -1,7 +1,5 @@
 /**
  * Token and price ledgers with explicit partial-cost metadata.
- *
- * @since 0.0.0
  */
 import { dual } from 'effect/Function'
 import * as SchemaField from './SchemaField.ts'
@@ -9,10 +7,9 @@ import * as Schema from 'effect/Schema'
 import type * as Response from 'effect/ai/Response'
 
 /**
- * Schema for cost.
+ * Schema for known USD input, output and cache costs for reported usage.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Cost = Schema.Struct({
   /** False means the numeric amounts are a partial subtotal, not a complete price. */
@@ -26,10 +23,9 @@ export const Cost = Schema.Struct({
   total: Schema.Finite,
 })
 /**
- * Schema for usage.
+ * Schema for known token and cost measurements for one model request.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Usage = Schema.Struct({
   input: Schema.Finite,
@@ -42,34 +38,30 @@ export const Usage = Schema.Struct({
   cost: Cost,
 })
 /**
- * Usage usage contract.
+ * Known token and cost measurements for one model request.
  *
  * @category models
- * @since 0.0.0
  */
 export type Usage = typeof Usage.Type
 /**
- * Schema for state.
+ * Schema for accumulated usage and request count.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const State = Schema.Struct({
   models: Schema.Record(Schema.String, Usage),
   tools: Schema.Record(Schema.String, Usage),
 })
 /**
- * Usage state contract.
+ * Accumulated usage and request count.
  *
  * @category models
- * @since 0.0.0
  */
 export type State = typeof State.Type
 /**
  * Creates usage with zero measured counters.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const zero = (): Usage => ({
   input: 0,
@@ -83,7 +75,6 @@ export const zero = (): Usage => ({
  * Creates an empty usage state.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const empty = (): State => ({ models: {}, tools: {} })
 function addImpl(self: Usage, that: Usage): Usage {
@@ -125,7 +116,6 @@ function addImpl(self: Usage, that: Usage): Usage {
  * Adds token and cost counters while retaining partial-cost knowledge.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const add: {
   (that: Usage): (self: Usage) => Usage
@@ -146,7 +136,6 @@ function recordImpl(self: State, bucket: keyof State, key: string, usage: Usage)
  * Records usage under an own-key ledger entry without mutating prior state.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const record: {
   (bucket: keyof State, key: string, usage: Usage): (self: State) => State
@@ -156,7 +145,6 @@ export const record: {
  * Combines independent usage ledgers.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function sum(self: ReadonlyArray<State>): State {
   let total = empty()
@@ -199,7 +187,6 @@ function fromResponseImpl(
  * Converts native usage while preserving explicit cache and price metadata.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const fromResponse: {
   (extra?: Partial<Pick<Usage, 'cost' | 'cacheWrite1h'>>): (self: Response.Usage) => Usage
@@ -212,39 +199,49 @@ export const fromResponse: {
  * Returns the measured input, cache and output token total.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const contextTokens = (self: Usage): number =>
   self.input + self.cacheRead + self.cacheWrite + self.output
 
 /**
- * Checks whether an unknown value satisfies the Cost contract.
+ * Checks whether a value satisfies the decoded `Cost` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isCost: (u: unknown) => u is Cost = Schema.is(Cost)
 
 /**
- * Checks whether an unknown value satisfies the Usage contract.
+ * Checks whether a value satisfies the decoded `Usage` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isUsage: (u: unknown) => u is Usage = Schema.is(Usage)
 
 /**
- * Checks whether an unknown value satisfies the State contract.
+ * Checks whether a value satisfies the decoded `State` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isState: (u: unknown) => u is State = Schema.is(State)
 
 /**
- * Usage cost contract.
+ * Known USD input, output and cache costs for reported usage.
  *
  * @category models
- * @since 0.0.0
  */
 export type Cost = typeof Cost.Type

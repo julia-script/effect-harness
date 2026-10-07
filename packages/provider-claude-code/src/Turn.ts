@@ -1,7 +1,5 @@
 /**
  * Ordered Claude Code stream translation and completed-turn collection.
- *
- * @since 0.0.0
  */
 import { dual } from 'effect/Function'
 import * as Arr from 'effect/Array'
@@ -437,7 +435,6 @@ const translateImpl = <E, R>(
  * Consolidates the same validated stream used by streaming generation.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const collect = Effect.fnUntraced(function* <E, R>(
   self: Stream.Stream<Part, E, R>,
@@ -494,7 +491,6 @@ export const collect = Effect.fnUntraced(function* <E, R>(
  * Translates a validated ordered protocol stream into native response parts.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const translate: {
   (

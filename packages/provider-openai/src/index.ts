@@ -1,42 +1,58 @@
 /**
  * Public concept namespaces for this package.
- *
- * @since 0.0.0
  */
 // @barrel
 /**
- * @since 0.0.0
+ * Scoped OpenAI loopback authorization callback ownership.
+ *
+ * @category re-exports
  */
 export * as Callback from './Callback.ts'
 /**
- * @since 0.0.0
+ * Validated model catalogues with pinned request configuration and usage accounting.
+ *
+ * @category re-exports
  */
 export * as Catalog from './Catalog.ts'
 /**
- * @since 0.0.0
+ * Single-use ChatGPT OAuth authorization and persisted account credentials.
+ *
+ * @category re-exports
  */
 export * as ChatGpt from './ChatGpt.ts'
 /**
- * @since 0.0.0
+ * Authenticated ChatGPT Responses clients with semantic terminal-event validation.
+ *
+ * @category re-exports
  */
 export * as ChatGptClient from './ChatGptClient.ts'
 /**
- * @since 0.0.0
+ * ChatGPT account model construction sharing its captured Responses client.
+ *
+ * @category re-exports
  */
 export * as ChatGptLanguageModel from './ChatGptLanguageModel.ts'
 /**
- * @since 0.0.0
+ * Compatibility forwarding paths for concrete provider language models.
+ *
+ * @category re-exports
  */
 export * as LanguageModel from './LanguageModel.ts'
 /**
- * @since 0.0.0
+ * Native Effect AI OpenAI client service and protocol facade.
+ *
+ * @category re-exports
  */
 export * as OpenAiClient from './OpenAiClient.ts'
 /**
- * @since 0.0.0
+ * Captured native OpenAI models and API-key transport composition.
+ *
+ * @category re-exports
  */
 export * as OpenAiLanguageModel from './OpenAiLanguageModel.ts'
 /**
- * @since 0.0.0
+ * Canonical tool-media translation at the captured native client boundary.
+ *
+ * @category re-exports
  */
 export * as ToolResult from './ToolResult.ts'

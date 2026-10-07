@@ -1,7 +1,5 @@
 /**
  * Single-use Anthropic OAuth consent, refresh and scoped browser callbacks.
- *
- * @since 0.0.0
  */
 import * as Arr from 'effect/Array'
 import * as String from 'effect/String'
@@ -40,52 +38,45 @@ import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 
 // Protocol adapted from Pi commit 636703a0 (MIT); see package NOTICE.
 /**
- * Defines clientId for the OAuth boundary.
+ * OAuth client identifier used by the supported Anthropic account protocol.
  *
- * @category models
- * @since 0.0.0
+ * @category constants
  */
 export const clientId = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 /**
- * Defines authorizationServer for the OAuth boundary.
+ * Base URL of the Anthropic account authorization server.
  *
- * @category models
- * @since 0.0.0
+ * @category constants
  */
 export const authorizationServer = 'https://platform.claude.com'
 /**
- * Defines authorizeUrl for the OAuth boundary.
+ * Browser consent endpoint used for Anthropic account authorization.
  *
- * @category models
- * @since 0.0.0
+ * @category constants
  */
 export const authorizeUrl = 'https://claude.ai/oauth/authorize'
 /**
- * Defines tokenUrl for the OAuth boundary.
+ * Token endpoint used for code exchange and refresh.
  *
- * @category models
- * @since 0.0.0
+ * @category constants
  */
 export const tokenUrl = `${authorizationServer}/v1/oauth/token`
 /**
- * Defines browserRedirectUri for the OAuth boundary.
+ * Loopback callback URL required by browser consent mode.
  *
- * @category models
- * @since 0.0.0
+ * @category constants
  */
 export const browserRedirectUri = 'http://localhost:53692/callback'
 /**
- * Defines copyCodeRedirectUri for the OAuth boundary.
+ * Hosted callback URL used to obtain a copied authorization code.
  *
- * @category models
- * @since 0.0.0
+ * @category constants
  */
 export const copyCodeRedirectUri = `${authorizationServer}/oauth/code/callback`
 /**
- * Defines scopes for the OAuth boundary.
+ * Permission scopes requested by the account authorization protocol.
  *
- * @category models
- * @since 0.0.0
+ * @category constants
  */
 export const scopes = [
   'org:create_api_key',
@@ -96,10 +87,9 @@ export const scopes = [
   'user:file_upload',
 ] as const
 /**
- * Describes the Authorization contract.
+ * Pending Anthropic consent URL, secret state, redirect and expiry.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export interface Authorization {
   readonly url: Redacted.Redacted<string>
@@ -109,48 +99,74 @@ export interface Authorization {
   readonly expiresAt: DateTime.Utc
 }
 /**
- * Types owned by the OAuth concept.
+ * Type-level contracts for `OAuth`.
  *
- * @category types
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace OAuth {
   /**
-   * Describes the Service contract.
+   * Explicit Anthropic consent, completion and serialized token refresh.
    *
-   * @category types
-   * @since 0.0.0
+   * @category models
    */
   export interface Service {
+    /**
+     * Creates a pending browser or copy-code authorization under a caller-selected account key.
+     */
     readonly begin: (options: {
       readonly account: string
       readonly method?: 'browser' | 'copyCode' | undefined
     }) => Effect.Effect<Authorization, AuthError>
+    /**
+     * Exchanges the callback URL or copied code using the Redacted secret state and persists an
+     * OpaqueOAuth grant.
+     */
     readonly complete: (
       state: Redacted.Redacted<string>,
       input: string,
     ) => Effect.Effect<OpaqueOAuth, AuthError>
+    /**
+     * Refreshes the selected grant under credential serialization; force bypasses its normal
+     * refresh deadline.
+     */
     readonly refresh: (
       account: string,
       options?: { readonly force?: boolean | undefined },
     ) => Effect.Effect<OpaqueOAuth, AuthError>
+    /**
+     * Returns a Redacted fresh bearer token for the selected account.
+     */
     readonly accessToken: (account: string) => Effect.Effect<Redacted.Redacted<string>, AuthError>
+    /**
+     * Removes the selected account grant from application-owned storage.
+     */
     readonly signOut: (account: string) => Effect.Effect<void, AuthError>
+    /**
+     * Cancels the pending authorization identified by its Redacted state.
+     */
     readonly cancel: (state: Redacted.Redacted<string>) => Effect.Effect<void>
   }
 }
 /**
- * Describes the Service contract.
+ * Explicit Anthropic consent, completion and serialized token refresh.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export type Service = OAuth.Service
 /**
- * Identifies the OAuth service in the Effect context.
+ * Service for explicit Anthropic account consent and serialized token refresh.
+ *
+ * **Details**
+ *
+ * begin selects browser or copy-code consent. The host passes the callback URL or copied
+ * code to complete. The resulting OpaqueOAuth grant uses a caller-selected account key.
+ *
+ * **Gotchas**
+ *
+ * The protocol uses the PKCE verifier as state, so both the URL and state are Redacted
+ * secrets. It does not establish a verified OIDC identity or read CLI credentials.
  *
  * @category services
- * @since 0.0.0
  */
 export class OAuth extends Context.Service<OAuth, Service>()(
   '@effect-harness/provider-anthropic/OAuth',
@@ -189,10 +205,19 @@ const matches = (value: OpaqueOAuth) =>
   value.clientId === clientId
 
 /**
- * Portable explicit consent service. It never opens a browser or reads another application's credentials.
+ * Provides Anthropic consent and refresh with application-owned credentials.
+ *
+ * **Details**
+ *
+ * Consumes CredentialStore, HttpClient and Crypto. Completion requires the inference scope;
+ * token refresh is serialized by CredentialStore.
+ *
+ * **Gotchas**
+ *
+ * Consent must be initiated by the user. Account access remains subject to the provider’s
+ * runtime authorization.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (options?: {
   readonly authorizationLifetimeMs?: Duration.Input | undefined
@@ -460,7 +485,6 @@ export const layer = (options?: {
  * Identifies the Callback service in the Effect context.
  *
  * @category services
- * @since 0.0.0
  */
 export class Callback extends Context.Service<
   Callback,
@@ -471,10 +495,19 @@ export class Callback extends Context.Service<
 >()('@effect-harness/provider-anthropic/OAuth/Callback') {}
 
 /**
- * Opt-in browser listener. Caller provides a scoped native HttpServer bound to 127.0.0.1:53692.
+ * Installs a scoped browser callback at the account protocol’s loopback address.
+ *
+ * **Details**
+ *
+ * Consumes an application-supplied HttpServer and OAuth. The listener owns one authorization
+ * attempt and closes with its Scope.
+ *
+ * **Gotchas**
+ *
+ * Copy-code mode does not require this server. The server must be bound to the protocol’s
+ * expected address and port.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerCallback = (options: {
   readonly account: string
@@ -571,7 +604,6 @@ export const layerCallback = (options: {
  * Resolves all layer options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
@@ -590,7 +622,6 @@ export const layerConfig = (
  * Resolves all layerCallback options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerCallbackConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layerCallback>[0]>>,

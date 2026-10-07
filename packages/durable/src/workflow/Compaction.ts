@@ -1,7 +1,5 @@
 /**
  * Native compaction Workflow declaration and result schemas.
- *
- * @since 0.0.0
  */
 import * as Identity from '../Identity.ts'
 import * as Schema from 'effect/Schema'
@@ -10,28 +8,31 @@ import * as Record from '../Record.ts'
 import { ExecutionErrorCodec } from './ExecutionError.ts'
 
 /**
- * Native workflow result schema.
+ * Schema for optional summary-entry and submission identities from compaction settlement.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Result = Schema.Struct({
   entryId: Schema.optionalKey(Record.EntryId),
   submissionId: Schema.optionalKey(Record.SubmissionId),
 })
 /**
- * Native workflow result schema.
+ * Decoded value validated by the `Result` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type Result = typeof Result.Type
 
 /**
- * Native workflow for an immutable compaction request and its eventual summary placement.
+ * Native Workflow preparing and placing an immutable conversation summary.
+ *
+ * **Details**
+ *
+ * Register CompactionExecutor before executing. Payload identifies the session,
+ * conversation, task, selection reason and blocking policy. The session/task pair determines
+ * replay identity.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Compaction = Workflow.make('@effect-harness/durable/Compaction/v1', {
   payload: {

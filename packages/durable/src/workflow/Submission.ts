@@ -1,7 +1,5 @@
 /**
  * Native submission Workflow declaration and legacy-compatible payloads.
- *
- * @since 0.0.0
  */
 import { tagged } from '../internal/legacyTag.ts'
 import * as Identity from '../Identity.ts'
@@ -13,10 +11,14 @@ import * as Record from '../Record.ts'
 import { ExecutionErrorCodec } from './ExecutionError.ts'
 
 /**
- * EntryDraft schema.
+ * Schema for passive-write entry content before durable identity allocation.
+ *
+ * **Details**
+ *
+ * Native model-message content is encoded for persistence. A self head can mark the new
+ * entry as a context boundary.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const EntryDraft = Record.Entry.mapFields((fields) => ({
   ...Struct.omit(fields, ['id', 'conversationId', 'head', 'model']),
@@ -24,18 +26,21 @@ export const EntryDraft = Record.Entry.mapFields((fields) => ({
   head: Schema.optionalKey(Schema.Union([Record.EntryId, Schema.Literal('self')])),
 }))
 /**
- * Decoded EntryDraft values.
+ * Decoded value validated by the `EntryDraft` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type EntryDraft = typeof EntryDraft.Type
 
 /**
- * Input schema.
+ * Schema for user input with busy policy, or a passive entry write.
+ *
+ * **Details**
+ *
+ * whenBusy selects steer, followUp or reject for input admission. Decoded variants use _tag
+ * while encoded payloads retain type.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Input = Schema.Union([
   tagged('input', {
@@ -46,37 +51,41 @@ export const Input = Schema.Union([
   tagged('write', { type: Schema.tag('write'), entry: EntryDraft }),
 ])
 /**
- * Decoded Input values.
+ * Decoded value validated by the `Input` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type Input = typeof Input.Type
 
 /**
- * Native workflow result schema.
+ * Schema for a settled input or passive-write receipt.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const Result = Record.SettledSubmission
 /**
- * Native workflow result schema.
+ * Decoded value validated by the `Result` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type Result = typeof Result.Type
 
 /**
- * Admits a durable input or passive write and waits for its settled receipt.
+ * Native Workflow admitting an input or passive write and returning its settled receipt.
  *
  * **Details**
  *
- * Use ordinary execute, poll and interrupt methods supplied by Effect Workflow. requestId is also the conversation's persistent admission identity.
+ * Use the declaration’s execute, poll and resume methods with the registered
+ * SubmissionExecutor. Native execution identity combines session, conversation, request ID
+ * and submission kind.
+ *
+ * **Gotchas**
+ *
+ * Choose requestId before admission and reuse it on retry. Same-kind replay returns the
+ * first receipt even if content changed; reusing the admission identity for another kind
+ * fails. Use a new request ID for new content.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const Submission = Workflow.make('@effect-harness/durable/Submission/v1', {
   payload: {

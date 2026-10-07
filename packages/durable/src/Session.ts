@@ -1,7 +1,5 @@
 /**
  * Scoped transactions, document drafts and committed read services.
- *
- * @since 0.0.0
  */
 import * as Struct from 'effect/Struct'
 import * as Data from 'effect/Data'
@@ -53,123 +51,185 @@ import {
 } from './storage/internal/state.ts'
 
 /**
- * Compatibility alias for Session.ConversationQuery.
+ * Optional owner filters for a conversation scan.
  *
  * @category models
- * @since 0.0.0
  */
 export type ConversationQuery = Session.ConversationQuery
 /**
- * Compatibility alias for Session.EntryQuery.
+ * Conversation and optional entry bounds for a visible-history scan.
  *
  * @category models
- * @since 0.0.0
  */
 export type EntryQuery = Session.EntryQuery
 /**
- * Compatibility alias for Session.TaskQuery.
+ * Optional conversation, kind, status and ownership-state filters for a task scan.
  *
  * @category models
- * @since 0.0.0
  */
 export type TaskQuery = Session.TaskQuery
 /**
- * Compatibility alias for Session.SubmissionQuery.
+ * Optional conversation and status filters for a submission scan.
  *
  * @category models
- * @since 0.0.0
  */
 export type SubmissionQuery = Session.SubmissionQuery
 /**
- * Compatibility alias for Session.DocumentQuery.
+ * Document scope, read cutoff and optional kind filter.
  *
  * @category models
- * @since 0.0.0
  */
 export type DocumentQuery = Session.DocumentQuery
 /**
  * Transaction ownership variants.
  *
  * @category models
- * @since 0.0.0
  */
 export type Ownership = Session.Ownership
 /**
  * Transaction ownership variants.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const Ownership = Data.taggedEnum<Ownership>()
 /**
- * Transaction contract.
+ * Callback-local record access and mutable drafts for one atomic domain transaction.
+ *
+ * **Details**
+ *
+ * All writes publish together when the callback succeeds. Document drafts reflect their
+ * staged mutations; table reads refer to the transaction snapshot.
+ *
+ * **Gotchas**
+ *
+ * Read all required tables before staging table writes. Later table reads fail with
+ * ReadAfterWrite. The transaction and every draft are revoked when the callback ends; copy
+ * data while the draft is active.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Transaction {
+  /**
+   * Returns or creates reserved root conversation 1 within the transaction.
+   */
   readonly ensureRoot: Effect.Effect<Record.Conversation, StorageError>
+  /**
+   * Allocates and validates an identity before it can be committed.
+   */
   readonly mint: <S extends Schema.Constraint>(
     schema: S,
   ) => Effect.Effect<S['Type'], StorageError, S['DecodingServices']>
+  /**
+   * Returns the requested conversation, or None when it is absent.
+   */
   readonly conversation: (
     id: Record.ConversationId,
   ) => Effect.Effect<Option.Option<Record.Conversation>, StorageError>
+  /**
+   * Returns the requested visible entry, or None when it is absent.
+   */
   readonly entry: (id: Record.EntryId) => Effect.Effect<Option.Option<Record.Entry>, StorageError>
+  /**
+   * Returns the requested domain task, or None when it is absent.
+   */
   readonly task: (id: Record.TaskId) => Effect.Effect<Option.Option<Record.Task>, StorageError>
+  /**
+   * Returns the requested submission, or None when it is absent.
+   */
   readonly submission: (
     id: Record.SubmissionId,
   ) => Effect.Effect<Option.Option<Record.Submission>, StorageError>
+  /**
+   * Scans matching conversations using a positive page size and optional continuation cursor.
+   */
   readonly scanConversations: (
     query: ConversationQuery,
     limit: number,
     cursor?: Record.Cursor,
   ) => Effect.Effect<Record.Page<Record.Conversation>, StorageError>
+  /**
+   * Scans visible conversation history in descending entry order within the requested bounds.
+   */
   readonly scanEntries: (
     query: EntryQuery,
     limit: number,
     cursor?: Record.Cursor,
   ) => Effect.Effect<Record.Page<Record.Entry>, StorageError>
+  /**
+   * Scans domain tasks matching the supplied filters and continuation cursor.
+   */
   readonly scanTasks: (
     query: TaskQuery,
     limit: number,
     cursor?: Record.Cursor,
   ) => Effect.Effect<Record.Page<Record.Task>, StorageError>
+  /**
+   * Scans admitted submissions matching the supplied filters and continuation cursor.
+   */
   readonly scanSubmissions: (
     query: SubmissionQuery,
     limit: number,
     cursor?: Record.Cursor,
   ) => Effect.Effect<Record.Page<Record.Submission>, StorageError>
+  /**
+   * Finds the submission admitted under a conversation and stable request identity.
+   */
   readonly submissionByRequest: (
     conversationId: Record.ConversationId,
     requestId: Identity.RequestId,
   ) => Effect.Effect<Option.Option<Record.Submission>, StorageError>
+  /**
+   * Finds the newest reset or compaction marker at or before the optional entry cutoff.
+   */
   readonly latestHeadMarker: (
     conversationId: Record.ConversationId,
     atOrBefore?: Record.EntryId,
   ) => Effect.Effect<Option.Option<Record.Entry>, StorageError>
+  /**
+   * Creates a conversation with explicit ownerless or task ownership and captured
+   * initialization hooks.
+   */
   readonly createConversation: (options: {
     readonly ownership: Ownership
   }) => Effect.Effect<Record.Conversation, StorageError>
+  /**
+   * Creates a conversation inheriting visible parent history through a valid parent entry
+   * cutoff.
+   */
   readonly forkConversation: (
     parent: Record.ConversationId,
     at: Record.EntryId,
     options: { readonly ownership: Ownership },
   ) => Effect.Effect<Record.Conversation, StorageError>
+  /**
+   * Stages an entry and assigns its conversation-local durable metadata.
+   */
   readonly appendEntry: (
     conversationId: Record.ConversationId,
     draft: Record.EntryDraft,
   ) => Effect.Effect<Record.Entry, StorageError>
+  /**
+   * Stages a domain task and returns its allocated identity.
+   */
   readonly createTask: (
     value: Omit<Record.Task, 'id'>,
   ) => Effect.Effect<Record.TaskId, StorageError>
+  /**
+   * Stages an admitted input or passive write with an allocated identity.
+   */
   readonly createSubmission: (
     value: Record.SubmissionCreate,
   ) => Effect.Effect<Record.Submission, StorageError>
+  /**
+   * Associates a queued submission with the entry where it was applied.
+   */
   readonly placeSubmission: (
     id: Record.SubmissionId,
     entry: Record.EntryId,
   ) => Effect.Effect<void, StorageError>
+  /**
+   * Stages a terminal answer or unanswered reason for a submission.
+   */
   readonly settleSubmission: (
     id: Record.SubmissionId,
     value:
@@ -180,35 +240,52 @@ export interface Transaction {
           readonly detail?: Record.Json | undefined
         },
   ) => Effect.Effect<void, StorageError>
+  /**
+   * Stages a domain mutation in the current atomic commit.
+   */
   readonly write: (value: Record.Write) => Effect.Effect<void, StorageError>
+  /**
+   * Acquires a mutable document draft, creating its initial value when needed. The draft is
+   * revoked when the callback ends.
+   */
   readonly doc: <T extends object>(
     token: Document.Document<T>,
     target?: Document.Target,
   ) => Effect.Effect<Document.Draft<T>, StorageError>
+  /**
+   * Retires the addressed document incarnation and ends watches bound to that incarnation.
+   */
   readonly retire: <T extends object>(
     token: Document.Document<T>,
     target?: Document.Target,
   ) => Effect.Effect<void, StorageError>
 }
 /**
- * Compatibility alias for Transaction.Function.
+ * Atomic transaction callback with optional persisted replay identity.
  *
  * @category models
- * @since 0.0.0
  */
 export type TransactionFunction = Transaction.Function
 /**
- * Compatibility alias for Session.Service.
+ * Domain operations exposed by a scoped Session.
  *
  * @category models
- * @since 0.0.0
  */
 export type Service = Session.Service
 /**
- * Optional atomically executed initializer for every newly created conversation.
+ * Service for atomic initialization and recovery of conversation documents.
+ *
+ * **Details**
+ *
+ * run participates in each newly created conversation transaction. Optional recover
+ * initializes existing conversations without repeating creation callbacks.
+ *
+ * **Gotchas**
+ *
+ * The callback uses the caller’s active Transaction; it must obey the same read-before-write
+ * and draft-lifetime rules.
  *
  * @category services
- * @since 0.0.0
  */
 export class CreationHook extends Context.Service<
   CreationHook,
@@ -223,10 +300,24 @@ export class CreationHook extends Context.Service<
   }
 >()('@effect-harness/durable/Session/CreationHook') {}
 /**
- * Session service.
+ * Scoped service for atomic domain mutations and committed reads.
+ *
+ * **When to use**
+ *
+ * Use when you need conversations, documents and receipts to share a storage lifetime.
+ *
+ * **Details**
+ *
+ * Build the service from a Store. Construction captures an optional CreationHook for new
+ * conversations and recovery initialization. Scoped release seals admission and
+ * observations, joins registered cleanup, then releases storage.
+ *
+ * **Gotchas**
+ *
+ * Session closure pauses recoverable execution; it does not persist a task-abort outcome.
+ * Keep the native engine alive when reopening a Session.
  *
  * @category services
- * @since 0.0.0
  */
 export class Session extends Context.Service<Session, Service>()(
   '@effect-harness/durable/Session',
@@ -488,10 +579,19 @@ class SnapshotRead<A> extends Request.Class<
 > {}
 
 /**
- * Scoped session service acquisition.
+ * Acquires a scoped Session over the supplied Store.
+ *
+ * **Details**
+ *
+ * Captures the optional CreationHook from the construction context. The owning Scope
+ * controls admission, observer lifetime and joined cleanup.
+ *
+ * **Gotchas**
+ *
+ * Provide conversation creation hooks before construction when using built-in executors. A
+ * hook added only at invocation time does not change the captured initializer.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.gen(function* () {
   const underlying = yield* Store
@@ -983,7 +1083,13 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
             const id = yield* mint(Record.ConversationId)
             const selected = new Map<
               string,
-              { readonly document: Record.StoredDocument; readonly at: Record.Point }
+              {
+                /**
+                 * Reads the selected persisted document incarnation and cutoff as an untyped snapshot.
+                 */
+                readonly document: Record.StoredDocument
+                readonly at: Record.Point
+              }
             >()
             for (const document of original.documents) {
               const record = document.record
@@ -1520,35 +1626,36 @@ export const make: Effect.Effect<Service, never, Scope.Scope | Store> = Effect.g
   return service
 })
 /**
- * layer service Layer.
+ * Provides a scoped Session from a Store.
+ *
+ * **Details**
+ *
+ * Share the Layer value to share one Session lifetime. Provide CreationHook while building
+ * this Layer when new conversations need domain initialization.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<Session, never, Store> = Layer.effect(Session, make)
 
 /**
- * Session contract.
+ * Type-level contracts for `Session`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Session {
   /**
-   * ConversationQuery contract.
+   * Optional owner filters for a conversation scan.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface ConversationQuery {
     readonly ownerConversationId?: Record.ConversationId | undefined
     readonly ownerTaskId?: Record.TaskId | undefined
   }
   /**
-   * EntryQuery contract.
+   * Conversation and optional entry bounds for a visible-history scan.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface EntryQuery {
     readonly conversationId: Record.ConversationId
@@ -1556,26 +1663,23 @@ export declare namespace Session {
     readonly maxEntryId?: Record.EntryId | undefined
   }
   /**
-   * TaskQuery contract.
+   * Optional conversation, kind, status and ownership-state filters for a task scan.
    *
    * @category models
-   * @since 0.0.0
    */
   export type TaskQuery = Partial<
     Pick<Record.Task, 'conversationId' | 'kind' | 'abortRequested' | 'background'>
   > & { readonly status?: Record.Task['state']['status'] | undefined }
   /**
-   * SubmissionQuery contract.
+   * Optional conversation and status filters for a submission scan.
    *
    * @category models
-   * @since 0.0.0
    */
   export type SubmissionQuery = Partial<Pick<Record.Submission, 'conversationId' | 'status'>>
   /**
-   * DocumentQuery contract.
+   * Document scope, read cutoff and optional kind filter.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface DocumentQuery {
     readonly scope: Record.Scope
@@ -1586,21 +1690,26 @@ export declare namespace Session {
    * Transaction ownership variants.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Ownership = Data.TaggedEnum<{
     ownerless: { readonly kind: 'ownerless' }
+    /**
+     * Returns the requested domain task, or None when it is absent.
+     */
     task: { readonly kind: 'task'; readonly taskId: Record.TaskId }
   }>
   /**
-   * Service contract.
+   * Domain operations exposed by a scoped Session.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Service {
     /** Saved domain facts, excluding uncommitted transaction candidates. */
     readonly committed: Effect.Effect<Record.State, StorageError>
+    /**
+     * Returns or creates reserved root conversation 1, atomically running initialization on
+     * creation.
+     */
     readonly root: (
       initialize?: (tx: Transaction) => Effect.Effect<void, StorageError>,
     ) => Effect.Effect<Record.Conversation, StorageError>
@@ -1608,17 +1717,32 @@ export declare namespace Session {
     readonly initialize: (
       conversationId: Record.ConversationId,
     ) => Effect.Effect<void, StorageError>
+    /**
+     * Runs an atomic callback; keyed transactions replay the saved JSON-safe or void result
+     * without rerunning it.
+     */
     readonly transaction: TransactionFunction
+    /**
+     * Reads and decodes the latest committed document value; None means no live incarnation
+     * exists.
+     */
     readonly snapshot: <T extends object>(
       token: Document.Document<T>,
       target?: Document.Target,
     ) => Effect.Effect<Option.Option<Document.Snapshot<T>>, StorageError>
+    /**
+     * Reads a conversation document at an entry cutoff using its declared history policy.
+     */
     readonly snapshotAsOf: <T extends object>(
       token: Document.Document<T>,
       conversationId: Record.ConversationId,
       at: Record.EntryId,
       target?: Omit<Document.Target, 'owner'>,
     ) => Effect.Effect<Option.Option<Document.Snapshot<T>>, StorageError>
+    /**
+     * Maintains a scoped live value for the current document incarnation; None means acquisition
+     * found no document.
+     */
     readonly state: <T extends object>(
       token: Document.Document<T>,
       target?: Document.Target,
@@ -1627,6 +1751,10 @@ export declare namespace Session {
       StorageError,
       import('effect/Scope').Scope
     >
+    /**
+     * Acquires an initial document snapshot and a scoped stream of committed changes for that
+     * incarnation.
+     */
     readonly watchDoc: <T extends object>(
       token: Document.Document<T>,
       target?: Document.Target,
@@ -1635,36 +1763,85 @@ export declare namespace Session {
       StorageError,
       import('effect/Scope').Scope
     >
+    /**
+     * Streams retained frames saved after subscription starts. Retention is bounded; use
+     * View/Event when consumers need reset-based resynchronization.
+     */
     readonly commits: Stream.Stream<Record.Frame, StorageError>
+    /**
+     * Returns the requested conversation, or None when it is absent.
+     */
     readonly conversation: (
       id: Record.ConversationId,
     ) => Effect.Effect<Option.Option<Record.Conversation>, StorageError>
+    /**
+     * Returns the requested visible entry, or None when it is absent.
+     */
     readonly entry: (
       id: Record.EntryId,
       conversationId?: Record.ConversationId,
     ) => Effect.Effect<
-      Option.Option<{ readonly entry: Record.Entry; readonly commitSeq: Record.Seq }>,
+      Option.Option<{
+        /**
+         * Returns the requested visible entry, or None when it is absent.
+         */
+        readonly entry: Record.Entry
+        readonly commitSeq: Record.Seq
+      }>,
       StorageError
     >
+    /**
+     * Returns the requested domain task, or None when it is absent.
+     */
     readonly task: (id: Record.TaskId) => Effect.Effect<Option.Option<Record.Task>, StorageError>
+    /**
+     * Returns the requested submission, or None when it is absent.
+     */
     readonly submission: (
       id: Record.SubmissionId,
     ) => Effect.Effect<Option.Option<Record.Submission>, StorageError>
+    /**
+     * Finds the submission admitted under a conversation and stable request identity.
+     */
     readonly submissionByRequest: Transaction['submissionByRequest']
+    /**
+     * Finds the newest reset or compaction marker at or before the optional entry cutoff.
+     */
     readonly latestHeadMarker: Transaction['latestHeadMarker']
+    /**
+     * Scans matching conversations using a positive page size and optional continuation cursor.
+     */
     readonly scanConversations: Transaction['scanConversations']
+    /**
+     * Scans visible conversation history in descending entry order within the requested bounds.
+     */
     readonly scanEntries: Transaction['scanEntries']
+    /**
+     * Scans domain tasks matching the supplied filters and continuation cursor.
+     */
     readonly scanTasks: Transaction['scanTasks']
+    /**
+     * Scans admitted submissions matching the supplied filters and continuation cursor.
+     */
     readonly scanSubmissions: Transaction['scanSubmissions']
+    /**
+     * Scans document records matching a scope, cutoff and optional kind.
+     */
     readonly scanDocuments: (
       query: DocumentQuery,
       limit: number,
       cursor?: Record.Cursor,
     ) => Effect.Effect<Record.Page<Record.Document>, StorageError>
+    /**
+     * Finds the live or historically selected document record at a logical address.
+     */
     readonly findDocument: (
       address: Record.Address,
       at?: Record.Point,
     ) => Effect.Effect<Option.Option<Record.Document>, StorageError>
+    /**
+     * Reads the selected persisted document incarnation and cutoff as an untyped snapshot.
+     */
     readonly document: (
       id: Record.DocumentId,
       at?: Record.Point,
@@ -1681,17 +1858,62 @@ export declare namespace Session {
 }
 
 /**
- * Transaction contract.
+ * Type-level contracts for `Transaction`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Transaction {
   /**
-   * Function contract.
+   * Commits a transaction callback and optionally persists its replay result.
+   *
+   * **Details**
+   *
+   * Unkeyed callbacks may return arbitrary values. A key stores the JSON-safe or void result
+   * atomically with all writes; replay returns that result without evaluating the callback. A
+   * fingerprint rejects reuse for different content.
+   *
+   * **Gotchas**
+   *
+   * Receipt replay protects domain facts. It cannot make external network, file or process
+   * actions exactly once. Keep those actions in native Activities with an explicit replay
+   * policy.
+   *
+   * **Example** (Replaying a committed update)
+   *
+   * ```ts
+   * import assert from 'node:assert/strict'
+   * import * as Document from '@effect-harness/durable/Document'
+   * import * as Session from '@effect-harness/durable/Session'
+   * import * as Store from '@effect-harness/durable/Store'
+   * import * as Effect from 'effect/Effect'
+   * import * as Layer from 'effect/Layer'
+   * import * as Option from 'effect/Option'
+   * import * as Schema from 'effect/Schema'
+   *
+   * const Counter = Document.defineUnsafe({
+   *   kind: 'counter', version: 1, scope: 'session',
+   *   schema: Schema.Struct({ count: Schema.Number }),
+   *   initial: () => ({ count: 0 }),
+   * })
+   * const sessions = Session.layer.pipe(Layer.provide(Store.layerMemory))
+   * const program = Effect.gen(function* () {
+   *   const session = yield* Session.Session
+   *   const increment = session.transaction(Effect.fnUntraced(function* (tx) {
+   *     const counter = yield* tx.doc(Counter)
+   *     counter.count += 1
+   *     return counter.count
+   *   }), { key: 'increment-once' })
+   *
+   *   assert.equal(yield* increment, 1)
+   *   assert.equal(yield* increment, 1)
+   *   const saved = yield* session.snapshot(Counter)
+   *   assert.equal(Option.getOrThrow(saved).value.count, 1)
+   * }).pipe(Effect.provide(sessions))
+   *
+   * await Effect.runPromise(program)
+   * ```
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Function {
     <A, E, R>(

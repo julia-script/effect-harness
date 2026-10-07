@@ -1,13 +1,16 @@
 /**
  * Node public contracts.
- *
- * @since 0.0.0
  */
 /**
- * @since 0.0.0
+ * Node environment construction with injected platform services and decoded host
+ * configuration.
+ *
+ * @category re-exports
  */
 export * from '../NodeEnv.ts'
 /**
- * @since 0.0.0
+ * Scoped Node filesystem capabilities absent from portable FileSystem.
+ *
+ * @category re-exports
  */
 export { layerNative, fileError } from '../NodeNativeFiles.ts'

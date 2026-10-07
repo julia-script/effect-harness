@@ -1,7 +1,5 @@
 /**
  * Single-use ChatGPT OAuth authorization and persisted account credentials.
- *
- * @since 0.0.0
  */
 import * as Arr from 'effect/Array'
 import * as String from 'effect/String'
@@ -44,24 +42,21 @@ import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 
 /**
- * Tests whether an unknown value satisfies the decoded suer schema.
+ * Expected issuer of identity tokens used for ChatGPT account authorization.
  *
- * @category guards
- * @since 0.0.0
+ * @category constants
  */
 export const issuer = 'https://auth.openai.com'
 /**
- * Defines resource for the ChatGpt boundary.
+ * OAuth resource identifier for direct inference through the public OpenAI API.
  *
- * @category models
- * @since 0.0.0
+ * @category constants
  */
 export const resource = 'https://api.openai.com/v1'
 /**
- * Defines directScope for the ChatGpt boundary.
+ * Permission scope required for ChatGPT account direct inference.
  *
- * @category models
- * @since 0.0.0
+ * @category constants
  */
 export const directScope = 'chatgpt.tokens.use.direct'
 const tokenEndpoint = `${issuer}/api/accounts/oauth/token`
@@ -76,10 +71,9 @@ const requestedScopes = [
 ]
 
 /**
- * Describes the Authorization contract.
+ * Pending browser authorization URL, state, redirect and expiry.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export interface Authorization {
   readonly url: Redacted.Redacted<string>
@@ -94,67 +88,106 @@ interface Pending {
   readonly returning?: OAuth | Registration | undefined
 }
 /**
- * Defines Model for the ChatGpt boundary.
+ * Model visibility record returned by authorized account discovery.
  *
  * @category models
- * @since 0.0.0
  */
 export const Model = Schema.Struct({
   slug: Schema.NonEmptyString,
   display_name: Schema.String,
   visibility: Schema.String,
 })
+/**
+ * Model visibility record returned by authorized account discovery.
+ *
+ * @category models
+ */
 export type Model = typeof Model.Type
 /**
- * Tests whether an unknown value satisfies the decoded Model schema.
+ * Checks whether a value satisfies the decoded `Model` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isModel: (u: unknown) => u is Model = Schema.is(Model)
 const ModelList = Schema.Struct({ models: Schema.Array(Model) })
 
 /**
- * Types owned by the ChatGpt concept.
+ * Type-level contracts for `ChatGpt`.
  *
- * @category types
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace ChatGpt {
   /**
-   * Describes the Service contract.
+   * Explicit ChatGPT sign-in, token refresh and account-model discovery.
    *
-   * @category types
-   * @since 0.0.0
+   * @category models
    */
   export interface Service {
+    /**
+     * Creates a pending explicit browser authorization; the host opens the returned URL after
+     * user consent.
+     */
     readonly begin: (options: {
       readonly redirectUri: string
       readonly account?: string | undefined
     }) => Effect.Effect<Authorization, AuthError>
+    /**
+     * Validates the full callback URL, exchanges the code and saves a verified OAuth grant.
+     */
     readonly complete: (callbackUrl: string) => Effect.Effect<OAuth, AuthError>
+    /**
+     * Refreshes under credential serialization when needed; force requests refresh even before
+     * the normal deadline.
+     */
     readonly refresh: (
       account: string,
       options?: { readonly force?: boolean | undefined },
     ) => Effect.Effect<OAuth, AuthError>
+    /**
+     * Returns a Redacted fresh access token, refreshing the selected account when needed.
+     */
     readonly accessToken: (account: string) => Effect.Effect<Redacted.Redacted<string>, AuthError>
+    /**
+     * Discovers model visibility for the authorized account; capabilities and prices still need
+     * host declarations.
+     */
     readonly models: (account: string) => Effect.Effect<ReadonlyArray<Model>, AuthError>
+    /**
+     * Revokes the account refresh token while retaining client registration for later consent.
+     */
     readonly signOut: (account: string) => Effect.Effect<void, AuthError>
+    /**
+     * Cancels a pending authorization by state without authorizing an account.
+     */
     readonly cancel: (state: string) => Effect.Effect<void>
   }
 }
 /**
- * Describes the Service contract.
+ * Explicit ChatGPT sign-in, token refresh and account-model discovery.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export type Service = ChatGpt.Service
 /**
- * Identifies the ChatGpt service in the Effect context.
+ * Service for explicit ChatGPT account authorization and token refresh.
+ *
+ * **Details**
+ *
+ * The host starts consent and delivers the full callback URL. Completion checks state, PKCE,
+ * redirect, identity claims and direct-inference scope. CredentialStore serializes token
+ * rotation.
+ *
+ * **Gotchas**
+ *
+ * This service does not import credentials from another application. Discover
+ * account-visible models and supply their limits separately.
  *
  * @category services
- * @since 0.0.0
  */
 export class ChatGpt extends Context.Service<ChatGpt, Service>()(
   '@effect-harness/provider-openai/ChatGpt',
@@ -211,10 +244,19 @@ const deadlines = (
   )
 
 /**
- * Provides ChatGpt services with the declared native dependencies.
+ * Provides ChatGPT consent, refresh and model discovery for one application.
+ *
+ * **Details**
+ *
+ * appName identifies dynamic client registration. Consumes CredentialStore, Jwt, Crypto and
+ * HttpClient. Authorization lifetime and refresh skew accept Duration.Input.
+ *
+ * **Gotchas**
+ *
+ * Begin consent only after an explicit user action. Live entitlement and server availability
+ * are checked by the provider, not guaranteed by Layer construction.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (options: {
   readonly appName: string
@@ -701,7 +743,6 @@ export const layer = (options: {
  * Resolves all layer options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,

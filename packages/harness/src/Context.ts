@@ -1,7 +1,5 @@
 /**
  * Committed transcript projection, compatible edit codecs and token estimates.
- *
- * @since 0.0.0
  */
 import * as Predicate from 'effect/Predicate'
 import { dual, constTrue, constFalse } from 'effect/Function'
@@ -18,7 +16,9 @@ import * as Serialization from './Serialization.ts'
 import { EntryId } from './Identity.ts'
 import { SystemPatch } from './SystemPatch.ts'
 /**
- * @since 0.0.0
+ * Canonical managed-section and tool-declaration codecs.
+ *
+ * @category re-exports
  */
 export { ToolDeclaration, SystemPatch } from './SystemPatch.ts'
 
@@ -38,7 +38,6 @@ const EditDomain = Schema.Union([
  * Codec for tagged context edits with the legacy action discriminator on the wire.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Edit = EditWire.pipe(
   Schema.decodeTo(
@@ -56,17 +55,15 @@ export const Edit = EditWire.pipe(
   ),
 )
 /**
- * Context edit contract.
+ * Omission or replacement of an entry contribution in model context.
  *
  * @category models
- * @since 0.0.0
  */
 export type Edit = typeof Edit.Type
 /**
  * Transcript inputs are immutable committed values supplied by the durable package.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Entry {
   readonly id: EntryId
@@ -79,10 +76,9 @@ export interface Entry {
   readonly system?: SystemPatch | undefined
 }
 /**
- * Context view contract.
+ * Active head, visible entries and ordered model-message contributions.
  *
  * @category models
- * @since 0.0.0
  */
 export interface View {
   readonly head: Entry | undefined
@@ -96,7 +92,6 @@ export interface View {
  * Creates an empty context state.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const empty = (): View => ({ head: undefined, entries: [], contributions: [], messages: [] })
 /** Newest head marker precedes non-head range; every range entry's edits count, including removed old markers. */
@@ -144,7 +139,6 @@ function deriveImpl(self: ReadonlyArray<Entry>, at?: EntryId): View {
  * Projects visible committed entries and applies the newest context edits.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const derive: {
   (at?: EntryId): (self: ReadonlyArray<Entry>) => View
@@ -154,7 +148,6 @@ export const derive: {
  * Managed section/tool deltas that survive the newest context edits.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function systemPatches(self: View): Array<SystemPatch> {
   return (self.systems ?? self.entries.map((entry) => entry.system)).filter(
@@ -169,7 +162,6 @@ export function systemPatches(self: View): Array<SystemPatch> {
  * Edited replacements remain normal native messages.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function managedMessages(self: View): Array<Prompt.Message> {
   return Arr.flatten(
@@ -188,7 +180,6 @@ export function managedMessages(self: View): Array<Prompt.Message> {
  * Moves results into call order; first matching result before the next assistant wins; orphan results disappear.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function orderToolResults(self: ReadonlyArray<Prompt.Message>): Array<Prompt.Message> {
   const ordered: Array<Prompt.Message> = []
@@ -234,7 +225,6 @@ export function orderToolResults(self: ReadonlyArray<Prompt.Message>): Array<Pro
  * Images use the pinned Pi fixed-size heuristic, independent of encoded payload bytes.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function estimateMessage(self: Prompt.Message): number {
   if (self.role === 'system') return Math.ceil(self.content.length / 3.5)
@@ -281,7 +271,6 @@ export function estimateMessage(self: Prompt.Message): number {
  * Native message equivalents for a system delta's visible sections and declared tool metadata.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function systemMessages(self: SystemPatch): Array<Prompt.SystemMessage> {
   const text = Object.values(self.sections ?? {})
@@ -343,7 +332,6 @@ function estimateImpl(
  * Estimates context tokens from the newest measured assistant and later messages.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const estimate: {
   (
@@ -379,7 +367,6 @@ function deltaImpl(
  * Returns incremental changes between the previous and current values.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const delta: {
   (that: View): (self: View) => {
@@ -398,9 +385,13 @@ export const delta: {
 } = dual(2, deltaImpl)
 
 /**
- * Checks whether an unknown value satisfies the Edit contract.
+ * Checks whether a value satisfies the decoded `Edit` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isEdit: (u: unknown) => u is Edit = Schema.is(Edit)

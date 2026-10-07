@@ -1,7 +1,5 @@
 /**
  * Identity-keyed registration and resolution of scoped sessions.
- *
- * @since 0.0.0
  */
 import * as Option from 'effect/Option'
 import type * as Identity from './Identity.ts'
@@ -12,23 +10,35 @@ import { Session, type Service as SessionService } from './Session.ts'
 import { rejected, type StorageError, NotFound } from './StorageError.ts'
 
 /**
- * Resolves already scoped Session services for native Workflow executor Layers.
+ * Service resolving durable session identities to already scoped Sessions.
+ *
+ * **Gotchas**
+ *
+ * The directory does not acquire or extend Session lifetimes. An unregistered identity fails
+ * with NotFound.
  *
  * @category services
- * @since 0.0.0
  */
 export class SessionDirectory extends Context.Service<
   SessionDirectory,
   {
+    /**
+     * Returns the already scoped Session registered under this identity; missing registrations
+     * fail with NotFound.
+     */
     readonly resolve: (sessionId: Identity.SessionId) => Effect.Effect<SessionService, StorageError>
   }
 >()('@effect-harness/durable/SessionDirectory') {}
 
 /**
- * Explicit application binding of already scoped Session references; no default registrations.
+ * Application-owned map of durable identities to scoped Session services.
+ *
+ * **Details**
+ *
+ * Supply explicit registrations before building layer. The Layer snapshots the map but
+ * retains the supplied Session references.
  *
  * @category services
- * @since 0.0.0
  */
 export class Registrations extends Context.Service<
   Registrations,
@@ -36,10 +46,14 @@ export class Registrations extends Context.Service<
 >()('@effect-harness/durable/SessionDirectory/Registrations') {}
 
 /**
- * Snapshot the explicitly supplied registration map when this Layer is built.
+ * Builds a directory from a snapshot of explicit Session registrations.
+ *
+ * **Gotchas**
+ *
+ * Later map changes do not update the directory. Keep every registered Session’s owning
+ * Scope alive.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<SessionDirectory, never, Registrations> = Layer.effect(
   SessionDirectory,
@@ -56,10 +70,18 @@ export const layer: Layer.Layer<SessionDirectory, never, Registrations> = Layer.
 )
 
 /**
- * Associates the application's ordinary Session Layer with one durable session identity.
+ * Binds the supplied Session to one durable session identity.
+ *
+ * **When to use**
+ *
+ * Use when one application runtime hosts a single Session.
+ *
+ * **Gotchas**
+ *
+ * Other requested identities fail with NotFound. This Layer does not create a Session or
+ * manage a second storage lifetime.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerSingle = (
   sessionId: Identity.SessionId,

@@ -1,7 +1,5 @@
 /**
  * Cross-backend durable storage conformance cases.
- *
- * @since 0.0.0
  */
 import * as Option from 'effect/Option'
 import * as Identity from '../Identity.ts'
@@ -91,7 +89,6 @@ const failure = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.
  * Storage semantics shared by every backend, independent from the selected test runner.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeStorageConformance = (assert: Assertions): Array<Case> => {
   const cases: Array<Case> = []

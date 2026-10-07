@@ -1,7 +1,5 @@
 /**
  * Whole-line text truncation with explicit byte and line counts.
- *
- * @since 0.0.0
  */
 import { dual } from 'effect/Function'
 // Adapted from pi-durable (MIT), pinned 636703a0; see package NOTICE.
@@ -17,30 +15,26 @@ import { dual } from 'effect/Function'
  * Never returns partial lines. Tool output streams are bounded by `Output` instead.
  *
  * @category constants
- * @since 0.0.0
  */
 export const DEFAULT_MAX_LINES = 2000
 /**
  * Default UTF-8 text truncation limit in bytes.
  *
  * @category constants
- * @since 0.0.0
  */
 export const DEFAULT_MAX_BYTES = 50 * 1024 // 50KB
 
 /**
- * Truncate truncation result contract.
+ * Retained head text with truncation and continuation metadata.
  *
  * @category models
- * @since 0.0.0
  */
 export type TruncationResult = truncateHead.Result
 
 /**
- * Truncate truncation options contract.
+ * Maximum retained lines and UTF-8 bytes.
  *
  * @category models
- * @since 0.0.0
  */
 export type TruncationOptions = truncateHead.Options
 
@@ -49,7 +43,6 @@ const encoder = new TextEncoder()
  * Returns the UTF-8 byte length of text.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function utf8ByteLength(self: string): number {
   return encoder.encode(self).length
@@ -66,7 +59,6 @@ function splitLinesForCounting(self: string): Array<string> {
  * Formats bytes as a readable size.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function formatSize(bytes: number): string {
   if (bytes < 1024) {
@@ -96,7 +88,6 @@ function truncateHeadImpl(self: string, options: TruncationOptions = {}): Trunca
  * Returns complete leading lines within the requested text limits.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const truncateHead: {
   (options?: TruncationOptions): (self: string) => TruncationResult
@@ -113,7 +104,6 @@ export const truncateHead: {
  * newlines; then the result equals `truncateHead` of the whole text.
  *
  * @category combinators
- * @since 0.0.0
  */
 function truncateHeadOfImpl(
   self: string,
@@ -202,17 +192,15 @@ function truncateHeadOfImpl(
 }
 
 /**
- * Type contracts owned by `truncateHead`.
+ * Type-level contracts for `truncateHead`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace truncateHead {
   /**
-   * truncateHead result type contract.
+   * Retained text and complete input/output byte and line counts.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Result {
     /** The truncated content */
@@ -242,7 +230,6 @@ export declare namespace truncateHead {
    * Configuration accepted by truncateHead.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Options {
     /** Maximum number of lines (default: 2000) */
@@ -256,7 +243,6 @@ export declare namespace truncateHead {
  * Truncates a known leading text window using complete original byte and line totals.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const truncateHeadOf: {
   (

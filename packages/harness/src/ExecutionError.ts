@@ -1,7 +1,5 @@
 /**
  * Semantic process execution failures with retained native causes and spill metadata.
- *
- * @since 0.0.0
  */
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
@@ -10,7 +8,6 @@ import * as Schema from 'effect/Schema'
  * Schema for execution error code.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ExecutionErrorCode = Schema.Literals([
   'aborted',
@@ -21,17 +18,15 @@ export const ExecutionErrorCode = Schema.Literals([
   'unknown',
 ])
 /**
- * Error execution error code contract.
+ * Decoded value validated by the `ExecutionErrorCode` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type ExecutionErrorCode = typeof ExecutionErrorCode.Type
 /**
- * Semantic execution aborted with its retained cause.
+ * Process failure reporting scoped cancellation.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ExecutionAborted extends Schema.TaggedError<ExecutionAborted>(
   '@effect-harness/harness/ExecutionError/ExecutionAborted',
@@ -45,10 +40,9 @@ export class ExecutionAborted extends Schema.TaggedError<ExecutionAborted>(
   }
 }
 /**
- * Semantic execution timeout with its retained cause.
+ * Process failure reporting the configured timeout exceeded.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ExecutionTimeout extends Schema.TaggedError<ExecutionTimeout>(
   '@effect-harness/harness/ExecutionError/ExecutionTimeout',
@@ -62,10 +56,9 @@ export class ExecutionTimeout extends Schema.TaggedError<ExecutionTimeout>(
   }
 }
 /**
- * Semantic execution shell unavailable with its retained cause.
+ * Process failure reporting that no usable configured shell was found.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ExecutionShellUnavailable extends Schema.TaggedError<ExecutionShellUnavailable>(
   '@effect-harness/harness/ExecutionError/ExecutionShellUnavailable',
@@ -79,10 +72,9 @@ export class ExecutionShellUnavailable extends Schema.TaggedError<ExecutionShell
   }
 }
 /**
- * Semantic execution spawn error with its retained cause.
+ * Process failure reporting an unsuccessful command launch.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ExecutionSpawnError extends Schema.TaggedError<ExecutionSpawnError>(
   '@effect-harness/harness/ExecutionError/ExecutionSpawnError',
@@ -96,10 +88,9 @@ export class ExecutionSpawnError extends Schema.TaggedError<ExecutionSpawnError>
   }
 }
 /**
- * Semantic execution callback error with its retained cause.
+ * Process failure reporting an output or progress callback failure.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ExecutionCallbackError extends Schema.TaggedError<ExecutionCallbackError>(
   '@effect-harness/harness/ExecutionError/ExecutionCallbackError',
@@ -113,10 +104,9 @@ export class ExecutionCallbackError extends Schema.TaggedError<ExecutionCallback
   }
 }
 /**
- * Semantic execution unknown with its retained cause.
+ * Process failure carrying an otherwise unclassified native cause.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ExecutionUnknown extends Schema.TaggedError<ExecutionUnknown>(
   '@effect-harness/harness/ExecutionError/ExecutionUnknown',
@@ -133,7 +123,6 @@ export class ExecutionUnknown extends Schema.TaggedError<ExecutionUnknown>(
  * Schema for execution error reason.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ExecutionErrorReason = Schema.Union([
   ExecutionAborted,
@@ -144,17 +133,25 @@ export const ExecutionErrorReason = Schema.Union([
   ExecutionUnknown,
 ])
 /**
- * Error execution error reason contract.
+ * Decoded value validated by the `ExecutionErrorReason` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type ExecutionErrorReason = typeof ExecutionErrorReason.Type
 /**
- * Semantic execution error with its retained cause.
+ * Structured shell/process failure with optional spill-file diagnostics.
+ *
+ * **Details**
+ *
+ * Spawn, timeout and callback failures use this error channel. A completed command’s nonzero
+ * exit code remains a shell result.
+ *
+ * **Gotchas**
+ *
+ * An existing spillPath may be useful for diagnostics; its filesystem and cleanup lifetime
+ * remain owned by the invocation.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ExecutionError extends Schema.TaggedError<ExecutionError>(
   '@effect-harness/harness/ExecutionError/ExecutionError',

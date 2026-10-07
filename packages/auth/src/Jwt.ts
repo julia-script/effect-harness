@@ -1,7 +1,5 @@
 /**
  * Portable verified JWT identity and verification service contracts.
- *
- * @since 0.0.0
  */
 import * as Schema from 'effect/Schema'
 import * as Time from './Time.ts'
@@ -14,7 +12,6 @@ import type { AuthError } from './Credential.ts'
  * Verified domain identity: exact UTC expiry encoded as epoch milliseconds; raw JWT seconds use JoseJwt.Claims.
  *
  * @category models
- * @since 0.0.0
  */
 export const Identity = Schema.Struct({
   sub: Schema.NonEmptyString,
@@ -23,26 +20,33 @@ export const Identity = Schema.Struct({
   nonce: Schema.optional(Schema.String),
   email: Schema.optional(Schema.String),
 })
+/**
+ * Verified issuer and subject identity with token expiry.
+ *
+ * @category models
+ */
 export type Identity = typeof Identity.Type
 /**
- * Tests whether an unknown value satisfies the decoded Identity schema.
+ * Checks whether a value satisfies the decoded `Identity` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isIdentity: (u: unknown) => u is Identity = Schema.is(Identity)
 /**
- * Types owned by the Jwt concept.
+ * Type-level contracts for `Jwt`.
  *
- * @category types
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Jwt {
   /**
-   * Describes the VerifyOptions contract.
+   * Expected issuer, client, nonce and JWKS endpoint for token verification.
    *
-   * @category types
-   * @since 0.0.0
+   * @category models
    */
   export interface VerifyOptions {
     readonly issuer: string
@@ -53,17 +57,20 @@ export declare namespace Jwt {
   }
 }
 /**
- * Describes the VerifyOptions contract.
+ * Expected issuer, client, nonce and JWKS endpoint for token verification.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export type VerifyOptions = Jwt.VerifyOptions
 /**
- * Identifies the Jwt service in the Effect context.
+ * Service verifying an identity token against expected authorization claims.
+ *
+ * **Details**
+ *
+ * Returns verified issuer/subject identity and expiry after checking the expected client.
+ * Email is informational and does not determine account identity.
  *
  * @category services
- * @since 0.0.0
  */
 export class Jwt extends Context.Service<
   Jwt,

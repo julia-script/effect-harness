@@ -1,7 +1,5 @@
 /**
  * Invocation context, execution callbacks and model-visible tool results.
- *
- * @since 0.0.0
  */
 import type * as Duration from 'effect/Duration'
 import * as SchemaField from './SchemaField.ts'
@@ -15,10 +13,9 @@ import type { ToolError } from './ToolError.ts'
 import type * as Output from './Output.ts'
 
 /**
- * Schema for diagnostic.
+ * Schema for structured tool diagnostic kept separately from output and details.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Diagnostic = Schema.Struct({
   kind: Schema.String,
@@ -27,17 +24,15 @@ export const Diagnostic = Schema.Struct({
   detail: SchemaField.optional(Schema.Json),
 })
 /**
- * Invocation diagnostic contract.
+ * Structured tool diagnostic kept separately from output and details.
  *
  * @category models
- * @since 0.0.0
  */
 export type Diagnostic = typeof Diagnostic.Type
 /**
- * Schema for control.
+ * Schema for tool requests to terminate, reset or add tools after settlement.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Control = Schema.Struct({
   terminate: SchemaField.optional(Schema.Boolean),
@@ -45,17 +40,15 @@ export const Control = Schema.Struct({
   addTools: SchemaField.optional(Schema.Array(Schema.String)),
 })
 /**
- * Invocation control contract.
+ * Tool requests to terminate, reset or add tools after settlement.
  *
  * @category models
- * @since 0.0.0
  */
 export type Control = typeof Control.Type
 /**
- * Schema for result.
+ * Schema for tool content, private details, diagnostics, usage and optional controls.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Result = Schema.Struct({
   content: SchemaField.optional(Schema.Array(Prompt.UserMessagePart)),
@@ -66,17 +59,15 @@ export const Result = Schema.Struct({
   isError: SchemaField.optional(Schema.Boolean),
 })
 /**
- * Invocation tool result contract.
+ * Decoded tool content and metadata returned to the executor.
  *
  * @category models
- * @since 0.0.0
  */
 export type ToolResult = Result
 /**
- * Invocation progress contract.
+ * Partial tool output, details and diagnostics published during execution.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Progress {
   readonly output?: string | undefined
@@ -87,14 +78,14 @@ export interface Progress {
   readonly clear?: boolean | undefined
 }
 /**
- * Request-local capabilities supplied per Activity.
+ * Request-local context and progress reporting for a model or tool invocation.
  *
  * **Details**
  *
- * Handler Layers may depend on this service using Tool.addDependency.
+ * Carries resolved agent/context inputs and scoped reporting callbacks. It is supplied by an
+ * executor, rather than captured as a global singleton.
  *
  * @category services
- * @since 0.0.0
  */
 export class Invocation extends Context.Service<
   Invocation,
@@ -105,10 +96,14 @@ export class Invocation extends Context.Service<
   }
 >()('@effect-harness/harness/Invocation') {}
 /**
- * Injectable tool execution capabilities, scoped to one executor call.
+ * Request-local tool reporting and ownership boundary.
+ *
+ * **Details**
+ *
+ * Handlers publish output, details and diagnostics through this service. Reports remain
+ * distinct from the final model-visible tool result and use the invocation’s lifetime.
  *
  * @category services
- * @since 0.0.0
  */
 export class ToolCall extends Context.Service<
   ToolCall,
@@ -133,10 +128,18 @@ export class ToolCall extends Context.Service<
   }
 >()('@effect-harness/harness/Invocation/ToolCall') {}
 /**
- * Layer for Invocation silent capabilities.
+ * Provides an Invocation with cwd set to . and no-op reporting.
+ *
+ * **When to use**
+ *
+ * Use when standalone execution needs invocation context without publishing progress.
+ *
+ * **Gotchas**
+ *
+ * This Layer provides Invocation only; it does not provide ToolCall or any durable ownership
+ * service.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerSilent: Layer.Layer<Invocation> = Layer.succeed(
   Invocation,
@@ -144,33 +147,44 @@ export const layerSilent: Layer.Layer<Invocation> = Layer.succeed(
 )
 
 /**
- * Checks whether an unknown value satisfies the Diagnostic contract.
+ * Checks whether a value satisfies the decoded `Diagnostic` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isDiagnostic: (u: unknown) => u is Diagnostic = Schema.is(Diagnostic)
 
 /**
- * Checks whether an unknown value satisfies the Control contract.
+ * Checks whether a value satisfies the decoded `Control` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isControl: (u: unknown) => u is Control = Schema.is(Control)
 
 /**
- * Checks whether an unknown value satisfies the ToolResult contract.
+ * Checks whether a value satisfies the decoded `Result` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isToolResult: (u: unknown) => u is Result = Schema.is(Result)
 
 /**
- * Invocation result contract.
+ * Tool content, private details, diagnostics, usage and optional controls.
  *
  * @category models
- * @since 0.0.0
  */
 export type Result = typeof Result.Type

@@ -1,7 +1,5 @@
 /**
  * Structured task ownership, joins and completion holds.
- *
- * @since 0.0.0
  */
 import * as Arr from 'effect/Array'
 import * as Outcome from './Outcome.ts'
@@ -30,10 +28,14 @@ const invalid = (message: string, cause?: unknown) =>
   })
 
 /**
- * Attaches native Workflow identity to an already created domain task in the same transaction.
+ * Encodes a native Workflow payload and computes its durable execution binding.
+ *
+ * **Details**
+ *
+ * Uses the declaration’s payload schema and idempotency key. Returns metadata for a task
+ * record; this operation neither creates the task nor starts execution.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const domainBinding = Effect.fnUntraced(function* <
   N extends string,
@@ -57,7 +59,6 @@ export const domainBinding = Effect.fnUntraced(function* <
  * The caller prefetches the task before any transaction table writes.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const bind = Effect.fnUntraced(function* <
   N extends string,
@@ -79,7 +80,6 @@ export const bind = Effect.fnUntraced(function* <
  * Outcome classification is shared by holds and fail-fast joins.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isFailed = Outcome.failed
 
@@ -92,7 +92,6 @@ const heldFailure = (task: Record.Task | undefined) =>
  * A captured domain callback dispatches pending submissions through ordinary native workflows.
  *
  * @category services
- * @since 0.0.0
  */
 export class DrainConversations extends Context.Service<
   DrainConversations,
@@ -107,10 +106,14 @@ export class DrainConversations extends Context.Service<
   }
 >()('@effect-harness/durable/workflow/Structured/DrainConversations') {}
 /**
- * layerDrainConversations service Layer.
+ * Provides the callback used to drain pending work in owned conversations.
+ *
+ * **Details**
+ *
+ * The callback dispatches and joins ordinary native Workflow executions; it does not replace
+ * the WorkflowEngine.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerDrainConversations = (
   drain: DrainConversations['Service']['drain'],
@@ -142,7 +145,6 @@ const pendingConversations = (graph: Ownership.Graph, reached: Option.Option<Own
  * Pass a graph collected before any table writes when composing this with entry/document mutations in an executor's atomic commit.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const hold = Effect.fnUntraced(function* (
   tx: Session.Transaction,
@@ -210,14 +212,19 @@ const execute = Effect.fnUntraced(function* (
 })
 
 /**
- * Joins native executions in input order.
+ * Joins owned native executions in input order.
  *
  * **Details**
  *
- * Fail-fast marks only listed owned siblings; held failures trigger the same mark before their descendants finish draining.
+ * allSettled is the default. failFast marks the listed owned siblings when a failure is
+ * observed, including a held failure before descendants finish draining.
+ *
+ * **Gotchas**
+ *
+ * A native result without a terminal domain projection is rejected. Do not return from a
+ * custom owned child without settling its domain task.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const join = Effect.fnUntraced(function* (
   session: Session.Service,
@@ -373,7 +380,6 @@ export const join = Effect.fnUntraced(function* (
  * Re-reading each committed graph admits ordinary new work in owned conversations during the hold; transaction validation seals the final drain race.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const drain = Effect.fnUntraced(function* (
   session: Session.Service,
@@ -500,7 +506,6 @@ export const drain = Effect.fnUntraced(function* (
  * Commits a result and releases it only after all ordinary owned native work drains.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const complete = Effect.fnUntraced(function* (
   session: Session.Service,
@@ -524,14 +529,20 @@ export const complete = Effect.fnUntraced(function* (
 })
 
 /**
- * Reserves a directly owned child with a replayable native binding.
+ * Reserves an owned child task with a replayable native Workflow binding.
  *
  * **Details**
  *
- * The stable key belongs to the caller's native Activity; execution remains workflow.execute.
+ * The caller supplies a stable key belonging to its native Activity. The receipt saves the
+ * child identity and binding; execute the native Workflow separately.
+ *
+ * **Gotchas**
+ *
+ * Requires Ownership.Current. A completing, terminal or abort-marked owner cannot admit new
+ * direct children. The child must commit its domain terminal projection before joins can
+ * succeed.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const child = Effect.fnUntraced(function* <
   N extends string,
@@ -587,7 +598,6 @@ export const child = Effect.fnUntraced(function* <
  * Native suspension/abandonment remains interruption so the engine can replay; completed bodies, typed failures and defects acquire an owned completing hold.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const evaluate = Effect.fnUntraced(function* <E, R>(
   identity: Ownership.Identity,

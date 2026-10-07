@@ -1,7 +1,5 @@
 /**
  * Host-owned canonical file mutation admission shared across runtimes.
- *
- * @since 0.0.0
  */
 import * as Context from 'effect/Context'
 import * as Layer from 'effect/Layer'
@@ -9,14 +7,19 @@ import * as RcMap from 'effect/RcMap'
 import * as Semaphore from 'effect/Semaphore'
 
 /**
- * One host-owned manager shared by all Env namespaces and runtime boundaries.
+ * Shared service serializing admitted mutations of canonical file paths.
  *
  * **Details**
  *
- * Build this layer once at the host Scope, then supply that same context to each Env/tool runtime. Rebuilding it per Env or invocation creates independent mutexes and defeats cross-runtime serialization.
+ * Provide one manager instance to every environment operating in the same namespace. Locks
+ * stay leased until admitted writes settle, including during cancellation.
+ *
+ * **Gotchas**
+ *
+ * Separate managers do not coordinate overlapping writes. This is process-local
+ * serialization, not a cross-process filesystem lock.
  *
  * @category services
- * @since 0.0.0
  */
 export class MutationLocks extends Context.Service<
   MutationLocks,
@@ -26,13 +29,16 @@ export class MutationLocks extends Context.Service<
  * Each execution creates one fresh manager; the host must join all consumer runtimes before closing this manager scope.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = RcMap.make({ lookup: (_key: string) => Semaphore.make(1) })
 /**
- * Layer for MutationLocks capabilities.
+ * Provides a scoped mutation-lock manager.
+ *
+ * **Gotchas**
+ *
+ * Share this Layer instance across tool bindings and environments that can write the same
+ * paths.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<MutationLocks> = Layer.effect(MutationLocks, make)

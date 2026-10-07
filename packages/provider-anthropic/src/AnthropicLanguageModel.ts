@@ -1,7 +1,5 @@
 /**
  * Captured native Anthropic models and API-key transport composition.
- *
- * @since 0.0.0
  */
 import * as Config from 'effect/Config'
 // effect-review-allow P9-namespace-alias-equals-module: @effect/ai-anthropic/AnthropicLanguageModel and packages/provider-anthropic/src/AnthropicLanguageModel.ts both bind AnthropicLanguageModel; anthropicLanguageModel distinguishes the concepts.
@@ -19,7 +17,6 @@ import type * as Redacted from 'effect/Redacted'
  * Constructs the native model with provider-owned system history handling.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = Effect.fnUntraced(function* (
   options: Parameters<typeof anthropicLanguageModel.make>[0],
@@ -38,7 +35,6 @@ export const make = Effect.fnUntraced(function* (
  * Provides the standard Effect AI LanguageModel service; the caller supplies its native AnthropicClient.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (
   options: Parameters<typeof anthropicLanguageModel.make>[0],
@@ -61,7 +57,6 @@ export const layer = (
  * Resolves all layer options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
@@ -76,17 +71,15 @@ export const layerConfig = (
     }),
   )
 /**
- * Anthropic model and transport settings, preserving native provider options.
+ * Type-level contracts for `AnthropicLanguageModel`.
  *
- * @category types
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace AnthropicLanguageModel {
   /**
-   * Describes the Options contract.
+   * Redacted API key, selected native model and Anthropic client/request configuration.
    *
-   * @category types
-   * @since 0.0.0
+   * @category models
    */
   export interface Options extends AnthropicClient.Options {
     readonly apiKey: Redacted.Redacted<string>
@@ -95,18 +88,21 @@ export declare namespace AnthropicLanguageModel {
   }
 }
 /**
- * Describes the Options contract.
+ * Redacted API key, selected native model and Anthropic client/request configuration.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export type Options = AnthropicLanguageModel.Options
 
 /**
- * Provides the native Effect AI model and client. Supply an HttpClient Layer at the app boundary.
+ * Provides a native Anthropic LanguageModel and client using a Redacted API key.
+ *
+ * **Details**
+ *
+ * Consumes HttpClient and applies native model configuration. Harness tool-content envelopes
+ * are expanded at the captured client boundary.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerApiKey = (
   options: Options,
@@ -123,7 +119,6 @@ export const layerApiKey = (
  * Resolves every model and transport option through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerApiKeyConfig = (
   config: Config.Wrap<Options>,
@@ -142,7 +137,6 @@ export const layerApiKeyConfig = (
  * Reads ANTHROPIC_API_KEY by default; all other options use the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerDefaultConfig = (
   config: Config.Wrap<Omit<Options, 'apiKey'>>,
@@ -163,27 +157,34 @@ export const layerDefaultConfig = (
  * Applies native Anthropic options to a single request Effect.
  *
  * @category models
- * @since 0.0.0
  */
 export const withConfigOverride: typeof anthropicLanguageModel.withConfigOverride =
   anthropicLanguageModel.withConfigOverride
 
 /**
- * Forwards the supported public declarations from their owning concept.
+ * Public APIs from `@effect/ai-anthropic/AnthropicLanguageModel`.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export { Config } from '@effect/ai-anthropic/AnthropicLanguageModel'
+/**
+ * Public APIs from `@effect/ai-anthropic/AnthropicLanguageModel`.
+ *
+ * @category re-exports
+ */
 export type { Model } from '@effect/ai-anthropic/AnthropicLanguageModel'
 
 /**
- * Forwards the supported public declarations from their owning concept.
+ * Public APIs from `@effect/ai-anthropic/AnthropicLanguageModel`.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export { model } from '@effect/ai-anthropic/AnthropicLanguageModel'
+/**
+ * Public APIs from `@effect/ai-anthropic/AnthropicLanguageModel`.
+ *
+ * @category re-exports
+ */
 export type {
   AnthropicUserDefinedTool,
   AnthropicProviderDefinedTool,

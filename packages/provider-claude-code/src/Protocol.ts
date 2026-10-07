@@ -1,7 +1,5 @@
 /**
  * Validated Claude Code protocol frames and accounting fields.
- *
- * @since 0.0.0
  */
 import type * as AiError from 'effect/ai/AiError'
 import * as Effect from 'effect/Effect'
@@ -11,10 +9,9 @@ import { protocol } from './ClaudeCodeError.ts'
 
 const Count = Schema.Natural.check(Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER))
 /**
- * Defines Usage for the Protocol boundary.
+ * Optional token counts reported by the CLI.
  *
  * @category models
- * @since 0.0.0
  */
 export const Usage = Schema.Struct({
   input_tokens: Schema.optionalKey(Count),
@@ -22,19 +19,27 @@ export const Usage = Schema.Struct({
   cache_read_input_tokens: Schema.optionalKey(Count),
   cache_creation_input_tokens: Schema.optionalKey(Count),
 })
+/**
+ * Optional token counts reported by the CLI.
+ *
+ * @category models
+ */
 export type Usage = typeof Usage.Type
 /**
- * Tests whether an unknown value satisfies the decoded Usage schema.
+ * Checks whether a value satisfies the decoded `Usage` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isUsage: (u: unknown) => u is Usage = Schema.is(Usage)
 /**
- * Defines ModelUsage for the Protocol boundary.
+ * CLI model-specific usage, pricing and context limits.
  *
  * @category models
- * @since 0.0.0
  */
 export const ModelUsage = Schema.Struct({
   inputTokens: Count,
@@ -47,12 +52,16 @@ export const ModelUsage = Schema.Struct({
   contextWindow: Count,
   maxOutputTokens: Count,
 })
-export type ModelUsage = typeof ModelUsage.Type
 /**
- * Defines Block for the Protocol boundary.
+ * CLI model-specific usage, pricing and context limits.
  *
  * @category models
- * @since 0.0.0
+ */
+export type ModelUsage = typeof ModelUsage.Type
+/**
+ * Text, thinking or tool-intent block emitted by the CLI.
+ *
+ * @category models
  */
 export const Block = Schema.Union([
   Schema.Struct({ type: Schema.Literal('text'), text: Schema.String }),
@@ -69,12 +78,21 @@ export const Block = Schema.Union([
     input: Schema.JsonObject,
   }),
 ])
+/**
+ * Text, thinking or tool-intent block emitted by the CLI.
+ *
+ * @category models
+ */
 export type Block = typeof Block.Type
 /**
- * Tests whether an unknown value satisfies the decoded Block schema.
+ * Checks whether a value satisfies the decoded `Block` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isBlock: (u: unknown) => u is Block = Schema.is(Block)
 const Message = Schema.Struct({
@@ -109,10 +127,9 @@ const Partial = Schema.Union([
   Schema.Struct({ type: Schema.Literal('error'), error: Schema.Struct({ type: Schema.String }) }),
 ])
 /**
- * Defines Event for the Protocol boundary.
+ * Validated stream event emitted by the installed CLI.
  *
  * @category models
- * @since 0.0.0
  */
 export const Event = Schema.Union([
   Schema.Struct({
@@ -159,12 +176,21 @@ export const Event = Schema.Union([
     error: Schema.optionalKey(Schema.String),
   }),
 ])
+/**
+ * Validated stream event emitted by the installed CLI.
+ *
+ * @category models
+ */
 export type Event = typeof Event.Type
 /**
- * Tests whether an unknown value satisfies the decoded Event schema.
+ * Checks whether a value satisfies the decoded `Event` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isEvent: (u: unknown) => u is Event = Schema.is(Event)
 
@@ -176,7 +202,6 @@ export const isEvent: (u: unknown) => u is Event = Schema.is(Event)
  * The protocol boundary never includes raw stdout/stderr or prompts in failures.
  *
  * @category decoding
- * @since 0.0.0
  */
 export const decode = Effect.fnUntraced(function* (
   line: string,

@@ -1,7 +1,5 @@
 /**
  * Canonical tool-media translation at the captured native client boundary.
- *
- * @since 0.0.0
  */
 import * as Arr from 'effect/Array'
 import * as String from 'effect/String'
@@ -160,7 +158,6 @@ const clientImpl = (self: AnthropicClient.Service): AnthropicClient.Service =>
  * Translates canonical content into validated native provider parts.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const content: {
   (): (self: ReadonlyArray<Prompt.UserMessagePart>) => ReturnType<typeof contentImpl>
@@ -170,7 +167,6 @@ export const content: {
  * Projects a request through the provider boundary without changing opaque protocol fields.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const request: {
   (): (
@@ -182,7 +178,6 @@ export const request: {
  * Adapts the exact captured native client while preserving unrelated capabilities.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const client: {
   (): (self: AnthropicClient.Service) => AnthropicClient.Service

@@ -1,7 +1,5 @@
 /**
  * Managed section and tool deltas for native model prompts.
- *
- * @since 0.0.0
  */
 import * as Record from 'effect/Record'
 import { dual } from 'effect/Function'
@@ -16,7 +14,6 @@ import * as Context from './Context.ts'
  * Replays ordered managed section patches into their effective dictionary.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function replaySections(self: ReadonlyArray<Context.SystemPatch>): Map<string, string> {
   const shown = new Map<string, string>()
@@ -31,7 +28,6 @@ export function replaySections(self: ReadonlyArray<Context.SystemPatch>): Map<st
  * Replays ordered tool declarations and removals.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function replayTools(
   self: ReadonlyArray<Context.SystemPatch>,
@@ -64,7 +60,6 @@ function planSectionsImpl(
  * Returns named section changes from the shown and desired dictionaries.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const planSections: {
   (
@@ -102,7 +97,6 @@ function planToolsImpl(
  * Returns ordered tool additions and removals for the desired declarations.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const planTools: {
   (
@@ -154,7 +148,6 @@ function planImpl(
  * Returns managed system patches and context edits for the desired prompt state.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const plan: {
   (
@@ -177,7 +170,6 @@ export const plan: {
  * Metadata identifies encoded managed patches without discarding plain stored system instructions.
  *
  * @category models
- * @since 0.0.0
  */
 export type ProjectionOptions = toPrompt.Options
 /** Projects plain system content in transcript order followed by the effective named sections once. */
@@ -199,7 +191,6 @@ function toPromptImpl(
  * Projects unmanaged system messages and effective named sections into a native prompt.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const toPrompt: {
   (
@@ -214,17 +205,15 @@ export const toPrompt: {
 } = dual((args) => Array.isArray(args[0]), toPromptImpl)
 
 /**
- * Type contracts owned by `toPrompt`.
+ * Type-level contracts for `toPrompt`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace toPrompt {
   /**
    * Configuration accepted by toPrompt.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Options {
     readonly managedSystemMessages?: ReadonlyArray<Prompt.Message> | undefined

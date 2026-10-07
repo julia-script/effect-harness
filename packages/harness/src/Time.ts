@@ -1,7 +1,5 @@
 /**
  * Fractional epoch-time and duration codecs at numeric wire boundaries.
- *
- * @since 0.0.0
  */
 import * as DateTime from 'effect/DateTime'
 import * as Duration from 'effect/Duration'
@@ -16,7 +14,6 @@ const origin = DateTime.fromEpochSeconds(0)
  * Native finite epoch milliseconds retain submillisecond precision.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const fromEpochMillis = (millis: number): DateTime.Utc =>
   DateTime.mapEpochMillis(origin, () => millis)
@@ -24,7 +21,6 @@ export const fromEpochMillis = (millis: number): DateTime.Utc =>
  * Domain UTC instant with its original finite numeric epoch-millisecond encoding.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const EpochMillis = Schema.Finite.pipe(
   Schema.decodeTo(Schema.DateTimeUtc, {
@@ -39,7 +35,6 @@ const finiteSpan = Schema.Duration.check(
  * Schema for duration millis.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const DurationMillis = Schema.Finite.pipe(
   Schema.decodeTo(finiteSpan, {
@@ -51,7 +46,6 @@ export const DurationMillis = Schema.Finite.pipe(
  * Schema for duration seconds.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const DurationSeconds = Schema.Finite.pipe(
   Schema.decodeTo(finiteSpan, {
@@ -72,7 +66,6 @@ const nonnegativeSpan = finiteSpan.check(
  * Schema for nonnegative millis.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const NonnegativeMillis = Schema.Natural.pipe(
   Schema.decodeTo(nonnegativeSpan, {
@@ -93,7 +86,6 @@ const commandSpan = finiteSpan.check(
  * Model tool JSON keeps positive finite seconds while the domain uses Duration.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const CommandTimeout = Schema.Finite.check(
   Schema.isGreaterThan(0),
@@ -108,7 +100,6 @@ export const CommandTimeout = Schema.Finite.check(
  * Runtime option boundary; native fromInput failures and nonfinite spans become SchemaError.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const DurationInput = Schema.Unknown.pipe(
   Schema.decodeTo(finiteSpan, {
@@ -158,7 +149,6 @@ export const DurationInput = Schema.Unknown.pipe(
  * Validates and normalizes a native duration input without losing nanosecond precision.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const duration: (
   input: unknown,

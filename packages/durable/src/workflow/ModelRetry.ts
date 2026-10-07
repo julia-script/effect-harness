@@ -1,7 +1,5 @@
 /**
  * Native durable retry deadlines, schedules and receipt decisions.
- *
- * @since 0.0.0
  */
 import * as Data from 'effect/Data'
 import * as DateTime from 'effect/DateTime'
@@ -14,7 +12,6 @@ import * as DurableClock from 'effect/workflow/DurableClock'
  * Internal retry metadata is emitted only after a native Activity journals its decision.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ModelRetry extends Data.TaggedError('ModelRetry')<{
   readonly name: string
@@ -25,7 +22,6 @@ export class ModelRetry extends Data.TaggedError('ModelRetry')<{
  * Sample the wall clock once; fractional epoch values remain exact.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const remaining = Effect.fnUntraced(function* (
   at: DateTime.Utc,
@@ -38,7 +34,6 @@ export const remaining = Effect.fnUntraced(function* (
  * Waits at retry time against the original cached deadline, never current policy settings.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const policy = Schedule.forever.pipe(
   Schedule.while(({ input }) => Effect.succeed(input instanceof ModelRetry)),

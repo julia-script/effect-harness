@@ -1,7 +1,5 @@
 /**
  * Domain snapshots stored through Effect persistence services.
- *
- * @since 0.0.0
  */
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -21,7 +19,6 @@ import { validateState } from './internal/state.ts'
  * Versioned snapshot containing state, receipts and retained observer frames.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Snapshot = Schema.Struct({
   version: Schema.Literal(1),
@@ -30,30 +27,46 @@ export const Snapshot = Schema.Struct({
 })
 
 /**
- * Namespace for one domain session in the application's key/value table.
+ * Snapshot namespace for one domain Session.
+ *
+ * **Details**
+ *
+ * key defaults to @effect-harness/durable/session and also identifies journal coordination.
+ *
+ * **Gotchas**
+ *
+ * Give independent sessions distinct keys in a shared backend. Equal keys address the same
+ * domain state.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Options {
   readonly key?: string | undefined
 }
 
 /**
- * Creates a Store from a KeyValueStore and EventJournal coordination.
+ * Acquires domain storage using native key/value persistence and journal coordination.
+ *
+ * **When to use**
+ *
+ * Use when the application supplies Effect persistence Layers and wants domain storage
+ * independent of a database driver.
  *
  * **Details**
  *
- * State, receipts and retained frames are one schema-encoded value. All writers
- * for a snapshot key must share a coordinating journal and key/value backend.
- * For SQLite, provide native SqlEventJournal and KeyValueStore layers built from
- * the same client. For memory, share one EventJournal.layerMemory instance.
- * The Store owns its commits; do not wrap its operations in external database
- * transactions. Observer reads use the construction context and saved state.
- * This format does not import the retired harness SQLite tables.
+ * State, receipts and retained frames are stored together under one versioned key. The
+ * default key is @effect-harness/durable/session. The journal coordinates initialization and
+ * each update; saved snapshots supply coherent observer reads.
+ *
+ * **Gotchas**
+ *
+ * All writers of a key need compatible shared coordination. For SQLite, build KeyValueStore
+ * and SqlEventJournal from the same native client; for memory, share both service instances.
+ * Do not wrap Store operations in an external database transaction. Uncertain
+ * write/coordination outcomes poison the Store. Other backend combinations need their own
+ * serialization verification; retired bespoke SQLite tables are not imported.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = Effect.fnUntraced(function* (
   options: Options = {},
@@ -128,10 +141,15 @@ export const make = Effect.fnUntraced(function* (
 })
 
 /**
- * Provides snapshot storage from application-supplied Effect persistence services.
+ * Provides scoped snapshot storage under a configured key.
  *
+ * **Details**
+ *
+ * Consumes application-supplied KeyValueStore and EventJournal services. Reopening an
+ * existing key loads and validates saved state and receipts.
+ *
+ * @see {@link make} for coordination and failure constraints.
  * @category layers
- * @since 0.0.0
  */
 export const layerWith = (
   options: Options = {},
@@ -139,9 +157,14 @@ export const layerWith = (
   Layer.effect(Store, make(options))
 
 /**
- * Snapshot storage with the default session key.
+ * Provides snapshot storage with the default session key.
  *
+ * **Gotchas**
+ *
+ * Use layerWith with a distinct key when multiple independent Sessions share the persistence
+ * backend.
+ *
+ * @see {@link layerWith} for namespace configuration.
  * @category layers
- * @since 0.0.0
  */
 export const layer = layerWith()

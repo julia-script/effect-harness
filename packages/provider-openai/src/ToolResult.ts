@@ -1,7 +1,5 @@
 /**
  * Canonical tool-media translation at the captured native client boundary.
- *
- * @since 0.0.0
  */
 import { dual, constant } from 'effect/Function'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
@@ -132,7 +130,6 @@ const clientImpl = (
  * Translates canonical content into validated native provider parts.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const content: {
   (options?: {
@@ -147,7 +144,6 @@ export const content: {
  * Projects a request through the provider boundary without changing opaque protocol fields.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const request: {
   (
@@ -165,7 +161,6 @@ export const request: {
  * Adapts the exact captured native client while preserving unrelated capabilities.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const client: {
   (

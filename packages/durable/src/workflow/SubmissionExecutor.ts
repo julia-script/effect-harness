@@ -1,7 +1,5 @@
 /**
  * Atomic inbox admission and generation creation.
- *
- * @since 0.0.0
  */
 import * as Arr from 'effect/Array'
 import * as Option from 'effect/Option'
@@ -39,17 +37,19 @@ import * as Prompt from 'effect/ai/Prompt'
  * Submission settlement notification schema.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const Settled = DurableDeferred.make('submission/settled/v1', {
   success: Result,
   error: ExecutionErrorCodec,
 })
 /**
- * Links schema.
+ * Session document family recording native executions waiting for submission settlement.
+ *
+ * **Details**
+ *
+ * Each keyed value retains execution IDs notified when the corresponding submission settles.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Links = Document.familyUnsafe({
   kind: 'harness.submission-links',
@@ -68,7 +68,6 @@ const Admission = Schema.Struct({
  * Wraps a storage failure in a workflow execution failure.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const storageError = (error: StorageError): ExecutionError =>
   new ExecutionError({
@@ -83,7 +82,6 @@ export const storageError = (error: StorageError): ExecutionError =>
  * A task record is an inspectable projection of a normal native Workflow execution.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeGeneration = Effect.fnUntraced(function* (
   tx: Session.Transaction,
@@ -131,7 +129,6 @@ export const makeGeneration = Effect.fnUntraced(function* (
  * Called after the cached admission/settlement Activity physically commits.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const notify = Effect.fnUntraced(function* (
   session: Session.Service,
@@ -184,7 +181,6 @@ export const notify = Effect.fnUntraced(function* (
  * Shared admission commit for native submission and compaction Activities.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const admitInTransaction = Effect.fnUntraced(function* (
   tx: Session.Transaction,
@@ -293,7 +289,6 @@ const admit = (
  * Registers the standard Submission workflow; applications provide their ordinary WorkflowEngine Layer.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<
   never,

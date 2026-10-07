@@ -1,7 +1,5 @@
 /**
  * Locked in-memory and protected-file credential transactions with scoped atomic persistence.
- *
- * @since 0.0.0
  */
 import * as Arr from 'effect/Array'
 import * as Ref from 'effect/Ref'
@@ -27,23 +25,36 @@ import {
 } from './Credential.ts'
 
 /**
- * Types owned by the CredentialStore concept.
+ * Type-level contracts for `CredentialStore`.
  *
- * @category types
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace CredentialStore {
   /**
-   * Describes the Service contract.
+   * Credential lookup and serialized updates for application-owned accounts.
    *
-   * @category types
-   * @since 0.0.0
+   * @category models
    */
   export interface Service {
+    /**
+     * Reads an application-owned credential by key, returning None when absent.
+     */
     readonly get: (key: string) => Effect.Effect<Option.Option<Credential>, AuthError>
+    /**
+     * Returns saved account keys and their credentials; secrets remain Redacted.
+     */
     readonly list: Effect.Effect<ReadonlyArray<readonly [string, Credential]>, AuthError>
+    /**
+     * Replaces a credential under the store’s update lock.
+     */
     readonly set: (key: string, value: Credential) => Effect.Effect<void, AuthError>
+    /**
+     * Removes the saved credential under the store’s update lock.
+     */
     readonly remove: (key: string) => Effect.Effect<void, AuthError>
+    /**
+     * Returns or persists a stable host UUID for this provider.
+     */
     readonly hostId: (provider: string) => Effect.Effect<string, AuthError>
     /** Holds the per-store lock over read, callback and atomic replacement. Callback failure preserves credentials. */
     readonly modify: <R>(
@@ -55,17 +66,26 @@ export declare namespace CredentialStore {
   }
 }
 /**
- * Describes the Service contract.
+ * Credential lookup and serialized updates for application-owned accounts.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export type Service = CredentialStore.Service
 /**
- * Identifies the CredentialStore service in the Effect context.
+ * Service for application-owned credentials and serialized token updates.
+ *
+ * **Details**
+ *
+ * modify holds the store lock across read, callback and atomic replacement. A failed
+ * callback preserves the previous credential. hostId retains a provider-specific host
+ * identity.
+ *
+ * **Gotchas**
+ *
+ * Credential values contain Redacted secrets. Do not log or unwrap them for ordinary
+ * application output.
  *
  * @category services
- * @since 0.0.0
  */
 export class CredentialStore extends Context.Service<CredentialStore, Service>()(
   '@effect-harness/auth/CredentialStore',
@@ -140,10 +160,17 @@ const makeService = (
   })
 
 /**
- * Provides CredentialStore services with the declared native dependencies.
+ * Provides empty process-local credential storage with serialized updates.
+ *
+ * **Details**
+ *
+ * Consumes native Crypto to create stable host IDs within the store lifetime.
+ *
+ * **Gotchas**
+ *
+ * Credentials and host IDs are lost when this service is rebuilt or the process exits.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerMemory: Layer.Layer<CredentialStore, never, Crypto.Crypto> = Layer.effect(
   CredentialStore,
@@ -162,12 +189,20 @@ export const layerMemory: Layer.Layer<CredentialStore, never, Crypto.Crypto> = L
 )
 
 /**
- * Creates a protected credential store in a dedicated private directory.
+ * Provides locked credential storage in an owner-only file and directory.
+ *
  * **Details**
- * A stale crash lock fails busy; it is never stolen from a live owner.
+ *
+ * Uses native FileSystem, Path and Crypto. Writes replace the saved file atomically while a
+ * cross-process lock serializes updates.
+ *
+ * **Gotchas**
+ *
+ * The file is permission-protected, not encrypted. Stale locks fail as busy; confirm the
+ * prior process is gone before recovering a lock. Do not nest another update to this store
+ * inside modify.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerProtectedFile = (options: {
   readonly path: string
@@ -314,7 +349,6 @@ export const layerProtectedFile = (options: {
  * Resolves all layerProtectedFile options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerProtectedFileConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layerProtectedFile>[0]>>,

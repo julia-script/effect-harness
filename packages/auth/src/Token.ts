@@ -1,7 +1,5 @@
 /**
  * Redacted OAuth token and revocation HTTP boundaries.
- *
- * @since 0.0.0
  */
 import * as Redacted from 'effect/Redacted'
 import * as Effect from 'effect/Effect'
@@ -16,10 +14,9 @@ import {
   Secret,
 } from './Credential.ts'
 /**
- * Defines TokenResponse for the Token boundary.
+ * Token endpoint grant with Redacted tokens and lifetime metadata.
  *
  * @category models
- * @since 0.0.0
  */
 export const TokenResponse = Schema.Struct({
   access_token: Secret,
@@ -30,19 +27,27 @@ export const TokenResponse = Schema.Struct({
   scope: Schema.optionalKey(Schema.String),
   earliest_refresh_at: Schema.optionalKey(Schema.Finite),
 })
+/**
+ * Token endpoint grant with Redacted tokens and lifetime metadata.
+ *
+ * @category models
+ */
 export type TokenResponse = typeof TokenResponse.Type
 /**
- * Tests whether an unknown value satisfies the decoded TokenResponse schema.
+ * Checks whether a value satisfies the decoded `TokenResponse` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isTokenResponse: (u: unknown) => u is TokenResponse = Schema.is(TokenResponse)
 /**
  * Sensitive protocol fields stay wrapped until the final HTTP body serialization.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export interface Fields {
   readonly [key: string]: string | Redacted.Redacted<string> | undefined
@@ -62,7 +67,6 @@ export interface Fields {
  * Failures omit raw requests and response bodies, which can contain credentials.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const request = Effect.fnUntraced(function* (
   endpoint: string,
@@ -130,7 +134,6 @@ export const request = Effect.fnUntraced(function* (
  * Revokes a token using the protocol form-encoded endpoint.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const revoke = Effect.fnUntraced(function* (
   endpoint: string,

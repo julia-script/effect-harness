@@ -1,7 +1,5 @@
 /**
  * Pinned model request document schema and initializer.
- *
- * @since 0.0.0
  */
 import * as Executor from '@effect-harness/harness/Executor'
 import * as Schema from 'effect/Schema'
@@ -15,7 +13,6 @@ const State = Schema.Struct({
  * Inspectable, pinned request data for recovery and cancellation of deferred provider work.
  *
  * @category models
- * @since 0.0.0
  */
 export const RequestDoc = Document.defineUnsafe({
   kind: 'harness.model-request',

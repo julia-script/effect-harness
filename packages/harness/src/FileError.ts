@@ -1,7 +1,5 @@
 /**
  * Semantic file operation failures with retained native causes and paths.
- *
- * @since 0.0.0
  */
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
@@ -10,7 +8,6 @@ import * as Schema from 'effect/Schema'
  * Schema for file error code.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const FileErrorCode = Schema.Literals([
   'aborted',
@@ -23,17 +20,15 @@ export const FileErrorCode = Schema.Literals([
   'unknown',
 ])
 /**
- * Error file error code contract.
+ * Decoded value validated by the `FileErrorCode` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type FileErrorCode = typeof FileErrorCode.Type
 /**
- * Semantic file aborted with its retained cause.
+ * File operation failure reporting cancellation.
  *
  * @category errors
- * @since 0.0.0
  */
 export class FileAborted extends Schema.TaggedError<FileAborted>(
   '@effect-harness/harness/FileError/FileAborted',
@@ -47,10 +42,9 @@ export class FileAborted extends Schema.TaggedError<FileAborted>(
   }
 }
 /**
- * Semantic file not found with its retained cause.
+ * File operation failure reporting a missing path.
  *
  * @category errors
- * @since 0.0.0
  */
 export class FileNotFound extends Schema.TaggedError<FileNotFound>(
   '@effect-harness/harness/FileError/FileNotFound',
@@ -64,10 +58,9 @@ export class FileNotFound extends Schema.TaggedError<FileNotFound>(
   }
 }
 /**
- * Semantic file permission denied with its retained cause.
+ * File operation failure reporting denied filesystem access.
  *
  * @category errors
- * @since 0.0.0
  */
 export class FilePermissionDenied extends Schema.TaggedError<FilePermissionDenied>(
   '@effect-harness/harness/FileError/FilePermissionDenied',
@@ -81,10 +74,9 @@ export class FilePermissionDenied extends Schema.TaggedError<FilePermissionDenie
   }
 }
 /**
- * Semantic file not directory with its retained cause.
+ * File operation failure reporting a directory operation on a non-directory.
  *
  * @category errors
- * @since 0.0.0
  */
 export class FileNotDirectory extends Schema.TaggedError<FileNotDirectory>(
   '@effect-harness/harness/FileError/FileNotDirectory',
@@ -98,10 +90,9 @@ export class FileNotDirectory extends Schema.TaggedError<FileNotDirectory>(
   }
 }
 /**
- * Semantic file is directory with its retained cause.
+ * File operation failure reporting a file operation on a directory.
  *
  * @category errors
- * @since 0.0.0
  */
 export class FileIsDirectory extends Schema.TaggedError<FileIsDirectory>(
   '@effect-harness/harness/FileError/FileIsDirectory',
@@ -115,10 +106,9 @@ export class FileIsDirectory extends Schema.TaggedError<FileIsDirectory>(
   }
 }
 /**
- * Semantic file invalid with its retained cause.
+ * File operation failure reporting invalid path or operation input.
  *
  * @category errors
- * @since 0.0.0
  */
 export class FileInvalid extends Schema.TaggedError<FileInvalid>(
   '@effect-harness/harness/FileError/FileInvalid',
@@ -132,10 +122,9 @@ export class FileInvalid extends Schema.TaggedError<FileInvalid>(
   }
 }
 /**
- * Semantic file not supported with its retained cause.
+ * File operation failure reporting an unavailable adapter capability.
  *
  * @category errors
- * @since 0.0.0
  */
 export class FileNotSupported extends Schema.TaggedError<FileNotSupported>(
   '@effect-harness/harness/FileError/FileNotSupported',
@@ -149,10 +138,9 @@ export class FileNotSupported extends Schema.TaggedError<FileNotSupported>(
   }
 }
 /**
- * Semantic file unknown with its retained cause.
+ * File operation failure retaining an otherwise unclassified native cause.
  *
  * @category errors
- * @since 0.0.0
  */
 export class FileUnknown extends Schema.TaggedError<FileUnknown>(
   '@effect-harness/harness/FileError/FileUnknown',
@@ -169,7 +157,6 @@ export class FileUnknown extends Schema.TaggedError<FileUnknown>(
  * Schema for file error reason.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const FileErrorReason = Schema.Union([
   FileAborted,
@@ -182,17 +169,15 @@ export const FileErrorReason = Schema.Union([
   FileUnknown,
 ])
 /**
- * Error file error reason contract.
+ * Decoded value validated by the `FileErrorReason` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type FileErrorReason = typeof FileErrorReason.Type
 /**
  * Semantic file error with its retained cause.
  *
  * @category errors
- * @since 0.0.0
  */
 export class FileError extends Schema.TaggedError<FileError>(
   '@effect-harness/harness/FileError/FileError',
@@ -214,7 +199,6 @@ export class FileError extends Schema.TaggedError<FileError>(
  * Constructs the semantic file reason for a known code and its original boundary metadata.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const fileReason = (
   code: FileErrorCode,

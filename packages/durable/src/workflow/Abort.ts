@@ -1,7 +1,5 @@
 /**
  * Native abort Workflow declaration and legacy-compatible target payloads.
- *
- * @since 0.0.0
  */
 import { tagged } from '../internal/legacyTag.ts'
 import * as Identity from '../Identity.ts'
@@ -11,10 +9,19 @@ import * as Record from '../Record.ts'
 import { ExecutionErrorCodec } from './ExecutionError.ts'
 
 /**
- * Records cancellation intent and reconciles the owned tree through native interruption.
+ * Native Workflow persisting cancellation intent and reconciling its owned task tree.
+ *
+ * **Details**
+ *
+ * Register AbortExecutor before executing. sessionId/requestId determine replay identity;
+ * target selects a conversation or task and background controls traversal.
+ *
+ * **Gotchas**
+ *
+ * Native interruption alone is not a durable abort receipt. Settlement accounts for owned
+ * work and joined cleanup.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Abort = Workflow.make('@effect-harness/durable/Abort/v1', {
   payload: {

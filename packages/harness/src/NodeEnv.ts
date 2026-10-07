@@ -1,7 +1,5 @@
 /**
  * Node environment construction with injected platform services and decoded host configuration.
- *
- * @since 0.0.0
  */
 import { resolveShell, watchMode } from './internal/nodeEnv.ts'
 import * as Effect from 'effect/Effect'
@@ -22,10 +20,9 @@ import {
 } from './Env.ts'
 import { layerNative } from './NodeNativeFiles.ts'
 /**
- * NodeEnv host contract.
+ * Platform, cwd, home and search-path conventions supplied by the host.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Host {
   readonly platform: string
@@ -34,10 +31,9 @@ export interface Host {
   readonly searchPathDelimiter: string
 }
 /**
- * NodeEnv options contract.
+ * Node environment configuration with optional host overrides.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Options extends Partial<EnvOptions> {
   readonly host?: Host | undefined
@@ -51,7 +47,6 @@ export interface Options extends Partial<EnvOptions> {
  * cwd/home and the host search-path delimiter absent from stable Effect Path.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const hostDefaults: Effect.Effect<Host> = Effect.sync(() => ({
   platform: process.platform,
@@ -63,7 +58,6 @@ export const hostDefaults: Effect.Effect<Host> = Effect.sync(() => ({
  * Native statfs policy accessor; normal parent traversal requires the supplied Path service.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const resolveWatchMode = Effect.fnUntraced(function* (
   targets: ReadonlyArray<WatchTarget>,
@@ -73,14 +67,19 @@ export const resolveWatchMode = Effect.fnUntraced(function* (
   return yield* watchMode(path, host.platform, targets)
 })
 /**
- * Constructs Env with caller-supplied FileSystem, Path and ChildProcessSpawner.
+ * Provides Env with Node-native file capabilities.
  *
  * **Details**
  *
- * Only the narrow NativeFiles adapter is provided here; platform services belong at the application edge.
+ * Consumes FileSystem, Path and ChildProcessSpawner from the caller. Host defaults are
+ * obtained when the Layer is built; options can override them.
+ *
+ * **Gotchas**
+ *
+ * Provide a shared MutationLocks manager when binding mutation tools. Environment
+ * construction does not enforce a filesystem access sandbox.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (
   options: Options = {},
@@ -107,10 +106,14 @@ export const layer = (
     }),
   ).pipe(Layer.provide(layerNative))
 /**
- * Layer for NodeEnv config capabilities.
+ * Resolves Node environment options through the active ConfigProvider.
+ *
+ * **Details**
+ *
+ * Shell discovery uses configured search paths and supplied FileSystem/Path services. Build
+ * this Layer in the desired ConfigProvider context.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<Options>,
@@ -124,7 +127,6 @@ export const layerConfig = (
  * Acquires Env using the supplied host defaults and injected platform services.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = (
   options: Options = {},

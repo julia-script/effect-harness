@@ -1,7 +1,5 @@
 /**
  * Agent and provider documents, conversation projections and configuration.
- *
- * @since 0.0.0
  */
 import { constTrue } from 'effect/Function'
 import * as Arr from 'effect/Array'
@@ -39,7 +37,6 @@ import { ExecutionError, InvalidState, InvalidArguments } from './workflow/Execu
  * Agent settings document definition.
  *
  * @category models
- * @since 0.0.0
  */
 export const AgentDoc = Document.defineUnsafe({
   kind: 'harness.agent',
@@ -52,17 +49,15 @@ export const AgentDoc = Document.defineUnsafe({
   checkpointWhen: constTrue,
 })
 /**
- * ProviderState schema.
+ * Schema for persisted provider session UUID used across retries and reopening.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ProviderState = Schema.Struct({ sessionId: Schema.NonEmptyString })
 /**
- * Decoded ProviderState values.
+ * Persisted provider session UUID used across retries and reopening.
  *
  * @category models
- * @since 0.0.0
  */
 export type ProviderState = typeof ProviderState.Type
 
@@ -70,7 +65,6 @@ export type ProviderState = typeof ProviderState.Type
  * Provider session document definition.
  *
  * @category models
- * @since 0.0.0
  */
 export const ProviderDoc = Document.defineUnsafe({
   kind: 'harness.provider',
@@ -84,12 +78,16 @@ export const ProviderDoc = Document.defineUnsafe({
 })
 
 /**
- * Options contract.
+ * Type-level contracts for `Conversation`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Conversation {
+  /**
+   * Host settings and callbacks used to build conversation Configuration.
+   *
+   * @category models
+   */
   interface Options {
     /** Positive safe integer, default sixteen; sequential tool rounds remain one. */
     readonly toolConcurrency?: number | undefined
@@ -106,10 +104,9 @@ export declare namespace Conversation {
   }
 }
 /**
- * Compatibility alias for Conversation.Options.
+ * Host settings and callbacks used to build conversation Configuration.
  *
  * @category models
- * @since 0.0.0
  */
 export type Options = Conversation.Options
 
@@ -117,7 +114,6 @@ export type Options = Conversation.Options
  * Configuration service.
  *
  * @category services
- * @since 0.0.0
  */
 export class Configuration extends Service<
   Configuration,
@@ -137,10 +133,19 @@ export class Configuration extends Service<
   }
 >()('@effect-harness/durable/Conversation/Configuration') {}
 /**
- * layerConfiguration service Layer.
+ * Builds host policy and callbacks for conversation execution.
+ *
+ * **Details**
+ *
+ * Validates initial settings and supplies validated live updates. toolConcurrency defaults
+ * to 16 and must be a positive safe integer; sequential mode uses one permit.
+ *
+ * **Gotchas**
+ *
+ * Invalid settings fail with SchemaError. Agent overrides are committed separately through
+ * Conversation.configure.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfiguration = (
   options: Options = {},
@@ -176,10 +181,20 @@ export const layerConfiguration = (
   )
 
 /**
- * Provides this to Session.layer so raw transaction creation and native Workflow creation share atomic initialization.
+ * Installs atomic built-in document creation and recovery initialization.
+ *
+ * **Details**
+ *
+ * Captures native Crypto for provider session UUIDs and an optional Registry for creation
+ * callbacks. Provide this Layer while constructing Session.
+ *
+ * **Gotchas**
+ *
+ * Recovery repairs missing provider affinity without rerunning conversation-created
+ * callbacks. UUIDs are distinct from authorization account and Workflow execution
+ * identities.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerCreation: Layer.Layer<
   Session.CreationHook,
@@ -239,24 +254,21 @@ export const layerCreation: Layer.Layer<
 )
 
 /**
- * Canonical system patch schema.
+ * Managed prompt sections and tool declarations recorded in conversation history.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const SystemPatch = systemPatch.SystemPatch
 /**
- * Canonical system patch schema.
+ * Managed prompt sections and tool declarations recorded in conversation history.
  *
  * @category models
- * @since 0.0.0
  */
 export type SystemPatch = typeof SystemPatch.Type
 /**
- * Metadata schema.
+ * Schema for entry metadata for conversation context projection.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Metadata = Schema.Struct({
   status: Schema.optionalKey(
@@ -266,10 +278,9 @@ export const Metadata = Schema.Struct({
   system: Schema.optionalKey(SystemPatch),
 })
 /**
- * Metadata contract.
+ * Entry metadata for conversation context projection.
  *
  * @category models
- * @since 0.0.0
  */
 export type Metadata = typeof Metadata.Type
 
@@ -277,7 +288,6 @@ export type Metadata = typeof Metadata.Type
  * Convert committed encoded AI messages and context edits into the generic harness's pure context inputs.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const projectEntry = Effect.fnUntraced(function* (
   entry: Record.Entry,
@@ -328,7 +338,6 @@ export const projectEntry = Effect.fnUntraced(function* (
  * Reads the complete inherited transcript in ascending entry order; scans themselves remain newest first.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const context = Effect.fnUntraced(function* (
   session: Session.Service,
@@ -374,7 +383,6 @@ export const context = Effect.fnUntraced(function* (
  * Reset is an ordinary entry draft admitted by Submission; transcript, agent, usage and provider identity remain durable.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const resetDraft = Effect.fnUntraced(function* (
   note?: string,
@@ -408,7 +416,6 @@ export const resetDraft = Effect.fnUntraced(function* (
  * Domain reads and atomic configuration only. Execute durable work with the exported native Workflow services.
  *
  * @category services
- * @since 0.0.0
  */
 export class Conversation extends Service<
   Conversation,
@@ -434,10 +441,14 @@ export class Conversation extends Service<
 >()('@effect-harness/durable/Conversation') {}
 
 /**
- * layer service Layer.
+ * Provides conversation creation, fork, configuration and context operations.
+ *
+ * **Details**
+ *
+ * Consumes the Session and its creation/configuration dependencies. Mutation operations
+ * publish through the Session transaction boundary.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<Conversation, never, Session.Session> = Layer.effect(Conversation)(
   Effect.gen(function* () {
@@ -467,14 +478,24 @@ export const layer: Layer.Layer<Conversation, never, Session.Session> = Layer.ef
 )
 
 /**
- * Waits for ordinary owned work to finish, driving its declared native executions.
+ * Waits for non-background owned work and drives its declared native executions.
+ *
+ * **When to use**
+ *
+ * Use when committed submission settlement must be followed by completion of ordinary owned
+ * work.
  *
  * **Details**
  *
- * Omit id to wait across the Session's ownerless conversation roots. Background subtrees are excluded; missing declarations remain blocked until restored.
+ * A conversation ID selects one ownership root; omitting it selects the Session’s ownerless
+ * conversation roots. Requires ownership declarations and the native WorkflowEngine.
+ *
+ * **Gotchas**
+ *
+ * Missing declarations leave work blocked until compatible code is restored. Background
+ * tasks do not hold this wait.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const awaitIdle = Effect.fnUntraced(function* (
   session: Session.Service,

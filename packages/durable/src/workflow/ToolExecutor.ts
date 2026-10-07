@@ -1,7 +1,5 @@
 /**
  * Pinned tool intent, progress and terminal execution settlement.
- *
- * @since 0.0.0
  */
 import * as result from 'effect/Result'
 // effect-review-allow P9-namespace-alias-equals-module: the native Workflow Result schema is an imported binding in this module.
@@ -43,7 +41,6 @@ import * as Structured from './Structured.ts'
  * Pinned tool intent document definition.
  *
  * @category models
- * @since 0.0.0
  */
 export const IntentDoc = Document.defineUnsafe({
   kind: 'harness.tool-intent',
@@ -54,17 +51,15 @@ export const IntentDoc = Document.defineUnsafe({
   initial: (seed) => ({ intent: Schema.decodeUnknownSync(Tool.Intent)(seed), started: false }),
 })
 /**
- * Outcome schema.
+ * Schema for a decoded tool execution and its terminal Workflow receipt.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Outcome = Schema.Struct({ execution: Tool.Execution, receipt: Result })
 /**
- * Decoded Outcome values.
+ * Decoded value validated by the `Outcome` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type Outcome = typeof Outcome.Type
 
@@ -82,7 +77,6 @@ const codecError = (cause: unknown) => invalid('Tool result cannot be persisted'
  * A native tool result entry also covers an unoffered call, which has no executable task.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const appendResult = Effect.fnUntraced(function* (
   tx: Session.Transaction,
@@ -178,7 +172,6 @@ const progress =
  * Its intent commits before any handler side effect.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<
   never,

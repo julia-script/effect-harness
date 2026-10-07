@@ -1,13 +1,10 @@
 /**
  * Compatibility constructors and transport identity for Anthropic account clients and models.
- *
- * @since 0.0.0
  */
 /**
- * Forwards the supported public declarations from their owning concept.
+ * Authenticated native Anthropic clients with account protocol adaptation.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export {
   identity,
@@ -17,16 +14,14 @@ export {
   layerConfig as layerClientConfig,
 } from './AnthropicAccountClient.ts'
 /**
- * Reexports the native account client construction options.
+ * Authenticated native Anthropic clients with account protocol adaptation.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export type { ClientOptions } from './AnthropicAccountClient.ts'
 /**
- * Forwards the supported public declarations from their owning concept.
+ * Anthropic account model construction sharing its captured native client.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export { layer, layerConfig } from './AnthropicAccountLanguageModel.ts'

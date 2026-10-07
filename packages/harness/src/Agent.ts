@@ -1,7 +1,5 @@
 /**
  * Agent configuration, selection policies and validated execution settings.
- *
- * @since 0.0.0
  */
 import * as Arr from 'effect/Array'
 import { dual } from 'effect/Function'
@@ -12,65 +10,58 @@ import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
 
 /**
- * Schema for model ref.
+ * Schema for provider name and model ID selected from a Model.Catalog.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ModelRef = Schema.Struct({ provider: Schema.String, modelId: Schema.String })
 /**
- * Agent model ref contract.
+ * Provider name and model ID selected from a Model.Catalog.
  *
  * @category models
- * @since 0.0.0
  */
 export type ModelRef = typeof ModelRef.Type
 /**
- * Schema for selection edit.
+ * Schema for names added to or removed from the existing extension selection.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const SelectionEdit = Schema.Struct({
   add: SchemaField.optional(Schema.Array(Schema.String)),
   remove: SchemaField.optional(Schema.Array(Schema.String)),
 })
 /**
- * Schema for selection.
+ * Schema for replacement names or incremental edits for extension selection.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Selection = Schema.Union([Schema.Array(Schema.String), SelectionEdit])
 /**
- * Agent selection contract.
+ * Replacement names or incremental edits for extension selection.
  *
  * @category models
- * @since 0.0.0
  */
 export type Selection = typeof Selection.Type
 /**
- * Schema for tool selection.
+ * Schema for explicit tool names or names removed from the resolved selection.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ToolSelection = Schema.Union([
   Schema.Array(Schema.String),
   Schema.Struct({ remove: Schema.Array(Schema.String) }),
 ])
 /**
- * Agent tool selection contract.
+ * Explicit tool names or names removed from the resolved selection.
  *
  * @category models
- * @since 0.0.0
  */
 export type ToolSelection = typeof ToolSelection.Type
 /**
- * Schema for state.
+ * Schema for conversation overrides for model, thinking, extensions, tools, instructions and
+ * cwd.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const State = Schema.Struct({
   model: SchemaField.optional(ModelRef),
@@ -81,45 +72,39 @@ export const State = Schema.Struct({
   cwd: SchemaField.optional(Schema.String),
 })
 /**
- * Agent state contract.
+ * Conversation overrides for model, thinking, extensions, tools, instructions and cwd.
  *
  * @category models
- * @since 0.0.0
  */
 export type State = typeof State.Type
 /**
- * Agent change contract.
+ * Partial replacement of conversation agent overrides.
  *
  * @category models
- * @since 0.0.0
  */
 export type Change = State.Change
 /**
- * Agent retry policy contract.
+ * Retry enablement, maximum attempts and delay bounds.
  *
  * @category models
- * @since 0.0.0
  */
 export type RetryPolicy = typeof RetryPolicy.Type
 /**
- * Agent compaction policy contract.
+ * Context reservation and recent-history retention policy.
  *
  * @category models
- * @since 0.0.0
  */
 export type CompactionPolicy = typeof CompactionPolicy.Type
 /**
- * Agent progress policy contract.
+ * Intervals for committed partial responses and tool output.
  *
  * @category models
- * @since 0.0.0
  */
 export type ProgressPolicy = typeof ProgressPolicy.Type
 /**
  * Default retry policy and native duration limits.
  *
  * @category constants
- * @since 0.0.0
  */
 export const defaultRetry: RetryPolicy = {
   enabled: true,
@@ -131,7 +116,6 @@ export const defaultRetry: RetryPolicy = {
  * Default context compaction token budgets.
  *
  * @category constants
- * @since 0.0.0
  */
 export const defaultCompaction: CompactionPolicy = {
   enabled: true,
@@ -143,24 +127,21 @@ export const defaultCompaction: CompactionPolicy = {
  * Default progress cadence, throughput and output-window settings.
  *
  * @category constants
- * @since 0.0.0
  */
 export const defaultProgress: ProgressPolicy = {
   partialIntervalMs: Duration.millis(100),
   outputIntervalMs: Duration.millis(100),
 }
 /**
- * Agent settings contract.
+ * Host settings for extensions, streams, retry, compaction and tool execution.
  *
  * @category models
- * @since 0.0.0
  */
 export type Settings = typeof Settings.Type
 /**
- * Agent settings input contract.
+ * Partial host settings expanded through library defaults.
  *
  * @category models
- * @since 0.0.0
  */
 export type SettingsInput = Settings.Input
 /** Configuration fields replace wholesale; null clears and undefined preserves. */
@@ -182,7 +163,6 @@ function configureImpl(self: State, change: Change): State {
  * Applies configuration changes; null clears a field and undefined preserves it.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const configure: {
   (change: Change): (self: State) => State
@@ -201,14 +181,12 @@ const defaults = (): Settings => ({
  * Validated default domain settings; options are normalized lazily for each construction.
  *
  * @category constants
- * @since 0.0.0
  */
 export const defaultSettings: Settings = defaults()
 /**
  * Validates execution settings and normalizes native duration inputs once.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const settings = Effect.fnUntraced(function* (
   input: SettingsInput = {},
@@ -258,7 +236,6 @@ function selectImpl(self: Selection | undefined, defaults: ReadonlyArray<string>
  * Applies ordered selection edits to host defaults, with removal winning.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const select: {
   (defaults: ReadonlyArray<string>): (self: Selection | undefined) => Array<string>
@@ -274,7 +251,6 @@ function retryDelayImpl(self: RetryPolicy, attempt: number): Duration.Duration {
  * Returns the bounded exponential retry delay for an attempt.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const retryDelay: {
   (attempt: number): (self: RetryPolicy) => Duration.Duration
@@ -287,7 +263,6 @@ function isRetryAllowedImpl(u: RetryPolicy, attempt: number, retryable: boolean)
  * Checks whether the retry policy permits another attempt.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isRetryAllowed: {
   (attempt: number, retryable: boolean): (self: RetryPolicy) => boolean
@@ -307,7 +282,6 @@ function addToolsImpl(self: State, names: ReadonlyArray<string>): State {
  * Adds offered tool names while preserving unchanged selection references.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const addTools: {
   (names: ReadonlyArray<string>): (self: State) => State
@@ -316,10 +290,9 @@ export const addTools: {
 
 const nonnegative = Schema.Natural
 /**
- * Schema for retry policy.
+ * Schema for retry enablement, maximum attempts and delay bounds.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const RetryPolicy = Schema.Struct({
   enabled: Schema.Boolean,
@@ -328,10 +301,9 @@ export const RetryPolicy = Schema.Struct({
   maxAgentDelayMs: Time.NonnegativeMillis,
 })
 /**
- * Schema for compaction policy.
+ * Schema for context reservation and recent-history retention policy.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const CompactionPolicy = Schema.Struct({
   enabled: Schema.Boolean,
@@ -340,20 +312,18 @@ export const CompactionPolicy = Schema.Struct({
   backgroundTokens: nonnegative,
 })
 /**
- * Schema for progress policy.
+ * Schema for intervals for committed partial responses and tool output.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ProgressPolicy = Schema.Struct({
   partialIntervalMs: Time.NonnegativeMillis,
   outputIntervalMs: Time.NonnegativeMillis,
 })
 /**
- * Schema for settings.
+ * Schema for host settings for extensions, streams, retry, compaction and tool execution.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Settings = Schema.Struct({
   extensions: SchemaField.optional(Schema.Array(Schema.String)),
@@ -367,113 +337,144 @@ export const Settings = Schema.Struct({
 })
 
 /**
- * Checks whether an unknown value satisfies the ModelRef contract.
+ * Checks whether a value satisfies the decoded `ModelRef` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isModelRef: (u: unknown) => u is ModelRef = Schema.is(ModelRef)
 
 /**
- * Checks whether an unknown value satisfies the SelectionEdit contract.
+ * Checks whether a value satisfies the decoded `SelectionEdit` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isSelectionEdit: (u: unknown) => u is SelectionEdit = Schema.is(SelectionEdit)
 
 /**
- * Checks whether an unknown value satisfies the Selection contract.
+ * Checks whether a value satisfies the decoded `Selection` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isSelection: (u: unknown) => u is Selection = Schema.is(Selection)
 
 /**
- * Checks whether an unknown value satisfies the ToolSelection contract.
+ * Checks whether a value satisfies the decoded `ToolSelection` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isToolSelection: (u: unknown) => u is ToolSelection = Schema.is(ToolSelection)
 
 /**
- * Checks whether an unknown value satisfies the State contract.
+ * Checks whether a value satisfies the decoded `State` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isState: (u: unknown) => u is State = Schema.is(State)
 
 /**
- * Checks whether an unknown value satisfies the RetryPolicy contract.
+ * Checks whether a value satisfies the decoded `RetryPolicy` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isRetryPolicy: (u: unknown) => u is RetryPolicy = Schema.is(RetryPolicy)
 
 /**
- * Checks whether an unknown value satisfies the CompactionPolicy contract.
+ * Checks whether a value satisfies the decoded `CompactionPolicy` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isCompactionPolicy: (u: unknown) => u is CompactionPolicy = Schema.is(CompactionPolicy)
 
 /**
- * Checks whether an unknown value satisfies the ProgressPolicy contract.
+ * Checks whether a value satisfies the decoded `ProgressPolicy` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isProgressPolicy: (u: unknown) => u is ProgressPolicy = Schema.is(ProgressPolicy)
 
 /**
- * Checks whether an unknown value satisfies the Settings contract.
+ * Checks whether a value satisfies the decoded `Settings` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isSettings: (u: unknown) => u is Settings = Schema.is(Settings)
 
 /**
- * Agent selection edit contract.
+ * Names added to or removed from the existing extension selection.
  *
  * @category models
- * @since 0.0.0
  */
 export type SelectionEdit = typeof SelectionEdit.Type
 
 /**
- * Type contracts owned by `State`.
+ * Type-level contracts for `State`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace State {
   /**
-   * State change type contract.
+   * Partial replacement of conversation agent overrides.
    *
    * @category models
-   * @since 0.0.0
    */
   type Change = { readonly [K in keyof State]?: State[K] | null | undefined }
 }
 
 /**
- * Type contracts owned by `Settings`.
+ * Type-level contracts for `Settings`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace Settings {
   /**
    * Input accepted by Settings, with optional fields preserving undefined.
    *
    * @category models
-   * @since 0.0.0
    */
   type Input = {
     readonly [K in keyof Settings]?: K extends 'retry' | 'compaction' | 'progress'

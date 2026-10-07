@@ -1,7 +1,5 @@
 /**
  * Structured storage failure reasons and certainty projections.
- *
- * @since 0.0.0
  */
 import * as Schema from 'effect/Schema'
 import * as Effect from 'effect/Effect'
@@ -11,10 +9,9 @@ import * as Effect from 'effect/Effect'
 const fields = { message: Schema.String, cause: Schema.optionalKey(Schema.Defect()) }
 
 /**
- * Invalid schema.
+ * Failure reporting invalid domain data or a rejected storage operation.
  *
  * @category errors
- * @since 0.0.0
  */
 export class Invalid extends Schema.TaggedError<Invalid>(
   '@effect-harness/durable/StorageError/Invalid',
@@ -26,10 +23,9 @@ export class Invalid extends Schema.TaggedError<Invalid>(
 }
 
 /**
- * Conflict schema.
+ * Failure reporting an incompatible update or reused receipt fingerprint.
  *
  * @category errors
- * @since 0.0.0
  */
 export class Conflict extends Schema.TaggedError<Conflict>(
   '@effect-harness/durable/StorageError/Conflict',
@@ -41,10 +37,9 @@ export class Conflict extends Schema.TaggedError<Conflict>(
 }
 
 /**
- * NotFound schema.
+ * Failure reporting a required domain record that is absent.
  *
  * @category errors
- * @since 0.0.0
  */
 export class NotFound extends Schema.TaggedError<NotFound>(
   '@effect-harness/durable/StorageError/NotFound',
@@ -56,10 +51,9 @@ export class NotFound extends Schema.TaggedError<NotFound>(
 }
 
 /**
- * Closed schema.
+ * Failure reporting an operation admitted after the Store or Session was sealed.
  *
  * @category errors
- * @since 0.0.0
  */
 export class Closed extends Schema.TaggedError<Closed>(
   '@effect-harness/durable/StorageError/Closed',
@@ -71,10 +65,9 @@ export class Closed extends Schema.TaggedError<Closed>(
 }
 
 /**
- * Poisoned schema.
+ * Failure reporting an operation against a Store with an unresolved write outcome.
  *
  * @category errors
- * @since 0.0.0
  */
 export class Poisoned extends Schema.TaggedError<Poisoned>(
   '@effect-harness/durable/StorageError/Poisoned',
@@ -86,10 +79,9 @@ export class Poisoned extends Schema.TaggedError<Poisoned>(
 }
 
 /**
- * Corrupt schema.
+ * Failure reporting invalid persisted state, receipts or journal frames.
  *
  * @category errors
- * @since 0.0.0
  */
 export class Corrupt extends Schema.TaggedError<Corrupt>(
   '@effect-harness/durable/StorageError/Corrupt',
@@ -101,10 +93,9 @@ export class Corrupt extends Schema.TaggedError<Corrupt>(
 }
 
 /**
- * Io schema.
+ * Persistence failure carrying whether its write outcome is rejected or uncertain.
  *
  * @category errors
- * @since 0.0.0
  */
 export class Io extends Schema.TaggedError<Io>('@effect-harness/durable/StorageError/Io')('Io', {
   ...fields,
@@ -118,10 +109,9 @@ export class Io extends Schema.TaggedError<Io>('@effect-harness/durable/StorageE
 }
 
 /**
- * ReadAfterWrite schema.
+ * Failure reporting a table read after table writes in one transaction.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ReadAfterWrite extends Schema.TaggedError<ReadAfterWrite>(
   '@effect-harness/durable/StorageError/ReadAfterWrite',
@@ -133,10 +123,9 @@ export class ReadAfterWrite extends Schema.TaggedError<ReadAfterWrite>(
 }
 
 /**
- * Revoked schema.
+ * Failure reporting use of a transaction or draft after its callback ended.
  *
  * @category errors
- * @since 0.0.0
  */
 export class Revoked extends Schema.TaggedError<Revoked>(
   '@effect-harness/durable/StorageError/Revoked',
@@ -148,10 +137,9 @@ export class Revoked extends Schema.TaggedError<Revoked>(
 }
 
 /**
- * StorageErrorReason schema.
+ * Schema for structured domain validation, lifecycle and persistence failures.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const StorageErrorReason = Schema.Union([
   Invalid,
@@ -165,18 +153,28 @@ export const StorageErrorReason = Schema.Union([
   Revoked,
 ])
 /**
- * StorageErrorReason contract.
+ * Decoded value validated by the `StorageErrorReason` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type StorageErrorReason = typeof StorageErrorReason.Type
 
 /**
- * A domain or persistence failure. An uncertain write must be reconciled, never automatically retried.
+ * Domain or persistence failure with an explicit write-certainty classification.
+ *
+ * **Details**
+ *
+ * Match reason._tag to distinguish invalid input, conflicts, missing records, lifecycle
+ * failures and I/O. certainty distinguishes rejected work from an outcome that may already
+ * have committed.
+ *
+ * **Gotchas**
+ *
+ * No reason promises automatic retry. An uncertain outcome must be reconciled by reopening
+ * storage and inspecting the receipt. Serialized causes preserve diagnostics rather than
+ * original native error identity or stack.
  *
  * @category errors
- * @since 0.0.0
  */
 export class StorageError extends Schema.TaggedError<StorageError>(
   '@effect-harness/durable/StorageError',
@@ -208,7 +206,6 @@ type ReasonConstructor = new (props: {
  * Creates a rejected storage failure with its structured reason.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const rejected = (
   message: string,
@@ -220,7 +217,6 @@ export const rejected = (
  * Creates a storage failure whose commit outcome is unknown.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const uncertain = (message: string, cause?: unknown): StorageError =>
   new StorageError({
@@ -250,17 +246,15 @@ const reasonCodes = {
   Revoked: 'revoked',
 } as const
 /**
- * LegacyReason contract.
+ * Compatibility code translated into a structured storage failure reason.
  *
  * @category models
- * @since 0.0.0
  */
 export type LegacyReason = keyof typeof legacyReasons
 /**
  * Input-only adapter for older callers; the runtime reason is always structured.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const rejectedLegacy = (
   message: string,

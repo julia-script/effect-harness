@@ -1,7 +1,5 @@
 /**
  * Persisted inbox documents and atomic message admission.
- *
- * @since 0.0.0
  */
 import * as Result from 'effect/Result'
 import * as Order from 'effect/Order'
@@ -24,10 +22,9 @@ import type * as Session from './Session.ts'
 import { EntryDraft } from './workflow/Submission.ts'
 
 /**
- * Item schema.
+ * Schema for queued input or passive write with its admission policy.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Item = Schema.Union([
   tagged('input', {
@@ -38,24 +35,21 @@ export const Item = Schema.Union([
   tagged('write', { id: Record.SubmissionId, mode: Schema.tag('write'), entry: EntryDraft }),
 ])
 /**
- * Item contract.
+ * Queued input or passive write with its admission policy.
  *
  * @category models
- * @since 0.0.0
  */
 export type Item = typeof Item.Type
 /**
- * State schema.
+ * Schema for ordered submission queues for a conversation.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const State = Schema.Struct({ items: Schema.Array(Item) })
 /**
- * Decoded State values.
+ * Ordered submission queues for a conversation.
  *
  * @category models
- * @since 0.0.0
  */
 export type State = typeof State.Type
 
@@ -63,7 +57,6 @@ export type State = typeof State.Type
  * Queued submission document definition.
  *
  * @category models
- * @since 0.0.0
  */
 export const InboxDoc = Document.defineUnsafe({
   kind: 'harness.inbox',
@@ -77,10 +70,9 @@ export const InboxDoc = Document.defineUnsafe({
 })
 
 /**
- * ToolSlot schema.
+ * Schema for tool intent and terminal receipt tracked within a generation boundary.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ToolSlot = Schema.Struct({
   callId: Schema.String,
@@ -95,18 +87,16 @@ export const ToolSlot = Schema.Struct({
   entry: Schema.optionalKey(Record.EntryId),
 })
 /**
- * Decoded ToolSlot values.
+ * Tool intent and terminal receipt tracked within a generation boundary.
  *
  * @category models
- * @since 0.0.0
  */
 export type ToolSlot = typeof ToolSlot.Type
 
 /**
- * LiveState schema.
+ * Schema for committed run, generation and tool state for a conversation.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const LiveState = Schema.Struct({
   run: Schema.optionalKey(
@@ -139,7 +129,6 @@ export const LiveState = Schema.Struct({
  * Decoded deadlines for read/event adapters; LiveDoc and its Proxy drafts retain numeric JSON.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const LiveDomain = LiveState.mapFields((fields) => ({
   ...fields,
@@ -163,7 +152,6 @@ export const LiveDomain = LiveState.mapFields((fields) => ({
  * Preserves opaque mounted references while adapting only the known numeric time leaves.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const domain = (value: LiveState): typeof LiveDomain.Type => {
   const { generation, compactions, ...rest } = value
@@ -201,17 +189,15 @@ export const domain = (value: LiveState): typeof LiveDomain.Type => {
   }
 }
 /**
- * LiveState contract.
+ * Committed run, generation and tool state for a conversation.
  *
  * @category models
- * @since 0.0.0
  */
 export type LiveState = typeof LiveState.Type
 /**
  * Committed generation and tool progress document definition.
  *
  * @category models
- * @since 0.0.0
  */
 export const LiveDoc = Document.defineUnsafe({
   kind: 'harness.live',
@@ -227,10 +213,9 @@ export const LiveDoc = Document.defineUnsafe({
 })
 
 /**
- * Boundary contract.
+ * Admission boundary from which pending inputs and writes are applied.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Boundary {
   readonly conversationId: Record.ConversationId
@@ -247,7 +232,6 @@ export interface Boundary {
  * Queue modes are supplied at this deciding commit.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const prepare = Effect.fnUntraced(function* (
   tx: Session.Transaction,
@@ -267,7 +251,6 @@ export const prepare = Effect.fnUntraced(function* (
  * Validates and replays view operations while preserving unchanged branches.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const apply = Effect.fnUntraced(function* (
   tx: Session.Transaction,
@@ -336,7 +319,6 @@ export const apply = Effect.fnUntraced(function* (
  * Withdraws queued submissions from an inbox boundary.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const withdraw = Effect.fnUntraced(function* (
   tx: Session.Transaction,
@@ -358,7 +340,6 @@ export const withdraw = Effect.fnUntraced(function* (
  * Settles exactly the inputs owned by this run; an earlier generation cannot end its successor's run.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const endRun = Effect.fnUntraced(function* (
   tx: Session.Transaction,

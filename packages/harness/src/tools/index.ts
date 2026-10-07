@@ -1,38 +1,52 @@
 /**
  * Public namespaces for the retained sibling concepts.
- *
- * @since 0.0.0
  */
 // @barrel
 /**
- * @since 0.0.0
+ * Bash and PowerShell tools with bounded output and spill diagnostics.
+ *
+ * @category re-exports
  */
 export * as Bash from './Bash.ts'
 /**
- * @since 0.0.0
+ * Native coding toolkits, handler layers and executable extensions.
+ *
+ * @category re-exports
  */
 export * as CodingTools from './CodingTools.ts'
 /**
- * @since 0.0.0
+ * Validated disjoint edits that preserve unchanged text bytes.
+ *
+ * @category re-exports
  */
 export * as Edit from './Edit.ts'
 /**
- * @since 0.0.0
+ * Exact and tolerant text matching with unchanged-line preservation.
+ *
+ * @category re-exports
  */
 export * as EditDiff from './EditDiff.ts'
 /**
- * @since 0.0.0
+ * Image signatures, MIME recognition and model-visible file parts.
+ *
+ * @category re-exports
  */
 export * as Image from './Image.ts'
 /**
- * @since 0.0.0
+ * Scoped text and image reading through portable Env capabilities.
+ *
+ * @category re-exports
  */
 export * as Read from './Read.ts'
 /**
- * @since 0.0.0
+ * Whole-line text truncation with explicit byte and line counts.
+ *
+ * @category re-exports
  */
 export * as Truncate from './Truncate.ts'
 /**
- * @since 0.0.0
+ * Canonical file replacement through host-owned mutation admission.
+ *
+ * @category re-exports
  */
 export * as Write from './Write.ts'

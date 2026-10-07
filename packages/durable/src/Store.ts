@@ -1,7 +1,5 @@
 /**
  * Scoped storage service, allocation accessors and memory acquisition.
- *
- * @since 0.0.0
  */
 import * as Layer from 'effect/Layer'
 import type * as Scope from 'effect/Scope'
@@ -17,60 +15,67 @@ import { rejected, type StorageError } from './StorageError.ts'
 import { validate } from './storage/internal/state.ts'
 
 /**
- * Compatibility alias for Store.UnkeyedOptions.
+ * Transaction options without receipt-based replay.
  *
  * @category models
- * @since 0.0.0
  */
 export type UnkeyedOptions = Store.UnkeyedOptions
 /**
- * Compatibility alias for Store.ReceiptOptions.
+ * Persisted idempotency key and optional request fingerprint.
  *
  * @category models
- * @since 0.0.0
  */
 export type ReceiptOptions = Store.ReceiptOptions
 /**
- * Compatibility alias for Store.CommitOptions.
+ * Choice between an ordinary commit and a persisted replay receipt.
  *
  * @category models
- * @since 0.0.0
  */
 export type CommitOptions = Store.CommitOptions
 /**
- * Compatibility alias for Store.Transact.
+ * Atomic callback that publishes a validated storage candidate.
  *
  * @category models
- * @since 0.0.0
  */
 export type Transact = Store.Transact
 const CandidateTypeId = '~@effect-harness/durable/Store/Candidate'
 /**
- * Compatibility alias for Store.Candidate.
+ * Next state, staged writes and callback result proposed for one atomic commit.
  *
  * @category models
- * @since 0.0.0
  */
 export type Candidate<A> = Store.Candidate<A>
 /**
- * Compatibility alias for Store.Journal.
+ * Coherent saved state and retained frames after a requested sequence.
  *
  * @category models
- * @since 0.0.0
  */
 export type Journal = Store.Journal
 /**
- * Compatibility alias for Store.Service.
+ * Storage adapter contract for commit serialization and lifecycle.
  *
  * @category models
- * @since 0.0.0
  */
 export type Service = Store.Service
 /**
- * Store service.
+ * Service for atomic domain state, receipts and retained commit frames.
+ *
+ * **When to use**
+ *
+ * Use with Session or supply an adapter implementing the same commit and lifecycle contract.
+ *
+ * **Details**
+ *
+ * A candidate becomes visible only after validation and successful publication.
+ * Receipt-based commits save writes and their replay result together. Observers read
+ * committed state rather than candidates.
+ *
+ * **Gotchas**
+ *
+ * An uncertain persistence outcome poisons the open Store. Reopen the backend and inspect
+ * saved receipts before continuing.
  *
  * @category services
- * @since 0.0.0
  */
 export class Store extends Context.Service<Store, Service>()('@effect-harness/durable/Store') {}
 
@@ -78,7 +83,6 @@ export class Store extends Context.Service<Store, Service>()('@effect-harness/du
  * Allocates through the transaction callback, validating before publication and again after allocation.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const mintId = Effect.fnUntraced(function* <S extends Schema.Constraint>(
   schema: S,
@@ -100,10 +104,14 @@ export const mintId = Effect.fnUntraced(function* <S extends Schema.Constraint>(
 })
 
 /**
- * Creates a detached transaction candidate without changing its input.
+ * Creates a nominal transaction candidate from the supplied fields.
+ *
+ * **Details**
+ *
+ * Copies the carrier and its property descriptors. Nested state, writes and result values
+ * are retained by reference; this is not a deep clone.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeCandidate = <A>(
   input: Omit<Candidate<A>, typeof CandidateTypeId>,
@@ -114,77 +122,96 @@ export const makeCandidate = <A>(
   return value
 }
 /**
- * Returns whether the value satisfies Candidate.
+ * Checks whether a value carries the nominal `Candidate` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isCandidate = (input: unknown): input is Candidate<unknown> =>
   Predicate.hasProperty(input, CandidateTypeId)
 
 /**
- * Creates a scoped memory Store with fresh state on each acquisition.
+ * Acquires a fresh scoped in-memory Store.
+ *
+ * **When to use**
+ *
+ * Use when tests or sessions need no recovery across process restarts.
+ *
+ * **Gotchas**
+ *
+ * Every acquisition starts with empty state. A persistent WorkflowEngine does not make this
+ * domain Store persistent.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeMemory: Effect.Effect<Store['Service'], never, Scope.Scope> = Effect.suspend(
   () => memoryStore.make,
 )
 /**
- * Scoped in-memory Store layer.
+ * Provides scoped, process-local domain storage.
+ *
+ * **Details**
+ *
+ * Share this Layer value to share one Store; rebuilding it independently creates independent
+ * session data.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerMemory: Layer.Layer<Store> = Layer.effect(Store, makeMemory)
 /**
- * Scoped in-memory Store implementation layer.
+ * Alias of layerMemory for scoped in-memory domain storage.
  *
+ * @see {@link layerMemory} for acquisition and sharing semantics.
  * @category layers
- * @since 0.0.0
  */
 export const layerStoreMemory: Layer.Layer<Store> = layerMemory
 
 /**
- * Store contract.
+ * Type-level contracts for `Store`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Store {
   /**
-   * UnkeyedOptions contract.
+   * Transaction options without receipt-based replay.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface UnkeyedOptions {
     readonly key?: undefined
     readonly fingerprint?: undefined
   }
   /**
-   * ReceiptOptions contract.
+   * Replay identity for a transaction result saved with its domain writes.
+   *
+   * **Details**
+   *
+   * key identifies the operation within the Store. fingerprint, when supplied, must match the
+   * original receipt when the key is reused.
+   *
+   * **Gotchas**
+   *
+   * The result must be JSON-safe or void; undefined is recorded separately from JSON null.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface ReceiptOptions {
     readonly key: string
     readonly fingerprint?: string | undefined
   }
   /**
-   * CommitOptions contract.
+   * Choice between an ordinary commit and a persisted replay receipt.
    *
    * @category models
-   * @since 0.0.0
    */
   export type CommitOptions = UnkeyedOptions | ReceiptOptions
   /**
-   * Transact contract.
+   * Atomic callback that publishes a validated storage candidate.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Transact {
     <A, E, R>(
@@ -197,10 +224,14 @@ export declare namespace Store {
     ): Effect.Effect<A, StorageError | E, R>
   }
   /**
-   * Candidate contract.
+   * Proposed next state, writes and callback result for a Store transaction.
+   *
+   * **Details**
+   *
+   * Construct with makeCandidate so the nominal guard recognizes the value. Supplying a
+   * candidate does not itself persist or validate its contents.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Candidate<out A> {
     readonly [CandidateTypeId]: { readonly _A: Types.Covariant<A> }
@@ -210,10 +241,9 @@ export declare namespace Store {
     readonly result: A
   }
   /**
-   * Journal contract.
+   * Coherent saved state and retained frames after a requested sequence.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Journal {
     readonly frames: ReadonlyArray<Record.Frame>
@@ -221,22 +251,45 @@ export declare namespace Store {
     readonly state: Record.State
   }
   /**
-   * Service contract.
+   * Storage adapter contract for authoritative snapshots and serialized commits.
+   *
+   * **Details**
+   *
+   * read supports transaction construction; committed exposes saved state independently of
+   * staged candidates. journal pairs retained frames with a coherent saved snapshot.
+   *
+   * **Gotchas**
+   *
+   * Scope owns release. seal stops admission and observers; awaitClosed only waits for cleanup
+   * and never initiates it.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Service {
+    /**
+     * Reads authoritative state for transaction construction.
+     */
     readonly read: Effect.Effect<Record.State, StorageError>
     /** Optional stable key for batching reads that share the same storage view. */
     readonly readContext?: Effect.Effect<object> | undefined
     /** Reads the saved snapshot without exposing a transaction candidate. */
     readonly committed: Effect.Effect<Record.State, StorageError>
+    /**
+     * Serializes a candidate callback, validates the result and publishes it atomically, with
+     * optional receipt replay.
+     */
     readonly transact: Transact
+    /**
+     * Publishes the supplied domain writes atomically and returns the commit sequence.
+     */
     readonly commit: (
       writes: ReadonlyArray<Record.Write>,
       options?: CommitOptions,
     ) => Effect.Effect<Record.Seq, StorageError>
+    /**
+     * Reads retained frames after a sequence together with a coherent saved state; reset signals
+     * a retention gap.
+     */
     readonly journal: (after: Record.Seq | 0) => Effect.Effect<Journal, StorageError>
     /** Stop admission and committed observers while retaining resources for admitted-operation cleanup. */
     readonly seal: Effect.Effect<void>

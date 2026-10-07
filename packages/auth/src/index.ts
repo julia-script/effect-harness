@@ -1,38 +1,54 @@
 /**
  * Public concept namespaces for this package.
- *
- * @since 0.0.0
  */
 // @barrel
 /**
- * @since 0.0.0
+ * Typed authentication failures and redacted credential codecs with compatible persisted
+ * wire representations.
+ *
+ * @category re-exports
  */
 export * as Credential from './Credential.ts'
 /**
- * @since 0.0.0
+ * Locked in-memory and protected-file credential transactions with scoped atomic
+ * persistence.
+ *
+ * @category re-exports
  */
 export * as CredentialStore from './CredentialStore.ts'
 /**
- * @since 0.0.0
+ * Guarded normalization of native and external duration inputs.
+ *
+ * @category re-exports
  */
 export * as Duration from './Duration.ts'
 /**
- * @since 0.0.0
+ * JOSE-backed JWT verification with fresh key reads and Effect-clock expiry checks.
+ *
+ * @category re-exports
  */
 export * as JoseJwt from './JoseJwt.ts'
 /**
- * @since 0.0.0
+ * Portable verified JWT identity and verification service contracts.
+ *
+ * @category re-exports
  */
 export * as Jwt from './Jwt.ts'
 /**
- * @since 0.0.0
+ * Cryptographic PKCE challenges and unpadded base64url encoding.
+ *
+ * @category re-exports
  */
 export * as Pkce from './Pkce.ts'
 /**
- * @since 0.0.0
+ * Exact finite epoch-millisecond codecs for UTC domain timestamps.
+ *
+ * @category re-exports
  */
 export * as Time from './Time.ts'
 /**
- * @since 0.0.0
+ * Redacted OAuth token and revocation HTTP boundaries.
+ *
+ * @category re-exports
  */
 export * as Token from './Token.ts'

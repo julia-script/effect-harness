@@ -1,7 +1,5 @@
 /**
  * Authenticated native Anthropic clients with account protocol adaptation.
- *
- * @since 0.0.0
  */
 import * as Arr from 'effect/Array'
 import * as Predicate from 'effect/Predicate'
@@ -26,24 +24,21 @@ import { OAuth, tokenUrl } from './OAuth.ts'
 
 // Transport identity and aliases adapted from Pi commit 636703a0 (MIT); see NOTICE.
 /**
- * Defines identity for the AnthropicAccountClient boundary.
+ * System identity required by the supported Anthropic account transport.
  *
- * @category models
- * @since 0.0.0
+ * @category constants
  */
 export const identity = "You are Claude Code, Anthropic's official CLI for Claude."
 /**
- * Defines cliVersion for the AnthropicAccountClient boundary.
+ * CLI-version header value sent by the supported account transport.
  *
- * @category models
- * @since 0.0.0
+ * @category constants
  */
 export const cliVersion = '2.1.280'
 /**
- * Defines betas for the AnthropicAccountClient boundary.
+ * Protocol beta headers used by Anthropic account requests.
  *
- * @category models
- * @since 0.0.0
+ * @category constants
  */
 export const betas = ['claude-code-20250219', 'oauth-2025-04-20'] as const
 const canonicalTools = [
@@ -184,17 +179,15 @@ const prepare = Effect.fnUntraced(function* (
 })
 
 /**
- * Describes the ClientOptions contract.
+ * Type-level contracts for `AnthropicAccountClient`.
  *
- * @category types
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace AnthropicAccountClient {
   /**
-   * Describes the ClientOptions contract.
+   * Selected credential account and native Anthropic transport overrides.
    *
-   * @category types
-   * @since 0.0.0
+   * @category models
    */
   export interface ClientOptions {
     readonly account: string
@@ -205,17 +198,25 @@ export declare namespace AnthropicAccountClient {
   }
 }
 /**
- * Describes the ClientOptions contract.
+ * Selected credential account and native Anthropic transport overrides.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export type ClientOptions = AnthropicAccountClient.ClientOptions
 /**
- * Supplies the standard native client with refreshed bearer auth and Pi account wire adaptation.
+ * Provides the native Anthropic client using a selected OAuth account.
+ *
+ * **Details**
+ *
+ * Refreshes bearer tokens and applies account transport identity, beta and tool-name
+ * mappings. Structured Prompt history remains intact.
+ *
+ * **Gotchas**
+ *
+ * This is direct account transport. It neither runs the installed Claude CLI nor reads its
+ * stored credentials.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (
   options: ClientOptions,
@@ -370,7 +371,6 @@ export const layer = (
  * Resolves all layer options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,

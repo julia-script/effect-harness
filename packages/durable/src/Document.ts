@@ -1,7 +1,5 @@
 /**
  * Validated document definitions, scoped draft values and detached snapshots.
- *
- * @since 0.0.0
  */
 import { dual } from 'effect/Function'
 import * as handle from './internal/handle.ts'
@@ -32,10 +30,9 @@ import {
   type CloneError,
 } from './storage/internal/state.ts'
 /**
- * Canonical document clone failure.
+ * Public APIs from `./storage/internal/state.ts`.
  *
- * @category errors
- * @since 0.0.0
+ * @category re-exports
  */
 export { CloneError } from './storage/internal/state.ts'
 
@@ -44,24 +41,30 @@ const TypeId = '~@effect-harness/durable/Document'
 const SnapshotTypeId = '~@effect-harness/durable/Document/Snapshot'
 const MigrationCacheTypeId = '~@effect-harness/durable/Document/MigrationCache'
 /**
- * Compatibility alias for Document.Definition.
+ * Schema, initialization, migration and history policies for a document kind.
  *
  * @category models
- * @since 0.0.0
  */
 export type Definition<T extends object> = Document.Definition<T>
 /**
- * Compatibility alias for Document.DefinitionInput.
+ * Document definition supplied before the library adds its nominal identity.
  *
  * @category models
- * @since 0.0.0
  */
 export type DefinitionInput<T extends object> = Document.DefinitionInput<T>
 /**
- * Document contract.
+ * Typed token identifying a singleton or keyed document family.
+ *
+ * **Details**
+ *
+ * The token carries schema and lifecycle policy; it is not the document value. Acquire a
+ * draft in a Session transaction, or read a detached committed snapshot.
+ *
+ * **Gotchas**
+ *
+ * isDocument checks the token’s nominal identity, not arbitrary stored document data.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Document<in out T extends object>
   extends Pipeable.Pipeable, Inspectable.Inspectable {
@@ -70,10 +73,13 @@ export interface Document<in out T extends object>
   readonly family: boolean
 }
 /**
- * Returns whether the value satisfies Document.
+ * Checks whether a value carries the nominal `Document` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isDocument = (input: unknown): input is Document<object> =>
   Predicate.hasProperty(input, TypeId)
@@ -87,10 +93,9 @@ const construct = <T extends object>(input: DefinitionInput<T>, family: boolean)
   return Object.defineProperty(token, TypeId, { enumerable: false })
 }
 /**
- * DocumentDefinitionError schema.
+ * Failure reporting an invalid document kind, version or history/fork combination.
  *
  * @category errors
- * @since 0.0.0
  */
 export class DocumentDefinitionError extends Schema.TaggedError<DocumentDefinitionError>(
   '@effect-harness/durable/Document/DocumentDefinitionError',
@@ -128,38 +133,75 @@ const checkDefinition = <T extends object>(
   return Result.succeed(undefined)
 }
 /**
- * Validates a document definition and creates its singleton token.
+ * Validates a document definition and creates a singleton token.
  *
+ * **When to use**
+ *
+ * Use when one value of a kind belongs to each selected session, conversation or task.
+ *
+ * **Details**
+ *
+ * kind must be nonempty and version a positive safe integer. Conversation definitions
+ * declare history and fork policies; session/task definitions omit them.
+ *
+ * **Gotchas**
+ *
+ * An asOf fork policy requires rewindable history. Invalid definitions return
+ * DocumentDefinitionError rather than throwing.
+ *
+ * @see {@link family} for multiple keyed values of one document kind.
  * @category constructors
- * @since 0.0.0
  */
 export const define = <T extends object>(
   definition: DefinitionInput<T>,
 ): Result.Result<Document<T>, DocumentDefinitionError> =>
   Result.map(checkDefinition(definition), () => construct(definition, false))
 /**
- * Validates a document definition and creates its keyed token factory.
+ * Validates a document definition and creates a keyed-family token.
  *
+ * **When to use**
+ *
+ * Use when an owner needs independently addressed values under one document kind.
+ *
+ * **Gotchas**
+ *
+ * Supply an explicit target key on every acquisition or read. Singleton tokens exclude keys.
+ * Definition validation is the same as define.
+ *
+ * @see {@link define} for one value per owner.
  * @category constructors
- * @since 0.0.0
  */
 export const family = <T extends object>(
   definition: DefinitionInput<T>,
 ): Result.Result<Document<T>, DocumentDefinitionError> =>
   Result.map(checkDefinition(definition), () => construct(definition, true))
 /**
- * Creates a singleton document token or throws for an invalid definition.
+ * Creates a singleton token or throws for an invalid definition.
  *
+ * **When to use**
+ *
+ * Use when static definitions are controlled by the application.
+ *
+ * **Gotchas**
+ *
+ * Throws DocumentDefinitionError synchronously; use define when the definition comes from
+ * input.
+ *
+ * @see {@link define} for validation as a Result.
  * @category constructors
- * @since 0.0.0
  */
 export const defineUnsafe = <T extends object>(definition: DefinitionInput<T>): Document<T> =>
   Result.getOrThrow(define(definition))
 /**
- * Creates a keyed document token factory or throws for an invalid definition.
+ * Creates a family token or throws for an invalid definition.
  *
+ * **Gotchas**
+ *
+ * Definition errors throw synchronously. Every document in the family still requires a
+ * target key.
+ *
+ * @see {@link family} for validation as a Result.
  * @category constructors
- * @since 0.0.0
  */
 export const familyUnsafe = <T extends object>(definition: DefinitionInput<T>): Document<T> =>
   Result.getOrThrow(family(definition))
@@ -167,29 +209,34 @@ export const familyUnsafe = <T extends object>(definition: DefinitionInput<T>): 
  * Ownership traversal target constructors.
  *
  * @category models
- * @since 0.0.0
  */
 export type Target = Document.Target
 /**
- * Compatibility alias for Document.Snapshot.
+ * Detached document record and decoded value at a stored revision.
  *
  * @category models
- * @since 0.0.0
  */
 export type Snapshot<T extends object = Record.JsonObject> = Document.Snapshot<T>
 
 /**
- * Compatibility alias for Document.SnapshotInput.
+ * Fields supplied when constructing a nominal document snapshot.
  *
  * @category models
- * @since 0.0.0
  */
 export type SnapshotInput<T extends object = Record.JsonObject> = Document.SnapshotInput<T>
 /**
- * Creates a detached snapshot carrier.
+ * Creates a nominal document-snapshot carrier from supplied fields.
+ *
+ * **Details**
+ *
+ * Preserves the supplied value and metadata; the constructor does not validate or deep-copy
+ * them.
+ *
+ * **Gotchas**
+ *
+ * Detach mutable data before constructing a snapshot when it must outlive a draft.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeSnapshot = <T extends object>(input: SnapshotInput<T>): Snapshot<T> => {
   const value = handle.make(SnapshotProto, handle.marked(input, SnapshotTypeId, { _T: identity }))
@@ -231,10 +278,9 @@ const addressImpl = Effect.fnUntraced(function* <T extends object>(
 })
 
 /**
- * MigrationCache contract.
+ * Token-local cache of decoded document migrations.
  *
  * @category models
- * @since 0.0.0
  */
 export interface MigrationCache {
   readonly [MigrationCacheTypeId]: typeof MigrationCacheTypeId
@@ -242,10 +288,13 @@ export interface MigrationCache {
   readonly permit: Semaphore.Semaphore
 }
 /**
- * Returns whether the value satisfies MigrationCache.
+ * Checks whether a value carries the nominal `MigrationCache` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isMigrationCache = (input: unknown): input is MigrationCache =>
   Predicate.hasProperty(input, MigrationCacheTypeId)
@@ -253,7 +302,6 @@ export const isMigrationCache = (input: unknown): input is MigrationCache =>
  * Creates a token-local migration cache with captured decoding services.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeMigrationCache: Effect.Effect<MigrationCache> = Effect.gen(function* () {
   const cache: MigrationCache = {
@@ -264,10 +312,9 @@ export const makeMigrationCache: Effect.Effect<MigrationCache> = Effect.gen(func
   return Object.defineProperty(cache, MigrationCacheTypeId, { enumerable: false })
 })
 /**
- * Compatibility alias for Document.Draft.
+ * Recursively mutable view of decoded document data.
  *
  * @category models
- * @since 0.0.0
  */
 export type Draft<T> = Document.Draft<T>
 
@@ -341,7 +388,6 @@ const typedImpl = Effect.fnUntraced(function* <T extends object>(
  * Canonical domain schemas may decode undefined-friendly fields; their storage form remains an object.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const jsonObjectCodec: typeof Serialization.object = Serialization.object
 
@@ -349,7 +395,6 @@ export const jsonObjectCodec: typeof Serialization.object = Serialization.object
  * Encodes the decoded domain model into the separately validated JSON storage representation.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const encode = <T extends object>(
   token: Document<T>,
@@ -361,25 +406,37 @@ export const encode = <T extends object>(
   )
 
 /**
- * Detaches validated JSON values into mutable data while preserving primitive brands.
+ * Returns detached mutable JSON data while preserving primitive brands.
  *
+ * **When to use**
+ *
+ * Use when data must outlive a transaction draft or be edited without changing it.
+ *
+ * **Gotchas**
+ *
+ * Copy a draft before its transaction ends. Unsupported or cyclic data returns CloneError;
+ * the original value is unchanged.
+ *
+ * @see {@link copyEffect} for the StorageError channel inside an Effect.
  * @category combinators
- * @since 0.0.0
  */
 export const copy = <T>(self: T): Result.Result<Draft<T>, CloneError> =>
   Result.map(detached(self), (self) => self as Draft<T>)
 /**
- * Synchronous copy for validated static data or documented synchronous callbacks.
+ * Copies JSON data or throws when it cannot be detached.
  *
+ * **Gotchas**
+ *
+ * CloneError is thrown synchronously. Copy active drafts before their transaction ends.
+ *
+ * @see {@link copy} for a Result-based alternative.
  * @category combinators
- * @since 0.0.0
  */
 export const copyUnsafe = <T>(self: T): Draft<T> => detachedUnsafe(self) as Draft<T>
 /**
  * Copies active drafts into the typed storage channel inside Effect transactions.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const copyEffect = <T>(self: T): Effect.Effect<Draft<T>, StorageError> =>
   detachedEffect(self).pipe(Effect.map((self) => self as Draft<T>))
@@ -388,7 +445,6 @@ export const copyEffect = <T>(self: T): Effect.Effect<Draft<T>, StorageError> =>
  * Resolves a document token and target into its durable address.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const address: {
   (
@@ -401,10 +457,19 @@ export const address: {
 } = dual((args) => isDocument(args[0]), addressImpl)
 
 /**
- * Decodes and detaches a stored snapshot through its document definition.
+ * Decodes a stored snapshot using a document token and its migrations.
+ *
+ * **Details**
+ *
+ * Returns detached decoded data and may use a token-local MigrationCache. Older values are
+ * projected through the declared migration; this read does not write the upgraded version.
+ *
+ * **Gotchas**
+ *
+ * Incompatible definitions, newer stored versions and failed migrations produce
+ * StorageError.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const typed: {
   (
@@ -419,26 +484,56 @@ export const typed: {
 } = dual((args) => isDocument(args[0]), typedImpl)
 
 /**
- * Document contract.
+ * Type-level contracts for `Document`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Document {
   /**
-   * Definition contract.
+   * Schema and lifecycle policy for a document kind.
+   *
+   * **Details**
+   *
+   * schema encodes decoded values as JSON objects. initial supplies new values; migrate
+   * upgrades older stored versions. Conversation history is latest or rewindable, and fork is
+   * asOf, current or initial.
+   *
+   * **Gotchas**
+   *
+   * Migration is a pure value transformation. Newer stored versions are rejected. asOf
+   * requires rewindable history; task and session documents do not accept conversation
+   * history/fork policies.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Definition<in out T extends object>
     extends Pipeable.Pipeable, Inspectable.Inspectable {
     readonly [DefinitionTypeId]: { readonly _T: Types.Invariant<T> }
+    /**
+     * Stable nonempty document-kind name used in its logical address.
+     */
     readonly kind: string
+    /**
+     * Positive safe-integer schema version used to select migrations.
+     */
     readonly version: number
+    /**
+     * Ownership scope determining whether an owner identity is required.
+     */
     readonly scope: Record.Scope['kind']
+    /**
+     * Conversation history policy: latest keeps present content; rewindable supports historical
+     * cutoffs.
+     */
     readonly history?: 'latest' | 'rewindable' | undefined
+    /**
+     * Conversation fork policy: asOf inherits the cutoff, current copies present content,
+     * initial starts fresh.
+     */
     readonly fork?: 'asOf' | 'current' | 'initial' | undefined
+    /**
+     * Codec between decoded document data and its JSON-object storage form.
+     */
     readonly schema: Schema.Codec<T, Record.JsonObject>
     /**
      * Returns the initial decoded value.
@@ -449,7 +544,14 @@ export declare namespace Document {
      * rejected StorageError before commit.
      */
     readonly initial: (seed?: Record.Json) => T
+    /**
+     * Pure transformation from an older stored version to the current decoded model.
+     */
     readonly migrate?: ((value: Record.JsonObject, fromVersion: number) => T) | undefined
+    /**
+     * Selects when staged operations should be saved as a full checkpoint instead of another
+     * delta.
+     */
     readonly checkpointWhen?:
       | ((
           value: Readonly<T>,
@@ -459,55 +561,77 @@ export declare namespace Document {
       | undefined
   }
   /**
-   * DefinitionInput contract.
+   * Document definition supplied before the library adds its nominal identity.
    *
    * @category models
-   * @since 0.0.0
    */
   export type DefinitionInput<T extends object> = handle.Input<
     Definition<T>,
     typeof DefinitionTypeId
   >
   /**
-   * Ownership traversal target constructors.
+   * Owner, family key and optional seed for document acquisition.
+   *
+   * **Details**
+   *
+   * owner selects the conversation or task for those scopes; session documents need no owner.
+   * seed is passed to initial only when creating a value.
+   *
+   * **Gotchas**
+   *
+   * Families require key; singletons reject it. Recreating a retired address creates a new
+   * incarnation rather than reviving old watches.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Target {
+    /**
+     * Conversation or task identity required by the document scope.
+     */
     readonly owner?: Record.ConversationId | Record.TaskId | undefined
+    /**
+     * Explicit family key; required for family tokens and excluded for singleton tokens.
+     */
     readonly key?: string | undefined
+    /**
+     * JSON initialization input used only when creating a document incarnation.
+     */
     readonly seed?: Record.Json | undefined
   }
   /**
-   * Snapshot contract.
+   * Detached decoded value and metadata at a document revision.
+   *
+   * **Details**
+   *
+   * version is the decoded schema version. deltasSinceBase counts retained deltas since the
+   * checkpoint. Reading a migrated value does not itself persist the migration.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Snapshot<out T extends object = Record.JsonObject>
     extends Pipeable.Pipeable, Inspectable.Inspectable {
     readonly [SnapshotTypeId]: { readonly _T: Types.Covariant<T> }
     readonly record: Record.Document
+    /**
+     * Positive safe-integer schema version used to select migrations.
+     */
     readonly version: number
     readonly value: Readonly<T>
     readonly deltasSinceBase: number
   }
   /**
-   * SnapshotInput contract.
+   * Fields supplied when constructing a nominal document snapshot.
    *
    * @category models
-   * @since 0.0.0
    */
   export type SnapshotInput<T extends object = Record.JsonObject> = Omit<
     Snapshot<T>,
     typeof SnapshotTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
   >
   /**
-   * Draft contract.
+   * Recursively mutable view of decoded document data.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Draft<T> = T extends string | number | boolean | null | undefined
     ? T

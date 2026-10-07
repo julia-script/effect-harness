@@ -1,7 +1,5 @@
 /**
  * Conversation cut selection and native summarization prompts.
- *
- * @since 0.0.0
  */
 import { constant } from 'effect/Function'
 import { dual } from 'effect/Function'
@@ -54,7 +52,6 @@ function selectCutImpl(
  * Selects a safe conversation boundary while retaining the requested token budget.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const selectCut: {
   (
@@ -113,7 +110,6 @@ const summarizedMessagesImpl = (self: Context.View, cut: number): Array<Prompt.M
  * Returns call-ordered native messages before the selected cut.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const summarizedMessages: {
   (cut: number): (self: Context.View) => Array<Prompt.Message>
@@ -135,7 +131,6 @@ function thresholdImpl(
  * Classifies a context estimate against blocking and background compaction thresholds.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const threshold: {
   (
@@ -152,7 +147,6 @@ export const threshold: {
  * Formats a native conversation for the summarization model.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function serializeConversation(self: ReadonlyArray<Prompt.Message>): string {
   const lines: Array<string> = []
@@ -249,7 +243,6 @@ function promptImpl(self: ReadonlyArray<Prompt.Message>, focus?: string): Prompt
  * Creates the native summarization prompt with optional additional focus.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const prompt: {
   (focus?: string): (self: ReadonlyArray<Prompt.Message>) => Prompt.Prompt
@@ -259,7 +252,6 @@ export const prompt: {
  * Creates a native user message containing a completed context summary.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const summaryMessage = (self: string): Prompt.UserMessage =>
   Prompt.userMessage({

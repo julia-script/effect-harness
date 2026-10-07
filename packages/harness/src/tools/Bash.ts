@@ -1,7 +1,5 @@
 /**
  * Bash and PowerShell tools with bounded output and spill diagnostics.
- *
- * @since 0.0.0
  */
 import * as Result from 'effect/Result'
 import * as Time from '../Time.ts'
@@ -19,27 +17,24 @@ import * as Metadata from '../Tool.ts'
 // effect-review-allow P9-namespace-alias-equals-module: ../Tool.ts and effect/ai/Tool both bind Tool; Metadata preserves the checked imported-name collision.
 import * as Truncate from './Truncate.ts'
 /**
- * Schema for parameters.
+ * Schema for shell command and optional timeout in seconds.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Parameters = Schema.Struct({
   command: Schema.String,
   timeout: SchemaField.optional(Time.CommandTimeout),
 })
 /**
- * Bash input contract.
+ * Decoded parameters passed to the coding-tool handler.
  *
  * @category models
- * @since 0.0.0
  */
 export type Input = Parameters
 /**
- * Bash execution contract.
+ * Resolved shell command, cwd and environment passed to the host process.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Execution {
   command: string
@@ -48,25 +43,33 @@ export interface Execution {
   inheritEnv: boolean
 }
 /**
- * Bash options contract.
+ * Default shell-tool timeout and output-window reporting policy.
  *
  * @category models
- * @since 0.0.0
  */
 export type Options = handler.Options
 /**
- * Bash power shell options contract.
+ * PowerShell executable and shell-tool reporting policy.
  *
  * @category models
- * @since 0.0.0
  */
 export type PowerShellOptions = powerShellHandler.Options
 const project = (result: unknown) => Metadata.decodeResult('bash', result)
 /**
- * Bash tool value.
+ * Native bash tool running a command through the configured environment shell.
+ *
+ * **Details**
+ *
+ * timeout is expressed in seconds. Output is bounded with spill files and optional progress
+ * callbacks.
+ *
+ * **Gotchas**
+ *
+ * Shell execution has unsafe replay. Scoped cancellation terminates process work and joins
+ * cleanup; nonzero exits are command results, while spawn, timeout and callback failures
+ * remain typed errors.
  *
  * @category constants
- * @since 0.0.0
  */
 export const tool = AiTool.make('bash', {
   description:
@@ -83,7 +86,6 @@ export const tool = AiTool.make('bash', {
  * Native PowerShell tool declaration with bounded output and full-output spill diagnostics.
  *
  * @category constants
- * @since 0.0.0
  */
 export const powershell = AiTool.make('powershell', {
   description:
@@ -226,7 +228,6 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
  * Creates the Bash handler using supplied shell execution options.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const handler = (
   options: Options = {},
@@ -236,7 +237,6 @@ export const handler = (
  * Creates the PowerShell handler using supplied shell execution options.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const powerShellHandler = (
   options: PowerShellOptions = {},
@@ -244,33 +244,34 @@ export const powerShellHandler = (
   execute('powershell', options)
 
 /**
- * Checks whether an unknown value satisfies the Input contract.
+ * Checks whether a value satisfies the decoded `Parameters` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isInput: (u: unknown) => u is Parameters = Schema.is(Parameters)
 
 /**
- * Bash parameters contract.
+ * Shell command and optional timeout in seconds.
  *
  * @category models
- * @since 0.0.0
  */
 export type Parameters = typeof Parameters.Type
 
 /**
- * Type contracts owned by `handler`.
+ * Type-level contracts for `handler`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace handler {
   /**
    * Configuration accepted by handler.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Options {
     readonly commandPrefix?: string | undefined
@@ -281,17 +282,15 @@ export declare namespace handler {
 }
 
 /**
- * Type contracts owned by `powerShellHandler`.
+ * Type-level contracts for `powerShellHandler`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace powerShellHandler {
   /**
    * Configuration accepted by powerShellHandler.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Options extends handler.Options {
     readonly programs?: ReadonlyArray<string> | undefined

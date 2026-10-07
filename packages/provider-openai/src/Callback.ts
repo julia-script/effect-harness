@@ -1,7 +1,5 @@
 /**
  * Scoped OpenAI loopback authorization callback ownership.
- *
- * @since 0.0.0
  */
 import * as Option from 'effect/Option'
 import * as Config from 'effect/Config'
@@ -29,7 +27,6 @@ import { ChatGpt, type Authorization } from './ChatGpt.ts'
  * Identifies the Callback service in the Effect context.
  *
  * @category services
- * @since 0.0.0
  */
 export class Callback extends Context.Service<
   Callback,
@@ -40,10 +37,19 @@ export class Callback extends Context.Service<
 >()('@effect-harness/provider-openai/Callback') {}
 
 /**
- * Starts the listener before exposing the authorization URL; callers provide a scoped loopback HttpServer adapter.
+ * Installs a scoped loopback callback for ChatGPT authorization.
+ *
+ * **Details**
+ *
+ * Uses an application-supplied HttpServer bound to IPv4 127.0.0.1. authorization is
+ * available after listener installation; await yields the completed credential.
+ *
+ * **Gotchas**
+ *
+ * Open the returned URL only after installation. Closing the Scope cancels the listener and
+ * pending authorization.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (options?: {
   readonly account?: string | undefined
@@ -147,7 +153,6 @@ export const layer = (options?: {
  * Resolves all layer options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,

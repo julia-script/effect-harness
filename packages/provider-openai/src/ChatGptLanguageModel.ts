@@ -1,7 +1,5 @@
 /**
  * ChatGPT account model construction sharing its captured Responses client.
- *
- * @since 0.0.0
  */
 import * as Config from 'effect/Config'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
@@ -14,10 +12,14 @@ import * as HttpClient from 'effect/http/HttpClient'
 import { ChatGpt } from './ChatGpt.ts'
 
 /**
- * Provides ChatGptLanguageModel services with the declared native dependencies.
+ * Provides a native LanguageModel using authorized ChatGPT account transport.
+ *
+ * **Details**
+ *
+ * Preserves structured Prompt history and disables remote response storage. Consumes ChatGpt
+ * and HttpClient and exposes the captured native OpenAI client.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (options: {
   readonly account: string
@@ -40,7 +42,6 @@ export const layer = (options: {
  * Resolves all layer options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,

@@ -1,29 +1,24 @@
 /**
  * Compatibility forwarding paths for concrete provider language models.
- *
- * @since 0.0.0
  */
 /**
- * Forwards the supported public declarations from their owning concept.
+ * Captured native OpenAI models and API-key transport composition.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export { make, layer, layerApiKey, layerApiKeyConfig, layerConfig } from './OpenAiLanguageModel.ts'
 /**
- * Forwards the supported public declarations from their owning concept.
+ * Authenticated ChatGPT Responses clients with semantic terminal-event validation.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export {
   layer as layerChatGptClient,
   layerConfig as layerChatGptClientConfig,
 } from './ChatGptClient.ts'
 /**
- * Forwards the supported public declarations from their owning concept.
+ * ChatGPT account model construction sharing its captured Responses client.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export { layer as layerChatGpt, layerConfig as layerChatGptConfig } from './ChatGptLanguageModel.ts'

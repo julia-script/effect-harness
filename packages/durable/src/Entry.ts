@@ -1,7 +1,5 @@
 /**
  * Schema-derived conversation entry data and typed entry tokens.
- *
- * @since 0.0.0
  */
 import * as Time from '@effect-harness/harness/Time'
 import * as Prompt from 'effect/ai/Prompt'
@@ -14,57 +12,50 @@ import * as Record from './Record.ts'
  * Stored input timestamps are absent on caller-authored and onYield entries.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const UserData = Schema.Struct({ timestamp: Schema.optionalKey(Time.EpochMillis) })
 /**
- * Decoded UserData values.
+ * Optional stored timestamp attached to a user entry.
  *
  * @category models
- * @since 0.0.0
  */
 export type UserData = typeof UserData.Type
 
 /**
- * AssistantData schema.
+ * Schema for optional timestamp and committed generation metadata for an assistant entry.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const AssistantData = Schema.Struct({
   timestamp: Schema.optionalKey(Time.EpochMillis),
   harness: Conversation.Metadata,
 })
 /**
- * Decoded AssistantData values.
+ * Optional timestamp and committed generation metadata for an assistant entry.
  *
  * @category models
- * @since 0.0.0
  */
 export type AssistantData = typeof AssistantData.Type
 
 /**
- * SystemData schema.
+ * Schema for managed system-section and tool-declaration patch recorded in history.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const SystemData = Schema.Struct({
   harness: Schema.Struct({ system: Conversation.SystemPatch }),
 })
 /**
- * Decoded SystemData values.
+ * Managed system-section and tool-declaration patch recorded in history.
  *
  * @category models
- * @since 0.0.0
  */
 export type SystemData = typeof SystemData.Type
 
 /**
- * Durable execution metadata includes both executed and immediately unavailable calls.
+ * Schema for timestamp, call identity and encoded execution result of a settled tool.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ToolResultData = Schema.Struct({
   timestamp: Time.EpochMillis,
@@ -74,27 +65,24 @@ export const ToolResultData = Schema.Struct({
   execution: Schema.toCodecJson(Tool.Execution),
 })
 /**
- * Decoded ToolResultData values.
+ * Timestamp, call identity and encoded execution result of a settled tool.
  *
  * @category models
- * @since 0.0.0
  */
 export type ToolResultData = typeof ToolResultData.Type
 
 /**
- * CompactionData schema.
+ * Schema for manual, threshold or overflow reason recorded with a compaction entry.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const CompactionData = Schema.Struct({
   reason: Schema.Literals(['manual', 'threshold', 'overflow']),
 })
 /**
- * Decoded CompactionData values.
+ * Manual, threshold or overflow reason recorded with a compaction entry.
  *
  * @category models
- * @since 0.0.0
  */
 export type CompactionData = typeof CompactionData.Type
 
@@ -106,10 +94,19 @@ const token = <K extends string, S extends Schema.Top>(
 const user = Schema.Tuple([Schema.toCodecJson(Prompt.UserMessage)])
 
 /**
- * UserEntry schema.
+ * Typed token for user-message entries.
  *
- * @category schemas
- * @since 0.0.0
+ * **Details**
+ *
+ * kind identifies the stored entry family. is checks identity only; decode validates stored
+ * data and native model content before exposing decoded values.
+ *
+ * **Gotchas**
+ *
+ * Use decode at a persisted or external data boundary; an identity match does not validate
+ * an entry’s payload.
+ *
+ * @category models
  */
 export const UserEntry = token(
   'harness.user',
@@ -121,10 +118,19 @@ export const UserEntry = token(
   }),
 )
 /**
- * AssistantEntry schema.
+ * Typed token for assistant-response entries.
  *
- * @category schemas
- * @since 0.0.0
+ * **Details**
+ *
+ * kind identifies the stored entry family. is checks identity only; decode validates stored
+ * data and native model content before exposing decoded values.
+ *
+ * **Gotchas**
+ *
+ * Use decode at a persisted or external data boundary; an identity match does not validate
+ * an entry’s payload.
+ *
+ * @category models
  */
 export const AssistantEntry = token(
   'harness.assistant',
@@ -136,10 +142,19 @@ export const AssistantEntry = token(
   }),
 )
 /**
- * SystemEntry schema.
+ * Typed token for managed system-patch entries.
  *
- * @category schemas
- * @since 0.0.0
+ * **Details**
+ *
+ * kind identifies the stored entry family. is checks identity only; decode validates stored
+ * data and native model content before exposing decoded values.
+ *
+ * **Gotchas**
+ *
+ * Use decode at a persisted or external data boundary; an identity match does not validate
+ * an entry’s payload.
+ *
+ * @category models
  */
 export const SystemEntry = token(
   'harness.system',
@@ -151,10 +166,19 @@ export const SystemEntry = token(
   }),
 )
 /**
- * ToolResultEntry schema.
+ * Typed token for committed tool-result entries.
  *
- * @category schemas
- * @since 0.0.0
+ * **Details**
+ *
+ * kind identifies the stored entry family. is checks identity only; decode validates stored
+ * data and native model content before exposing decoded values.
+ *
+ * **Gotchas**
+ *
+ * Use decode at a persisted or external data boundary; an identity match does not validate
+ * an entry’s payload.
+ *
+ * @category models
  */
 export const ToolResultEntry = token(
   'harness.tool',
@@ -166,10 +190,19 @@ export const ToolResultEntry = token(
   }),
 )
 /**
- * ResetEntry schema.
+ * Typed token for reset entries establishing a new active context head.
  *
- * @category schemas
- * @since 0.0.0
+ * **Details**
+ *
+ * kind identifies the stored entry family. is checks identity only; decode validates stored
+ * data and native model content before exposing decoded values.
+ *
+ * **Gotchas**
+ *
+ * Use decode at a persisted or external data boundary; an identity match does not validate
+ * an entry’s payload.
+ *
+ * @category models
  */
 export const ResetEntry = token(
   'harness.reset',
@@ -181,10 +214,19 @@ export const ResetEntry = token(
   }).check(Schema.makeFilter((entry) => entry.head === entry.id)),
 )
 /**
- * CompactionEntry schema.
+ * Typed token for summary entries establishing a compaction boundary.
  *
- * @category schemas
- * @since 0.0.0
+ * **Details**
+ *
+ * kind identifies the stored entry family. is checks identity only; decode validates stored
+ * data and native model content before exposing decoded values.
+ *
+ * **Gotchas**
+ *
+ * Use decode at a persisted or external data boundary; an identity match does not validate
+ * an entry’s payload.
+ *
+ * @category models
  */
 export const CompactionEntry = token(
   'harness.compaction',

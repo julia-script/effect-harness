@@ -1,7 +1,5 @@
 /**
  * Persisted model and tool accounting documents.
- *
- * @since 0.0.0
  */
 import { constTrue } from 'effect/Function'
 import type { StorageError } from './StorageError.ts'
@@ -16,7 +14,6 @@ import type * as Session from './Session.ts'
  * Conversation accounting document definition.
  *
  * @category models
- * @since 0.0.0
  */
 export const UsageDoc = Document.defineUnsafe({
   kind: 'harness.usage',
@@ -33,7 +30,6 @@ export const UsageDoc = Document.defineUnsafe({
  * Records one usage increment in the conversation ledger.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const record = Effect.fnUntraced(function* (
   tx: Session.Transaction,
@@ -53,7 +49,6 @@ export const record = Effect.fnUntraced(function* (
  * Includes only each conversation's own ledger; inherited transcript entries are never counted again.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const sessionTotals = Effect.fnUntraced(function* (
   session: Session.Service,

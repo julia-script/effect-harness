@@ -1,12 +1,9 @@
 /**
  * Compatibility forwarding paths for concrete provider language models.
- *
- * @since 0.0.0
  */
 /**
- * Forwards the supported public declarations from their owning concept.
+ * Claude Code language models with scoped transport and intent-session ownership.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export * from './ClaudeCodeLanguageModel.ts'

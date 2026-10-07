@@ -1,7 +1,5 @@
 /**
  * Portable scoped file, directory, watch and process capabilities.
- *
- * @since 0.0.0
  */
 import { constant } from 'effect/Function'
 import * as Pipeable from 'effect/Pipeable'
@@ -32,34 +30,40 @@ import * as watch from './env/internal/watch.ts'
 import { FileError, FileInvalid, fileReason } from './FileError.ts'
 import { ExecutionError } from './ExecutionError.ts'
 /**
- * @since 0.0.0
+ * Semantic file operation failures with retained native causes and paths.
+ *
+ * @category re-exports
  */
 export * from './FileError.ts'
 /**
- * @since 0.0.0
+ * Semantic process execution failures with retained native causes and spill metadata.
+ *
+ * @category re-exports
  */
 export * from './ExecutionError.ts'
 
 /**
- * Env file info contract.
+ * File metadata returned by environment readers and directory scans.
  *
  * @category models
- * @since 0.0.0
  */
 export interface FileInfo {
   readonly name: string
   readonly path: string
   readonly kind: 'file' | 'directory' | 'symlink'
   readonly size: number
+  /**
+   * File modification instant as DateTime.Utc, preserving fractional epoch-millisecond
+   * precision.
+   */
   readonly mtimeMs: DateTime.Utc
   /** Native identity used by watch snapshots; adapters without stable identities may omit it. */
   readonly identity?: string | undefined
 }
 /**
- * Env line scan contract.
+ * Byte offsets and newline counts for a requested text window.
  *
  * @category models
- * @since 0.0.0
  */
 export interface LineScan {
   readonly newlines: number
@@ -72,10 +76,9 @@ export interface LineScan {
 }
 const BinaryReaderTypeId = '~@effect-harness/harness/Env/BinaryReader'
 /**
- * Env binary reader contract.
+ * Scoped random-access file reader and line-window scanner.
  *
  * @category models
- * @since 0.0.0
  */
 export interface BinaryReader extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [BinaryReaderTypeId]: typeof BinaryReaderTypeId
@@ -90,7 +93,6 @@ export interface BinaryReader extends Pipeable.Pipeable, Inspectable.Inspectable
  * Attaches handle identity without evaluating or changing capability getters.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeBinaryReader = (
   input: Omit<
@@ -107,19 +109,21 @@ export const makeBinaryReader = (
   return handle
 }
 /**
- * Checks whether an unknown value satisfies the BinaryReader contract.
+ * Checks whether a value carries the nominal `BinaryReader` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isBinaryReader = (u: unknown): u is BinaryReader =>
   Predicate.hasProperty(u, BinaryReaderTypeId)
 
 /**
- * Env text line contract.
+ * Decoded line and whether it ended with a line terminator.
  *
  * @category models
- * @since 0.0.0
  */
 export interface TextLine {
   readonly text: string
@@ -127,20 +131,31 @@ export interface TextLine {
 }
 const TextLineReaderTypeId = '~@effect-harness/harness/Env/TextLineReader'
 /**
- * Env text line reader contract.
+ * Scoped sequential reader returning decoded lines until Option.none.
+ *
+ * **Details**
+ *
+ * Each line records whether it was terminated. End-of-input is a successful None; read
+ * failures remain FileError.
+ *
+ * **Gotchas**
+ *
+ * Acquire and consume in the same owning Scope. Do not treat a read failure as end-of-input.
  *
  * @category models
- * @since 0.0.0
  */
 export interface TextLineReader extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [TextLineReaderTypeId]: typeof TextLineReaderTypeId
+  /**
+   * Reads the next decoded line; successful None marks end-of-input, while FileError remains a
+   * failure.
+   */
   readonly readLine: Effect.Effect<Option.Option<TextLine>, FileError>
 }
 /**
  * Attaches handle identity without evaluating or changing capability getters.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeTextLineReader = (
   input: Omit<
@@ -157,20 +172,22 @@ export const makeTextLineReader = (
   return handle
 }
 /**
- * Checks whether an unknown value satisfies the TextLineReader contract.
+ * Checks whether a value carries the nominal `TextLineReader` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isTextLineReader = (u: unknown): u is TextLineReader =>
   Predicate.hasProperty(u, TextLineReaderTypeId)
 
 const DirReaderTypeId = '~@effect-harness/harness/Env/DirReader'
 /**
- * Env dir reader contract.
+ * Scoped directory reader returning bounded batches.
  *
  * @category models
- * @since 0.0.0
  */
 export interface DirReader extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [DirReaderTypeId]: typeof DirReaderTypeId
@@ -185,7 +202,6 @@ export interface DirReader extends Pipeable.Pipeable, Inspectable.Inspectable {
  * Attaches handle identity without evaluating or changing capability getters.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeDirReader = (
   input: Omit<
@@ -199,18 +215,20 @@ export const makeDirReader = (
   return handle
 }
 /**
- * Checks whether an unknown value satisfies the DirReader contract.
+ * Checks whether a value carries the nominal `DirReader` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isDirReader = (u: unknown): u is DirReader => Predicate.hasProperty(u, DirReaderTypeId)
 
 /**
- * Env watch target contract.
+ * Directory path, recursion and exclusions for environment watching.
  *
  * @category models
- * @since 0.0.0
  */
 export interface WatchTarget {
   readonly path: string
@@ -220,10 +238,9 @@ export interface WatchTarget {
     | undefined
 }
 /**
- * Env watch change contract.
+ * Changed paths, overflow or watcher error delivered by a watch stream.
  *
  * @category models
- * @since 0.0.0
  */
 export type WatchChange = Data.TaggedEnum<{
   Paths: { readonly paths: ReadonlyArray<string> }
@@ -234,26 +251,26 @@ export type WatchChange = Data.TaggedEnum<{
  * Constructors and matchers for path changes, coverage overflow and terminal watch failures.
  *
  * @category constants
- * @since 0.0.0
  */
 export const WatchChange = Data.taggedEnum<WatchChange>()
 const WatcherTypeId = '~@effect-harness/harness/Env/Watcher'
 /**
- * Env watcher contract.
+ * Scoped native or polling stream of environment changes.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Watcher extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [WatcherTypeId]: typeof WatcherTypeId
   readonly mode: 'native' | 'polling'
+  /**
+   * Single-consumer stream of watcher changes owned by the consumption Scope.
+   */
   readonly changes: Stream.Stream<WatchChange>
 }
 /**
  * Attaches handle identity without evaluating or changing capability getters.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeWatcher = (
   input: Omit<
@@ -267,35 +284,57 @@ export const makeWatcher = (
   return handle
 }
 /**
- * Checks whether an unknown value satisfies the Watcher contract.
+ * Checks whether a value carries the nominal `Watcher` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isWatcher = (u: unknown): u is Watcher => Predicate.hasProperty(u, WatcherTypeId)
 
 /**
- * Env watch options contract.
+ * Backend selection and timing policy for environment watching.
  *
  * @category models
- * @since 0.0.0
  */
 export type WatchOptions = Env.WatchOptions
 /**
- * A single-consumer directory stream; started settles when its native installation succeeds or fails.
+ * Scoped native directory notifications and installation readiness.
+ *
+ * **Details**
+ *
+ * Consuming changes installs the watcher. started reports installation success or failure,
+ * allowing callers to await readiness before mutating files.
+ *
+ * **Gotchas**
+ *
+ * changes is single-consumer and owned by the consumption Scope. Closing that Scope joins
+ * native producers.
  *
  * @category models
- * @since 0.0.0
  */
 export interface DirectoryNotifications {
+  /**
+   * Single-consumer stream of watcher changes owned by the consumption Scope.
+   */
   readonly changes: Stream.Stream<string | undefined, FileError>
+  /**
+   * Waits for native watcher installation and reports installation failure before callers rely
+   * on notifications.
+   */
   readonly started: Effect.Effect<void, FileError>
 }
 /**
- * Missing native FileSystem capabilities; a remote or platform Layer implements this narrow boundary.
+ * Service supplying native directory watches, lstat and bounded file readers.
+ *
+ * **Details**
+ *
+ * Adapters fill capabilities absent from the generic FileSystem contract. Supply this
+ * service with the native platform filesystem/process Layers at the application boundary.
  *
  * @category services
- * @since 0.0.0
  */
 export class NativeFiles extends Context.Service<
   NativeFiles,
@@ -310,10 +349,9 @@ export class NativeFiles extends Context.Service<
   }
 >()('@effect-harness/harness/Env/NativeFiles') {}
 /**
- * Env shell output info contract.
+ * Output stream identity and metadata for skipped bytes.
  *
  * @category models
- * @since 0.0.0
  */
 export interface ShellOutputInfo {
   readonly stream: 'stdout' | 'stderr'
@@ -322,31 +360,27 @@ export interface ShellOutputInfo {
     | undefined
 }
 /**
- * Env shell output window contract.
+ * Retained stdout/stderr window with bounds and omission metadata.
  *
  * @category models
- * @since 0.0.0
  */
 export type ShellOutputWindow = Env.ShellOutputWindow
 /**
- * Env shell exec options contract.
+ * Command environment, timeout and output-reporting options.
  *
  * @category models
- * @since 0.0.0
  */
 export type ShellExecOptions = Env.ShellExecOptions
 /**
- * Env shell exec result contract.
+ * Exit status and bounded output from a completed shell command.
  *
  * @category models
- * @since 0.0.0
  */
 export type ShellExecResult = Env.ShellExecResult
 /**
- * Env shell configuration contract.
+ * Executable and argument prefix used to launch shell commands.
  *
  * @category models
- * @since 0.0.0
  */
 export interface ShellConfiguration {
   readonly program: string
@@ -354,17 +388,25 @@ export interface ShellConfiguration {
   readonly commandOnStdin?: boolean | undefined
 }
 /**
- * Env options contract.
+ * Environment identity, cwd, home and shell/watch configuration.
  *
  * @category models
- * @since 0.0.0
  */
 export type Options = Env.Options
 /**
- * Service for env capabilities.
+ * Service for bounded file access, shell execution and scoped environment watching.
+ *
+ * **Details**
+ *
+ * Paths resolve against configured cwd/home through the supplied Path service. FileSystem,
+ * ChildProcessSpawner and NativeFiles remain application-owned capabilities.
+ *
+ * **Gotchas**
+ *
+ * An Env is not a filesystem sandbox. The host owns access policy, tool selection and the
+ * lifetime of open readers and watchers.
  *
  * @category services
- * @since 0.0.0
  */
 export class Env extends Context.Service<
   Env,
@@ -472,7 +514,6 @@ const fromPlatformImpl = (self: PlatformError.PlatformError, path?: string): Fil
  * Maps platform reasons and ordered native errno fallbacks to a semantic file failure.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const fromPlatform: {
   (path?: string): (self: PlatformError.PlatformError) => FileError
@@ -482,7 +523,6 @@ export const fromPlatform: {
  * Acquires scoped file, watcher and process capabilities from the injected platform services.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = Effect.fnUntraced(function* (
   options: Options,
@@ -724,10 +764,14 @@ export const make = Effect.fnUntraced(function* (
   })
 })
 /**
- * Layer for Env capabilities.
+ * Provides an Env from the caller’s native filesystem, path, process and file capabilities.
+ *
+ * **Details**
+ *
+ * Normalizes cwd/home and shell/watch configuration for bounded operations. Readers,
+ * watchers and subprocesses remain scoped.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (
   options: Options,
@@ -770,17 +814,15 @@ const WatcherProto = {
 }
 
 /**
- * Type contracts owned by `Env`.
+ * Type-level contracts for `Env`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace Env {
   /**
-   * Env watch options type contract.
+   * Backend selection and timing policy for environment watching.
    *
    * @category models
-   * @since 0.0.0
    */
   interface WatchOptions {
     readonly mode?: 'native' | 'polling' | undefined
@@ -788,10 +830,9 @@ export declare namespace Env {
     readonly directoryBudget?: number | undefined
   }
   /**
-   * Env shell output window type contract.
+   * Retained stdout/stderr window with bounds and omission metadata.
    *
    * @category models
-   * @since 0.0.0
    */
   interface ShellOutputWindow {
     readonly maxBytes: number
@@ -800,10 +841,9 @@ export declare namespace Env {
     readonly bytesPerSecond: number
   }
   /**
-   * Env shell exec options type contract.
+   * Command environment, timeout and output-reporting options.
    *
    * @category models
-   * @since 0.0.0
    */
   interface ShellExecOptions {
     readonly cwd?: string | undefined
@@ -818,10 +858,9 @@ export declare namespace Env {
     readonly window?: ShellOutputWindow | undefined
   }
   /**
-   * Env shell exec result type contract.
+   * Exit status and bounded output from a completed shell command.
    *
    * @category models
-   * @since 0.0.0
    */
   interface ShellExecResult {
     readonly exitCode: number
@@ -831,7 +870,6 @@ export declare namespace Env {
    * Configuration accepted by Env.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Options {
     readonly id: string

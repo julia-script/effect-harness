@@ -1,7 +1,5 @@
 /**
  * Native generation, deferred polling and tool-round orchestration.
- *
- * @since 0.0.0
  */
 import { tagged } from '../internal/legacyTag.ts'
 import * as Arr from 'effect/Array'
@@ -128,7 +126,6 @@ const domainError = (error: import('../StorageError.ts').StorageError | Executio
  * convertPartial schema.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const convertPartial = Effect.fnUntraced(function* (
   tx: Session.Transaction,
@@ -197,7 +194,6 @@ const appendAssistant = Effect.fnUntraced(function* (
  * Ordinary native Workflow orchestration; named Activities own request replay and domain commits.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<
   never,

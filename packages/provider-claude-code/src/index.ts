@@ -1,50 +1,70 @@
 /**
  * Public concept namespaces for this package.
- *
- * @since 0.0.0
  */
 // @barrel
 /**
- * @since 0.0.0
+ * Validated model catalogues with pinned request configuration and usage accounting.
+ *
+ * @category re-exports
  */
 export * as Catalog from './Catalog.ts'
 /**
- * @since 0.0.0
+ * Semantic native AI error mappings for the Claude Code provider.
+ *
+ * @category re-exports
  */
 export * as ClaudeCodeError from './ClaudeCodeError.ts'
 /**
- * @since 0.0.0
+ * Claude Code language models with scoped transport and intent-session ownership.
+ *
+ * @category re-exports
  */
 export * as ClaudeCodeLanguageModel from './ClaudeCodeLanguageModel.ts'
 /**
- * @since 0.0.0
+ * Scoped Claude Code child-process transport and account admission policy.
+ *
+ * @category re-exports
  */
 export * as Cli from './Cli.ts'
 /**
- * @since 0.0.0
+ * Compatibility forwarding path for the Claude Code error concept.
+ *
+ * @category re-exports
  */
 export * as Error from './Error.ts'
 /**
- * @since 0.0.0
+ * Scoped intent-only MCP sessions with tool execution blocked at the provider boundary.
+ *
+ * @category re-exports
  */
 export * as IntentServer from './IntentServer.ts'
 /**
- * @since 0.0.0
+ * Compatibility forwarding paths for concrete provider language models.
+ *
+ * @category re-exports
  */
 export * as LanguageModel from './LanguageModel.ts'
 /**
- * @since 0.0.0
+ * Provider prompt projections that retain native message roles and opaque protocol data.
+ *
+ * @category re-exports
  */
 export * as Prompt from './Prompt.ts'
 /**
- * @since 0.0.0
+ * Validated Claude Code protocol frames and accounting fields.
+ *
+ * @category re-exports
  */
 export * as Protocol from './Protocol.ts'
 /**
- * @since 0.0.0
+ * Request-local Claude Code model, session and inference controls.
+ *
+ * @category re-exports
  */
 export * as RequestOptions from './RequestOptions.ts'
 /**
- * @since 0.0.0
+ * Ordered Claude Code stream translation and completed-turn collection.
+ *
+ * @category re-exports
  */
 export * as Turn from './Turn.ts'

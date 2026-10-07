@@ -31,7 +31,6 @@ import * as LineScan from '../env/LineScan.ts'
  * Maps a caught native filesystem error while preserving its path and cause.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function fileError(error: unknown, path: string): FileError {
   if (error instanceof FileError) return error
@@ -96,7 +95,6 @@ const io = <A>(path: string, operation: () => Promise<A>): Effect.Effect<A, File
  * Layer for NodeNativeFiles native capabilities.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerNative: Layer.Layer<NativeFiles> = Layer.succeed(
   NativeFiles,

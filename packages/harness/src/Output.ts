@@ -1,7 +1,5 @@
 /**
  * Incremental output retention with exact UTF-8 limits and UTF-16 deltas.
- *
- * @since 0.0.0
  */
 import * as Pipeable from 'effect/Pipeable'
 import * as Inspectable from 'effect/Inspectable'
@@ -18,7 +16,6 @@ import { OutputError, OutputFailure } from './OutputError.ts'
  * Retention limits of one tool's output.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Limits = Schema.Struct({
   maxBytes: Schema.Natural,
@@ -26,24 +23,21 @@ export const Limits = Schema.Struct({
   retain: Schema.Literals(['head', 'tail']),
 })
 /**
- * Output limits contract.
+ * Byte, line and retention policy for model-visible tool output.
  *
  * @category models
- * @since 0.0.0
  */
 export type Limits = typeof Limits.Type
 /**
- * Output output limits contract.
+ * Normalized output policy with explicit byte and line bounds.
  *
  * @category models
- * @since 0.0.0
  */
 export type OutputLimits = Limits
 /**
  * Default head-retention limits of 50 KiB and 2000 lines.
  *
  * @category constants
- * @since 0.0.0
  */
 export const defaults: OutputLimits = { maxBytes: 50 * 1024, maxLines: 2000, retain: 'head' }
 
@@ -51,7 +45,6 @@ export const defaults: OutputLimits = { maxBytes: 50 * 1024, maxLines: 2000, ret
  * Retained output and what the limits dropped.
  *
  * @category models
- * @since 0.0.0
  */
 export interface BoundedOutput {
   readonly text: string
@@ -63,7 +56,6 @@ export interface BoundedOutput {
  * An exact slice of the input within the limits, and what it left out.
  *
  * @category models
- * @since 0.0.0
  */
 export interface OutputSlice {
   readonly text: string
@@ -82,7 +74,6 @@ const decoder = new TextDecoder('utf-8', { ignoreBOM: true })
  * Removes control characters that break display and transcripts; tabs and newlines stay.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function sanitizeOutput(self: string): string {
   return Array.from(self)
@@ -113,7 +104,6 @@ function boundOutputImpl(self: string, limits: OutputLimits): OutputSlice {
  * Returns an exact whole-line slice within UTF-8 byte and line limits.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const boundOutput: {
   (limits: OutputLimits): (self: string) => OutputSlice
@@ -174,7 +164,6 @@ function characterEndImpl(bytes: Uint8Array, index: number): number {
  * Finds a UTF-8 character boundary at or before a byte offset.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const characterEnd: {
   (index: number): (self: Uint8Array) => number
@@ -199,10 +188,9 @@ function lineCount(bytes: Uint8Array): number {
 /** Data owned by one invocation; sibling functions manage its incremental decoder and retention window. */
 const TypeId = '~@effect-harness/harness/Output'
 /**
- * Output buffer contract.
+ * Incremental bounded output buffer.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Buffer extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [TypeId]: typeof TypeId
@@ -218,10 +206,9 @@ export interface Buffer extends Pipeable.Pipeable, Inspectable.Inspectable {
   endsWithNewline: boolean
 }
 /**
- * Output skip contract.
+ * Metadata describing output omitted before a retained window.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Skip {
   readonly bytes: number
@@ -229,17 +216,19 @@ export interface Skip {
   readonly endsWithNewline: boolean
 }
 /**
- * Checks whether an unknown value satisfies the Buffer contract.
+ * Checks whether a value carries the nominal `Buffer` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isBuffer = (u: unknown): u is Buffer => Predicate.hasProperty(u, TypeId)
 /**
  * Creates a fresh mutable buffer, cloning chunk storage and preserving other capability accessors.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeBuffer = (
   input: Omit<Buffer, typeof TypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable>,
@@ -273,7 +262,6 @@ export const makeBuffer = (
  * Creates an empty mutable UTF-8 output buffer with the supplied retention limits.
  *
  * @category constructors
- * @since 0.0.0
  */
 export function make(limits: OutputLimits = defaults): Buffer {
   return makeBuffer({
@@ -297,7 +285,6 @@ export function make(limits: OutputLimits = defaults): Buffer {
  * Only a BOM at the stream's very start is removed.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const push = (
   self: Buffer,
@@ -342,7 +329,6 @@ const pushUnsafe = (self: Buffer, chunk: string | Uint8Array, skipped?: Skip): b
  * Flushes incremental decoding synchronously; native decoder and accessor faults can throw.
  *
  * @category unsafe
- * @since 0.0.0
  */
 export function endUnsafe(self: Buffer): void {
   accept(self, self.decoder.decode())
@@ -380,7 +366,6 @@ function accept(self: Buffer, text: string): boolean {
  * Snapshot cadence never changes the retained tail; raw byte counts include later-sanitized controls.
  *
  * @category unsafe
- * @since 0.0.0
  */
 export function snapshotUnsafe(self: Buffer): BoundedOutput {
   const stored = self.chunks.map((chunk) => chunk.text).join('')
@@ -437,10 +422,9 @@ function countNewlines(self: string): number {
 }
 
 /**
- * Output delta contract.
+ * Append or replacement needed to update an output projection.
  *
  * @category models
- * @since 0.0.0
  */
 export type Delta = Data.TaggedEnum<{
   append: { readonly trimStart: number; readonly text: string }
@@ -450,7 +434,6 @@ export type Delta = Data.TaggedEnum<{
  * Constructors and matchers for incremental UTF-16 output changes.
  *
  * @category constants
- * @since 0.0.0
  */
 export const Delta = Data.taggedEnum<Delta>()
 /** Longest suffix/prefix overlap, with bounded work and a whole-value fallback. UTF-16 offsets suit JS text clients. */
@@ -466,7 +449,6 @@ function deltaImpl(self: string, that: string, maxScan = 65536): Delta {
  * Returns incremental changes between the previous and current values.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const delta: {
   (that: string, maxScan?: number): (self: string) => Delta
@@ -482,10 +464,9 @@ type WindowState = Readonly<Omit<Buffer, 'decoder' | 'chunks' | typeof TypeId>> 
   }>
 }
 /**
- * Output window contract.
+ * Incremental bounded window that tracks output changes.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Window {
   readonly push: (chunk: string | Uint8Array, skipped?: Skip) => Effect.Effect<boolean, OutputError>
@@ -497,7 +478,6 @@ export interface Window {
  * Creates a serialized output window whose commands share one decoder and retention state.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeWindow = Effect.fnUntraced(function* (
   limits: OutputLimits = defaults,
@@ -545,10 +525,14 @@ export const makeWindow = Effect.fnUntraced(function* (
 })
 
 /**
- * Checks whether an unknown value satisfies the OutputLimits contract.
+ * Checks whether a value satisfies the decoded `Limits` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isOutputLimits: (u: unknown) => u is Limits = Schema.is(Limits)
 
@@ -556,7 +540,6 @@ export const isOutputLimits: (u: unknown) => u is Limits = Schema.is(Limits)
  * Flushes incremental decoding through the typed output error boundary.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const end = (self: Buffer): Effect.Effect<void, OutputError> =>
   Effect.try({
@@ -570,7 +553,6 @@ export const end = (self: Buffer): Effect.Effect<void, OutputError> =>
  * Returns a typed snapshot of retained output and its dropped counts.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const snapshot = (self: Buffer): Effect.Effect<BoundedOutput, OutputError> =>
   Effect.try({

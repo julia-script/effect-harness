@@ -1,7 +1,5 @@
 /**
  * Scoped storage conformance runner.
- *
- * @since 0.0.0
  */
 import { identity } from 'effect/Function'
 import type * as Types from 'effect/Types'
@@ -14,10 +12,9 @@ import { withStorage, type Assertions } from './Storage.ts'
 
 const RunnerTypeId = '~@effect-harness/durable/testing/Runner'
 /**
- * Runner contract.
+ * Test registration functions used to install conformance cases.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Runner<in E, in R> {
   readonly [RunnerTypeId]: {
@@ -31,7 +28,6 @@ export interface Runner<in E, in R> {
  * Registers conformance with Effect-native runners; every case owns a fresh scoped Layer.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const registerStorageConformance = <E, R>(
   runner: Runner<E, R>,
@@ -49,7 +45,6 @@ export const registerStorageConformance = <E, R>(
  * Creates a scoped storage conformance runner.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeRunner = <E, R>(input: Omit<Runner<E, R>, typeof RunnerTypeId>): Runner<E, R> => {
   const runner: Runner<E, R> = { ...input, [RunnerTypeId]: { _E: identity, _R: identity } }

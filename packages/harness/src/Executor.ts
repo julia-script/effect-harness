@@ -1,7 +1,5 @@
 /**
  * Native model and tool execution with admitted progress settlement.
- *
- * @since 0.0.0
  */
 import * as Result from 'effect/Result'
 import * as Record from 'effect/Record'
@@ -59,10 +57,9 @@ import * as Json from './Json.ts'
 import { EntryId } from './Identity.ts'
 
 /**
- * Schema for request.
+ * Schema for pinned model reference, native prompt, options and offered tool declarations.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Request = Schema.Struct({
   model: Agent.ModelRef,
@@ -72,24 +69,21 @@ export const Request = Schema.Struct({
   tail: SchemaField.optional(EntryId),
 })
 /**
- * Executor request contract.
+ * Pinned model reference, native prompt, options and offered tool declarations.
  *
  * @category models
- * @since 0.0.0
  */
 export type Request = typeof Request.Type
 /**
- * Executor preparation contract.
+ * Prepared request and resolved registry/model inputs.
  *
  * @category models
- * @since 0.0.0
  */
 export type Preparation = Executor.Preparation
 /**
- * Schema for summary request.
+ * Schema for pinned compaction request with the history cut and retry attempt.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const SummaryRequest = Schema.Struct({
   request: Request,
@@ -98,31 +92,27 @@ export const SummaryRequest = Schema.Struct({
   attempt: Schema.Int,
 })
 /**
- * Executor summary request contract.
+ * Pinned compaction request with the history cut and retry attempt.
  *
  * @category models
- * @since 0.0.0
  */
 export type SummaryRequest = typeof SummaryRequest.Type
 /**
- * Schema for summary.
+ * Schema for compaction summary text and usage reported by the model.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Summary = Schema.Struct({ summary: Schema.String, usage: Usage.Usage })
 /**
- * Executor summary contract.
+ * Compaction summary text and usage reported by the model.
  *
  * @category models
- * @since 0.0.0
  */
 export type Summary = typeof Summary.Type
 /**
- * Executor compaction preparation contract.
+ * Decision to skip compaction, use a supplied summary or request one.
  *
  * @category models
- * @since 0.0.0
  */
 export type CompactionPreparation = Data.TaggedEnum<{
   none: {}
@@ -133,35 +123,30 @@ export type CompactionPreparation = Data.TaggedEnum<{
  * Constructors and matchers for declined, completed and requested compaction.
  *
  * @category constants
- * @since 0.0.0
  */
 export const CompactionPreparation = Data.taggedEnum<CompactionPreparation>()
 /**
- * Executor part contract.
+ * Encoded native AI response part emitted by a model stream.
  *
  * @category models
- * @since 0.0.0
  */
 export type Part = Response.StreamPart<Record<string, AiTool.Any>, 'encoded'>
 /**
- * Executor prepare input contract.
+ * Conversation context, agent overrides and policy used to prepare a request.
  *
  * @category models
- * @since 0.0.0
  */
 export type PrepareInput = Executor.PrepareInput
 /**
- * Executor tool options contract.
+ * Invocation policy and callbacks supplied to a bound tool execution.
  *
  * @category models
- * @since 0.0.0
  */
 export type ToolOptions = Executor.ToolOptions
 /**
- * Executor compact input contract.
+ * Context and compaction policy used to choose and prepare a summary.
  *
  * @category models
- * @since 0.0.0
  */
 export type CompactInput = Executor.CompactInput
 const Call = Schema.Struct({
@@ -206,7 +191,6 @@ const DispositionDomain = Schema.Union([
  * Codec for tagged execution dispositions with the legacy type discriminator on the wire.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Disposition = DispositionWire.pipe(
   Schema.decodeTo(
@@ -262,18 +246,31 @@ export const Disposition = DispositionWire.pipe(
   ),
 )
 /**
- * Executor disposition contract.
+ * Tool-driven decision to continue, terminate, reset or extend available tools.
  *
  * @category models
- * @since 0.0.0
  */
 export type Disposition = typeof Disposition.Type
 
 /**
- * Service for executor capabilities.
+ * Service preparing model requests and executing registered tools.
+ *
+ * **When to use**
+ *
+ * Use when you need model/tool execution without durable domain storage.
+ *
+ * **Details**
+ *
+ * Consumes Registry and Model.Catalog. Prepared requests pin model reference, prompt and
+ * options; native LanguageModels handle streaming. Durable executor Layers add saved
+ * receipts and ownership.
+ *
+ * **Gotchas**
+ *
+ * Undeclared tool-call settlement requires the workspace’s Effect AI patch. External actions
+ * still need an explicit replay policy at a durable boundary.
  *
  * @category services
- * @since 0.0.0
  */
 export class Executor extends Context.Service<
   Executor,
@@ -359,10 +356,15 @@ function definitions(
   }
 }
 /**
- * Layer for Executor capabilities.
+ * Provides request preparation, streaming and tool execution from Registry and
+ * Model.Catalog.
+ *
+ * **Details**
+ *
+ * Host dependencies are captured when the Layer is built. Request-local Invocation and
+ * ToolCall services remain supplied by the caller.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catalog> = Layer.effect(
   Executor,
@@ -1002,49 +1004,63 @@ function noToolCall(id: string): ToolCall['Service'] {
 }
 
 /**
- * Checks whether an unknown value satisfies the Request contract.
+ * Checks whether a value satisfies the decoded `Request` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isRequest: (u: unknown) => u is Request = Schema.is(Request)
 
 /**
- * Checks whether an unknown value satisfies the SummaryRequest contract.
+ * Checks whether a value satisfies the decoded `SummaryRequest` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isSummaryRequest: (u: unknown) => u is SummaryRequest = Schema.is(SummaryRequest)
 
 /**
- * Checks whether an unknown value satisfies the Summary contract.
+ * Checks whether a value satisfies the decoded `Summary` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isSummary: (u: unknown) => u is Summary = Schema.is(Summary)
 
 /**
- * Checks whether an unknown value satisfies the Disposition contract.
+ * Checks whether a value satisfies the decoded `Disposition` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isDisposition: (u: unknown) => u is Disposition = Schema.is(Disposition)
 
 /**
- * Type contracts owned by `Executor`.
+ * Type-level contracts for `Executor`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace Executor {
   /**
-   * Executor preparation type contract.
+   * Prepared request and resolved registry/model inputs.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Preparation {
     readonly request: Request
@@ -1052,10 +1068,9 @@ export declare namespace Executor {
     readonly plan: ReturnType<typeof Prompt.plan>
   }
   /**
-   * Executor prepare input type contract.
+   * Conversation context, agent overrides and policy used to prepare a request.
    *
    * @category models
-   * @since 0.0.0
    */
   interface PrepareInput {
     readonly state: Agent.State
@@ -1064,10 +1079,9 @@ export declare namespace Executor {
     readonly sessionId?: string | undefined
   }
   /**
-   * Executor tool options type contract.
+   * Invocation policy and callbacks supplied to a bound tool execution.
    *
    * @category models
-   * @since 0.0.0
    */
   interface ToolOptions {
     readonly recovering?: boolean | undefined
@@ -1077,10 +1091,9 @@ export declare namespace Executor {
     readonly commit?: ((execution: Tool.Execution) => Effect.Effect<void>) | undefined
   }
   /**
-   * Executor compact input type contract.
+   * Context and compaction policy used to choose and prepare a summary.
    *
    * @category models
-   * @since 0.0.0
    */
   interface CompactInput extends PrepareInput {
     readonly reason: Hook.CompactInput['reason']

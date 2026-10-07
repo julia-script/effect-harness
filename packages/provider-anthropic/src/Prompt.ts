@@ -1,7 +1,5 @@
 /**
  * Provider prompt projections that retain native message roles and opaque protocol data.
- *
- * @since 0.0.0
  */
 import * as Prompt from 'effect/ai/Prompt'
 /**
@@ -9,16 +7,15 @@ import * as Prompt from 'effect/ai/Prompt'
  *
  * **When to use**
  *
- * Use this projection when an application wants leading instructions.
+ * Use when an application wants leading instructions.
  *
  * **Details**
  *
- * Native models handle their own history capabilities. Keeping each original
- * block preserves provider options, including cache breakpoints, while
- * all user, assistant and tool messages retain their original data and ordering.
+ * Keeps each original block and its provider options, including cache breakpoints. User,
+ * assistant and tool messages retain their data and relative order. Native models still
+ * decide which history features they support.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function normalize(self: Prompt.Prompt): Prompt.Prompt {
   return Prompt.fromMessages([
@@ -28,9 +25,8 @@ export function normalize(self: Prompt.Prompt): Prompt.Prompt {
 }
 
 /**
- * Forwards the supported public declarations from their owning concept.
+ * Captured native Anthropic models and API-key transport composition.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export { make, layer, layerConfig } from './AnthropicLanguageModel.ts'

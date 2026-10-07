@@ -1,7 +1,5 @@
 /**
  * Executable extension declarations and prompt-section callbacks.
- *
- * @since 0.0.0
  */
 import { identity } from 'effect/Function'
 import type { HookError } from './HookError.ts'
@@ -12,31 +10,27 @@ import type { Invocation } from './Invocation.ts'
 import type * as Tool from './Tool.ts'
 
 /**
- * Extension prompt input contract.
+ * Conversation and agent inputs supplied to an extension prompt section.
  *
  * @category models
- * @since 0.0.0
  */
 export type PromptInput = Extension.PromptInput
 /**
- * Extension section contract.
+ * Named prompt section with effectful rendering.
  *
  * @category models
- * @since 0.0.0
  */
 export type Section = Extension.Section
 /**
- * Extension tool wrap contract.
+ * Wrapper around a registered tool invocation.
  *
  * @category models
- * @since 0.0.0
  */
 export type ToolWrap = Extension.ToolWrap
 /**
- * Extension section wrap contract.
+ * Wrapper around a prompt section renderer.
  *
  * @category models
- * @since 0.0.0
  */
 export type SectionWrap = Extension.SectionWrap
 /**
@@ -47,7 +41,6 @@ export type SectionWrap = Extension.SectionWrap
  * Build callbacks within Layers to capture services.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Extension {
   readonly name: string
@@ -61,22 +54,19 @@ export interface Extension {
  * Returns the executable extension declaration with its inferred callback requirements.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = identity<Extension>
 
 /**
- * Type contracts owned by `Extension`.
+ * Type-level contracts for `Extension`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace Extension {
   /**
-   * Extension prompt input type contract.
+   * Conversation and agent inputs supplied to an extension prompt section.
    *
    * @category models
-   * @since 0.0.0
    */
   interface PromptInput {
     readonly view: Context.View
@@ -84,10 +74,9 @@ export declare namespace Extension {
     readonly cwd: string
   }
   /**
-   * Extension section type contract.
+   * Named prompt section with effectful rendering.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Section {
     readonly key: string
@@ -97,10 +86,9 @@ export declare namespace Extension {
     ) => Effect.Effect<string | undefined, HookError, Invocation>
   }
   /**
-   * Extension tool wrap type contract.
+   * Wrapper around a registered tool invocation.
    *
    * @category models
-   * @since 0.0.0
    */
   interface ToolWrap {
     readonly name: string
@@ -109,10 +97,9 @@ export declare namespace Extension {
     ) => Effect.Effect<Tool.Registration, HookError, Invocation>
   }
   /**
-   * Extension section wrap type contract.
+   * Wrapper around a prompt section renderer.
    *
    * @category models
-   * @since 0.0.0
    */
   interface SectionWrap {
     readonly key: string

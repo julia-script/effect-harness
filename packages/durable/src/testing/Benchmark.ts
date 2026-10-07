@@ -1,7 +1,5 @@
 /**
  * Deterministic storage workloads and benchmark reports.
- *
- * @since 0.0.0
  */
 import { constant } from 'effect/Function'
 import * as Option from 'effect/Option'
@@ -14,10 +12,9 @@ import { Store } from '../Store.ts'
 import { rejected, type StorageError } from '../StorageError.ts'
 
 /**
- * Scale contract.
+ * Named counts of entries, tasks and documents in a deterministic workload.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Scale {
   readonly name: string
@@ -29,7 +26,6 @@ export interface Scale {
  * In-memory benchmark workload sizes.
  *
  * @category models
- * @since 0.0.0
  */
 export const STORAGE_MEMORY_SCALES: ReadonlyArray<Scale> = [
   { name: '1k', entryCount: 1000, taskCount: 200, documentCount: 200 },
@@ -39,7 +35,6 @@ export const STORAGE_MEMORY_SCALES: ReadonlyArray<Scale> = [
  * Timing benchmark workload size.
  *
  * @category models
- * @since 0.0.0
  */
 export const TIMING_SCALE: Scale = {
   name: 'timing',
@@ -49,10 +44,9 @@ export const TIMING_SCALE: Scale = {
 }
 const TAILS = [0, 16, 128, 1024] as const
 /**
- * Dataset contract.
+ * Stable record identities and historical cutoffs used by benchmark cases.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Dataset {
   readonly firstEntryId: Record.EntryId
@@ -70,7 +64,6 @@ export interface Dataset {
  * Returns the number of primary records in a benchmark scale.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const storageBenchmarkPrimaryRecordCount = (scale: Scale): number =>
   1 + scale.entryCount + scale.taskCount + scale.documentCount + TAILS.length + 1 + 8 * 33
@@ -134,7 +127,6 @@ const creation = Effect.fnUntraced(function* (
  * Seeds exact lookups, filtered scans, long replay tails, old bases and deep fork ancestry.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const seedStorageBenchmark = Effect.fnUntraced(function* (
   scale: Scale = TIMING_SCALE,
@@ -251,10 +243,9 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
   }
 })
 /**
- * ReadBenchmark contract.
+ * Named read workload with an observable numeric result and its expected value.
  *
  * @category models
- * @since 0.0.0
  */
 export interface ReadBenchmark {
   readonly name: string
@@ -265,7 +256,6 @@ export interface ReadBenchmark {
  * Committed storage read benchmark definitions.
  *
  * @category models
- * @since 0.0.0
  */
 export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
   {
@@ -403,10 +393,9 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
   },
 ]
 /**
- * WriteBenchmark contract.
+ * Named mutation workload with an observable numeric result and expected value.
  *
  * @category models
- * @since 0.0.0
  */
 export interface WriteBenchmark {
   readonly name: string
@@ -417,7 +406,6 @@ export interface WriteBenchmark {
  * Seeds the controlled records required by a write benchmark.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const seedStorageWriteBenchmark = Session.use((session) =>
   session
@@ -431,7 +419,6 @@ export const seedStorageWriteBenchmark = Session.use((session) =>
  * Transactional storage write benchmark definitions.
  *
  * @category models
- * @since 0.0.0
  */
 export const STORAGE_WRITE_BENCHMARKS: ReadonlyArray<WriteBenchmark> = [
   ...[1, 100].map((count) => ({

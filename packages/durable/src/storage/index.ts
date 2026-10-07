@@ -1,19 +1,23 @@
 /**
  * Platform-neutral storage constructors.
- *
- * @since 0.0.0
  */
 // @barrel
 /**
- * @since 0.0.0
+ * Append-only JSONL storage with recovery and compaction.
+ *
+ * @category re-exports
  */
 export * as JsonlStore from './JsonlStore.ts'
 /**
- * @since 0.0.0
+ * Domain snapshots stored through Effect persistence services.
+ *
+ * @category re-exports
  */
 export * as SnapshotStore from './SnapshotStore.ts'
 
 /**
- * @since 0.0.0
+ * Descriptor-based JSON validation for durable receipt values.
+ *
+ * @category re-exports
  */
 export * as StrictReceiptJson from './StrictReceiptJson.ts'

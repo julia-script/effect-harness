@@ -1,7 +1,5 @@
 /**
  * Scoped physical invocation cancellation and suspension fencing.
- *
- * @since 0.0.0
  */
 import * as Arr from 'effect/Array'
 import { constant, identity } from 'effect/Function'
@@ -28,7 +26,6 @@ import { ExecutionError, InvalidState, Aborted } from './ExecutionError.ts'
  * Owner-local capabilities supplement native engine cancellation without replacing its journal.
  *
  * @category services
- * @since 0.0.0
  */
 export class Cancellation extends Context.Service<
   Cancellation,
@@ -45,10 +42,14 @@ export class Cancellation extends Context.Service<
 >()('@effect-harness/durable/workflow/Cancellation') {}
 
 /**
- * layer service Layer.
+ * Provides scoped registrations for live owned-handler cancellation.
+ *
+ * **Details**
+ *
+ * The service supplements native engine interruption with owner-local callbacks. Closing a
+ * registration’s Scope removes it.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<Cancellation> = Layer.effect(
   Cancellation,
@@ -107,7 +108,6 @@ export const layer: Layer.Layer<Cancellation> = Layer.effect(
  * Commits the complete bottom-up reach before any owner-local cancellation is signalled.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const mark = (
   session: Session.Service,
@@ -134,7 +134,6 @@ export const mark = (
  * Interrupts registered invocations after durable abort admission.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const cancel = Effect.fnUntraced(function* (
   sessionId: Identity.SessionId,
@@ -151,7 +150,6 @@ export const cancel = Effect.fnUntraced(function* (
  * Use inside a native Activity execute effect. Closing requests public native suspension before interrupting the body and joins its resource finalizers; no domain outcome is written here.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const activity = <A, E, R>(
   identity: Ownership.Identity,
@@ -250,7 +248,6 @@ export const activity = <A, E, R>(
  * The Activity guard owns close suspension; abort still joins body finalizers and reports a typed aborted result for the executor's domain settlement. The supplied body uses ordinary Activities; domain receipts protect committed mutations during replay.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const run = <A, E, R>(
   identity: Ownership.Identity,

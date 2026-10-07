@@ -1,7 +1,5 @@
 /**
  * Synchronous assertion adapters for portable environment conformance.
- *
- * @since 0.0.0
  */
 import type { Assertions as EnvAssertions } from './EnvConformance.ts'
 import * as Cause from 'effect/Cause'
@@ -9,31 +7,27 @@ import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 
 /**
- * Assertions expectation contract.
+ * Assertion operations used by adapter conformance cases.
  *
  * @category models
- * @since 0.0.0
  */
 export type Expectation = makeExpectAssertions.Expectation
 /**
- * Assertions expect like contract.
+ * Test-runner expectation factory accepted by the assertion adapter.
  *
  * @category models
- * @since 0.0.0
  */
 export type ExpectLike = makeExpectAssertions.ExpectLike
 /**
- * Assertions conformance assertions contract.
+ * Assertions required by environment adapter conformance cases.
  *
  * @category models
- * @since 0.0.0
  */
 export type ConformanceAssertions = makeExpectAssertions.Assertions
 /**
  * Adapts synchronous assertions without running effects or hiding adapter failures.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeExpectAssertions = (expect: ExpectLike): ConformanceAssertions => ({
   strictEqual: (actual, expected) => expect(actual).toBe(expected),
@@ -51,17 +45,15 @@ export const makeExpectAssertions = (expect: ExpectLike): ConformanceAssertions 
 })
 
 /**
- * Type contracts owned by makeExpectAssertions.
+ * Type-level contracts for `makeExpectAssertions`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace makeExpectAssertions {
   /**
-   * Type contract for makeExpectAssertions.
+   * Assertion operations used by adapter conformance cases.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Expectation {
     readonly toBe: (expected: unknown) => void
@@ -71,17 +63,15 @@ export declare namespace makeExpectAssertions {
     readonly toBeGreaterThan: (expected: number) => void
   }
   /**
-   * Type contract for makeExpectAssertions.
+   * Test-runner expectation factory accepted by the assertion adapter.
    *
    * @category models
-   * @since 0.0.0
    */
   type ExpectLike = (actual: unknown) => Expectation
   /**
-   * Type contract for makeExpectAssertions.
+   * Assertion functions required by shared environment conformance cases.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Assertions extends EnvAssertions {
     readonly deepEqual: (actual: unknown, expected: unknown) => void

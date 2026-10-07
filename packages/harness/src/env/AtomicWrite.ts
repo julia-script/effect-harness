@@ -1,7 +1,5 @@
 /**
  * Atomic native file replacement with canonical destinations and settled writes.
- *
- * @since 0.0.0
  */
 import * as Effect from 'effect/Effect'
 import type * as FileSystem from 'effect/FileSystem'
@@ -16,7 +14,6 @@ import { FileError, fromPlatform, type NativeFiles, FileNotSupported, fileReason
  * Replaces a regular file after its sibling staging file has been written and synced.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const write = Effect.fnUntraced(function* (
   fs: FileSystem.FileSystem,

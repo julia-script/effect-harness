@@ -1,26 +1,34 @@
 /**
  * Storage conformance fixtures, assertions and benchmark runners.
- *
- * @since 0.0.0
  */
 // @barrel
 /**
- * @since 0.0.0
+ * Assertion adapters for storage conformance cases.
+ *
+ * @category re-exports
  */
 export * as Assertions from './Assertions.ts'
 /**
- * @since 0.0.0
+ * Deterministic storage workloads and benchmark reports.
+ *
+ * @category re-exports
  */
 export * as Benchmark from './Benchmark.ts'
 /**
- * @since 0.0.0
+ * Cross-backend durable storage conformance cases.
+ *
+ * @category re-exports
  */
 export * as Conformance from './Conformance.ts'
 /**
- * @since 0.0.0
+ * Scoped storage conformance runner.
+ *
+ * @category re-exports
  */
 export * as Runner from './Runner.ts'
 /**
- * @since 0.0.0
+ * Scoped backend fixtures and conformance case contracts.
+ *
+ * @category re-exports
  */
 export * as Storage from './Storage.ts'

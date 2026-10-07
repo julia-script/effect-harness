@@ -1,7 +1,5 @@
 /**
  * Durable facts, identifiers, journal frames and legacy-compatible codecs.
- *
- * @since 0.0.0
  */
 import { dual } from 'effect/Function'
 import * as handle from './internal/handle.ts'
@@ -18,131 +16,113 @@ import * as Struct from 'effect/Struct'
 import { RequestId } from './Identity.ts'
 import * as Identity from '@effect-harness/harness/Identity'
 /**
- * Canonical conversation identifier schema.
+ * Schema for positive identity of a conversation.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ConversationId = Identity.ConversationId
 /**
- * Canonical entry identifier schema.
+ * Schema for positive identity of a conversation entry.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const EntryId = Identity.EntryId
 /**
- * Canonical conversation identifier schema.
+ * Positive identity of a conversation.
  *
  * @category models
- * @since 0.0.0
  */
 export type ConversationId = typeof ConversationId.Type
 /**
- * Canonical entry identifier schema.
+ * Positive identity of a conversation entry.
  *
  * @category models
- * @since 0.0.0
  */
 export type EntryId = typeof EntryId.Type
 
 const safe = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }))
 /**
- * TaskId schema.
+ * Schema for positive identity of a domain task.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const TaskId = safe.pipe(Schema.brand('@effect-harness/durable/Record/TaskId'))
 /**
- * TaskId contract.
+ * Positive identity of a domain task.
  *
  * @category models
- * @since 0.0.0
  */
 export type TaskId<A = Schema.Json> = typeof TaskId.Type & { readonly __result?: A | undefined }
 /**
- * SubmissionId schema.
+ * Schema for positive identity of an admitted input or passive write.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const SubmissionId = safe.pipe(Schema.brand('@effect-harness/durable/Record/SubmissionId'))
 /**
- * SubmissionId contract.
+ * Positive identity of an admitted input or passive write.
  *
  * @category models
- * @since 0.0.0
  */
 export type SubmissionId = typeof SubmissionId.Type
 /**
- * DocumentId schema.
+ * Schema for positive identity of a document incarnation.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const DocumentId = safe.pipe(Schema.brand('@effect-harness/durable/Record/DocumentId'))
 /**
- * DocumentId contract.
+ * Positive identity of a document incarnation.
  *
  * @category models
- * @since 0.0.0
  */
 export type DocumentId = typeof DocumentId.Type
 /**
- * Seq schema.
+ * Schema for positive commit sequence assigned by storage.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Seq = safe.pipe(Schema.brand('@effect-harness/durable/Record/Seq'))
 /**
- * Seq contract.
+ * Positive commit sequence assigned by storage.
  *
  * @category models
- * @since 0.0.0
  */
 export type Seq = typeof Seq.Type
 /**
- * JournalCursor schema.
+ * Schema for commit sequence from which retained observation frames are read.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const JournalCursor = Schema.Union([Seq, Schema.Literal(0)])
 /**
- * JournalCursor contract.
+ * Commit sequence from which retained observation frames are read.
  *
  * @category models
- * @since 0.0.0
  */
 export type JournalCursor = typeof JournalCursor.Type
 /**
  * ROOT_CONVERSATION_ID schema.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ROOT_CONVERSATION_ID = Schema.decodeSync(ConversationId)(1)
 /**
- * Json contract.
+ * JSON value accepted by domain storage and replay receipts.
  *
  * @category models
- * @since 0.0.0
  */
 export type Json = Schema.Json
 /**
- * JsonObject contract.
+ * JSON object used as a document storage representation.
  *
  * @category models
- * @since 0.0.0
  */
 export type JsonObject = Schema.JsonObject
 /**
- * Conversation schema.
+ * Schema for conversation identity, parent history and ownership recorded in a session.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Conversation = Schema.Struct({
   id: ConversationId,
@@ -150,17 +130,15 @@ export const Conversation = Schema.Struct({
   owner: Schema.optionalKey(Schema.Struct({ conversationId: ConversationId, taskId: TaskId })),
 })
 /**
- * Conversation contract.
+ * Conversation identity, parent history and ownership recorded in a session.
  *
  * @category models
- * @since 0.0.0
  */
 export type Conversation = typeof Conversation.Type
 /**
- * ContextEdit schema.
+ * Schema for context reset, omission or replacement applied to visible entry history.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ContextEdit = Schema.Union([
   tagged('omit', { target: EntryId, action: Schema.tag('omit') }),
@@ -171,17 +149,15 @@ export const ContextEdit = Schema.Union([
   }),
 ])
 /**
- * ContextEdit contract.
+ * Context reset, omission or replacement applied to visible entry history.
  *
  * @category models
- * @since 0.0.0
  */
 export type ContextEdit = typeof ContextEdit.Type
 /**
- * Entry schema.
+ * Schema for committed conversation entry with identity, timestamp and stored content.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Entry = Schema.Struct({
   id: EntryId,
@@ -194,24 +170,22 @@ export const Entry = Schema.Struct({
   byTaskId: Schema.optionalKey(TaskId),
 })
 /**
- * Entry contract.
+ * Committed conversation entry with identity, timestamp and stored content.
  *
  * @category models
- * @since 0.0.0
  */
 export type Entry = typeof Entry.Type
 /**
- * Compatibility alias for Entry.Draft.
+ * Entry content supplied before the session assigns its durable identity.
  *
  * @category models
- * @since 0.0.0
  */
 export type EntryDraft = Entry.Draft
 /**
- * Task schema.
+ * Schema for owned work with its native execution binding, abort mark and domain completion
+ * state.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Task = Schema.Struct({
   id: TaskId,
@@ -232,10 +206,9 @@ export const Task = Schema.Struct({
   memos: Schema.optionalKey(Schema.JsonObject),
 })
 /**
- * Task contract.
+ * Owned work with its native execution binding, abort mark and domain completion state.
  *
  * @category models
- * @since 0.0.0
  */
 export type Task = typeof Task.Type
 const submissionIdentity = {
@@ -249,10 +222,9 @@ const noSettlement = {
   detail: Schema.optionalKey(Schema.Never),
 }
 /**
- * InputQueued schema.
+ * Schema for input admitted to a busy conversation and awaiting placement.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const InputQueued = tagged('InputQueued', {
   ...submissionIdentity,
@@ -262,18 +234,16 @@ export const InputQueued = tagged('InputQueued', {
   ...noSettlement,
 })
 /**
- * Decoded InputQueued values.
+ * Input admitted to a busy conversation and awaiting placement.
  *
  * @category models
- * @since 0.0.0
  */
 export type InputQueued = typeof InputQueued.Type
 
 /**
- * InputPlaced schema.
+ * Schema for input attached to an entry and awaiting its settled answer.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const InputPlaced = tagged('InputPlaced', {
   ...submissionIdentity,
@@ -283,18 +253,16 @@ export const InputPlaced = tagged('InputPlaced', {
   ...noSettlement,
 })
 /**
- * Decoded InputPlaced values.
+ * Input attached to an entry and awaiting its settled answer.
  *
  * @category models
- * @since 0.0.0
  */
 export type InputPlaced = typeof InputPlaced.Type
 
 /**
- * InputDone schema.
+ * Schema for input settled with a committed answer entry.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const InputDone = tagged('InputDone', {
   ...submissionIdentity,
@@ -306,18 +274,16 @@ export const InputDone = tagged('InputDone', {
   detail: Schema.optionalKey(Schema.Never),
 })
 /**
- * Decoded InputDone values.
+ * Input settled with a committed answer entry.
  *
  * @category models
- * @since 0.0.0
  */
 export type InputDone = typeof InputDone.Type
 
 /**
- * InputUnanswered schema.
+ * Schema for input settled without an answer, with a reason and optional detail.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const InputUnanswered = tagged('InputUnanswered', {
   ...submissionIdentity,
@@ -329,18 +295,16 @@ export const InputUnanswered = tagged('InputUnanswered', {
   detail: Schema.optionalKey(Schema.Json),
 })
 /**
- * Decoded InputUnanswered values.
+ * Input settled without an answer, with a reason and optional detail.
  *
  * @category models
- * @since 0.0.0
  */
 export type InputUnanswered = typeof InputUnanswered.Type
 
 /**
- * WriteQueued schema.
+ * Schema for passive write awaiting an admission boundary.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const WriteQueued = tagged('WriteQueued', {
   ...submissionIdentity,
@@ -350,18 +314,16 @@ export const WriteQueued = tagged('WriteQueued', {
   ...noSettlement,
 })
 /**
- * Decoded WriteQueued values.
+ * Passive write awaiting an admission boundary.
  *
  * @category models
- * @since 0.0.0
  */
 export type WriteQueued = typeof WriteQueued.Type
 
 /**
- * WriteDone schema.
+ * Schema for passive write settled with its committed entry.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const WriteDone = tagged('WriteDone', {
   ...submissionIdentity,
@@ -371,18 +333,16 @@ export const WriteDone = tagged('WriteDone', {
   ...noSettlement,
 })
 /**
- * Decoded WriteDone values.
+ * Passive write settled with its committed entry.
  *
  * @category models
- * @since 0.0.0
  */
 export type WriteDone = typeof WriteDone.Type
 
 /**
- * WriteUnanswered schema.
+ * Schema for passive write settled without placement.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const WriteUnanswered = tagged('WriteUnanswered', {
   ...submissionIdentity,
@@ -394,18 +354,16 @@ export const WriteUnanswered = tagged('WriteUnanswered', {
   detail: Schema.optionalKey(Schema.Json),
 })
 /**
- * Decoded WriteUnanswered values.
+ * Passive write settled without placement.
  *
  * @category models
- * @since 0.0.0
  */
 export type WriteUnanswered = typeof WriteUnanswered.Type
 
 /**
- * SettledSubmission schema.
+ * Schema for terminal input or passive-write receipt.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const SettledSubmission = Schema.Union([
   InputDone,
@@ -414,17 +372,15 @@ export const SettledSubmission = Schema.Union([
   WriteUnanswered,
 ])
 /**
- * SettledSubmission contract.
+ * Terminal input or passive-write receipt.
  *
  * @category models
- * @since 0.0.0
  */
 export type SettledSubmission = typeof SettledSubmission.Type
 /**
- * Submission schema.
+ * Schema for persisted input or passive write progressing from admission to settlement.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Submission = Schema.Union([
   InputQueued,
@@ -436,24 +392,21 @@ export const Submission = Schema.Union([
   WriteUnanswered,
 ])
 /**
- * Submission contract.
+ * Persisted input or passive write progressing from admission to settlement.
  *
  * @category models
- * @since 0.0.0
  */
 export type Submission = typeof Submission.Type
 /**
- * Compatibility alias for Submission.Create.
+ * Submission content supplied before durable identity allocation.
  *
  * @category models
- * @since 0.0.0
  */
 export type SubmissionCreate = Submission.Create
 /**
- * Scope schema.
+ * Schema for session, conversation or task ownership of a document.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Scope = Schema.Union([
   tagged('session', { kind: Schema.tag('session') }),
@@ -461,17 +414,15 @@ export const Scope = Schema.Union([
   tagged('task', { kind: Schema.tag('task'), taskId: TaskId }),
 ])
 /**
- * Scope contract.
+ * Session, conversation or task ownership of a document.
  *
  * @category models
- * @since 0.0.0
  */
 export type Scope = typeof Scope.Type
 /**
- * Document schema.
+ * Schema for document incarnation and its schema, scope, history and fork policies.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Document = Schema.Struct({
   id: DocumentId,
@@ -484,45 +435,39 @@ export const Document = Schema.Struct({
   fork: Schema.optionalKey(Schema.Literals(['asOf', 'current', 'initial'])),
 })
 /**
- * Document contract.
+ * Document incarnation and its schema, scope, history and fork policies.
  *
  * @category models
- * @since 0.0.0
  */
 export type Document = typeof Document.Type
 /**
- * Document creation record schema.
+ * Initial persisted document metadata before identity allocation.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const DocumentCreate = Document.mapFields(Struct.omit(['createdAt', 'retiredAt']))
 /**
- * Document creation record schema.
+ * Initial persisted document metadata before identity allocation.
  *
  * @category models
- * @since 0.0.0
  */
 export type DocumentCreate = typeof DocumentCreate.Type
 /**
- * Address contract.
+ * Logical document address determined by kind, scope and optional family key.
  *
  * @category models
- * @since 0.0.0
  */
 export type Address = Pick<Document, 'kind' | 'scope' | 'key'>
 /**
- * Point contract.
+ * Latest or historical entry cutoff for a document read.
  *
  * @category models
- * @since 0.0.0
  */
 export type Point = Seq | 'current'
 /**
  * Serializable operations keep exact structural no-ops and root replacements observable.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Op = Schema.Union([
   Schema.Tuple([
@@ -537,34 +482,30 @@ export const Op = Schema.Union([
   Schema.Tuple([Schema.Literal('replace'), Schema.JsonObject]),
 ])
 /**
- * Op contract.
+ * Persisted object/array mutation or full document replacement.
  *
  * @category models
- * @since 0.0.0
  */
 export type Op = typeof Op.Type
 /**
- * Content schema.
+ * Schema for full document checkpoint or incremental mutation payload.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Content = Schema.Union([
   tagged('base', { kind: Schema.tag('base'), version: safe, value: Schema.JsonObject }),
   tagged('delta', { kind: Schema.tag('delta'), version: safe, ops: Schema.Array(Op) }),
 ])
 /**
- * Content contract.
+ * Full document checkpoint or incremental mutation payload.
  *
  * @category models
- * @since 0.0.0
  */
 export type Content = typeof Content.Type
 /**
- * Write schema.
+ * Schema for domain mutation included in an atomic Store commit.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Write = Schema.Union([
   tagged('conversation', { type: Schema.tag('conversation'), value: Conversation }),
@@ -590,45 +531,39 @@ export const Write = Schema.Union([
   tagged('document.retire', { type: Schema.tag('document.retire'), id: DocumentId }),
 ])
 /**
- * Write contract.
+ * Domain mutation included in an atomic Store commit.
  *
  * @category models
- * @since 0.0.0
  */
 export type Write = typeof Write.Type
 /**
- * Revision schema.
+ * Schema for document version and content saved at one commit sequence.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Revision = Schema.Struct({ seq: Seq, content: Content })
 /**
- * Revision contract.
+ * Document version and content saved at one commit sequence.
  *
  * @category models
- * @since 0.0.0
  */
 export type Revision = typeof Revision.Type
 /**
- * StoredDocument schema.
+ * Schema for document metadata together with its retained revision history.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const StoredDocument = Schema.Struct({ record: Document, revisions: Schema.Array(Revision) })
 /**
- * StoredDocument contract.
+ * Document metadata together with its retained revision history.
  *
  * @category models
- * @since 0.0.0
  */
 export type StoredDocument = typeof StoredDocument.Type
 /**
- * Receipt schema.
+ * Schema for idempotency key, optional fingerprint and saved JSON or void result.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Receipt = Schema.Struct({
   key: Schema.String,
@@ -638,17 +573,16 @@ export const Receipt = Schema.Struct({
   seq: Seq,
 })
 /**
- * Receipt contract.
+ * Idempotency key, optional fingerprint and saved JSON or void result.
  *
  * @category models
- * @since 0.0.0
  */
 export type Receipt = typeof Receipt.Type
 /**
- * State schema.
+ * Schema for authoritative session records, document histories, receipts and allocation
+ * counters.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const State = Schema.Struct({
   format: Schema.Literal(1),
@@ -666,17 +600,15 @@ export const State = Schema.Struct({
   receipts: Schema.Array(Receipt),
 })
 /**
- * State contract.
+ * Authoritative session records, document histories, receipts and allocation counters.
  *
  * @category models
- * @since 0.0.0
  */
 export type State = typeof State.Type
 /**
- * Publication schema.
+ * Schema for committed sequence and affected domain categories for observation.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Publication = Schema.Struct({
   record: Document,
@@ -685,17 +617,15 @@ export const Publication = Schema.Struct({
   ops: Schema.Array(Op),
 })
 /**
- * Publication contract.
+ * Committed sequence and affected domain categories for observation.
  *
  * @category models
- * @since 0.0.0
  */
 export type Publication = typeof Publication.Type
 /**
- * Frame schema.
+ * Schema for atomic commit frame containing writes and publication metadata.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Frame = Schema.Struct({
   seq: Seq,
@@ -703,18 +633,16 @@ export const Frame = Schema.Struct({
   documents: Schema.Array(Publication),
 })
 /**
- * Frame contract.
+ * Atomic commit frame containing writes and publication metadata.
  *
  * @category models
- * @since 0.0.0
  */
 export type Frame = typeof Frame.Type
 const PageTypeId = '~@effect-harness/durable/Record/Page'
 /**
- * Page contract.
+ * Bounded scan results with an optional continuation cursor.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Page<out A> {
   readonly [PageTypeId]: { readonly _A: Types.Covariant<A> }
@@ -723,10 +651,9 @@ export interface Page<out A> {
   readonly next?: { readonly after: number } | undefined
 }
 /**
- * Cursor contract.
+ * Continuation position for a paginated record scan.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Cursor {
   readonly after: number
@@ -735,7 +662,6 @@ export interface Cursor {
  * Returns the stable serialized key for a document address.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const addressKey = (self: Address): string =>
   JSON.stringify([
@@ -747,7 +673,6 @@ export const addressKey = (self: Address): string =>
  * Returns the stable serialized key for a document scope.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const scopeKey = (self: Scope): string => {
   if (self.kind === 'session') return 'session'
@@ -762,7 +687,6 @@ const isAliveImpl = (self: Document, at: Point): boolean =>
  * Returns whether the value satisfies CurrentOnly.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isCurrentOnly = (self: DocumentCreate): boolean =>
   self.scope.kind !== 'conversation' || self.history === 'latest'
@@ -770,7 +694,6 @@ export const isCurrentOnly = (self: DocumentCreate): boolean =>
  * Creates an empty durable state with initial allocation counters.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const emptyState = (): State => ({
   format: 1,
@@ -785,41 +708,36 @@ export const emptyState = (): State => ({
 })
 
 /**
- * Compatibility alias for Entry.WithData.
+ * Committed entry whose data is decoded by an entry token.
  *
  * @category models
- * @since 0.0.0
  */
 export type TypedEntry<D extends Json> = Entry.WithData<D>
 /**
- * Compatibility alias for Entry.DraftWithData.
+ * Decoded entry data supplied before durable identity allocation.
  *
  * @category models
- * @since 0.0.0
  */
 export type TypedEntryDraft<D extends Json> = Entry.DraftWithData<D>
 const EntryTokenTypeId = '~@effect-harness/durable/Record/EntryToken'
 /**
- * Compatibility alias for Entry.Token.
+ * Entry-kind token with identity guard and schema-based decoding.
  *
  * @category models
- * @since 0.0.0
  */
 export type EntryToken<K extends string = string> = Entry.Token<K>
 /**
- * EntryDefinitionError schema.
+ * Failure reporting an invalid typed entry kind or definition.
  *
  * @category errors
- * @since 0.0.0
  */
 export class EntryDefinitionError extends Schema.TaggedError<EntryDefinitionError>(
   '@effect-harness/durable/Record/EntryDefinitionError',
 )('EntryDefinitionError', { message: Schema.String }) {}
 /**
- * DecodedEntryToken contract.
+ * Entry token with its decoding service requirements retained.
  *
  * @category models
- * @since 0.0.0
  */
 export interface DecodedEntryToken<
   K extends string,
@@ -834,7 +752,6 @@ export interface DecodedEntryToken<
  * Validates an entry kind and creates its typed token.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const defineEntry = <const K extends string, S extends Schema.Constraint>(
   kind: K,
@@ -855,17 +772,15 @@ export const defineEntry = <const K extends string, S extends Schema.Constraint>
  * Creates a typed entry token or throws for an invalid kind.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const defineEntryUnsafe = <const K extends string, S extends Schema.Constraint>(
   kind: K,
   schema: S,
 ): DecodedEntryToken<K, S> => Result.getOrThrow(defineEntry(kind, schema))
 /**
- * SubmissionStatus schema.
+ * Schema for admission, placement and terminal settlement states of a submission.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const SubmissionStatus = Schema.Literals(['queued', 'placed', 'done', 'unanswered'])
 
@@ -873,7 +788,6 @@ export const SubmissionStatus = Schema.Literals(['queued', 'placed', 'done', 'un
  * Creates a page without changing its input.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makePage = <A>(input: Omit<Page<A>, typeof PageTypeId>): Page<A> => {
   const value = Object.assign({}, input, { [PageTypeId]: { _A: identity } })
@@ -882,10 +796,13 @@ export const makePage = <A>(input: Omit<Page<A>, typeof PageTypeId>): Page<A> =>
   return value
 }
 /**
- * Returns whether the value satisfies Page.
+ * Checks whether a value carries the nominal `Page` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isPage = (input: unknown): input is Page<unknown> =>
   Predicate.hasProperty(input, PageTypeId)
@@ -894,7 +811,6 @@ export const isPage = (input: unknown): input is Page<unknown> =>
  * Creates a typed entry token without reading input accessors.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeEntryToken = <K extends string, S extends Schema.Constraint>(
   input: handle.Input<DecodedEntryToken<K, S>, typeof EntryTokenTypeId>,
@@ -906,19 +822,21 @@ export const makeEntryToken = <K extends string, S extends Schema.Constraint>(
   return value
 }
 /**
- * Returns whether the value satisfies EntryToken.
+ * Checks whether a value carries the nominal `EntryToken` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isEntryToken = (input: unknown): input is EntryToken =>
   Predicate.hasProperty(input, EntryTokenTypeId)
 
 /**
- * SubmissionStatus contract.
+ * Admission, placement and terminal settlement states of a submission.
  *
  * @category models
- * @since 0.0.0
  */
 export type SubmissionStatus = typeof SubmissionStatus.Type
 
@@ -926,7 +844,6 @@ export type SubmissionStatus = typeof SubmissionStatus.Type
  * Returns whether the value satisfies Alive.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isAlive: {
   (at: Point): (self: Document) => boolean
@@ -934,42 +851,37 @@ export const isAlive: {
 } = dual(2, isAliveImpl)
 
 /**
- * Entry contract.
+ * Type-level contracts for `Entry`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Entry {
   /**
-   * Draft contract.
+   * Entry fields supplied before a committed identity is assigned.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Draft = Omit<Entry, 'id' | 'conversationId' | 'head'> & {
     readonly head?: EntryId | 'self' | undefined
   }
   /**
-   * WithData contract.
+   * Committed entry whose data has a caller-selected decoded type.
    *
    * @category models
-   * @since 0.0.0
    */
   export type WithData<D extends Json> = Omit<Entry, 'data'> &
     ([D] extends [never] ? { readonly data?: undefined } : { readonly data: D })
   /**
-   * DraftWithData contract.
+   * Uncommitted entry draft with caller-selected decoded data.
    *
    * @category models
-   * @since 0.0.0
    */
   export type DraftWithData<D extends Json> = Omit<EntryDraft, 'kind' | 'data'> &
     ([D] extends [never] ? { readonly data?: undefined } : { readonly data: D })
   /**
-   * Token contract.
+   * Nominal kind token used to identify typed entry records.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Token<out K extends string = string>
     extends Pipeable.Pipeable, Inspectable.Inspectable {
@@ -980,17 +892,15 @@ export declare namespace Entry {
 }
 
 /**
- * Submission contract.
+ * Type-level contracts for `Submission`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Submission {
   /**
-   * Create contract.
+   * Record fields supplied before durable identity allocation.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Create = Submission extends infer A
     ? A extends Submission
@@ -1000,17 +910,15 @@ export declare namespace Submission {
 }
 
 /**
- * Document contract.
+ * Type-level contracts for `Document`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Document {
   /**
-   * Create contract.
+   * Record fields supplied before durable identity allocation.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Create = DocumentCreate
 }

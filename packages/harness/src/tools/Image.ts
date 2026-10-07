@@ -1,7 +1,5 @@
 /**
  * Image signatures, MIME recognition and model-visible file parts.
- *
- * @since 0.0.0
  */
 import * as Option from 'effect/Option'
 // Adapted from pi-durable (MIT), pinned 636703a0; see package NOTICE.
@@ -12,10 +10,9 @@ const BLOCK_BYTES = 64 * 1024
 
 import * as Effect from 'effect/Effect'
 /**
- * Image byte source contract.
+ * Bounded random-access byte source used for image-signature recognition.
  *
  * @category models
- * @since 0.0.0
  */
 export interface ByteSource<out E, out R> {
   readonly size: number
@@ -25,7 +22,6 @@ export interface ByteSource<out E, out R> {
  * Recognizes supported image MIME types using bounded reads, rejecting animated PNG.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const detectSupportedImageMimeTypeOf = Effect.fnUntraced(function* <E, R>(
   self: ByteSource<E, R>,
@@ -56,7 +52,6 @@ export const detectSupportedImageMimeTypeOf = Effect.fnUntraced(function* <E, R>
  * Recognizes supported image MIME types from available signature bytes.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function detectSupportedImageMimeType(self: Uint8Array): Option.Option<string> {
   if (startsWith(self, [0xff, 0xd8, 0xff]))

@@ -1,7 +1,5 @@
 /**
  * Authenticated ChatGPT Responses clients with semantic terminal-event validation.
- *
- * @since 0.0.0
  */
 import * as Config from 'effect/Config'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
@@ -159,10 +157,19 @@ const completedStream = (
   })
 
 /**
- * Standard OpenAiClient service. Both generated and streamed text use the public streaming Responses endpoint.
+ * Provides the native OpenAI client authenticated by an authorized ChatGPT account.
+ *
+ * **Details**
+ *
+ * Refreshes credentials for requests and uses public Responses with remote storage disabled.
+ * Checks terminal response completion.
+ *
+ * **Gotchas**
+ *
+ * The account must have granted direct-inference permission. This client does not resume
+ * private application sessions.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (options: {
   readonly account: string
@@ -264,7 +271,6 @@ export const layer = (options: {
  * Resolves all layer options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,

@@ -1,70 +1,100 @@
 /**
  * Native Workflow declarations, executors and task lifecycle operations.
- *
- * @since 0.0.0
  */
 // @barrel
 /**
- * @since 0.0.0
+ * Native abort Workflow declaration and legacy-compatible target payloads.
+ *
+ * @category re-exports
  */
 export * as Abort from './Abort.ts'
 /**
- * @since 0.0.0
+ * Native abort execution and domain cancellation settlement.
+ *
+ * @category re-exports
  */
 export * as AbortExecutor from './AbortExecutor.ts'
 /**
- * @since 0.0.0
+ * Scoped physical invocation cancellation and suspension fencing.
+ *
+ * @category re-exports
  */
 export * as Cancellation from './Cancellation.ts'
 /**
- * @since 0.0.0
+ * Native compaction Workflow declaration and result schemas.
+ *
+ * @category re-exports
  */
 export * as Compaction from './Compaction.ts'
 /**
- * @since 0.0.0
+ * Native compaction execution, retries and atomic summary settlement.
+ *
+ * @category re-exports
  */
 export * as CompactionExecutor from './CompactionExecutor.ts'
 /**
- * @since 0.0.0
+ * Structured Workflow execution failures and legacy-compatible codecs.
+ *
+ * @category re-exports
  */
 export * as ExecutionError from './ExecutionError.ts'
 /**
- * @since 0.0.0
+ * Native generation Workflow declaration and result schema.
+ *
+ * @category re-exports
  */
 export * as Generation from './Generation.ts'
 /**
- * @since 0.0.0
+ * Native generation, deferred polling and tool-round orchestration.
+ *
+ * @category re-exports
  */
 export * as GenerationExecutor from './GenerationExecutor.ts'
 /**
- * @since 0.0.0
+ * Native durable retry deadlines, schedules and receipt decisions.
+ *
+ * @category re-exports
  */
 export * as ModelRetry from './ModelRetry.ts'
 /**
- * @since 0.0.0
+ * Schema-derived task outcomes and classification.
+ *
+ * @category re-exports
  */
 export * as Outcome from './Outcome.ts'
 /**
- * @since 0.0.0
+ * Pinned model request document schema and initializer.
+ *
+ * @category re-exports
  */
 export * as Request from './Request.ts'
 /**
- * @since 0.0.0
+ * Structured task ownership, joins and completion holds.
+ *
+ * @category re-exports
  */
 export * as Structured from './Structured.ts'
 /**
- * @since 0.0.0
+ * Native submission Workflow declaration and legacy-compatible payloads.
+ *
+ * @category re-exports
  */
 export * as Submission from './Submission.ts'
 /**
- * @since 0.0.0
+ * Atomic inbox admission and generation creation.
+ *
+ * @category re-exports
  */
 export * as SubmissionExecutor from './SubmissionExecutor.ts'
 /**
- * @since 0.0.0
+ * Native tool-call Workflow declaration and result schema.
+ *
+ * @category re-exports
  */
 export * as ToolCall from './ToolCall.ts'
 /**
- * @since 0.0.0
+ * Pinned tool intent, progress and terminal execution settlement.
+ *
+ * @category re-exports
  */
 export * as ToolExecutor from './ToolExecutor.ts'

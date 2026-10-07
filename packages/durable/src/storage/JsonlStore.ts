@@ -1,7 +1,5 @@
 /**
  * Append-only JSONL storage with recovery and compaction.
- *
- * @since 0.0.0
  */
 import type * as Scope from 'effect/Scope'
 import { identity } from 'effect/Function'
@@ -19,20 +17,27 @@ import * as backend from './internal/backend.ts'
 import { detachedEffect, validateState } from './internal/state.ts'
 
 /**
- * Options contract.
+ * Directory and durable-flushing policy for a single-writer JSONL Store.
+ *
+ * **Details**
+ *
+ * directory holds snapshot and journal files. fsync is enabled only when explicitly true.
+ *
+ * **Gotchas**
+ *
+ * Without fsync, successful writes do not establish crash durability. Directory ownership
+ * must be coordinated outside the adapter.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Options {
   readonly directory: string
   readonly fsync?: boolean | undefined
 }
 /**
- * SnapshotSchema schema.
+ * Schema for a JSONL checkpoint containing authoritative state and retained frames.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const SnapshotSchema = Schema.Struct({
   state: Record.State,
@@ -40,10 +45,19 @@ export const SnapshotSchema = Schema.Struct({
 })
 
 /**
- * Creates a scoped JSONL store for its directory.
+ * Acquires a single-writer Store backed by JSONL commit frames.
+ *
+ * **Details**
+ *
+ * Replays saved frames on acquisition, repairs an incomplete final line and rejects
+ * malformed complete frames. fsync controls durable flushing.
+ *
+ * **Gotchas**
+ *
+ * Coordinate directory ownership externally. Disabling fsync gives no crash-durability
+ * guarantee. An uncertain write poisons the open Store; reopen to inspect receipts.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = Effect.fnUntraced(function* (
   options: Options,
@@ -127,10 +141,14 @@ export const make = Effect.fnUntraced(function* (
   })
 })
 /**
- * layer service Layer.
+ * Provides scoped JSONL storage from native FileSystem and Path services.
  *
+ * **Details**
+ *
+ * Acquisition validates and recovers the directory before exposing the Store.
+ *
+ * @see {@link make} for durability and single-writer requirements.
  * @category layers
- * @since 0.0.0
  */
 export const layer = (
   options: Options,
@@ -141,7 +159,6 @@ export const layer = (
  * Resolves journal options through the caller's ConfigProvider without changing storage ownership.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<Options>,
@@ -152,14 +169,12 @@ export const layerConfig = (
  * Canonical Jsonl Store layer.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerStoreJsonl: typeof layer = layer
 /** Scoped memory alternative for the same Store service. */
 /**
- * Scoped memory alternatives to this storage backend.
+ * Scoped storage service, allocation accessors and memory acquisition.
  *
- * @category layers
- * @since 0.0.0
+ * @category re-exports
  */
 export { makeMemory, layerMemory, layerStoreMemory } from '../Store.ts'

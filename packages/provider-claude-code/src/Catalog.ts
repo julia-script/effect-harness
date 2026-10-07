@@ -1,7 +1,5 @@
 /**
  * Validated model catalogues with pinned request configuration and usage accounting.
- *
- * @since 0.0.0
  */
 import { dual, constUndefined } from 'effect/Function'
 import * as Arr from 'effect/Array'
@@ -28,10 +26,19 @@ const Limit = Schema.Int.check(
   Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
 )
 /**
- * Defines Entry for the Catalog boundary.
+ * Schema for a caller-declared model and its supported request capabilities.
+ *
+ * **Details**
+ *
+ * contextWindow and maxOutputTokens must be positive and the output limit cannot exceed the
+ * context window. Optional capability fields control accepted request options.
+ *
+ * **Gotchas**
+ *
+ * Entries describe application policy; they do not discover current remote models or account
+ * entitlements.
  *
  * @category models
- * @since 0.0.0
  */
 export const Entry = Schema.Struct({
   modelId: Schema.NonEmptyString,
@@ -40,19 +47,22 @@ export const Entry = Schema.Struct({
   efforts: Schema.optional(Schema.Array(Effort)),
   supportsThinkingOff: Schema.optional(Schema.Boolean),
 }).check(Schema.makeFilter((entry) => entry.maxOutputTokens <= entry.contextWindow))
+/**
+ * Caller-declared model identity, token limits and supported request capabilities.
+ *
+ * @category models
+ */
 export type Entry = typeof Entry.Type
 /**
- * Describes the Options contract.
+ * Type-level contracts for `Catalog`.
  *
- * @category types
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Catalog {
   /**
-   * Describes the Options contract.
+   * Declared catalogue entries and defaults for provider model construction.
    *
-   * @category types
-   * @since 0.0.0
+   * @category models
    */
   export interface Options {
     readonly models: ReadonlyArray<Entry>
@@ -62,10 +72,9 @@ export declare namespace Catalog {
   }
 }
 /**
- * Describes the Options contract.
+ * Declared catalogue entries and defaults for provider model construction.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export type Options = Catalog.Options
 const fail = (message: string, cause?: unknown) =>
@@ -107,10 +116,10 @@ const usage = (value: Response.Usage, provider: Response.ProviderMetadata): Usag
 }
 
 /**
- * Describes the Descriptor contract.
+ * Native model with validated provider configuration, usage accounting and error
+ * classification.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export interface Descriptor {
   readonly ref: { provider: string; modelId: string }
@@ -196,10 +205,14 @@ const descriptorImpl = Effect.fnUntraced(function* (
   } satisfies Model.Descriptor
 })
 /**
- * Captures a validated catalogue entry and pins its model and request configuration.
+ * Creates a model descriptor from a validated catalogue entry.
+ *
+ * **Details**
+ *
+ * Binds native model configuration, usage accounting and error classification to declared
+ * capabilities. Unsupported request options fail with ModelError.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const descriptor: {
   (): (self: Entry) => ReturnType<typeof descriptorImpl>
@@ -229,10 +242,19 @@ export const descriptor: {
 )
 
 /**
- * Provides Catalog services with the declared native dependencies.
+ * Provides a Model.Catalog from declared provider model entries.
+ *
+ * **Details**
+ *
+ * Validates entries and resolves only the registered provider/model pairs. Duplicate model
+ * IDs are rejected; unknown references fail with ModelNoModel.
+ *
+ * **Gotchas**
+ *
+ * Supply the required native client or CLI services. Catalogue construction does not
+ * authorize a remote account.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (
   options: Options,

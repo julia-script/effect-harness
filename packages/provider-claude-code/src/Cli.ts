@@ -1,7 +1,5 @@
 /**
  * Scoped Claude Code child-process transport and account admission policy.
- *
- * @since 0.0.0
  */
 import * as Config from 'effect/Config'
 import * as Context from 'effect/Context'
@@ -17,10 +15,9 @@ import * as Protocol from './Protocol.ts'
 import * as Prompt from './Prompt.ts'
 
 /**
- * Describes the Request contract.
+ * Model, prompt content and explicit options sent to the installed CLI.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export interface Request {
   readonly model: string
@@ -36,25 +33,40 @@ export interface Request {
   readonly mcp?: { readonly url: string; readonly aliases: ReadonlyArray<string> } | undefined
 }
 /**
- * Describes the AccountStatus contract.
+ * CLI-reported login state and whether account authentication is available.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export interface AccountStatus {
   readonly loggedIn: boolean
   readonly account: boolean
 }
 /**
- * Identifies the Cli service in the Effect context.
+ * Service invoking an installed CLI under its own account authentication.
+ *
+ * **Details**
+ *
+ * Consumes ChildProcessSpawner. Requests clear alternate provider credentials, disable
+ * built-in tool execution and expose offered harness tools through the intent server.
+ *
+ * **Gotchas**
+ *
+ * Enable requests only with policyTrust set to trusted-installed-cli after auditing the
+ * executable and managed policy. The adapter does not sign in or import credentials into
+ * CredentialStore.
  *
  * @category services
- * @since 0.0.0
  */
 export class Cli extends Context.Service<
   Cli,
   {
+    /**
+     * Queries the installed CLI for its login and account-authentication state.
+     */
     readonly status: Effect.Effect<AccountStatus, AiError.AiError>
+    /**
+     * Runs a scoped CLI request and emits validated native protocol events.
+     */
     readonly run: (request: Request) => Stream.Stream<Protocol.Event, AiError.AiError>
   }
 >()('@effect-harness/provider-claude-code/Cli') {}
@@ -78,10 +90,19 @@ const clearedProviderEnvironment: Record<string, string | undefined> = {
 }
 
 /**
- * Portable process boundary; the application provides its native ChildProcessSpawner Layer.
+ * Provides scoped process access to an installed, independently authenticated CLI.
+ *
+ * **Details**
+ *
+ * Selects executable and output limits from host options and consumes ChildProcessSpawner.
+ *
+ * **Gotchas**
+ *
+ * Requests require explicit trusted-installed-cli policy trust. Process cancellation and
+ * cleanup remain scoped; unsupported account authentication fails with a typed native AI
+ * error.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (options?: {
   readonly executable?: string | undefined
@@ -306,7 +327,6 @@ export const layer = (options?: {
  * Resolves all layer options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,

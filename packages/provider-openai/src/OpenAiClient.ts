@@ -1,12 +1,9 @@
 /**
  * Native Effect AI OpenAI client service and protocol facade.
- *
- * @since 0.0.0
  */
 /**
- * Forwards the supported public declarations from their owning concept.
+ * Public APIs from `@effect/ai-openai/OpenAiClient`.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export * from '@effect/ai-openai/OpenAiClient'

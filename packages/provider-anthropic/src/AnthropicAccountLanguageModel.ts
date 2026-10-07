@@ -1,7 +1,5 @@
 /**
  * Anthropic account model construction sharing its captured native client.
- *
- * @since 0.0.0
  */
 import type * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Config from 'effect/Config'
@@ -18,7 +16,6 @@ import * as AnthropicAccountClient from './AnthropicAccountClient.ts'
  * Native direct Messages LanguageModel, preserving structured Prompt history.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (
   options: AnthropicAccountClient.ClientOptions & {
@@ -38,7 +35,6 @@ export const layer = (
  * Resolves all layer options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,

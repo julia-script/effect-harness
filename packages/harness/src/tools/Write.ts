@@ -1,7 +1,5 @@
 /**
  * Canonical file replacement through host-owned mutation admission.
- *
- * @since 0.0.0
  */
 import { MutationLocks } from '../MutationLocks.ts'
 import * as Effect from 'effect/Effect'
@@ -17,24 +15,29 @@ import * as Metadata from '../Tool.ts'
 import * as mutation from './internal/mutation.ts'
 import * as path from './internal/path.ts'
 /**
- * Schema for parameters.
+ * Schema for file path and complete replacement text.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Parameters = Schema.Struct({ path: Schema.String, content: Schema.String })
 /**
- * Write input contract.
+ * Decoded parameters passed to the coding-tool handler.
  *
  * @category models
- * @since 0.0.0
  */
 export type Input = Parameters
 /**
- * Native write tool declaration using canonical mutation admission.
+ * Native write tool replacing a file with supplied text.
+ *
+ * **Details**
+ *
+ * Creates parent directories and serializes writes through the shared MutationLocks manager.
+ *
+ * **Gotchas**
+ *
+ * The action mutates the environment and uses unsafe replay by default.
  *
  * @category constants
- * @since 0.0.0
  */
 export const tool = AiTool.make('write', {
   description:
@@ -54,7 +57,6 @@ export const tool = AiTool.make('write', {
  * Replaces file content under the host-owned canonical mutation lock.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const handler = Effect.fnUntraced(function* (
   input: Input,
@@ -92,17 +94,20 @@ export const handler = Effect.fnUntraced(function* (
 })
 
 /**
- * Checks whether an unknown value satisfies the Input contract.
+ * Checks whether a value satisfies the decoded `Parameters` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isInput: (u: unknown) => u is Parameters = Schema.is(Parameters)
 
 /**
- * Write parameters contract.
+ * File path and complete replacement text.
  *
  * @category models
- * @since 0.0.0
  */
 export type Parameters = typeof Parameters.Type

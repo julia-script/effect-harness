@@ -1,15 +1,12 @@
 /**
  * Assertion adapters for storage conformance cases.
- *
- * @since 0.0.0
  */
 import type { Assertions } from './Storage.ts'
 
 /**
- * Expectation contract.
+ * Assertion operations used by adapter conformance cases.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Expectation {
   readonly toBe: (expected: unknown) => void
@@ -19,17 +16,15 @@ export interface Expectation {
   readonly toBeTruthy: () => void
 }
 /**
- * ExpectLike contract.
+ * Test-runner expectation factory accepted by the assertion adapter.
  *
  * @category models
- * @since 0.0.0
  */
 export type ExpectLike = (actual: unknown) => Expectation
 /**
  * Adapts the synchronous assertion boundary of a Jest/Vitest compatible runner.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeExpectAssertions = (expect: ExpectLike): Assertions => ({
   strictEqual: (actual, expected) => expect(actual).toBe(expected),

@@ -1,7 +1,5 @@
 /**
  * Ordered extension hooks with interruption-preserving recovery.
- *
- * @since 0.0.0
  */
 import { dual } from 'effect/Function'
 import * as Data from 'effect/Data'
@@ -18,17 +16,15 @@ import { Invocation, type ToolResult } from './Invocation.ts'
 import type { ConversationId, EntryId } from './Identity.ts'
 
 /**
- * Hook tool input contract.
+ * Tool identity and decoded arguments passed to a before-tool hook.
  *
  * @category models
- * @since 0.0.0
  */
 export type ToolInput = Handlers.ToolInput
 /**
- * Hook tool decision contract.
+ * Decision to continue with arguments or block a tool.
  *
  * @category models
- * @since 0.0.0
  */
 export type ToolDecision = Data.TaggedEnum<{
   Block: { readonly block: string }
@@ -38,21 +34,18 @@ export type ToolDecision = Data.TaggedEnum<{
  * Constructors and matchers for blocked tools and replacement arguments.
  *
  * @category constants
- * @since 0.0.0
  */
 export const ToolDecision = Data.taggedEnum<ToolDecision>()
 /**
- * Hook compact input contract.
+ * History and policy supplied to a compaction hook.
  *
  * @category models
- * @since 0.0.0
  */
 export type CompactInput = Handlers.CompactInput
 /**
- * Hook compact decision contract.
+ * Decision to request, decline or supply a compaction summary.
  *
  * @category models
- * @since 0.0.0
  */
 export type CompactDecision = Data.TaggedEnum<{
   Decline: {}
@@ -62,14 +55,17 @@ export type CompactDecision = Data.TaggedEnum<{
  * Constructors and matchers for declined and supplied compaction summaries.
  *
  * @category constants
- * @since 0.0.0
  */
 export const CompactDecision = Data.taggedEnum<CompactDecision>()
 /**
- * Hook settled tool contract.
+ * Terminal tool result and committed entry ID in provider call order.
+ *
+ * **Details**
+ *
+ * afterTools receives these values after all batch slots settle, including unavailable
+ * calls. Parallel completion does not reorder the batch.
  *
  * @category models
- * @since 0.0.0
  */
 export interface SettledTool {
   readonly id: string
@@ -79,10 +75,9 @@ export interface SettledTool {
   readonly result: ToolResult
 }
 /**
- * Hook handlers contract.
+ * Optional callbacks around request, response, tool and compaction boundaries.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Handlers<out R = Invocation> {
   readonly conversationCreated?:
@@ -116,17 +111,15 @@ export interface Handlers<out R = Invocation> {
     | undefined
 }
 /**
- * Hook operation contract.
+ * Effectful hook boundary with its invocation dependencies.
  *
  * @category models
- * @since 0.0.0
  */
 export type Operation = 'generation' | 'tool' | 'compaction' | 'conversation'
 /**
- * Hook registration contract.
+ * Hook callbacks with captured host services and declared request services.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Registration {
   readonly operation: Operation
@@ -136,7 +129,6 @@ export interface Registration {
  * Report callback faults, but propagate cancellation rather than converting it to an omitted hook result.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const recover = <A, E, R>(
   self: Effect.Effect<A, E, R>,
@@ -165,7 +157,6 @@ const beforeRequestImpl = Effect.fnUntraced(function* (
  * Applies request hooks sequentially to the latest native prompt.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const beforeRequest: {
   (
@@ -194,7 +185,6 @@ const afterToolImpl = Effect.fnUntraced(function* (
  * Applies tool-result hooks sequentially to the latest result.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const afterTool: {
   (
@@ -223,7 +213,6 @@ const beforeCompactImpl = Effect.fnUntraced(function* (
  * Returns the first supplied compaction decision.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const beforeCompact: {
   (
@@ -252,7 +241,6 @@ const onYieldImpl = Effect.fnUntraced(function* (
  * Returns the first supplied native user message from yield hooks.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const onYield: {
   (
@@ -279,7 +267,6 @@ const afterResponseImpl = Effect.fnUntraced(function* (
  * Runs response hooks in registration order.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const afterResponse: {
   (
@@ -304,7 +291,6 @@ const afterToolsImpl = Effect.fnUntraced(function* (
  * Runs terminal tool-batch hooks in registration order.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const afterTools: {
   (
@@ -331,7 +317,6 @@ const conversationCreatedImpl = Effect.fnUntraced(function* (
  * Runs creation hooks with the canonical conversation identity.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const conversationCreated: {
   (
@@ -384,10 +369,19 @@ const bindImpl = Effect.fnUntraced(function* <R, RequestServices = never>(
   }
 })
 /**
- * Captures host dependencies while preserving invocation-time service requirements.
+ * Captures host hook services and declares dynamic request dependencies.
+ *
+ * **Details**
+ *
+ * Invocation remains request-local. requestServices lists additional services that the
+ * executor must supply, such as durable Ownership.Current.
+ *
+ * **Gotchas**
+ *
+ * Conversation creation does not automatically provide task invocation services. Missing
+ * declared request services fail with HookError.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const bind: {
   <RequestServices = never>(
@@ -402,17 +396,15 @@ export const bind: {
 } = dual((args) => typeof args[0] === 'object' && !Array.isArray(args[0]), bindImpl)
 
 /**
- * Type contracts owned by `Handlers`.
+ * Type-level contracts for `Handlers`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace Handlers {
   /**
-   * Handlers tool input type contract.
+   * Tool identity and decoded arguments passed to a before-tool hook.
    *
    * @category models
-   * @since 0.0.0
    */
   interface ToolInput {
     readonly id: string
@@ -420,10 +412,9 @@ export declare namespace Handlers {
     readonly args: unknown
   }
   /**
-   * Handlers compact input type contract.
+   * History and policy supplied to a compaction hook.
    *
    * @category models
-   * @since 0.0.0
    */
   interface CompactInput {
     readonly reason: 'manual' | 'threshold' | 'overflow'

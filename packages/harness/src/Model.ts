@@ -1,7 +1,5 @@
 /**
  * Native model catalogs, deferred capabilities and semantic provider failures.
- *
- * @since 0.0.0
  */
 import * as Option from 'effect/Option'
 import * as DateTime from 'effect/DateTime'
@@ -22,10 +20,9 @@ import type * as Response from 'effect/ai/Response'
 import * as Serialization from './Serialization.ts'
 
 /**
- * Schema for request options.
+ * Schema for thinking, token, cache and provider-specific options for a model request.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const RequestOptions = Schema.Struct({
   thinking: Schema.String,
@@ -35,21 +32,26 @@ export const RequestOptions = Schema.Struct({
   cache: SchemaField.optional(Schema.Literals(['none', 'short', 'long'])),
 })
 /**
- * Model request options contract.
+ * Thinking, token, cache and provider-specific options for a model request.
  *
  * @category models
- * @since 0.0.0
  */
 export type RequestOptions = typeof RequestOptions.Type
 /**
- * A native LanguageModel with provider capability translation.
+ * Native LanguageModel with declared limits and provider-specific request behavior.
  *
  * **Details**
  *
- * Layer construction captures required provider/client services.
+ * configure produces request services. Optional normalizePrompt prepares native prompts;
+ * usage interprets measurements, estimate can provide tokenization, and classify selects
+ * retry/overflow behavior. Deferred capability is opt-in.
+ *
+ * **Gotchas**
+ *
+ * Capabilities and prices are caller declarations; catalogue membership is not proof of
+ * current remote entitlement or availability.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Descriptor {
   readonly ref: Agent.ModelRef
@@ -57,34 +59,57 @@ export interface Descriptor {
   readonly deferred?: DeferredCapability | undefined
   readonly contextWindow: number
   readonly maxOutputTokens: number
+  /**
+   * Validates request options and builds the provider-specific services used for that request.
+   */
   readonly configure: (options: RequestOptions) => Effect.Effect<Context.Context<never>, ModelError>
   /** Provider transcript normalization runs after request hooks, preserving native message data. */
   readonly normalizePrompt?: ((prompt: Prompt.Prompt) => Prompt.Prompt) | undefined
+  /**
+   * Optional provider-specific token estimate used in context selection.
+   */
   readonly estimate?: ((message: Prompt.Message) => number) | undefined
+  /**
+   * Maps native response measurements to known harness token and cost fields.
+   */
   readonly usage?:
     | ((usage: Response.Usage, metadata: Response.ProviderMetadata) => Usage.Usage)
     | undefined
+  /**
+   * Classifies provider failures for retry or context-overflow handling.
+   */
   readonly classify?:
     | ((error: unknown) => { readonly retryable: boolean; readonly overflow: boolean })
     | undefined
 }
 /**
- * Service for model capabilities.
+ * Service resolving a provider/model reference to a native model descriptor.
+ *
+ * **Details**
+ *
+ * Resolution uses the selected provider and model ID. Unknown references fail with
+ * ModelNoModel; callers decide which descriptors are available.
  *
  * @category services
- * @since 0.0.0
  */
 export class Catalog extends Context.Service<
   Catalog,
   {
+    /**
+     * Resolves a declared provider/model pair; an unknown reference fails with ModelNoModel.
+     */
     readonly resolve: (ref: Agent.ModelRef) => Effect.Effect<Descriptor, ModelError>
   }
 >()('@effect-harness/harness/Model/Catalog') {}
 /**
- * Layer for Model capabilities.
+ * Provides a catalogue from already constructed model descriptors.
+ *
+ * **Details**
+ *
+ * References are keyed by provider/model ID. If multiple descriptors use the same reference,
+ * the last descriptor is retained; unknown references fail with ModelNoModel.
  *
  * @category layers
- * @since 0.0.0
  */
 export function layer(descriptors: ReadonlyArray<Descriptor>): Layer.Layer<Catalog> {
   const entries = new Map(descriptors.map((descriptor) => [key(descriptor.ref), descriptor]))
@@ -116,7 +141,6 @@ const key = (ref: Agent.ModelRef): string => JSON.stringify([ref.provider, ref.m
  * Unknown options fail explicitly.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const noOptions = (
   options: RequestOptions,
@@ -136,27 +160,24 @@ export const noOptions = (
     : Effect.succeed(Context.empty())
 
 /**
- * Schema for deferred decision.
+ * Schema for persistable deferred request handle and optional delay before its next poll.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const DeferredDecision = Schema.Struct({
   handle: Schema.Json,
   pollAfterMs: SchemaField.optional(Time.DurationMillis),
 })
 /**
- * Model deferred decision contract.
+ * Persistable deferred request handle and optional delay before its next poll.
  *
  * @category models
- * @since 0.0.0
  */
 export type DeferredDecision = typeof DeferredDecision.Type
 /**
- * Model deferred capability contract.
+ * Provider operations for starting and polling a deferred request.
  *
  * @category models
- * @since 0.0.0
  */
 export interface DeferredCapability {
   readonly inspect: (parts: ReadonlyArray<Response.AnyPart>) => Option.Option<DeferredDecision>
@@ -176,7 +197,6 @@ export interface DeferredCapability {
  * Root persists this absolute deadline; the harness does not create a timer or poll loop.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const pollAt = (
   now: DateTime.Utc,
@@ -334,7 +354,6 @@ const foreignTransient = new RegExp(
  * Returns a guarded display description of an arbitrary caught value.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function errorText(error: unknown): string {
   return Serialization.errorText(error)
@@ -343,7 +362,6 @@ export function errorText(error: unknown): string {
  * Converts SDK invalid-request diagnostics and otherwise unclassified foreign sentinels once at the model boundary.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function providerError(error: unknown, provider?: string): AiError.AiError {
   if (error instanceof ModelError)
@@ -401,7 +419,6 @@ export function providerError(error: unknown, provider?: string): AiError.AiErro
  * Classifies retry and context-overflow behavior using semantic native AI errors.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function classify(
   error: unknown,
@@ -416,17 +433,25 @@ export function classify(
 }
 
 /**
- * Checks whether an unknown value satisfies the RequestOptions contract.
+ * Checks whether a value satisfies the decoded `RequestOptions` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isRequestOptions: (u: unknown) => u is RequestOptions = Schema.is(RequestOptions)
 
 /**
- * Checks whether an unknown value satisfies the DeferredDecision contract.
+ * Checks whether a value satisfies the decoded `DeferredDecision` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isDeferredDecision: (u: unknown) => u is DeferredDecision = Schema.is(DeferredDecision)

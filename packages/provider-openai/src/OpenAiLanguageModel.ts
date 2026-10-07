@@ -1,7 +1,5 @@
 /**
  * Captured native OpenAI models and API-key transport composition.
- *
- * @since 0.0.0
  */
 import * as Config from 'effect/Config'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
@@ -18,7 +16,6 @@ import * as ToolResult from './ToolResult.ts'
  * Constructs the native model with canonical tool-media translation at its captured client boundary.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make = Effect.fnUntraced(function* (
   options: Parameters<typeof OpenAiLanguageModel.make>[0],
@@ -33,7 +30,6 @@ export const make = Effect.fnUntraced(function* (
  * Provides the exact selected client with a single native model construction.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer = (
   options: Parameters<typeof OpenAiLanguageModel.make>[0],
@@ -53,10 +49,14 @@ export const layer = (
   )
 
 /**
- * Provides OpenAiLanguageModel services with the declared native dependencies.
+ * Provides a native OpenAI LanguageModel and client using a Redacted API key.
+ *
+ * **Details**
+ *
+ * Consumes HttpClient. model selects the Responses model; config supplies native request
+ * defaults and apiUrl can override the API endpoint.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerApiKey = (options: {
   readonly apiKey: Redacted.Redacted<string>
@@ -77,7 +77,6 @@ export const layerApiKey = (options: {
  * Resolves all layerApiKey options through the caller's ConfigProvider.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerApiKeyConfig = (
   config: Config.Wrap<NonNullable<Parameters<typeof layerApiKey>[0]>>,
@@ -96,7 +95,6 @@ export const layerApiKeyConfig = (
  * Resolves the model options while retaining the caller's exact native client.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConfig = (
   config: Config.Wrap<Parameters<typeof layer>[0]>,
@@ -111,10 +109,14 @@ export const layerConfig = (
     }),
   )
 /**
- * Forwards the supported public declarations from their owning concept.
+ * Public APIs from `@effect/ai-openai/OpenAiLanguageModel`.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export { Config } from '@effect/ai-openai/OpenAiLanguageModel'
+/**
+ * Public APIs from `@effect/ai-openai/OpenAiLanguageModel`.
+ *
+ * @category re-exports
+ */
 export type { Model } from '@effect/ai-openai/OpenAiLanguageModel'

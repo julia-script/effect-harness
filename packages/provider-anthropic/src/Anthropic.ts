@@ -1,13 +1,10 @@
 /**
  * Compatibility constructors for the Anthropic API-key language model.
- *
- * @since 0.0.0
  */
 /**
- * Forwards the supported public declarations from their owning concept.
+ * Captured native Anthropic models and API-key transport composition.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export {
   layerApiKey as layer,
@@ -16,9 +13,8 @@ export {
   withConfigOverride,
 } from './AnthropicLanguageModel.ts'
 /**
- * Reexports the API-key model construction options.
+ * Captured native Anthropic models and API-key transport composition.
  *
- * @category exports
- * @since 0.0.0
+ * @category re-exports
  */
 export type { Options } from './AnthropicLanguageModel.ts'

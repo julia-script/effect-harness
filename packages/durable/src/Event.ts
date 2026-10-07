@@ -1,7 +1,5 @@
 /**
  * Committed agent event projections and bounded observation streams.
- *
- * @since 0.0.0
  */
 import * as Order from 'effect/Order'
 import * as Arr from 'effect/Array'
@@ -32,27 +30,24 @@ import { rejected, type StorageError, Corrupt } from './StorageError.ts'
 import * as View from './View.ts'
 
 /**
- * QueuedItem schema.
+ * Schema for submission metadata included in an event snapshot.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const QueuedItem = Schema.Struct({
   id: Record.SubmissionId,
   mode: Schema.Literals(['steer', 'followUp', 'write']),
 })
 /**
- * Compatibility alias for Event.QueuedItem.
+ * Submission metadata included in an event snapshot.
  *
  * @category models
- * @since 0.0.0
  */
 export type QueuedItem = Event.QueuedItem
 /**
- * MessageChange schema.
+ * Schema for incremental change to committed model-visible message content.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const MessageChange = Schema.Union([
   tagged('text_start', {
@@ -94,17 +89,15 @@ export const MessageChange = Schema.Union([
   tagged('message', { type: Schema.tag('message'), message: Prompt.AssistantMessage }),
 ])
 /**
- * Compatibility alias for Event.MessageChange.
+ * Incremental change to committed model-visible message content.
  *
  * @category models
- * @since 0.0.0
  */
 export type MessageChange = Event.MessageChange
 /**
- * Snapshot schema.
+ * Schema for committed conversation execution, queue, usage and entry snapshot.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Snapshot = tagged('snapshot', {
   type: Schema.tag('snapshot'),
@@ -127,10 +120,9 @@ export const Snapshot = tagged('snapshot', {
   usage: Usage.State,
 })
 /**
- * Compatibility alias for Event.Snapshot.
+ * Committed conversation execution, queue, usage and entry snapshot.
  *
  * @category models
- * @since 0.0.0
  */
 export type Snapshot = Event.Snapshot
 const toolIdentity = { toolCallId: Schema.String, toolName: Schema.String }
@@ -139,10 +131,9 @@ const compactionIdentity = {
   reason: Schema.Literals(['manual', 'threshold', 'overflow', 'background']),
 }
 /**
- * AgentEvent schema.
+ * Schema for semantic event derived from a committed conversation update.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const AgentEvent = Schema.Union([
   Snapshot,
@@ -215,52 +206,55 @@ export const AgentEvent = Schema.Union([
   tagged('compaction_end', { type: Schema.tag('compaction_end'), ...compactionIdentity }),
 ])
 /**
- * AgentEvent contract.
+ * Semantic event derived from a committed conversation update.
  *
  * @category models
- * @since 0.0.0
  */
 export type AgentEvent = typeof AgentEvent.Type
 /**
- * Batch schema.
+ * Schema for ordered semantic events emitted for one committed update.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Batch = Schema.Array(AgentEvent)
 /**
- * Compatibility alias for Event.Batch.
+ * Ordered semantic events emitted for one committed update.
  *
  * @category models
- * @since 0.0.0
  */
 export type Batch = Event.Batch
 /**
- * BatchJson schema.
+ * JSON codec for an ordered batch of committed semantic events.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const BatchJson = Schema.toCodecJson(Batch)
 /**
- * Compatibility alias for Event.Watch.
+ * Scoped initial semantic snapshot and subsequent event batches.
  *
  * @category models
- * @since 0.0.0
  */
 export type Watch = Event.Watch
 /**
- * Compatibility alias for Event.Service.
+ * Semantic observation operations built on committed View projections.
  *
  * @category models
- * @since 0.0.0
  */
 export type Service = Event.Service
 /**
- * Ordered semantic batches derived exclusively from committed conversation mounts.
+ * Service deriving semantic conversation events from committed views.
+ *
+ * **Details**
+ *
+ * An initial snapshot is separate from later ordered batches. Events cover model content,
+ * tools, queue, usage and execution boundaries.
+ *
+ * **Gotchas**
+ *
+ * These are committed domain events, not provider transport deltas. task_failed reports
+ * faulted or orphaned tasks rather than every expected failed tool receipt.
  *
  * @category services
- * @since 0.0.0
  */
 export class Event extends Context.Service<Event, Service>()('@effect-harness/durable/Event') {}
 
@@ -288,7 +282,6 @@ const parts = Effect.fnUntraced(function* (view: View.Value) {
  * Projects a committed conversation view into an agent snapshot.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const snapshot = Effect.fnUntraced(function* (
   self: View.Value,
@@ -489,7 +482,6 @@ function outputChangeImpl(
  * Translates one domain commit in progress/end/submission/state/start order; held generations end their turn once.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const translate = Effect.fnUntraced(function* (
   id: Record.ConversationId,
@@ -738,7 +730,6 @@ export const translate = Effect.fnUntraced(function* (
  * Scoped agent-event service acquisition.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make: Effect.Effect<Service, never, View.View> = Effect.gen(function* () {
   const views = yield* View.View
@@ -792,10 +783,13 @@ export const make: Effect.Effect<Service, never, View.View> = Effect.gen(functio
   })
 })
 /**
- * layer service Layer.
+ * Provides semantic conversation observation from View.
+ *
+ * **Details**
+ *
+ * Uses the same committed structural stream and subscription lifetime as View projections.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<Event, never, View.View> = Layer.effect(Event, make)
 
@@ -803,7 +797,6 @@ export const layer: Layer.Layer<Event, never, View.View> = Layer.effect(Event, m
  * Coalesces draft operations into final assistant-message changes.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const messageChanges: {
   (
@@ -821,7 +814,6 @@ export const messageChanges: {
  * Returns the final output change between two assistant messages.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const outputChange: {
   (
@@ -836,59 +828,56 @@ export const outputChange: {
 } = dual(2, outputChangeImpl)
 
 /**
- * Event contract.
+ * Type-level contracts for `Event`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Event {
   /**
-   * QueuedItem contract.
+   * Submission metadata included in an event snapshot.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface QueuedItem {
     readonly id: Record.SubmissionId
     readonly mode: Inbox.Item['mode']
   }
   /**
-   * MessageChange contract.
+   * Incremental change to committed model-visible message content.
    *
    * @category models
-   * @since 0.0.0
    */
   export type MessageChange = typeof MessageChange.Type
   /**
-   * Snapshot contract.
+   * Committed conversation execution, queue, usage and entry snapshot.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Snapshot = typeof Snapshot.Type
   /**
-   * Batch contract.
+   * Ordered semantic events emitted for one committed update.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Batch = typeof Batch.Type
   /**
-   * Watch contract.
+   * Scoped initial semantic snapshot and subsequent event batches.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Watch extends View.ProjectionWatch<Batch> {
     readonly snapshot: Snapshot
   }
   /**
-   * Service contract.
+   * Semantic observation operations built on committed View projections.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Service {
+    /**
+     * Acquires an initial semantic snapshot and scoped stream of ordered committed event
+     * batches.
+     */
     readonly watch: (id: Record.ConversationId) => Effect.Effect<Watch, StorageError, Scope.Scope>
   }
 }

@@ -1,7 +1,5 @@
 /**
  * Native tool binding, validated projections and replay intent codecs.
- *
- * @since 0.0.0
  */
 import * as Result from 'effect/Result'
 import { dual } from 'effect/Function'
@@ -30,17 +28,46 @@ import * as Hook from './Hook.ts'
 import * as Serialization from './Serialization.ts'
 
 /**
- * Tool metadata contract.
+ * Policies controlling harness execution and projection of a native tool.
+ *
+ * **Details**
+ *
+ * replay defaults to unsafe. A sequential tool makes its whole batch sequential. Output
+ * options override library limits. repair can normalize decoded arguments; project maps
+ * native results to harness content and metadata.
+ *
+ * **Gotchas**
+ *
+ * A safe replay flag permits re-execution after an intent without a saved receipt. It does
+ * not make external side effects exactly once.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Metadata {
+  /**
+   * Recovery policy; unsafe is the default and safe permits repeating a call without a saved
+   * receipt.
+   */
   readonly replay?: 'safe' | 'unsafe' | undefined
+  /**
+   * Batch execution policy; a sequential registration makes the selected batch sequential.
+   */
   readonly execution?: 'parallel' | 'sequential' | undefined
+  /**
+   * Optional overrides for default byte, line and head/tail output limits.
+   */
   readonly output?: Partial<Output.OutputLimits> | undefined
+  /**
+   * Selects bounded-window output reporting for this registration.
+   */
   readonly outputWindow?: boolean | undefined
+  /**
+   * Normalizes decoded arguments before execution in the current Invocation context.
+   */
   readonly repair?: ((args: unknown) => Effect.Effect<unknown, ToolError, Invocation>) | undefined
+  /**
+   * Maps a handler result and encoded representation into harness tool content and metadata.
+   */
   readonly project?:
     | ((
         result: unknown,
@@ -50,26 +77,34 @@ export interface Metadata {
     | undefined
 }
 /**
- * Annotation reference for replay, execution, output and typed projection policies.
+ * Annotation reference for native-tool replay, execution, output and projection policies.
+ *
+ * **Details**
+ *
+ * Starts with no overrides. bind merges these annotations with metadata supplied by tool
+ * name; named overrides take precedence.
  *
  * @category annotations
- * @since 0.0.0
  */
 export const Metadata = Context.Reference<Metadata>('@effect-harness/harness/Tool/Metadata', {
   defaultValue: () => ({}),
 })
 /**
- * Tool native result contract.
+ * Handler result, encoded schema value and failure-mode flag.
  *
  * @category models
- * @since 0.0.0
  */
 export type NativeResult = Registration.NativeResult
 /**
- * Host dependencies are captured at bind time; explicitly declared request services are supplied by the executor.
+ * Native tool declaration with captured handler, codecs and harness policies.
+ *
+ * **Details**
+ *
+ * decode validates provider arguments, encodeArgs records provider representation, and
+ * execute invokes the captured handler with dynamic Invocation and ToolCall services. Use
+ * bind to construct registrations.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Registration {
   readonly tool: Tool.Any
@@ -240,10 +275,57 @@ const bindImpl = Effect.fnUntraced(function* <
   return registrations
 })
 /**
- * Captures host dependencies while preserving invocation-time service requirements.
+ * Captures native Toolkit handlers and host services as harness registrations.
+ *
+ * **When to use**
+ *
+ * Use when an ordinary Effect AI Toolkit should participate in harness hooks, output
+ * reporting and replay policy.
+ *
+ * **Details**
+ *
+ * Provide toolkit.toLayer handlers when binding. Explicit metadata overrides tool
+ * annotations. Invocation and ToolCall are supplied dynamically; requestServices declares
+ * any additional per-request services.
+ *
+ * **Gotchas**
+ *
+ * Missing request services fail with ToolUnavailable at invocation. replay defaults to
+ * unsafe; mark safe only when repeating the external action is acceptable.
+ *
+ * **Example** (Capturing Toolkit handlers)
+ *
+ * ```ts
+ * import * as Registry from '@effect-harness/harness/Registry'
+ * import * as ToolBinding from '@effect-harness/harness/Tool'
+ * import * as Effect from 'effect/Effect'
+ * import * as Layer from 'effect/Layer'
+ * import * as Schema from 'effect/Schema'
+ * import * as Tool from 'effect/ai/Tool'
+ * import * as Toolkit from 'effect/ai/Toolkit'
+ *
+ * const Uppercase = Tool.make('uppercase', {
+ *   description: 'Convert text to uppercase.',
+ *   parameters: Schema.Struct({ text: Schema.String }),
+ *   success: Schema.String,
+ * })
+ * const toolkit = Toolkit.make(Uppercase)
+ * const handlers = toolkit.toLayer({
+ *   uppercase: ({ text }) => Effect.succeed(text.toUpperCase()),
+ * })
+ *
+ * // Pure uppercasing can be repeated before a durable receipt is saved.
+ * export const registry = Layer.unwrap(
+ *   Effect.gen(function* () {
+ *     const tools = yield* ToolBinding.bind(toolkit, {
+ *       uppercase: { replay: 'safe' },
+ *     })
+ *     return Registry.layer([{ name: 'text-tools', tools }])
+ *   }),
+ * ).pipe(Layer.provide(handlers))
+ * ```
  *
  * @category combinators
- * @since 0.0.0
  */
 export const bind: {
   <RequestServices = never>(
@@ -268,7 +350,6 @@ export const bind: {
  * Validates owned tool projections without throwing inside Effect.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const decodeResult = (name: string, value: unknown): Effect.Effect<ToolResult, ToolError> =>
   Schema.decodeUnknownEffect(ToolResultSchema)(value).pipe(
@@ -283,7 +364,6 @@ export const decodeResult = (name: string, value: unknown): Effect.Effect<ToolRe
  * Run the selected effectful projector; native encoded fallback keeps its existing display policy.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const project = (
   self: Pick<Registration, 'tool' | 'metadata'>,
@@ -304,7 +384,6 @@ export const project = (
  * Projects native encoded content with the explicit unencodable display policy.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function defaultProject(_result: unknown, encoded: unknown, isFailure: boolean): ToolResult {
   return {
@@ -317,10 +396,14 @@ export function defaultProject(_result: unknown, encoded: unknown, isFailure: bo
   }
 }
 /**
- * Schema for declaration.
+ * Builds the model-facing declaration for a registered native tool.
+ *
+ * **Details**
+ *
+ * Extracts the native parameter JSON Schema and preserves provider-defined tool metadata.
+ * Invalid declaration data fails with SchemaError.
  *
  * @category schemas
- * @since 0.0.0
  */
 export function declaration(
   self: Registration,
@@ -341,10 +424,9 @@ export function declaration(
   })
 }
 /**
- * Schema for intent.
+ * Schema for pinned tool call identity, decoded arguments and external-action replay policy.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Intent = Schema.Struct({
   id: Schema.String,
@@ -354,27 +436,24 @@ export const Intent = Schema.Struct({
   replay: Schema.Literals(['safe', 'unsafe']),
 })
 /**
- * Tool intent contract.
+ * Pinned tool call identity, decoded arguments and external-action replay policy.
  *
  * @category models
- * @since 0.0.0
  */
 export type Intent = typeof Intent.Type
 /**
- * Schema for execution.
+ * Schema for terminal tool outcome and projected model-visible result.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Execution = Schema.Struct({
   outcome: Schema.Literals(['completed', 'failed', 'interrupted', 'unavailable']),
   result: ToolResultSchema,
 })
 /**
- * Tool execution contract.
+ * Terminal tool outcome and projected model-visible result.
  *
  * @category models
- * @since 0.0.0
  */
 export type Execution = typeof Execution.Type
 /** Persist decoded intent separately from provider encoded params. Native transforms are not re-applied during replay. */
@@ -395,10 +474,15 @@ const makeIntentImpl = Effect.fnUntraced(function* (
   } satisfies Intent
 })
 /**
- * Creates a validated replay intent from decoded and provider-encoded arguments.
+ * Pins call identity, decoded arguments and replay policy for recovery.
+ *
+ * **Details**
+ *
+ * Decoded arguments must be JSON-safe. Optional encodedArgs preserves the provider
+ * representation without reapplying schema transforms during replay. The registration’s
+ * replay policy defaults to unsafe.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeIntent: {
   (options: makeIntent.Options): (self: Registration) => Effect.Effect<Intent, ToolError>
@@ -408,7 +492,6 @@ export const makeIntent: {
  * Creates the model-visible result for an interrupted intent.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function interruption(self: Intent): ToolResult {
   return {
@@ -423,7 +506,6 @@ export function interruption(self: Intent): ToolResult {
  * Creates the model-visible result for an unavailable tool.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function unavailable(name: string): ToolResult {
   return {
@@ -456,7 +538,6 @@ const settleFailureImpl = (
  * Converts a caught tool cause to the terminal result while propagating interruption.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const settleFailure: {
   (partial: ToolResult): (self: Cause.Cause<ToolError>) => Effect.Effect<ToolResult>
@@ -492,10 +573,14 @@ function boundResultImpl(self: ToolResult, limits: Output.OutputLimits): ToolRes
   }
 }
 /**
- * Bounds model-visible text while preserving non-text native content.
+ * Bounds model-visible text while preserving non-text content.
+ *
+ * **Details**
+ *
+ * Unchanged results are returned directly. On truncation, text is combined at the selected
+ * head/tail anchor and one truncation diagnostic is added; media retain their order.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const boundResult: {
   (limits: Output.OutputLimits): (self: ToolResult) => ToolResult
@@ -505,7 +590,6 @@ export const boundResult: {
  * Selects sequential or parallel execution from settings and tool metadata.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function executionMode(
   self: ReadonlyArray<Registration>,
@@ -518,10 +602,19 @@ export function executionMode(
 }
 
 /**
- * Controls are reduced in original call order, not finish order; noncompleted/unavailable slots defeat unanimity.
+ * Reduces tool controls in original call order.
+ *
+ * **Details**
+ *
+ * The last completed reset wins; added tool names are deduplicated. Termination requires a
+ * nonempty batch in which every slot completed and requested termination.
+ *
+ * **Gotchas**
+ *
+ * Failed, interrupted or unavailable slots prevent unanimous termination even if another
+ * tool requests it.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function controls(self: ReadonlyArray<Execution>): {
   readonly terminate: boolean
@@ -551,7 +644,6 @@ export function controls(self: ReadonlyArray<Execution>): {
  * Returns the configured tool output limits merged with defaults.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function outputLimits(self: Metadata): Output.OutputLimits {
   return {
@@ -562,33 +654,39 @@ export function outputLimits(self: Metadata): Output.OutputLimits {
 }
 
 /**
- * Checks whether an unknown value satisfies the Intent contract.
+ * Checks whether a value satisfies the decoded `Intent` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isIntent: (u: unknown) => u is Intent = Schema.is(Intent)
 
 /**
- * Checks whether an unknown value satisfies the Execution contract.
+ * Checks whether a value satisfies the decoded `Execution` schema.
+ *
+ * **Details**
+ *
+ * Does not decode, transform or coerce input. Use the schema decoder at an external data
+ * boundary.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isExecution: (u: unknown) => u is Execution = Schema.is(Execution)
 
 /**
- * Type contracts owned by `makeIntent`.
+ * Type-level contracts for `makeIntent`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace makeIntent {
   /**
    * Configuration accepted by makeIntent.
    *
    * @category models
-   * @since 0.0.0
    */
   interface Options {
     readonly id: string
@@ -598,17 +696,15 @@ export declare namespace makeIntent {
 }
 
 /**
- * Type contracts owned by `Registration`.
+ * Type-level contracts for `Registration`.
  *
  * @category utility types
- * @since 0.0.0
  */
 export declare namespace Registration {
   /**
-   * Registration native result type contract.
+   * Handler result, encoded schema value and failure-mode flag.
    *
    * @category models
-   * @since 0.0.0
    */
   interface NativeResult {
     readonly result: unknown

@@ -1,7 +1,5 @@
 /**
  * Cryptographic PKCE challenges and unpadded base64url encoding.
- *
- * @since 0.0.0
  */
 import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
@@ -9,10 +7,9 @@ import * as Redacted from 'effect/Redacted'
 import * as Base64Url from 'effect/encoding/Base64Url'
 import { AuthConfigurationError, AuthError } from './Credential.ts'
 /**
- * Describes the Challenge contract.
+ * Secret PKCE verifier, SHA-256 challenge and independent state/nonce values.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export interface Challenge {
   readonly verifier: Redacted.Redacted<string>
@@ -24,14 +21,22 @@ export interface Challenge {
  * Encodes bytes with the unpadded URL-safe base64 alphabet.
  *
  * @category encoding
- * @since 0.0.0
  */
 export const base64Url = (bytes: Uint8Array): string => Base64Url.encode(bytes)
 /**
- * Constructs Pkce with the caller-provided services.
+ * Creates a fresh S256 PKCE challenge with independent state and nonce.
+ *
+ * **Details**
+ *
+ * Generates 32 random bytes for each verifier, state and nonce and uses unpadded base64url
+ * encoding. The verifier is Redacted; the challenge is its SHA-256 digest.
+ *
+ * **Gotchas**
+ *
+ * Secure random or digest failures use AuthConfigurationError. Keep the verifier private
+ * until token exchange.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make: Effect.Effect<Challenge, AuthError, Crypto.Crypto> = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto

@@ -1,7 +1,5 @@
 /**
  * Native Workflow executor Layer composition.
- *
- * @since 0.0.0
  */
 import * as Arr from 'effect/Array'
 import type * as Record from './Record.ts'
@@ -33,10 +31,15 @@ import { ToolCall } from './workflow/ToolCall.ts'
 import * as ToolExecutor from './workflow/ToolExecutor.ts'
 
 /**
- * Built-in native declarations; applications may extend Declarations with their own ordinary Workflows.
+ * Built-in native Workflow declarations for submission, generation, tools, compaction and
+ * abort.
+ *
+ * **Details**
+ *
+ * Include these values when constructing extended Ownership.Declarations for custom owned
+ * work.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const workflows = [Submission, Generation, ToolCall, Compaction, Abort] as const
 
@@ -44,7 +47,6 @@ export const workflows = [Submission, Generation, ToolCall, Compaction, Abort] a
  * Pending work in owned conversations is dispatched and joined using native Workflow executions.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerConversationDrain: Layer.Layer<
   Structured.DrainConversations,
@@ -130,14 +132,19 @@ export const layerConversationDrain: Layer.Layer<
 )
 
 /**
- * Registers harness executors with the application's standard WorkflowEngine.
+ * Registers built-in handlers using the application’s ownership declarations.
+ *
+ * **When to use**
+ *
+ * Use when custom Workflows share ownership with built-in harness work.
  *
  * **Details**
  *
- * Provide SessionDirectory, Conversation.Configuration and the generic harness/provider Layers. For custom owned work, provide an extended Ownership.Declarations instead of the built-in declarations Layer.
+ * Provide Ownership.Declarations containing the built-ins and your custom declarations. This
+ * Layer installs handlers and cancellation/draining services in the supplied native engine.
  *
+ * @see {@link workflows} for the built-in declaration list.
  * @category layers
- * @since 0.0.0
  */
 export const layerExecutors: Layer.Layer<
   Structured.DrainConversations | Cancellation.Cancellation,
@@ -157,10 +164,21 @@ export const layerExecutors: Layer.Layer<
 ).pipe(Layer.provideMerge(layerConversationDrain), Layer.provideMerge(Cancellation.layer))
 
 /**
- * layer service Layer.
+ * Registers the five built-in Workflow executors and their ownership declarations.
  *
+ * **When to use**
+ *
+ * Use when only the built-in Submission, Generation, ToolCall, Compaction and Abort
+ * Workflows need domain ownership.
+ *
+ * **Details**
+ *
+ * Consumes the application’s native WorkflowEngine, SessionDirectory, conversation
+ * Configuration, model catalogue and generic Executor. Execution, replay and timers remain
+ * owned by Effect Workflow.
+ *
+ * @see {@link layerExecutors} for custom owned Workflow declarations.
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<
   Structured.DrainConversations | Cancellation.Cancellation | Ownership.Declarations,

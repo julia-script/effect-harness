@@ -1,7 +1,5 @@
 /**
  * Extension callback failures with their original causes.
- *
- * @since 0.0.0
  */
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
@@ -9,7 +7,6 @@ import * as Schema from 'effect/Schema'
  * Semantic hook failure with its retained cause.
  *
  * @category errors
- * @since 0.0.0
  */
 export class HookFailure extends Schema.TaggedError<HookFailure>(
   '@effect-harness/harness/HookError/HookFailure',
@@ -18,21 +15,18 @@ export class HookFailure extends Schema.TaggedError<HookFailure>(
  * Schema for hook error reason.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const HookErrorReason = Schema.Union([HookFailure])
 /**
- * HookError hook error reason contract.
+ * Decoded value validated by the `HookErrorReason` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type HookErrorReason = typeof HookErrorReason.Type
 /**
  * Semantic hook error with its retained cause.
  *
  * @category errors
- * @since 0.0.0
  */
 export class HookError extends Schema.TaggedError<HookError>(
   '@effect-harness/harness/HookError/HookError',

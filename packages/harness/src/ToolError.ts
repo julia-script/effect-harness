@@ -1,15 +1,12 @@
 /**
  * Semantic tool failure reasons with preserved caught causes.
- *
- * @since 0.0.0
  */
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
 /**
- * Semantic tool unavailable with its retained cause.
+ * Failure reporting a requested tool or local handler that is unavailable.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ToolUnavailable extends Schema.TaggedError<ToolUnavailable>(
   '@effect-harness/harness/ToolError/ToolUnavailable',
@@ -19,10 +16,9 @@ export class ToolUnavailable extends Schema.TaggedError<ToolUnavailable>(
   name: Schema.String,
 }) {}
 /**
- * Semantic tool blocked with its retained cause.
+ * Failure reporting a tool invocation blocked by hook policy.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ToolBlocked extends Schema.TaggedError<ToolBlocked>(
   '@effect-harness/harness/ToolError/ToolBlocked',
@@ -32,10 +28,9 @@ export class ToolBlocked extends Schema.TaggedError<ToolBlocked>(
   name: Schema.String,
 }) {}
 /**
- * Semantic tool invalid parameters with its retained cause.
+ * Failure decoding, repairing or encoding tool arguments.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ToolInvalidParameters extends Schema.TaggedError<ToolInvalidParameters>(
   '@effect-harness/harness/ToolError/ToolInvalidParameters',
@@ -45,10 +40,9 @@ export class ToolInvalidParameters extends Schema.TaggedError<ToolInvalidParamet
   name: Schema.String,
 }) {}
 /**
- * Semantic tool execution with its retained cause.
+ * Failure raised while running a captured tool handler.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ToolExecution extends Schema.TaggedError<ToolExecution>(
   '@effect-harness/harness/ToolError/ToolExecution',
@@ -58,10 +52,9 @@ export class ToolExecution extends Schema.TaggedError<ToolExecution>(
   name: Schema.String,
 }) {}
 /**
- * Semantic tool invalid result with its retained cause.
+ * Failure encoding or projecting a handler’s terminal result.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ToolInvalidResult extends Schema.TaggedError<ToolInvalidResult>(
   '@effect-harness/harness/ToolError/ToolInvalidResult',
@@ -71,10 +64,9 @@ export class ToolInvalidResult extends Schema.TaggedError<ToolInvalidResult>(
   name: Schema.String,
 }) {}
 /**
- * Semantic tool interrupted with its retained cause.
+ * Failure reporting interruption before tool settlement.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ToolInterrupted extends Schema.TaggedError<ToolInterrupted>(
   '@effect-harness/harness/ToolError/ToolInterrupted',
@@ -87,7 +79,6 @@ export class ToolInterrupted extends Schema.TaggedError<ToolInterrupted>(
  * Schema for tool error reason.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ToolErrorReason = Schema.Union([
   ToolUnavailable,
@@ -98,17 +89,25 @@ export const ToolErrorReason = Schema.Union([
   ToolInterrupted,
 ])
 /**
- * ToolError tool error reason contract.
+ * Decoded value validated by the `ToolErrorReason` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type ToolErrorReason = typeof ToolErrorReason.Type
 /**
- * Semantic tool error with its retained cause.
+ * Structured tool failure retaining its tool name and caught cause.
+ *
+ * **Details**
+ *
+ * Match reason._tag to distinguish availability, policy, argument, execution and result
+ * failures. The message/name/cause accessors project the selected reason.
+ *
+ * **Gotchas**
+ *
+ * Effect interruption remains cancellation when settling a caught cause; it is not silently
+ * converted into an ordinary failed tool result.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ToolError extends Schema.TaggedError<ToolError>(
   '@effect-harness/harness/ToolError/ToolError',

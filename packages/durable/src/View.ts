@@ -1,7 +1,5 @@
 /**
  * Shared committed conversation mounts and bounded subscriber projections.
- *
- * @since 0.0.0
  */
 import * as Order from 'effect/Order'
 import { dual } from 'effect/Function'
@@ -51,7 +49,6 @@ import { findDocument, materialize, visibleEntries } from './storage/internal/st
  * Schema-derived singleton document values retain their mounted reference identity.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Documents = Schema.Struct({
   'harness.agent': Schema.optionalKey(Agent.State),
@@ -61,17 +58,16 @@ export const Documents = Schema.Struct({
   'harness.usage': Schema.optionalKey(Usage.State),
 })
 /**
- * Documents contract.
+ * Built-in document values included in a committed conversation view.
  *
  * @category models
- * @since 0.0.0
  */
 export type Documents = typeof Documents.Type
 /**
- * Value schema.
+ * Schema for conversation, visible entries and built-in documents from one committed
+ * snapshot.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Value = Schema.Struct({
   conversation: Record.Conversation,
@@ -79,31 +75,27 @@ export const Value = Schema.Struct({
   docs: Documents,
 })
 /**
- * Compatibility alias for View.Value.
+ * Conversation, visible entries and built-in documents from one committed snapshot.
  *
  * @category models
- * @since 0.0.0
  */
 export type Value = View.Value
 /**
- * Path schema.
+ * Schema for address of an entry or document field within a conversation view.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Path = Schema.Array(Schema.Union([Schema.String, Schema.Finite]))
 /**
- * Compatibility alias for View.Path.
+ * Address of an entry or document field within a conversation view.
  *
  * @category models
- * @since 0.0.0
  */
 export type Path = View.Path
 /**
- * Op schema.
+ * Schema for structural mutation applied to a committed conversation view.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Op = Schema.Union([
   Schema.Tuple([Schema.Literal('replace'), Value]),
@@ -121,17 +113,15 @@ export const Op = Schema.Union([
   ]),
 ])
 /**
- * Compatibility alias for View.Op.
+ * Structural mutation applied to a committed conversation view.
  *
  * @category models
- * @since 0.0.0
  */
 export type Op = View.Op
 /**
- * Change schema.
+ * Schema for before/after view values and structural operations for a committed update.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Change = Schema.Struct({
   seq: Record.JournalCursor,
@@ -143,61 +133,63 @@ export const Change = Schema.Struct({
   rebased: Schema.optionalKey(Schema.Boolean),
 })
 /**
- * Compatibility alias for View.Change.
+ * Before/after view values and structural operations for a committed update.
  *
  * @category models
- * @since 0.0.0
  */
 export type Change = View.Change
 /**
  * Structural set values are opaque decoded field values; the JSON client codec validates their wire representation without changing mounted references.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ChangeJson = Schema.toCodecJson(Change)
 const ProjectionWatchTypeId = '~@effect-harness/durable/View/ProjectionWatch'
 /**
- * Compatibility alias for View.ProjectionWatch.
+ * Scoped initial projection and stream of subsequent committed values.
  *
  * @category models
- * @since 0.0.0
  */
 export type ProjectionWatch<A> = View.ProjectionWatch<A>
 /**
- * Compatibility alias for View.Watch.
+ * Scoped conversation snapshot and stream of structural changes.
  *
  * @category models
- * @since 0.0.0
  */
 export type Watch = View.Watch
 const ProjectionTypeId = '~@effect-harness/durable/View/Projection'
 /**
- * Compatibility alias for View.Projection.
+ * Initial, incremental and reset functions for a custom committed view.
  *
  * @category models
- * @since 0.0.0
  */
 export type Projection<A> = View.Projection<A>
 /**
- * Compatibility alias for View.State.
+ * Live committed view with its latest journal cursor and closing result.
  *
  * @category models
- * @since 0.0.0
  */
 export type State = View.State
 /**
- * Compatibility alias for View.Service.
+ * Shared conversation mounts and scoped committed projections.
  *
  * @category models
- * @since 0.0.0
  */
 export type Service = View.Service
 /**
- * View service.
+ * Service for coherent committed conversation views and scoped projections.
+ *
+ * **Details**
+ *
+ * Views combine visible entries and built-in documents from saved commit frames. Projections
+ * for a conversation share a mount and storage driver.
+ *
+ * **Gotchas**
+ *
+ * Provider token streams are invisible until committed. Each watch holds at most 100 pending
+ * batches; overflow resets to the newest coherent snapshot.
  *
  * @category services
- * @since 0.0.0
  */
 export class View extends Context.Service<View, Service>()('@effect-harness/durable/View') {}
 
@@ -247,7 +239,6 @@ const own = (object: object, key: string | number, value: unknown) =>
  * Replays structural deltas while preserving all unchanged branches and safe own-property keys.
  *
  * @category schemas
- * @since 0.0.0
  */
 function applyUnsafeImpl(self: Value, ops: ReadonlyArray<Op>): Value {
   const value = self
@@ -288,10 +279,9 @@ function applyUnsafeImpl(self: Value, ops: ReadonlyArray<Op>): Value {
   return result as Value
 }
 /**
- * ViewOperationError schema.
+ * Failure reporting an invalid structural view operation.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ViewOperationError extends Schema.TaggedError<ViewOperationError>(
   '@effect-harness/durable/View/ViewOperationError',
@@ -486,7 +476,6 @@ const advance = Effect.fnUntraced(function* (
  * Scoped committed view service acquisition.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Effect.gen(
   function* () {
@@ -632,6 +621,9 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
             const queue = yield* Queue.make<
               {
                 readonly value: Effect.Success<ReturnType<typeof projection.initial>>
+                /**
+                 * Rebuilds the projection after incremental history is unavailable.
+                 */
                 readonly reset: boolean
               },
               Cause.Done
@@ -786,10 +778,14 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
   },
 )
 /**
- * layer service Layer.
+ * Provides shared committed views over a domain Store.
+ *
+ * **Details**
+ *
+ * The Layer’s Scope owns conversation mounts; each watch also requires its own acquisition
+ * Scope.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<View, never, Store.Store> = Layer.effect(View, make)
 
@@ -797,7 +793,6 @@ export const layer: Layer.Layer<View, never, Store.Store> = Layer.effect(View, m
  * Creates a projection watch with live getters and shared inspection.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeProjectionWatch = <A>(
   input: handle.Input<ProjectionWatch<A>, typeof ProjectionWatchTypeId>,
@@ -810,10 +805,13 @@ export const makeProjectionWatch = <A>(
 }
 
 /**
- * Returns whether the value satisfies ProjectionWatch.
+ * Checks whether a value carries the nominal `ProjectionWatch` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isProjectionWatch = (input: unknown): input is ProjectionWatch<unknown> =>
   Predicate.hasProperty(input, ProjectionWatchTypeId)
@@ -822,7 +820,6 @@ export const isProjectionWatch = (input: unknown): input is ProjectionWatch<unkn
  * Creates a typed conversation projection.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeProjection = <A>(
   input: Omit<Projection<A>, typeof ProjectionTypeId>,
@@ -833,10 +830,13 @@ export const makeProjection = <A>(
   return value
 }
 /**
- * Returns whether the value satisfies Projection.
+ * Checks whether a value carries the nominal `Projection` marker.
+ *
+ * **Gotchas**
+ *
+ * This checks library identity, not the validity of arbitrary fields or stored JSON.
  *
  * @category guards
- * @since 0.0.0
  */
 export const isProjection = (input: unknown): input is Projection<unknown> =>
   Predicate.hasProperty(input, ProjectionTypeId)
@@ -845,7 +845,6 @@ export const isProjection = (input: unknown): input is Projection<unknown> =>
  * Creates a watch handle with live getters and shared inspection.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeWatch = (input: handle.Input<Watch, typeof ProjectionWatchTypeId>): Watch => {
   const value = handle.make(
@@ -859,7 +858,6 @@ export const makeWatch = (input: handle.Input<Watch, typeof ProjectionWatchTypeI
  * Validates and replays view operations while preserving unchanged branches.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const apply: {
   (ops: ReadonlyArray<Op>): (self: Value) => Result.Result<Value, ViewOperationError>
@@ -867,45 +865,50 @@ export const apply: {
 } = dual(2, applyImpl)
 
 /**
- * View contract.
+ * Type-level contracts for `View`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace View {
   /**
-   * Value contract.
+   * Conversation, visible entries and built-in documents from one committed snapshot.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Value = typeof Value.Type
   /**
-   * Path contract.
+   * Address of an entry or document field within a conversation view.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Path = typeof Path.Type
   /**
-   * Op contract.
+   * Structural mutation applied to a committed conversation view.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Op = typeof Op.Type
   /**
-   * Change contract.
+   * Before/after view values and structural operations for a committed update.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Change = typeof Change.Type
   /**
-   * ProjectionWatch contract.
+   * Scoped initial projection and single-consumer stream of committed updates.
+   *
+   * **Details**
+   *
+   * value is the initial projection; changes contains subsequent deliveries. listen joins the
+   * listener lifetime. stop ends delivery with a stopped result; Scope still owns resource
+   * release.
+   *
+   * **Gotchas**
+   *
+   * Process batches in order. A slow watch may receive a reset instead of every intermediate
+   * commit. Listener failures close that watch.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface ProjectionWatch<out A> extends Pipeable.Pipeable, Inspectable.Inspectable {
     readonly [ProjectionWatchTypeId]: { readonly _A: Types.Covariant<A> }
@@ -919,27 +922,40 @@ export declare namespace View {
     ) => Effect.Effect<void, E | StorageError, R>
   }
   /**
-   * Watch contract.
+   * Scoped conversation snapshot and stream of structural changes.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Watch extends Omit<ProjectionWatch<Change>, 'value'> {
     readonly value: Value
   }
   /**
-   * Projection contract.
+   * Functions projecting an initial snapshot, incremental change and reset.
+   *
+   * **Details**
+   *
+   * initial receives the committed view and tasks. project may return undefined to suppress a
+   * delivery. reset reconstructs the projection when retained incremental history is
+   * unavailable.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Projection<out A> {
     readonly [ProjectionTypeId]: { readonly _A: Types.Covariant<A> }
+    /**
+     * Builds the projection from the committed view and task snapshot.
+     */
     readonly initial: (
       view: Value,
       tasks: ReadonlyArray<Record.Task>,
     ) => Effect.Effect<A, StorageError>
+    /**
+     * Projects an incremental change; undefined suppresses a delivery.
+     */
     readonly project: (change: Change) => Effect.Effect<A | undefined, StorageError>
+    /**
+     * Rebuilds the projection after incremental history is unavailable.
+     */
     readonly reset: (
       view: Value,
       seq: Record.Seq | 0,
@@ -947,10 +963,9 @@ export declare namespace View {
     ) => Effect.Effect<A, StorageError>
   }
   /**
-   * State contract.
+   * Live committed view with its latest journal cursor and closing result.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface State extends Pipeable.Pipeable, Inspectable.Inspectable {
     readonly value: Value
@@ -958,17 +973,26 @@ export declare namespace View {
     readonly closed: Effect.Effect<Observation.End>
   }
   /**
-   * Service contract.
+   * Shared conversation mounts and scoped committed projections.
    *
    * @category models
-   * @since 0.0.0
    */
   export interface Service {
+    /**
+     * Acquires a custom projection over the conversation’s shared committed mount.
+     */
     readonly observe: <A>(
       id: Record.ConversationId,
       projection: Projection<A>,
     ) => Effect.Effect<ProjectionWatch<A>, StorageError, Scope.Scope>
+    /**
+     * Acquires a committed initial conversation view and subsequent structural change batches in
+     * the caller’s Scope.
+     */
     readonly watch: (id: Record.ConversationId) => Effect.Effect<Watch, StorageError, Scope.Scope>
+    /**
+     * Maintains a scoped live conversation value and journal cursor.
+     */
     readonly state: (id: Record.ConversationId) => Effect.Effect<State, StorageError, Scope.Scope>
   }
 }
@@ -977,7 +1001,6 @@ export declare namespace View {
  * Replays view operations or throws for an invalid operation.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const applyUnsafe: {
   (ops: ReadonlyArray<Op>): (self: Value) => Value

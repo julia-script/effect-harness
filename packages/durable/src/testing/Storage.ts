@@ -1,7 +1,5 @@
 /**
  * Scoped backend fixtures and conformance case contracts.
- *
- * @since 0.0.0
  */
 import { dual } from 'effect/Function'
 import { identity } from 'effect/Function'
@@ -18,7 +16,6 @@ import type { StorageError } from '../StorageError.ts'
  * Composes a storage backend with the ordinary domain Session service.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const sessionLayer = <E, R>(
   backend: Layer.Layer<Store, E, R>,
@@ -28,7 +25,6 @@ export const sessionLayer = <E, R>(
  * Child resource Scope available to conformance cases for explicit early release.
  *
  * @category services
- * @since 0.0.0
  */
 export class ResourceScope extends Context.Service<ResourceScope, Scope.Closeable>()(
   '@effect-harness/durable/testing/ResourceScope',
@@ -38,7 +34,6 @@ export class ResourceScope extends Context.Service<ResourceScope, Scope.Closeabl
  * Builds resources in a child Scope while the test body retains its separate waiting Scope.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const withLayer = <A, E, R, O, E2, R2>(
   effect: Effect.Effect<A, E, R>,
@@ -60,10 +55,9 @@ export const withLayer = <A, E, R, O, E2, R2>(
 /** Runner independent conformance cases keep the native Effect environment visible. */
 const CaseTypeId = '~@effect-harness/durable/testing/Storage/Case'
 /**
- * Case contract.
+ * Named Effect-based storage conformance case.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Case<out R = Store | Session.Session | ResourceScope> {
   readonly [CaseTypeId]: { readonly _R: Types.Covariant<R> }
@@ -71,10 +65,9 @@ export interface Case<out R = Store | Session.Session | ResourceScope> {
   readonly run: Effect.Effect<void, StorageError, R>
 }
 /**
- * Assertions contract.
+ * Runner-independent assertions for storage conformance.
  *
  * @category models
- * @since 0.0.0
  */
 export interface Assertions {
   readonly strictEqual: (actual: unknown, expected: unknown) => void
@@ -88,7 +81,6 @@ export interface Assertions {
  * Every case gets its own resource scope and backend instance.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const withStorage: {
   <E2, R2>(
@@ -120,7 +112,6 @@ export const withStorage: {
  * Creates a named storage conformance case.
  *
  * @category constructors
- * @since 0.0.0
  */
 export const makeCase = <R>(input: Omit<Case<R>, typeof CaseTypeId>): Case<R> => {
   const value: Case<R> = { ...input, [CaseTypeId]: { _R: identity } }

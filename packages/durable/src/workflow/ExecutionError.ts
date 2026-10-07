@@ -1,7 +1,5 @@
 /**
  * Structured Workflow execution failures and legacy-compatible codecs.
- *
- * @since 0.0.0
  */
 import * as Schema from 'effect/Schema'
 import * as SchemaTransformation from 'effect/SchemaTransformation'
@@ -15,10 +13,9 @@ const fields = {
 }
 
 /**
- * NoModel schema.
+ * Workflow failure reporting that no usable model was selected.
  *
  * @category errors
- * @since 0.0.0
  */
 export class NoModel extends Schema.TaggedError<NoModel>(
   '@effect-harness/durable/workflow/ExecutionError/NoModel',
@@ -29,10 +26,9 @@ export class NoModel extends Schema.TaggedError<NoModel>(
 }
 
 /**
- * ConversationBusy schema.
+ * Workflow failure reporting input rejected while its conversation is busy.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ConversationBusy extends Schema.TaggedError<ConversationBusy>(
   '@effect-harness/durable/workflow/ExecutionError/ConversationBusy',
@@ -43,10 +39,9 @@ export class ConversationBusy extends Schema.TaggedError<ConversationBusy>(
 }
 
 /**
- * RequestConflict schema.
+ * Workflow failure reporting incompatible reuse of an admission identity.
  *
  * @category errors
- * @since 0.0.0
  */
 export class RequestConflict extends Schema.TaggedError<RequestConflict>(
   '@effect-harness/durable/workflow/ExecutionError/RequestConflict',
@@ -57,10 +52,9 @@ export class RequestConflict extends Schema.TaggedError<RequestConflict>(
 }
 
 /**
- * ToolUnavailable schema.
+ * Workflow failure reporting an unavailable requested tool.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ToolUnavailable extends Schema.TaggedError<ToolUnavailable>(
   '@effect-harness/durable/workflow/ExecutionError/ToolUnavailable',
@@ -71,10 +65,9 @@ export class ToolUnavailable extends Schema.TaggedError<ToolUnavailable>(
 }
 
 /**
- * InvalidArguments schema.
+ * Workflow failure reporting invalid execution or tool arguments.
  *
  * @category errors
- * @since 0.0.0
  */
 export class InvalidArguments extends Schema.TaggedError<InvalidArguments>(
   '@effect-harness/durable/workflow/ExecutionError/InvalidArguments',
@@ -85,10 +78,9 @@ export class InvalidArguments extends Schema.TaggedError<InvalidArguments>(
 }
 
 /**
- * ModelError schema.
+ * Workflow failure wrapping a model request failure.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ModelError extends Schema.TaggedError<ModelError>(
   '@effect-harness/durable/workflow/ExecutionError/ModelError',
@@ -99,10 +91,9 @@ export class ModelError extends Schema.TaggedError<ModelError>(
 }
 
 /**
- * ContextOverflow schema.
+ * Workflow failure reporting context beyond the selected model’s limit.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ContextOverflow extends Schema.TaggedError<ContextOverflow>(
   '@effect-harness/durable/workflow/ExecutionError/ContextOverflow',
@@ -113,10 +104,9 @@ export class ContextOverflow extends Schema.TaggedError<ContextOverflow>(
 }
 
 /**
- * Aborted schema.
+ * Workflow failure reporting committed task cancellation.
  *
  * @category errors
- * @since 0.0.0
  */
 export class Aborted extends Schema.TaggedError<Aborted>(
   '@effect-harness/durable/workflow/ExecutionError/Aborted',
@@ -127,10 +117,9 @@ export class Aborted extends Schema.TaggedError<Aborted>(
 }
 
 /**
- * Closed schema.
+ * Workflow failure reporting a sealed Session or execution boundary.
  *
  * @category errors
- * @since 0.0.0
  */
 export class Closed extends Schema.TaggedError<Closed>(
   '@effect-harness/durable/workflow/ExecutionError/Closed',
@@ -141,10 +130,9 @@ export class Closed extends Schema.TaggedError<Closed>(
 }
 
 /**
- * Storage schema.
+ * Workflow failure wrapping rejected or uncertain domain persistence.
  *
  * @category errors
- * @since 0.0.0
  */
 export class Storage extends Schema.TaggedError<Storage>(
   '@effect-harness/durable/workflow/ExecutionError/Storage',
@@ -155,10 +143,9 @@ export class Storage extends Schema.TaggedError<Storage>(
 }
 
 /**
- * InvalidState schema.
+ * Workflow failure reporting an inconsistent task or execution projection.
  *
  * @category errors
- * @since 0.0.0
  */
 export class InvalidState extends Schema.TaggedError<InvalidState>(
   '@effect-harness/durable/workflow/ExecutionError/InvalidState',
@@ -169,10 +156,9 @@ export class InvalidState extends Schema.TaggedError<InvalidState>(
 }
 
 /**
- * ExecutionErrorReason schema.
+ * Schema for structured harness Workflow failure reasons.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ExecutionErrorReason = Schema.Union([
   NoModel,
@@ -188,18 +174,26 @@ export const ExecutionErrorReason = Schema.Union([
   InvalidState,
 ])
 /**
- * ExecutionErrorReason contract.
+ * Decoded value validated by the `ExecutionErrorReason` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type ExecutionErrorReason = typeof ExecutionErrorReason.Type
 
 /**
- * A recoverable execution failure. Model/provider retry remains owned by the model policy.
+ * Structured Workflow failure with preserved reason and optional domain detail.
+ *
+ * **Details**
+ *
+ * Runtime policies match reason._tag. The code accessor retains the legacy discriminator for
+ * persisted records. Model/provider retry is selected by model policy.
+ *
+ * **Gotchas**
+ *
+ * A Workflow failure does not authorize repeating an external side effect. Reconcile its
+ * domain receipt and replay policy first.
  *
  * @category errors
- * @since 0.0.0
  */
 export class ExecutionError extends Schema.TaggedError<ExecutionError>(
   '@effect-harness/durable/workflow/ExecutionError',
@@ -250,18 +244,16 @@ const reasonCodes = {
   InvalidState: 'invalid_state',
 } as const
 /**
- * LegacyReason contract.
+ * Compatibility code translated into a structured workflow failure reason.
  *
  * @category models
- * @since 0.0.0
  */
 export type LegacyReason = keyof typeof legacyReasons
 
 /**
- * LegacyExecutionError schema.
+ * Schema for the compatible persisted Workflow error representation.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const LegacyExecutionError = Schema.TaggedStruct('ExecutionError', {
   reason: Schema.Literals([
@@ -315,6 +307,5 @@ const legacyCodec = LegacyExecutionError.pipe(
  * Accepts legacy/current errors; encoding keeps the original reason/message/detail wire shape.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const ExecutionErrorCodec = Schema.Union([legacyCodec, ExecutionError])

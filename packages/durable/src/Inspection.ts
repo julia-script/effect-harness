@@ -1,7 +1,5 @@
 /**
  * Committed task inspection and structurally shared ownership graph projections.
- *
- * @since 0.0.0
  */
 import * as records from 'effect/Record'
 // effect-review-allow P9-namespace-alias-equals-module: durable/Record supplies domain schemas; effect/Record supplies safe dictionary operations.
@@ -21,10 +19,9 @@ import type * as Session from './Session.ts'
 import type * as Store from './Store.ts'
 
 /**
- * TaskState schema.
+ * Schema for persisted task lifecycle classification without running its handler.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const TaskState = Schema.Union([
   tagged('ready', { kind: Schema.tag('ready') }),
@@ -37,41 +34,36 @@ export const TaskState = Schema.Union([
   }),
 ])
 /**
- * Compatibility alias for TaskInspection.State.
+ * Persisted task lifecycle classification without running its handler.
  *
  * @category models
- * @since 0.0.0
  */
 export type TaskState = typeof TaskState.Type
 /**
- * TaskInspection schema.
+ * Schema for task record paired with committed lifecycle diagnostics.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const TaskInspection = Schema.Struct({ record: Record.Task, state: TaskState })
 /**
- * TaskInspection contract.
+ * Task record paired with committed lifecycle diagnostics.
  *
  * @category models
- * @since 0.0.0
  */
 export type TaskInspection = typeof TaskInspection.Type
 /**
- * Value schema.
+ * Schema for committed session inspection of conversations, tasks and submissions.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Value = Schema.Struct({
   tasks: Schema.Array(TaskInspection),
   submissions: Schema.Array(Record.Submission),
 })
 /**
- * Value contract.
+ * Committed session inspection of conversations, tasks and submissions.
  *
  * @category models
- * @since 0.0.0
  */
 export type Value = typeof Value.Type
 
@@ -79,7 +71,6 @@ export type Value = typeof Value.Type
  * Inspects committed facts and declaration metadata without invoking handlers, codecs, migrations, or the engine.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const get = Effect.fnUntraced(function* (
   session: Session.Service,
@@ -124,10 +115,9 @@ export const get = Effect.fnUntraced(function* (
 })
 
 /**
- * GraphNode schema.
+ * Schema for conversation or task represented in an ownership graph.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const GraphNode = Schema.Struct({
   id: Record.TaskId,
@@ -145,31 +135,27 @@ export const GraphNode = Schema.Struct({
   conversations: Schema.Array(Record.ConversationId),
 })
 /**
- * Compatibility alias for Graph.Node.
+ * Conversation or task represented in an ownership graph.
  *
  * @category models
- * @since 0.0.0
  */
 export type GraphNode = typeof GraphNode.Type
 /**
- * Graph schema.
+ * Schema for committed ownership graph for diagnostics or visualization.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Graph = Schema.Struct({ tasks: Schema.Record(Schema.String, GraphNode) })
 /**
- * Graph contract.
+ * Committed ownership graph for diagnostics or visualization.
  *
  * @category models
- * @since 0.0.0
  */
 export type Graph = typeof Graph.Type
 /**
  * Live-only ownership graph deliberately excludes arbitrary checkpoint/result payloads.
  *
  * @category combinators
- * @since 0.0.0
  */
 export function graph(state: Ownership.Graph): Graph {
   const tasks: Record<string, GraphNode> = Object.create(null)
@@ -203,10 +189,9 @@ export function graph(state: Ownership.Graph): Graph {
 }
 
 /**
- * GraphOp schema.
+ * Schema for incremental change to an ownership graph.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const GraphOp = Schema.Union([
   Schema.Tuple([Schema.Literal('replace'), Graph]),
@@ -218,17 +203,15 @@ export const GraphOp = Schema.Union([
   Schema.Tuple([Schema.Literal('delete'), Schema.Tuple([Schema.Literal('tasks'), Schema.String])]),
 ])
 /**
- * Compatibility alias for Graph.Op.
+ * Incremental change to an ownership graph.
  *
  * @category models
- * @since 0.0.0
  */
 export type GraphOp = typeof GraphOp.Type
 /**
- * GraphChange schema.
+ * Schema for ordered graph operations for a committed session update.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const GraphChange = Schema.Struct({
   seq: Record.JournalCursor,
@@ -238,10 +221,9 @@ export const GraphChange = Schema.Struct({
   reset: Schema.Boolean,
 })
 /**
- * Compatibility alias for Graph.Change.
+ * Ordered graph operations for a committed session update.
  *
  * @category models
- * @since 0.0.0
  */
 export type GraphChange = typeof GraphChange.Type
 const changed = (
@@ -269,7 +251,6 @@ const changed = (
  * Exact committed graph frames and structural branch sharing, replaced only on bounded journal overflow.
  *
  * @category combinators
- * @since 0.0.0
  */
 export const changes = (
   store: Store.Service,
@@ -360,47 +341,41 @@ export const changes = (
   )
 
 /**
- * Graph contract.
+ * Type-level contracts for `Graph`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace Graph {
   /**
-   * Node contract.
+   * Task or conversation node in the committed ownership graph.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Node = GraphNode
   /**
-   * Op contract.
+   * Type alias for `GraphOp`.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Op = GraphOp
   /**
-   * Change contract.
+   * Type alias for `GraphChange`.
    *
    * @category models
-   * @since 0.0.0
    */
   export type Change = GraphChange
 }
 
 /**
- * TaskInspection contract.
+ * Type-level contracts for `TaskInspection`.
  *
- * @category models
- * @since 0.0.0
+ * @category utility types
  */
 export declare namespace TaskInspection {
   /**
-   * State contract.
+   * Persisted lifecycle classification of a domain task.
    *
    * @category models
-   * @since 0.0.0
    */
   export type State = TaskState
 }

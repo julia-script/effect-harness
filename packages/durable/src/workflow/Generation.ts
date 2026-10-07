@@ -1,7 +1,5 @@
 /**
  * Native generation Workflow declaration and result schema.
- *
- * @since 0.0.0
  */
 import * as Identity from '../Identity.ts'
 import * as Schema from 'effect/Schema'
@@ -10,10 +8,9 @@ import * as Record from '../Record.ts'
 import { ExecutionErrorCodec } from './ExecutionError.ts'
 
 /**
- * Native workflow result schema.
+ * Schema for answered, tool-round, reset, failed or aborted generation settlement.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Result = Schema.Struct({
   status: Schema.Literals(['answered', 'tools', 'reset', 'failed', 'aborted']),
@@ -21,18 +18,27 @@ export const Result = Schema.Struct({
   detail: Schema.optionalKey(Schema.String),
 })
 /**
- * Native workflow result schema.
+ * Decoded value validated by the `Result` schema.
  *
  * @category models
- * @since 0.0.0
  */
 export type Result = typeof Result.Type
 
 /**
- * Native workflow for a conversation generation, including retries and tool rounds.
+ * Native Workflow running one conversation generation with retries and tool rounds.
+ *
+ * **Details**
+ *
+ * Register GenerationExecutor before calling the declaration. The session/task pair
+ * determines execution identity; domain receipts preserve committed preparation and terminal
+ * settlement across native Activity reply gaps.
+ *
+ * **Gotchas**
+ *
+ * A persistent domain Store and persistent WorkflowEngine are both needed for restart
+ * recovery.
  *
  * @category schemas
- * @since 0.0.0
  */
 export const Generation = Workflow.make('@effect-harness/durable/Generation/v1', {
   payload: {

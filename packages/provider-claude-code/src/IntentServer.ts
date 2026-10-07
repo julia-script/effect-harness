@@ -1,7 +1,5 @@
 /**
  * Scoped intent-only MCP sessions with tool execution blocked at the provider boundary.
- *
- * @since 0.0.0
  */
 import * as Arr from 'effect/Array'
 import * as Ref from 'effect/Ref'
@@ -25,10 +23,9 @@ import * as HttpServerResponse from 'effect/http/HttpServerResponse'
 import { processError, unsupported } from './ClaudeCodeError.ts'
 
 /**
- * Describes the Session contract.
+ * Scoped MCP endpoint and CLI-alias mapping for offered native tools.
  *
- * @category types
- * @since 0.0.0
+ * @category models
  */
 export interface Session {
   readonly url: string
@@ -36,10 +33,14 @@ export interface Session {
   readonly aliases: ReadonlyMap<string, string>
 }
 /**
- * Identifies the IntentServer service in the Effect context.
+ * Service opening a scoped MCP endpoint that captures native tool intents.
+ *
+ * **Details**
+ *
+ * The CLI can request offered tools but the harness executes their handlers. Aliases map
+ * CLI-visible names back to native Tool names.
  *
  * @category services
- * @since 0.0.0
  */
 export class IntentServer extends Context.Service<
   IntentServer,
@@ -51,10 +52,13 @@ export class IntentServer extends Context.Service<
 >()('@effect-harness/provider-claude-code/IntentServer') {}
 
 /**
- * Explicit text-only capability: attempts to supply tools produce a native typed error.
+ * Provides an intent server that rejects requests offering tools.
+ *
+ * **When to use**
+ *
+ * Use when CLI requests contain no tools and need no loopback server.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layerDisabled: Layer.Layer<IntentServer, never, never> = Layer.succeed(
   IntentServer,
@@ -64,10 +68,18 @@ export const layerDisabled: Layer.Layer<IntentServer, never, never> = Layer.succ
 )
 
 /**
- * Serves native MCP descriptors; every tools/call handler waits forever and never runs a real tool.
+ * Provides scoped MCP tool-intent sessions through a loopback HttpServer.
+ *
+ * **Details**
+ *
+ * Each session exposes offered tools and retains their alias mapping. The server records
+ * intent rather than executing handlers inside the CLI.
+ *
+ * **Gotchas**
+ *
+ * Keep the supplied HttpServer and acquisition Scope alive until the request finishes.
  *
  * @category layers
- * @since 0.0.0
  */
 export const layer: Layer.Layer<
   IntentServer,
