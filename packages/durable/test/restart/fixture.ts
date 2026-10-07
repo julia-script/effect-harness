@@ -1,7 +1,6 @@
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as BunRuntime from '@effect/platform-bun/BunRuntime'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
-import * as ClusterSchema from 'effect/cluster/ClusterSchema'
 import * as ClusterWorkflowEngine from 'effect/cluster/ClusterWorkflowEngine'
 import * as SingleRunner from 'effect/cluster/SingleRunner'
 import * as Config from 'effect/Config'
@@ -30,19 +29,22 @@ const executor = Probe.toLayer(() =>
       name: 'domain-commit',
       success: Schema.Int,
       error: Schema.String,
-      execute: Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        yield* sql`CREATE TABLE IF NOT EXISTS restart_probe (id INTEGER PRIMARY KEY CHECK (id = 1), count INTEGER NOT NULL)`
-        yield* sql`INSERT OR IGNORE INTO restart_probe (id, count) VALUES (1, 0)`
-        yield* sql`UPDATE restart_probe SET count = count + 1 WHERE id = 1`
-        const rows = yield* sql<{ count: number }>`SELECT count FROM restart_probe WHERE id = 1`
-        if (faultWindow === 'true' && phase === 'start') {
-          yield* Console.log('PROBE_READY:uncommitted')
-          return yield* Effect.never
-        }
-        return rows[0]?.count ?? 0
-      }).pipe(Effect.mapError((error) => error.message)),
-    }).annotate(ClusterSchema.WithTransaction, true)
+      execute: Effect.flatMap(SqlClient.SqlClient, (sql) =>
+        sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`CREATE TABLE IF NOT EXISTS restart_probe (id INTEGER PRIMARY KEY CHECK (id = 1), count INTEGER NOT NULL)`
+            yield* sql`INSERT OR IGNORE INTO restart_probe (id, count) VALUES (1, 0)`
+            yield* sql`UPDATE restart_probe SET count = count + 1 WHERE id = 1`
+            const rows = yield* sql<{ count: number }>`SELECT count FROM restart_probe WHERE id = 1`
+            if (faultWindow === 'true' && phase === 'start') {
+              yield* Console.log('PROBE_READY:uncommitted')
+              return yield* Effect.never
+            }
+            return rows[0]?.count ?? 0
+          }),
+        ),
+      ).pipe(Effect.mapError((error) => error.message)),
+    })
     yield* Console.log(`PROBE_READY:${count}`)
     yield* DurableDeferred.await(Resume)
     return count

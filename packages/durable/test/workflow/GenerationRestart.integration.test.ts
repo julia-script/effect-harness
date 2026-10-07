@@ -11,7 +11,7 @@ describe('GenerationRestart', () => {
   for (const faultWindow of [false, true])
     // SIGKILL, child stdout and independent SQL COMMIT progress use host processes outside TestClock.
     it.live(
-      `restarts after SIGKILL ${faultWindow ? 'inside a transaction after a SQL-reading workflow prefix' : 'without repeating a completed activity'}`,
+      `restarts after SIGKILL ${faultWindow ? 'inside an Activity-owned transaction after a SQL-reading workflow prefix' : 'without repeating a completed activity'}`,
       () =>
         Effect.gen(function* () {
           const worker = yield* RestartWorker
@@ -22,8 +22,7 @@ describe('GenerationRestart', () => {
             ready,
             Option.some(faultWindow ? 'PROBE_READY:uncommitted' : 'PROBE_READY:1'),
           )
-          // An independent writable transaction waits for the child commit, closing
-          // the native reply notification vs. physical COMMIT timing gap.
+          // Inspect the committed body independently before killing the worker.
           if (!faultWindow) {
             const committed = yield* Effect.gen(function* () {
               const sql = yield* SqlClient.SqlClient

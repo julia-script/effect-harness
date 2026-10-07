@@ -4,16 +4,15 @@ The package peer requirement is Effect `^4.0.1`. The implementation and examples
 
 ## Effect 4.0.1 patch
 
-The full harness contract on Effect 4.0.1 requires the supplied [compatibility patch](../../patches/effect@4.0.1.patch). The package peer range does not apply that patch automatically to a consumer's installation. It changes two native behaviors:
+Unknown-tool settlement requires the supplied [AI compatibility patch](../../patches/effect@4.0.1.patch). The package peer range does not apply that patch automatically to a consumer's installation.
 
-| Behavior                                        | Patch contract                                                                                                                                  |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Caller-owned unknown tool settlement            | Preserves undeclared names/parameters only with allowUnknownToolCalls and disableToolCallResolution both true; declared tools retain validation |
-| Cluster transaction-annotated Activity recovery | Waits for the recovered Activity definition before acquiring its transaction, allowing earlier cached Activity results to be read               |
+The generic Executor opts into `allowUnknownToolCalls` together with `disableToolCallResolution` so it can commit an unavailable-tool result for an undeclared name. The patch preserves that name and its parameters; declared tools retain native parameter validation. Unpatched Effect rejects undeclared calls before this settlement path. Strict rejection remains the default for ordinary native model calls.
 
-The generic Executor opts into unknown-call preservation to commit unavailable-tool results. Unpatched Effect rejects those calls before that settlement path. The native type option permits the opt-in only for broad tool names and unknown parameter types. Strict rejection remains the default for ordinary native model calls.
+## Native Workflow recovery
 
-The Cluster fix changes recovery ordering for transaction-annotated Activities. Those bodies and replies remain natively transactional. Built-in harness Activities use ordinary native replay and domain receipts, without transaction annotations.
+The harness does not patch ClusterWorkflowEngine or its transaction handling. Built-in Activities use ordinary native replay and domain receipts. Their domain commits and the native Activity replies have separate commit points; a saved domain receipt resolves the gap on recovery. See [replay and recovery](../explanation/recovery.md#the-commit-to-reply-gap).
+
+A separate upstream recovery deadlock was reproduced with `ClusterSchema.WithTransaction` Activities and a shared SQLite client. That annotation lets a recovered Activity request acquire the connection before its Workflow has replayed far enough to register its definition. Earlier database access can then block the replay needed to release the connection. Built-in harness Activities do not use that annotation. The library does not supply a workaround for custom transaction-annotated Activities.
 
 ## Applying the patch
 

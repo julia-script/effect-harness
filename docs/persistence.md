@@ -13,7 +13,7 @@ mkdir -p data
 
 This recipe uses the Node SQLite adapter, which requires a Node.js runtime with `node:sqlite`. For another runtime, choose its native SQLite and platform Layers.
 
-Keep `data/` on a volume that survives process replacement. Review [Effect compatibility](reference/compatibility.md) when using transaction-annotated Activities.
+Keep `data/` on a volume that survives process replacement. Built-in executors use ordinary native Activities and domain receipts. Review [native Workflow recovery](reference/compatibility.md#native-workflow-recovery) before adding transaction-annotated Activities of your own.
 
 ## 2. Build shared persistence Layers
 
