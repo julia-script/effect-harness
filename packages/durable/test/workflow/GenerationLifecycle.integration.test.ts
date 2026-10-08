@@ -57,12 +57,7 @@ import * as Document from '@effect-harness/durable/Document'
 import { rejected, NotFound, Closed } from '@effect-harness/durable/StorageError'
 import * as Cancellation from '@effect-harness/durable/workflow/Cancellation'
 import * as Structured from '@effect-harness/durable/workflow/Structured'
-import {
-  ExecutionError,
-  ExecutionErrorCodec,
-  Storage,
-  Aborted,
-} from '@effect-harness/durable/workflow/ExecutionError'
+import { ExecutionError, Storage, Aborted } from '@effect-harness/durable/workflow/ExecutionError'
 
 const User = Workflow.make('test/session-lifecycle/v1', {
   payload: {
@@ -71,7 +66,7 @@ const User = Workflow.make('test/session-lifecycle/v1', {
     taskId: Record.TaskId,
   },
   success: Schema.Json,
-  error: ExecutionErrorCodec,
+  error: ExecutionError,
   idempotencyKey: ({ taskId }) => String(taskId),
 })
 const persisted = Effect.sync(() => {
@@ -263,7 +258,7 @@ describe('GenerationLifecycle', () => {
                 ? Activity.make({
                     name: 'body',
                     success: Schema.Json,
-                    error: ExecutionErrorCodec,
+                    error: ExecutionError,
                     execute: Cancellation.activity(identity, session, work).pipe(
                       Effect.mapError(
                         (error) =>
@@ -760,7 +755,7 @@ describe('GenerationLifecycle', () => {
                 const activity = Activity.make({
                   name: 'SQL body',
                   success: Schema.Json,
-                  error: ExecutionErrorCodec,
+                  error: ExecutionError,
                   execute: Cancellation.activity(identity, session, work).pipe(
                     Effect.mapError(
                       (error) =>

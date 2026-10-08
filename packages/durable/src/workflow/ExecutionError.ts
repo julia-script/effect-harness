@@ -1,8 +1,7 @@
 /**
- * Structured Workflow execution failures and legacy-compatible codecs.
+ * Structured Workflow execution failures.
  */
 import * as Schema from 'effect/Schema'
-import * as SchemaTransformation from 'effect/SchemaTransformation'
 
 // Defect JSON is a diagnostic projection: messages and cause chains survive,
 // while native Error subclasses/custom properties/stacks need not.
@@ -185,8 +184,8 @@ export type ExecutionErrorReason = typeof ExecutionErrorReason.Type
  *
  * **Details**
  *
- * Runtime policies match reason._tag. The code accessor retains the legacy discriminator for
- * persisted records. Model/provider retry is selected by model policy.
+ * Runtime policies match reason._tag. The same schema encodes persisted failures with their
+ * structured reason. Model/provider retry is selected by model policy.
  *
  * **Gotchas**
  *
@@ -211,101 +210,4 @@ export class ExecutionError extends Schema.TaggedError<ExecutionError>(
   get isRetryable(): boolean {
     return this.reason.isRetryable
   }
-  /** Original wire discriminator, for persisted domain records only. Match reason._tag in runtime policies. */
-  get code(): LegacyReason {
-    return reasonCodes[this.reason._tag]
-  }
 }
-
-const legacyReasons = {
-  no_model: NoModel,
-  conversation_busy: ConversationBusy,
-  request_conflict: RequestConflict,
-  tool_unavailable: ToolUnavailable,
-  invalid_arguments: InvalidArguments,
-  model_error: ModelError,
-  context_overflow: ContextOverflow,
-  aborted: Aborted,
-  closed: Closed,
-  storage: Storage,
-  invalid_state: InvalidState,
-} as const
-const reasonCodes = {
-  NoModel: 'no_model',
-  ConversationBusy: 'conversation_busy',
-  RequestConflict: 'request_conflict',
-  ToolUnavailable: 'tool_unavailable',
-  InvalidArguments: 'invalid_arguments',
-  ModelError: 'model_error',
-  ContextOverflow: 'context_overflow',
-  Aborted: 'aborted',
-  Closed: 'closed',
-  Storage: 'storage',
-  InvalidState: 'invalid_state',
-} as const
-/**
- * Compatibility code translated into a structured workflow failure reason.
- *
- * @category models
- */
-export type LegacyReason = keyof typeof legacyReasons
-
-/**
- * Schema for the compatible persisted Workflow error representation.
- *
- * @category schemas
- */
-export const LegacyExecutionError = Schema.TaggedStruct('ExecutionError', {
-  reason: Schema.Literals([
-    'no_model',
-    'conversation_busy',
-    'request_conflict',
-    'tool_unavailable',
-    'invalid_arguments',
-    'model_error',
-    'context_overflow',
-    'aborted',
-    'closed',
-    'storage',
-    'invalid_state',
-  ]),
-  message: Schema.String,
-  detail: Schema.optionalKey(Schema.Json),
-  cause: Schema.optionalKey(Schema.Defect()),
-})
-/** Decodes the frozen Workflow representation into structured runtime reasons. */
-const fromLegacy = (input: typeof LegacyExecutionError.Type): ExecutionError => {
-  const Reason = legacyReasons[input.reason]
-  return new ExecutionError({
-    reason: new Reason({
-      message: input.message,
-      ...(Object.hasOwn(input, 'detail') ? { detail: input.detail } : {}),
-      ...(Object.hasOwn(input, 'cause') ? { cause: input.cause } : {}),
-    }),
-  })
-}
-const legacyCodec = LegacyExecutionError.pipe(
-  Schema.decodeTo(
-    Schema.toType(ExecutionError),
-    SchemaTransformation.transform({
-      decode: fromLegacy,
-      encode: (error) => ({
-        _tag: 'ExecutionError' as const,
-        reason: error.code,
-        message: error.message,
-        ...(Object.hasOwn(error.reason, 'detail') ? { detail: error.reason.detail } : {}),
-        ...(Object.hasOwn(error.reason, 'cause') ? { cause: error.reason.cause } : {}),
-      }),
-    }),
-  ),
-)
-/**
- * Native Workflow codec.
- *
- * **Details**
- *
- * Accepts legacy/current errors; encoding keeps the original reason/message/detail wire shape.
- *
- * @category schemas
- */
-export const ExecutionErrorCodec = Schema.Union([legacyCodec, ExecutionError])

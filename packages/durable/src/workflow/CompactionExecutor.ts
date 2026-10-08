@@ -33,14 +33,7 @@ import { record as recordUsage } from '../Usage.ts'
 import { Compaction, Result } from './Compaction.ts'
 import * as Cancellation from './Cancellation.ts'
 import * as Structured from './Structured.ts'
-import {
-  ExecutionError,
-  InvalidState,
-  Aborted,
-  ExecutionErrorCodec,
-  NoModel,
-  ModelError,
-} from './ExecutionError.ts'
+import { ExecutionError, InvalidState, Aborted, NoModel, ModelError } from './ExecutionError.ts'
 import { Submission, EntryDraft } from './Submission.ts'
 import * as SubmissionExecutor from './SubmissionExecutor.ts'
 
@@ -197,7 +190,7 @@ export const layer: Layer.Layer<
       const settlement = yield* Activity.make({
         name: 'placement',
         success: Settlement,
-        error: ExecutionErrorCodec,
+        error: ExecutionError,
         execute: session
           .transaction(
             Effect.fnUntraced(function* (tx) {
@@ -269,7 +262,7 @@ export const layer: Layer.Layer<
       const prepared = yield* Activity.make({
         name: 'selection',
         success: Prepared,
-        error: ExecutionErrorCodec,
+        error: ExecutionError,
         execute: Cancellation.activity(
           payload,
           session,
@@ -343,7 +336,7 @@ export const layer: Layer.Layer<
         const response = yield* Activity.make({
           name: `summary/${attempt}`,
           success: Attempt,
-          error: ExecutionErrorCodec,
+          error: ExecutionError,
           execute: Cancellation.activity(
             payload,
             session,
@@ -406,7 +399,7 @@ export const layer: Layer.Layer<
         const decision = yield* Activity.make({
           name: `usage/${attempt}`,
           success: Schema.Struct({ at: Time.EpochMillis, retry: Schema.Boolean }),
-          error: ExecutionErrorCodec,
+          error: ExecutionError,
           execute: session
             .transaction(
               Effect.fnUntraced(function* (tx) {
@@ -486,12 +479,12 @@ export const layer: Layer.Layer<
       const encoded = yield* Activity.make({
         name: 'failed',
         success: Schema.Json,
-        error: ExecutionErrorCodec,
+        error: ExecutionError,
         execute: Effect.succeed(failed.value.result),
       })
-      const error = yield* Schema.decodeEffect(Schema.toCodecJson(ExecutionErrorCodec))(
-        encoded,
-      ).pipe(Effect.mapError(invalid))
+      const error = yield* Schema.decodeEffect(Schema.toCodecJson(ExecutionError))(encoded).pipe(
+        Effect.mapError(invalid),
+      )
       yield* Structured.drain(session, payload.taskId, payload.sessionId).pipe(
         Effect.mapError(domainError),
       )
@@ -503,11 +496,11 @@ export const layer: Layer.Layer<
         Activity.make({
           name: 'failed',
           success: Schema.Json,
-          error: ExecutionErrorCodec,
+          error: ExecutionError,
           execute: session
             .transaction(
               Effect.fnUntraced(function* (tx) {
-                const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(ExecutionErrorCodec))(
+                const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(ExecutionError))(
                   error,
                 ).pipe(Effect.mapError(invalid))
                 const graph = yield* Ownership.readGraph(tx)
@@ -526,7 +519,7 @@ export const layer: Layer.Layer<
                   {
                     status: error.reason._tag === 'Aborted' ? 'aborted' : 'failed',
                     message: error.message,
-                    reason: error.code,
+                    reason: error.reason._tag,
                   },
                   graph,
                 )

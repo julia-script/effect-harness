@@ -44,11 +44,7 @@ import * as CompactionExecutor from '@effect-harness/durable/workflow/Compaction
 import * as Cancellation from '@effect-harness/durable/workflow/Cancellation'
 import { Submission } from '@effect-harness/durable/workflow/Submission'
 import * as Structured from '@effect-harness/durable/workflow/Structured'
-import {
-  ExecutionError,
-  ExecutionErrorCodec,
-  Storage,
-} from '@effect-harness/durable/workflow/ExecutionError'
+import { ExecutionError, Storage } from '@effect-harness/durable/workflow/ExecutionError'
 
 const modelRef = { provider: 'race', modelId: 'model' }
 const finish = (reason: Response.FinishReason = 'stop'): Response.FinishPartEncoded => ({
@@ -101,7 +97,7 @@ const Node = Workflow.make('race/custom/v1', {
     name: Schema.String,
   },
   success: Schema.Json,
-  error: ExecutionErrorCodec,
+  error: ExecutionError,
   idempotencyKey: ({ taskId }) => String(taskId),
 })
 type Behavior = (name: string) => Effect.Effect<Record.Json, ExecutionError>

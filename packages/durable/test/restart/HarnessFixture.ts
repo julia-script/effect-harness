@@ -49,7 +49,7 @@ import * as Structured from '@effect-harness/durable/workflow/Structured'
 import { Submission } from '@effect-harness/durable/workflow/Submission'
 import { Abort } from '@effect-harness/durable/workflow/Abort'
 import { Compaction } from '@effect-harness/durable/workflow/Compaction'
-import { ExecutionErrorCodec } from '@effect-harness/durable/workflow/ExecutionError'
+import { ExecutionError } from '@effect-harness/durable/workflow/ExecutionError'
 
 const Child = Workflow.make('restart/owned-child/v1', {
   payload: {
@@ -58,7 +58,7 @@ const Child = Workflow.make('restart/owned-child/v1', {
     taskId: Record.TaskId,
   },
   success: Schema.Json,
-  error: ExecutionErrorCodec,
+  error: ExecutionError,
   idempotencyKey: ({ taskId }) => String(taskId),
 })
 const finish = (reason: Response.FinishReason): Response.FinishPartEncoded => ({
@@ -433,7 +433,7 @@ const main = Effect.gen(function* () {
           Activity.make({
             name: 'child/body',
             success: Schema.Json,
-            error: ExecutionErrorCodec,
+            error: ExecutionError,
             execute: audit('child').pipe(
               Effect.andThen(first ? Effect.never : Effect.succeed({ status: 'completed' })),
             ),

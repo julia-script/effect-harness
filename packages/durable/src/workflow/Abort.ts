@@ -6,7 +6,7 @@ import * as Identity from '../Identity.ts'
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Record from '../Record.ts'
-import { ExecutionErrorCodec } from './ExecutionError.ts'
+import { ExecutionError } from './ExecutionError.ts'
 
 /**
  * Native Workflow persisting cancellation intent and reconciling its owned task tree.
@@ -35,6 +35,6 @@ export const Abort = Workflow.make('@effect-harness/durable/Abort/v1', {
     reason: Schema.optionalKey(Schema.String),
   },
   success: Schema.Struct({ reached: Schema.Array(Record.TaskId) }),
-  error: ExecutionErrorCodec,
+  error: ExecutionError,
   idempotencyKey: ({ sessionId, requestId }) => JSON.stringify([sessionId, requestId]),
 })

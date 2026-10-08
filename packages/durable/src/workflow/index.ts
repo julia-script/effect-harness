@@ -33,7 +33,7 @@ export * as Compaction from './Compaction.ts'
  */
 export * as CompactionExecutor from './CompactionExecutor.ts'
 /**
- * Structured Workflow execution failures and legacy-compatible codecs.
+ * Structured Workflow execution failures.
  *
  * @category re-exports
  */

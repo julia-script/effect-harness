@@ -21,7 +21,6 @@ import { SessionDirectory } from '../SessionDirectory.ts'
 import type { StorageError } from '../StorageError.ts'
 import {
   ExecutionError,
-  ExecutionErrorCodec,
   Closed,
   Storage,
   InvalidState,
@@ -40,7 +39,7 @@ import * as Prompt from 'effect/ai/Prompt'
  */
 export const Settled = DurableDeferred.make('submission/settled/v1', {
   success: Result,
-  error: ExecutionErrorCodec,
+  error: ExecutionError,
 })
 /**
  * Session document family recording native executions waiting for submission settlement.
@@ -304,13 +303,13 @@ export const layer: Layer.Layer<
       yield* Activity.make({
         name: 'ensure-root',
         success: Record.Conversation,
-        error: ExecutionErrorCodec,
+        error: ExecutionError,
         execute: session.root().pipe(Effect.mapError(storageError)),
       })
     const admitted = yield* Activity.make({
       name: 'admission',
       success: Admission,
-      error: ExecutionErrorCodec,
+      error: ExecutionError,
       execute: admit(session, config, payload, executionId),
     })
     if (admitted.generation !== undefined)

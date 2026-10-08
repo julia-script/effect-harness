@@ -31,7 +31,7 @@ import type * as Record from '../Record.ts'
 import * as Session from '../Session.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
 import * as Usage from '../Usage.ts'
-import { ExecutionError, InvalidState, ExecutionErrorCodec, Aborted } from './ExecutionError.ts'
+import { ExecutionError, InvalidState, Aborted } from './ExecutionError.ts'
 import { storageError } from './SubmissionExecutor.ts'
 import { ToolCall, Result } from './ToolCall.ts'
 import * as Cancellation from './Cancellation.ts'
@@ -209,7 +209,7 @@ export const layer: Layer.Layer<
     const prepared = yield* Activity.make({
       name: 'intent',
       success: Prepared,
-      error: ExecutionErrorCodec,
+      error: ExecutionError,
       execute: Cancellation.activity(
         payload,
         session,
@@ -317,7 +317,7 @@ export const layer: Layer.Layer<
     const outcome = yield* Activity.make({
       name: 'execute-and-settle',
       success: Outcome,
-      error: ExecutionErrorCodec,
+      error: ExecutionError,
       execute: Effect.gen(function* () {
         const task = yield* session.task(payload.taskId).pipe(Effect.mapError(storageError))
         if (

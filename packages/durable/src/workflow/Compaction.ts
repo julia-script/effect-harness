@@ -5,7 +5,7 @@ import * as Identity from '../Identity.ts'
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Record from '../Record.ts'
-import { ExecutionErrorCodec } from './ExecutionError.ts'
+import { ExecutionError } from './ExecutionError.ts'
 
 /**
  * Schema for optional summary-entry and submission identities from compaction settlement.
@@ -44,6 +44,6 @@ export const Compaction = Workflow.make('@effect-harness/durable/Compaction/v1',
     blocking: Schema.Boolean,
   },
   success: Result,
-  error: ExecutionErrorCodec,
+  error: ExecutionError,
   idempotencyKey: ({ sessionId, taskId }) => JSON.stringify([sessionId, taskId]),
 })

@@ -5,7 +5,7 @@ import * as Identity from '../Identity.ts'
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Record from '../Record.ts'
-import { ExecutionErrorCodec } from './ExecutionError.ts'
+import { ExecutionError } from './ExecutionError.ts'
 
 /**
  * Schema for answered, tool-round, reset, failed or aborted generation settlement.
@@ -49,6 +49,6 @@ export const Generation = Workflow.make('@effect-harness/durable/Generation/v1',
     inputs: Schema.Array(Record.SubmissionId),
   },
   success: Result,
-  error: ExecutionErrorCodec,
+  error: ExecutionError,
   idempotencyKey: ({ sessionId, taskId }) => JSON.stringify([sessionId, taskId]),
 })

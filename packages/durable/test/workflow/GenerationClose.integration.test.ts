@@ -26,11 +26,7 @@ import * as Record from '@effect-harness/durable/Record'
 import * as View from '@effect-harness/durable/View'
 import * as Memory from '@effect-harness/durable/storage/Memory'
 import { rejected as storageRejected, Closed } from '@effect-harness/durable/StorageError'
-import {
-  ExecutionError,
-  ExecutionErrorCodec,
-  InvalidState,
-} from '@effect-harness/durable/workflow/ExecutionError'
+import { ExecutionError, InvalidState } from '@effect-harness/durable/workflow/ExecutionError'
 
 describe('GenerationClose', () => {
   it.effect('View, Event and document watches end while Session cleanup is still blocked', () =>
@@ -138,7 +134,7 @@ describe('GenerationClose', () => {
         const task = Workflow.make('test/native-compensation/v1', {
           payload: { key: Schema.String },
           success: Schema.String,
-          error: ExecutionErrorCodec,
+          error: ExecutionError,
           idempotencyKey: ({ key }) => key,
         })
         const executor = task.toLayer(() =>

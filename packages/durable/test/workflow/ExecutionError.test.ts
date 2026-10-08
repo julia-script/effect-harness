@@ -14,7 +14,7 @@ import { Submission } from '@effect-harness/durable/workflow/Submission'
 import { storageError } from '@effect-harness/durable/workflow/SubmissionExecutor'
 
 const codec: Schema.Codec<ExecutionError.ExecutionError, Schema.Json> = Schema.toCodecJson(
-  ExecutionError.ExecutionErrorCodec,
+  ExecutionError.ExecutionError,
 )
 describe('ExecutionError', () => {
   it.effect('retains the native declaration decoder failure when wrapping it', () =>
@@ -36,50 +36,7 @@ describe('ExecutionError', () => {
     ),
   )
 
-  it.effect('decodes every frozen reason and preserves the original Workflow wire shape', () =>
-    Effect.gen(function* () {
-      const fixtures = [
-        ['no_model', 'NoModel'],
-        ['conversation_busy', 'ConversationBusy'],
-        ['request_conflict', 'RequestConflict'],
-        ['tool_unavailable', 'ToolUnavailable'],
-        ['invalid_arguments', 'InvalidArguments'],
-        ['model_error', 'ModelError'],
-        ['context_overflow', 'ContextOverflow'],
-        ['aborted', 'Aborted'],
-        ['closed', 'Closed'],
-        ['storage', 'Storage'],
-        ['invalid_state', 'InvalidState'],
-      ] as const
-      for (const [reason, tag] of fixtures) {
-        for (const detail of [undefined, null, { certainty: 'uncertain', reason: 'io' }]) {
-          const legacy = {
-            _tag: 'ExecutionError' as const,
-            reason,
-            message: `original ${reason}`,
-            ...(detail === undefined ? {} : { detail }),
-          }
-          const incompatibleCodec: Schema.Codec<ExecutionError.ExecutionError, Schema.Json> =
-            Schema.toCodecJson(ExecutionError.ExecutionError)
-          const rejectedLegacy = yield* Schema.decodeEffect(incompatibleCodec)(legacy).pipe(
-            Effect.flip,
-          )
-          assert.ok(rejectedLegacy instanceof Schema.SchemaError)
-          const decoded = yield* Schema.decodeEffect(codec)(legacy)
-          assert.ok(decoded instanceof ExecutionError.ExecutionError)
-          assert.strictEqual(decoded.reason._tag, tag)
-          assert.strictEqual(decoded.message, legacy.message)
-          assert.strictEqual(decoded.code, reason)
-          assert.strictEqual(decoded.isRetryable, false)
-          assert.strictEqual(Object.hasOwn(decoded.reason, 'detail'), detail !== undefined)
-          assert.strictEqual(Object.hasOwn(decoded.reason, 'cause'), false)
-          assert.deepStrictEqual(yield* Schema.encodeEffect(codec)(decoded), legacy)
-        }
-      }
-    }),
-  )
-
-  it.effect('accepts current structured encoding and preserves real foreign causes', () =>
+  it.effect('round-trips structured reasons and preserves real foreign causes', () =>
     Effect.gen(function* () {
       const cause = new TypeError('provider parsing failed', { cause: new Error('upstream') })
       const error = new ExecutionError.ExecutionError({
@@ -90,42 +47,43 @@ describe('ExecutionError', () => {
         }),
       })
       assert.strictEqual(error.cause, cause)
-      const currentCodec: Schema.Codec<ExecutionError.ExecutionError, Schema.Json> =
-        Schema.toCodecJson(ExecutionError.ExecutionError)
-      const current = yield* Schema.encodeEffect(currentCodec)(error)
-      const decoded = yield* Schema.decodeEffect(codec)(current)
+      const encoded = yield* Schema.encodeEffect(codec)(error)
+      const decoded = yield* Schema.decodeEffect(codec)(encoded)
+      assert.ok(decoded instanceof ExecutionError.ExecutionError)
+      assert.ok(decoded.reason instanceof ExecutionError.ModelError)
       assert.strictEqual(decoded.reason._tag, 'ModelError')
       assert.deepStrictEqual(decoded.detail, { retained: true })
       assert.ok(decoded.cause instanceof Error)
       assert.strictEqual(decoded.cause.message, 'provider parsing failed')
       assert.ok(decoded.cause.cause instanceof Error)
       assert.strictEqual(decoded.cause.cause.message, 'upstream')
-      const legacy = yield* Schema.encodeEffect(codec)(decoded)
-      assert.ok(legacy !== null && typeof legacy === 'object' && !Array.isArray(legacy))
-      assert.ok('reason' in legacy && 'message' in legacy)
-      assert.strictEqual(legacy.reason, 'model_error')
-      assert.strictEqual(legacy.message, 'model failed')
-      const roundtrip = yield* Schema.decodeEffect(codec)(legacy)
-      assert.ok(roundtrip.cause instanceof Error)
-      assert.strictEqual(roundtrip.cause.message, 'provider parsing failed')
     }),
   )
 
   it.effect(
-    'uses compatible codecs in native declarations and rejects owned undefined detail',
+    'persists structured errors in native declarations and rejects owned undefined detail',
     () =>
       Effect.gen(function* () {
-        const legacy = { _tag: 'ExecutionError', reason: 'aborted', message: 'old activity' }
+        const error = new ExecutionError.ExecutionError({
+          reason: new ExecutionError.Aborted({ message: 'Activity aborted' }),
+        })
+        const encoded = {
+          _tag: 'ExecutionError',
+          reason: { _tag: 'Aborted', message: 'Activity aborted' },
+        }
         for (const declaration of [Generation, Submission]) {
           const errorSchema: Schema.Codec<ExecutionError.ExecutionError, unknown> =
             declaration.errorSchema
-          const decoded = yield* Schema.decodeEffect(errorSchema)(legacy)
+          const persisted = yield* Schema.encodeEffect(errorSchema)(error)
+          assert.deepStrictEqual(persisted, encoded)
+          const decoded = yield* Schema.decodeEffect(errorSchema)(persisted)
+          assert.ok(decoded.reason instanceof ExecutionError.Aborted)
           assert.strictEqual(decoded.reason._tag, 'Aborted')
-          assert.strictEqual(decoded.message, 'old activity')
+          assert.strictEqual(decoded.message, 'Activity aborted')
         }
         const invalid = yield* Schema.decodeUnknownEffect(codec)({
-          ...legacy,
-          detail: undefined,
+          ...encoded,
+          reason: { ...encoded.reason, detail: undefined },
         }).pipe(Effect.flip)
         assert.ok(invalid instanceof Schema.SchemaError)
       }),

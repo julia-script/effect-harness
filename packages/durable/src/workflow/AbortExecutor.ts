@@ -18,7 +18,7 @@ import * as Record from '../Record.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
 import { Abort } from './Abort.ts'
 import * as Cancellation from './Cancellation.ts'
-import { ExecutionError, ExecutionErrorCodec, InvalidState } from './ExecutionError.ts'
+import { ExecutionError, InvalidState } from './ExecutionError.ts'
 import { convertPartial } from './GenerationExecutor.ts'
 import { RequestDoc } from './Request.ts'
 import * as SubmissionExecutor from './SubmissionExecutor.ts'
@@ -71,7 +71,7 @@ export const layer: Layer.Layer<
     const marked = yield* Activity.make({
       name: 'mark',
       success: Marked,
-      error: ExecutionErrorCodec,
+      error: ExecutionError,
       execute: session
         .transaction(
           Effect.fnUntraced(function* (tx) {
@@ -146,7 +146,7 @@ export const layer: Layer.Layer<
       const settled = yield* Activity.make({
         name: `reconcile/${previous.id}`,
         success: Schema.Array(Record.SubmissionId),
-        error: ExecutionErrorCodec,
+        error: ExecutionError,
         execute: session
           .transaction(
             Effect.fnUntraced(function* (tx) {

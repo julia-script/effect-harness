@@ -31,7 +31,6 @@ import { ToolCall } from '@effect-harness/durable/workflow/ToolCall'
 import { Compaction } from '@effect-harness/durable/workflow/Compaction'
 import {
   ExecutionError,
-  ExecutionErrorCodec,
   Storage,
   InvalidArguments,
   InvalidState,
@@ -53,7 +52,7 @@ const Node = Workflow.make('test/ordinary-owned-work', {
     name: Schema.String,
   },
   success: Schema.Json,
-  error: ExecutionErrorCodec,
+  error: ExecutionError,
   idempotencyKey: ({ taskId }) => String(taskId),
 })
 type Payload = typeof Node.payloadSchema.Type
@@ -1121,7 +1120,7 @@ describe('Ownership', () => {
         const Custom = Workflow.make('test/custom-native-author', {
           payload: Node.payloadSchema,
           success: Schema.Json,
-          error: ExecutionErrorCodec,
+          error: ExecutionError,
           idempotencyKey: ({ taskId }) => String(taskId),
         })
         const custom = Custom.toLayer(
@@ -1565,7 +1564,7 @@ describe('Ownership', () => {
       const Incomplete = Workflow.make('test/incomplete-native-child', {
         payload: Node.payloadSchema,
         success: Schema.Json,
-        error: ExecutionErrorCodec,
+        error: ExecutionError,
         idempotencyKey: ({ taskId }) => String(taskId),
       })
       const incomplete = Incomplete.toLayer(() =>

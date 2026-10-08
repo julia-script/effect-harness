@@ -41,11 +41,7 @@ import * as Memory from '@effect-harness/durable/storage/Memory'
 import { Generation } from '@effect-harness/durable/workflow/Generation'
 import { Submission } from '@effect-harness/durable/workflow/Submission'
 import * as SubmissionExecutor from '@effect-harness/durable/workflow/SubmissionExecutor'
-import {
-  ExecutionError,
-  ExecutionErrorCodec,
-  InvalidState,
-} from '@effect-harness/durable/workflow/ExecutionError'
+import { ExecutionError, InvalidState } from '@effect-harness/durable/workflow/ExecutionError'
 import { ToolCall } from '@effect-harness/durable/workflow/ToolCall'
 import * as ToolExecutor from '@effect-harness/durable/workflow/ToolExecutor'
 import * as GenerationExecutor from '@effect-harness/durable/workflow/GenerationExecutor'
@@ -110,7 +106,7 @@ const fakeGeneration = (
           answer: Record.EntryId,
           inputs: Schema.Array(Record.SubmissionId),
         }),
-        error: ExecutionErrorCodec,
+        error: ExecutionError,
         execute: session
           .transaction(
             Effect.fnUntraced(function* (tx) {

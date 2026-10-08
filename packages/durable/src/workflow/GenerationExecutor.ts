@@ -44,14 +44,7 @@ import * as Record from '../Record.ts'
 import type * as Session from '../Session.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
 import { record as recordUsage } from '../Usage.ts'
-import {
-  ExecutionError,
-  InvalidState,
-  Aborted,
-  ExecutionErrorCodec,
-  NoModel,
-  ModelError,
-} from './ExecutionError.ts'
+import { ExecutionError, InvalidState, Aborted, NoModel, ModelError } from './ExecutionError.ts'
 import { Generation, Result } from './Generation.ts'
 import * as SubmissionExecutor from './SubmissionExecutor.ts'
 import { ToolCall } from './ToolCall.ts'
@@ -243,7 +236,7 @@ export const layer: Layer.Layer<
       const settled = yield* Activity.make({
         name: 'failure',
         success: Settlement,
-        error: ExecutionErrorCodec,
+        error: ExecutionError,
         execute: session
           .transaction(
             Effect.fnUntraced(function* (tx) {
@@ -278,7 +271,7 @@ export const layer: Layer.Layer<
       const notify = yield* Activity.make({
         name: 'failure/end-run',
         success: Schema.Array(Record.SubmissionId),
-        error: ExecutionErrorCodec,
+        error: ExecutionError,
         execute: session
           .transaction(
             Effect.fnUntraced(function* (tx) {
@@ -308,7 +301,7 @@ export const layer: Layer.Layer<
             const planned = yield* Activity.make({
               name: `prepare/${cycle}/${preparation}`,
               success: Preparation,
-              error: ExecutionErrorCodec,
+              error: ExecutionError,
               execute: Cancellation.activity(
                 payload,
                 session,
@@ -571,7 +564,7 @@ export const layer: Layer.Layer<
             const step = yield* Activity.make({
               name: `response/${cycle}/${fetch}`,
               success: ResponseStep,
-              error: ExecutionErrorCodec,
+              error: ExecutionError,
               execute: Cancellation.activity(
                 payload,
                 session,
@@ -747,7 +740,7 @@ export const layer: Layer.Layer<
             poll = yield* Activity.make({
               name: `deferred/${cycle}/${fetch}`,
               success: Schema.Struct({ handle: Schema.Json, at: Time.EpochMillis }),
-              error: ExecutionErrorCodec,
+              error: ExecutionError,
               execute: session
                 .transaction(
                   Effect.fnUntraced(function* (tx) {
@@ -794,7 +787,7 @@ export const layer: Layer.Layer<
                 retry: Schema.Boolean,
                 compaction: Schema.optionalKey(Compaction.payloadSchema),
               }),
-              error: ExecutionErrorCodec,
+              error: ExecutionError,
               execute: Effect.gen(function* () {
                 let shouldCompact = false
                 if (
@@ -916,7 +909,7 @@ export const layer: Layer.Layer<
             const continuation = yield* Activity.make({
               name: 'on-yield',
               success: Schema.OptionFromUndefinedOr(Prompt.UserMessage),
-              error: ExecutionErrorCodec,
+              error: ExecutionError,
               execute: Cancellation.activity(
                 payload,
                 session,
@@ -929,7 +922,7 @@ export const layer: Layer.Layer<
             const settlement = yield* Activity.make({
               name: 'answer',
               success: Settlement,
-              error: ExecutionErrorCodec,
+              error: ExecutionError,
               execute: session
                 .transaction(
                   Effect.fnUntraced(function* (tx) {
@@ -1009,7 +1002,7 @@ export const layer: Layer.Layer<
           const round = yield* Activity.make({
             name: 'tool-round',
             success: Round,
-            error: ExecutionErrorCodec,
+            error: ExecutionError,
             execute: session
               .transaction(
                 Effect.fnUntraced(function* (tx) {
@@ -1088,7 +1081,7 @@ export const layer: Layer.Layer<
               const child = yield* Activity.make({
                 name: `start-tool/${index}`,
                 success: ToolCall.payloadSchema,
-                error: ExecutionErrorCodec,
+                error: ExecutionError,
                 execute: session
                   .transaction(
                     Effect.fnUntraced(function* (tx) {
@@ -1166,7 +1159,7 @@ export const layer: Layer.Layer<
           )
           yield* Activity.make({
             name: 'after-tools',
-            error: ExecutionErrorCodec,
+            error: ExecutionError,
             execute: Cancellation.activity(
               payload,
               session,
@@ -1202,7 +1195,7 @@ export const layer: Layer.Layer<
           const settlement = yield* Activity.make({
             name: 'after-round',
             success: Settlement,
-            error: ExecutionErrorCodec,
+            error: ExecutionError,
             execute: session
               .transaction(
                 Effect.fnUntraced(function* (tx) {
@@ -1289,7 +1282,7 @@ export const layer: Layer.Layer<
         const settlement = yield* Activity.make({
           name,
           success: Settlement,
-          error: ExecutionErrorCodec,
+          error: ExecutionError,
           execute: Schema.decodeUnknownEffect(Settlement)(saved.value.result).pipe(
             Effect.mapError(codecError),
           ),

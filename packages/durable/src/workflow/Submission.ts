@@ -8,7 +8,7 @@ import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Record from '../Record.ts'
-import { ExecutionErrorCodec } from './ExecutionError.ts'
+import { ExecutionError } from './ExecutionError.ts'
 
 /**
  * Schema for passive-write entry content before durable identity allocation.
@@ -95,7 +95,7 @@ export const Submission = Workflow.make('@effect-harness/durable/Submission/v1',
     submission: Input,
   },
   success: Result,
-  error: ExecutionErrorCodec,
+  error: ExecutionError,
   idempotencyKey: ({ sessionId, conversationId, requestId, submission }) =>
     JSON.stringify([sessionId, conversationId, requestId, submission.type]),
 })

@@ -5,7 +5,7 @@ import * as Identity from '../Identity.ts'
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as Record from '../Record.ts'
-import { ExecutionErrorCodec } from './ExecutionError.ts'
+import { ExecutionError } from './ExecutionError.ts'
 
 /**
  * Schema for terminal tool settlement, committed result entry and optional controls.
@@ -51,6 +51,6 @@ export const ToolCall = Workflow.make('@effect-harness/durable/ToolCall/v1', {
     arguments: Schema.Json,
   },
   success: Result,
-  error: ExecutionErrorCodec,
+  error: ExecutionError,
   idempotencyKey: ({ sessionId, taskId }) => JSON.stringify([sessionId, taskId]),
 })
