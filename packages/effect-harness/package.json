@@ -1,6 +1,6 @@
 {
   "name": "effect-harness",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Durable AI conversations built with native Effect AI and Workflow services.",
   "repository": {
     "type": "git",
