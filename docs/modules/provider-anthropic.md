@@ -2,7 +2,7 @@
 
 Anthropic models for native Effect AI and Effect Harness.
 
-Use an API key for direct inference, or compose explicit Anthropic account authorization. The adapter supplies native LanguageModels and harness catalogue descriptors, preserving structured Prompt history and translating harness tool content at the provider boundary.
+Use an API key for direct inference. The adapter supplies native LanguageModels and harness catalogue descriptors, preserving structured Prompt history and translating harness tool content at the provider boundary.
 
 ## Install
 
@@ -30,25 +30,17 @@ export const Model = AnthropicLanguageModel.layerApiKeyConfig({
 
 Provide `Model` to an Effect using the native LanguageModel service. Select a model ID available to your account through `ANTHROPIC_MODEL`; no provider model name is hard-coded in the Layer.
 
-For harness execution, use `Catalog.layerApiKeyConfig` instead. Declare model IDs, context/output limits and capabilities, then provide that catalogue to the Executor. The [provider guide](../providers.md) includes the complete catalogue configuration and conversation model selection.
-
-## Account authorization
-
-`OAuth` handles consent, credential storage and refresh. `AnthropicAccountClient` supplies the authorized native transport; `AnthropicAccountLanguageModel` supplies a native model, and `Catalog.layer` builds harness descriptors from that client.
-
-The host owns consent and callback delivery. A successful exchange still requires the provider to grant inference permissions. Follow [account sign-in](../how-to/account-sign-in.md#anthropic-use-copy-code-or-a-browser-callback) for copy-code and browser callback flows.
-
-For an installed Claude Code CLI with its own login, use [effect-harness/provider-claude-code](provider-claude-code.md). That transport has a different history contract from the direct Anthropic API.
+For harness execution, use `Catalog.layerApiKeyConfig` instead. Declare model IDs, context/output limits and capabilities, then provide that catalogue to the Executor used by Harness. The [provider guide](../providers.md) includes the complete catalogue configuration and conversation model selection.
 
 ## Find the right API
 
-| Modules                                                   | Purpose                                             |
-| --------------------------------------------------------- | --------------------------------------------------- |
-| `AnthropicLanguageModel`                                  | Native API-key model construction and composition   |
-| `Catalog`                                                 | Harness model declarations, limits and capabilities |
-| `OAuth`                                                   | Account authorization and scoped callback handling  |
-| `AnthropicAccountClient`, `AnthropicAccountLanguageModel` | Authorized transport and native model               |
-| `Prompt`                                                  | Provider prompt handling                            |
+| Modules                  | Purpose                                                |
+| ------------------------ | ------------------------------------------------------ |
+| `AnthropicClient`        | Native client service and transport constructors       |
+| `AnthropicLanguageModel` | Native API-key model and client Layers                 |
+| `AnthropicTool`          | Native Anthropic tool constructors and schemas         |
+| `Catalog`                | Harness model declarations, limits and capabilities    |
+| `Prompt`, `ToolResult`   | Prompt projection and canonical tool-media translation |
 
 ## Continue
 

@@ -1,20 +1,13 @@
 import { inspect } from 'node:util'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
-import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import type * as Inspectable from 'effect/Inspectable'
-import * as Redacted from 'effect/Redacted'
 import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
-import * as Pkce from 'effect-harness/auth/Pkce'
-import * as OAuth from 'effect-harness/provider-anthropic/OAuth'
-import * as ChatGpt from 'effect-harness/provider-openai/ChatGpt'
-import * as IntentServer from 'effect-harness/provider-claude-code/IntentServer'
-// effect-nit-allow P9-namespace-alias-equals-module: this interoperability fixture requires all three distinct owned Descriptor constructors and guards to prove native callback identity and cross-provider rejection; a single Catalog API cannot supply those brand contracts.
+// effect-nit-allow P9-namespace-alias-equals-module: this interoperability fixture requires both distinct owned Descriptor constructors and guards to prove native callback identity and cross-provider rejection; a single Catalog API cannot supply those brand contracts.
 import * as AnthropicCatalog from 'effect-harness/provider-anthropic/Catalog'
 import * as OpenAiCatalog from 'effect-harness/provider-openai/Catalog'
-import * as ClaudeCodeCatalog from 'effect-harness/provider-claude-code/Catalog'
 import * as Output from 'effect-harness/Output'
 import * as LineScan from 'effect-harness/env/LineScan'
 import * as Result from 'effect/Result'
@@ -31,160 +24,6 @@ const diagnostics = (value: Inspectable.Inspectable): ReadonlyArray<string> => [
 ]
 
 describe('OwnedProtocols', () => {
-  it('auth handles preserve descriptors, expiry identity, sparse extras and secrets without sampling getters', () => {
-    let reads = 0
-    const verifier = Redacted.make('private-verifier')
-    const expiresAt = DateTime.makeUnsafe(123456)
-    const holes: Array<string> = []
-    holes.length = 4
-    Object.defineProperty(holes, '2', {
-      get: () => {
-        reads++
-        return 'private-sparse-value'
-      },
-      enumerable: true,
-    })
-    const opaque = Symbol('opaque')
-    const input = Object.freeze({
-      verifier,
-      challenge: 'public-challenge',
-      state: 'private-state',
-      nonce: 'private-nonce',
-      holes,
-      ['__proto__']: { secret: 'private-prototype-data' },
-      get extra(): string {
-        reads++
-        return 'private-extra'
-      },
-      get toJSON(): () => unknown {
-        reads++
-        return () => 'private-protocol-shadow'
-      },
-      [opaque]: verifier,
-    })
-    const first = Pkce.makeChallenge(input)
-    const second = Pkce.makeChallenge(input)
-    assert.isTrue(Pkce.isChallenge(first))
-    assert.strictEqual(
-      first.pipe((value) => value),
-      first,
-    )
-    assert.strictEqual(Object.getPrototypeOf(first), Object.getPrototypeOf(second))
-    assert.strictEqual(first.verifier, verifier)
-    assert.strictEqual(Object.getOwnPropertyDescriptor(first, 'holes')?.value, holes)
-    assert.strictEqual(0 in holes, false)
-    assert.strictEqual(1 in holes, false)
-    assert.deepStrictEqual(
-      Object.getOwnPropertyDescriptor(first, 'extra'),
-      Object.getOwnPropertyDescriptor(input, 'extra'),
-    )
-    assert.strictEqual(Object.getOwnPropertyDescriptor(first, opaque)?.value, verifier)
-    assert.strictEqual(
-      Object.getOwnPropertyDescriptor(first, '__proto__')?.value,
-      Object.getOwnPropertyDescriptor(input, '__proto__')?.value,
-    )
-    assert.isUndefined(Object.getOwnPropertyDescriptor(first, 'toJSON'))
-    assert.strictEqual(reads, 0)
-    const secretUrl = Redacted.make('https://secret.example/authorize?secret=private-state')
-    const anthropic = OAuth.makeAuthorization(
-      Object.freeze({
-        url: secretUrl,
-        state: verifier,
-        redirectUri: 'http://localhost:53692/callback',
-        expiresAt,
-      }),
-    )
-    const openai = ChatGpt.makeAuthorization(
-      Object.freeze({
-        url: secretUrl,
-        state: 'private-state',
-        redirectUri: 'http://localhost:1234/callback',
-        expiresAt,
-      }),
-    )
-    assert.strictEqual(anthropic.url, secretUrl)
-    assert.strictEqual(anthropic.state, verifier)
-    assert.strictEqual(anthropic.expiresAt, expiresAt)
-    assert.strictEqual(openai.expiresAt, expiresAt)
-    assert.strictEqual(openai.state, 'private-state')
-    assert.isTrue(OAuth.isAuthorization(anthropic))
-    assert.isTrue(ChatGpt.isAuthorization(openai))
-    assert.isFalse(OAuth.isAuthorization(openai))
-    assert.isFalse(ChatGpt.isAuthorization(anthropic))
-    for (const handle of [first, anthropic, openai]) {
-      assert.strictEqual(
-        handle.pipe((value) => value),
-        handle,
-      )
-      for (const text of diagnostics(handle)) {
-        assert.include(text, 'effect-harness/')
-        assert.isBelow(text.length, 700)
-        for (const secret of [
-          'private-verifier',
-          'private-state',
-          'private-nonce',
-          'private-extra',
-          'private-prototype-data',
-          'private-sparse-value',
-        ])
-          assert.notInclude(text, secret)
-      }
-    }
-    assert.strictEqual(reads, 0)
-    for (const value of [undefined, null, 0, '', {}, input]) assert.isFalse(Pkce.isChallenge(value))
-    const marker = Object.getOwnPropertyNames(first).find((name) =>
-      name.startsWith('~effect-harness/'),
-    )
-    assert.isDefined(marker)
-    if (marker !== undefined) {
-      assert.strictEqual(Object.getOwnPropertyDescriptor(first, marker)?.enumerable, false)
-      assert.isFalse(Pkce.isChallenge({ [marker]: undefined }))
-    }
-  })
-
-  it('session handles keep the original insertion-ordered alias map without iterating it for inspection', () => {
-    let visits = 0
-    class AliasMap extends Map<string, string> {
-      override entries(): MapIterator<[string, string]> {
-        visits++
-        return super.entries()
-      }
-      override [Symbol.iterator](): MapIterator<[string, string]> {
-        visits++
-        return super[Symbol.iterator]()
-      }
-      toJSON(): unknown {
-        return 'private-alias-values'
-      }
-    }
-    const aliases = new AliasMap([
-      ['second', 'native.second'],
-      ['first', 'native.first'],
-    ])
-    const input = Object.freeze({ url: 'http://localhost:1234/private-token', aliases })
-    const session = IntentServer.makeSession(input)
-    assert.strictEqual(session.aliases, aliases)
-    assert.strictEqual(session.url, input.url)
-    assert.isTrue(IntentServer.isSession(session))
-    assert.strictEqual(
-      session.pipe((value) => value),
-      session,
-    )
-    for (const text of diagnostics(session)) {
-      assert.notInclude(text, 'private-token')
-      assert.notInclude(text, 'native.second')
-      assert.notInclude(text, 'private-alias-values')
-    }
-    assert.strictEqual(visits, 0)
-    assert.deepStrictEqual(
-      [...session.aliases],
-      [
-        ['second', 'native.second'],
-        ['first', 'native.first'],
-      ],
-    )
-  })
-
   it.effect(
     'descriptor handles retain the exact native model and callback identities without traversing services',
     () =>
@@ -221,17 +60,13 @@ describe('OwnedProtocols', () => {
         })
         const anth = AnthropicCatalog.makeDescriptor({ ...input, configure: configureAnthropic })
         const openai = OpenAiCatalog.makeDescriptor({ ...input, configure: configureOpenAi })
-        const cli = ClaudeCodeCatalog.makeDescriptor(input)
         assert.isTrue(AnthropicCatalog.isDescriptor(anth))
         assert.isTrue(OpenAiCatalog.isDescriptor(openai))
-        assert.isTrue(ClaudeCodeCatalog.isDescriptor(cli))
         assert.isFalse(OpenAiCatalog.isDescriptor(anth))
-        for (const handle of [anth, openai, cli]) {
+        assert.strictEqual(anth.configure, configureAnthropic)
+        assert.strictEqual(openai.configure, configureOpenAi)
+        for (const handle of [anth, openai]) {
           assert.strictEqual(handle.model, model)
-          let selected = configure
-          if (handle === anth) selected = configureAnthropic
-          else if (handle === openai) selected = configureOpenAi
-          assert.strictEqual(handle.configure, selected)
           assert.strictEqual(handle.usage, Usage.make)
           assert.strictEqual(handle.classify, classify)
           assert.strictEqual(handle.ref, ref)

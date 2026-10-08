@@ -9,7 +9,6 @@ import * as Toolkit from 'effect/ai/Toolkit'
 
 import * as Catalog from 'effect-harness/provider-openai/Catalog'
 import * as ToolResult from 'effect-harness/provider-openai/ToolResult'
-import * as ChatGpt from 'effect-harness/provider-openai/ChatGpt'
 import type * as OpenAiSchema from '@effect/ai-openai/OpenAiSchema'
 import type * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
 import type * as Prompt from 'effect/ai/Prompt'
@@ -88,9 +87,7 @@ test('owned public construction exposes the exact captured native client', () =>
   expect(ToolResult.content(parts)).type.toBe<
     Effect.Effect<Array<typeof OpenAiSchema.InputContent.Encoded>, AiError.AiError>
   >()
-  if (ChatGpt.isModel(unknownModel)) expect(unknownModel).type.toBe<ChatGpt.Model>()
 })
-declare const unknownModel: unknown
 declare const parts: ReadonlyArray<Prompt.UserMessagePart>
 
 test('curried provider combinators retain channels and reject ambiguous empty options', () => {

@@ -34,3 +34,18 @@ export const EntryId = positiveSafeInteger.pipe(
  * @category models
  */
 export type EntryId = typeof EntryId.Type
+
+/**
+ * Persisted admission identity, encoded without normalization.
+ *
+ * @category schemas
+ */
+export const RequestId = Schema.String.pipe(
+  Schema.brand('@effect-harness/durable/Identity/RequestId'),
+)
+/**
+ * Decoded value validated by the `RequestId` schema.
+ *
+ * @category models
+ */
+export type RequestId = typeof RequestId.Type

@@ -36,13 +36,13 @@ export const Tools = Layer.unwrap(
 ).pipe(Layer.provide(handlers))
 ```
 
-Provide `Tools` to the harness Executor. If conversation settings restrict extensions, include `text-tools` in the selected extension names. If agent settings restrict tools, include `uppercase`. See [selection rules](reference/configuration.md#conversation-overrides).
+Provide `Tools` to the harness Executor. If conversation settings restrict extensions, include `text-tools` in the selected extension names. If agent settings restrict tools, include `uppercase`. See [selection rules](reference/configuration.md#agent-configuration).
 
 Provide host service Layers while binding handlers. `ToolRegistration.bind` captures them for later calls. Keep per-call `Invocation` and `ToolCall` services dynamic; additional request services belong in the explicit `requestServices` argument.
 
 ## Report progress during execution
 
-Add `Invocation.ToolCall` as a dependency to the native Tool declaration and yield that service inside its handler. Its `output`, `details` and `diagnostic` operations report distinct channels of progress. The [tutorial Toolkit](tutorials/first-conversation.md#2-bind-an-ordinary-ai-toolkit) shows the minimal binding; the API comments in `effect-harness/Invocation` describe the reporting operations.
+Add `Invocation.ToolCall` as a dependency to the native Tool declaration and yield that service inside its handler. Its `output`, `details` and `diagnostic` operations report distinct channels of progress. The [example Toolkit](../apps/example/src/Uppercase.ts) shows the minimal binding; the API comments in `effect-harness/Invocation` describe the reporting operations.
 
 For richer results, supply `project` in the per-name metadata passed to `ToolRegistration.bind`, or annotate the native Tool with `ToolRegistration.Metadata`. The projector maps the native result to model-facing content and committed metadata. Keep model content in `content`; private details and control requests remain separate. Provider media translation is described in [the provider guide](providers.md#tool-media-and-native-validation).
 
@@ -75,10 +75,10 @@ The environment is a capability boundary, not a filesystem sandbox. The host cho
 
 Replay is `unsafe` by default. Mark a tool `safe` only when repeating its body after a crash is acceptable. Pure transformations are a straightforward case; a payment, shell command or file mutation needs an application-specific decision. Built-in coding tools retain unsafe replay.
 
-Use [replay and recovery](explanation/recovery.md#external-actions) to reason about an external action that completes before its receipt commits. The [tool policy reference](reference/configuration.md#tool-policy) lists execution and output defaults.
+Use [replay and recovery](explanation/recovery.md#external-actions) to reason about an external action that completes before its result commits. The [tool policy reference](reference/configuration.md#tool-policy) lists execution and output defaults.
 
 ## Verify registration
 
-Build the Registry and inspect Registry.snapshot. The bound tools should appear under the coding-tools extension. Check the [coding tool behavior reference](reference/configuration.md#coding-tool-behavior) when selecting read windows, shell timeouts and output limits.
+Build the Registry and inspect Registry.snapshot. The bound tools should appear under the coding-tools extension. Check the [coding tool API](../packages/effect-harness/src/tools/CodingTools.ts) when selecting read windows, shell timeouts and output limits.
 
 For custom environment adapters, run the public `effect-harness/testing` conformance helpers. Check scoped reader/watcher lifetimes and process cancellation before offering those tools to a conversation.

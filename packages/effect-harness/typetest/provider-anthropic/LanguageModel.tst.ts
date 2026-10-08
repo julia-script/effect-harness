@@ -11,10 +11,8 @@ import type * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLang
 
 import * as Catalog from 'effect-harness/provider-anthropic/Catalog'
 import * as Prompt from 'effect-harness/provider-anthropic/Prompt'
-import type * as OAuth from 'effect-harness/provider-anthropic/OAuth'
 
 import type * as Layer from 'effect/Layer'
-import type * as HttpClient from 'effect/http/HttpClient'
 import type { ModelError } from 'effect-harness/ModelError'
 class Audit extends Context.Service<
   Audit,
@@ -60,7 +58,7 @@ test('public native model retains toolkit mode, handler errors and invocation se
   expect(model.generateText).type.not.toBeCallableWith({ prompt: 'question', toolkit: 42 })
 })
 
-test('owned construction pins native client outputs and account inputs', () => {
+test('owned construction pins native client outputs ', () => {
   expect(Prompt.make({ model: 'declared' })).type.toBe<
     Effect.Effect<
       typeof LanguageModel.LanguageModel.Service,
@@ -73,13 +71,6 @@ test('owned construction pins native client outputs and account inputs', () => {
       LanguageModel.LanguageModel | AnthropicClient.AnthropicClient,
       never,
       AnthropicClient.AnthropicClient
-    >
-  >()
-  expect(AnthropicAccountLanguageModel.layer({ model: 'declared', account: 'key' })).type.toBe<
-    Layer.Layer<
-      LanguageModel.LanguageModel | AnthropicClient.AnthropicClient,
-      AiError.AiError,
-      HttpClient.HttpClient | OAuth.OAuth
     >
   >()
   expect(
@@ -120,12 +111,9 @@ test('curried catalogue projection retains captured native client channels', () 
 
 import * as ProviderAnthropic from 'effect-harness/provider-anthropic'
 
-test('root namespaces expose native client and canonical account model channels', () => {
+test('root namespaces expose native client ', () => {
   expect(ProviderAnthropic.AnthropicClient.AnthropicClient).type.toBe<
     typeof AnthropicClient.AnthropicClient
-  >()
-  expect(ProviderAnthropic.AnthropicAccountLanguageModel.layer).type.toBe<
-    typeof AnthropicAccountLanguageModel.layer
   >()
 })
 
@@ -158,5 +146,4 @@ test('encoded tool parameters retain the exact indexed shape through concrete an
   }>()
 })
 
-import * as AnthropicAccountLanguageModel from 'effect-harness/provider-anthropic/AnthropicAccountLanguageModel'
 import * as HarnessAnthropicLanguageModel from 'effect-harness/provider-anthropic/AnthropicLanguageModel'

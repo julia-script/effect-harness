@@ -578,7 +578,7 @@ describe('Executor', () => {
         }).pipe(Effect.provideService(Invocation, quiet)),
     )
     it.effect(
-      'unsafe stored/current gate and missing code settle interrupted with partial output and no hooks',
+      'unsafe replay preserves partial output and missing code settles unavailable without execution',
       () =>
         Effect.gen(function* () {
           for (const [stored, current] of [
@@ -606,7 +606,7 @@ describe('Executor', () => {
               yield* executor.resolve(state, yield* settings),
               { recovering: true },
             )).outcome,
-            'interrupted',
+            'unavailable',
           )
         }).pipe(Effect.provideService(Invocation, quiet)),
     )

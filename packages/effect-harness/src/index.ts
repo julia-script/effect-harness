@@ -198,3 +198,33 @@ export * as ResponseAccumulator from './ResponseAccumulator.ts'
  * @category re-exports
  */
 export * as ToolRegistration from './ToolRegistration.ts'
+
+/** Embedded conversation runtime and its scoped lifecycle. */
+export * as Harness from './Harness.ts'
+/** Data-first conversation operations. */
+export * as Conversation from './Conversation.ts'
+/** Submission identities and settlement. */
+export * as Submission from './Submission.ts'
+/** Immutable stored facts and atomic journal batches. */
+export * as Record from './Record.ts'
+/** Typed document definitions, histories and drafts. */
+export * as Document from './Document.ts'
+/** Persistence failures and write certainty. */
+export * as StorageError from './StorageError.ts'
+/** Serializable observation snapshots and committed frames. */
+export * as Observation from './Observation.ts'
+
+/** Atomic persistence records, queries and commit batches.
+ * @category re-exports
+ */
+export * as Persistence from './Persistence.ts'
+
+/** Named, versioned checkpoint task definitions.
+ * @category re-exports
+ */
+export * as Task from './Task.ts'
+
+/** Invocation capabilities supplied to checkpoint task phases.
+ * @category re-exports
+ */
+export * as TaskRuntime from './TaskRuntime.ts'

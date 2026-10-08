@@ -11,7 +11,6 @@ import * as Array from 'effect/Array'
 import * as HashMap from 'effect/HashMap'
 import * as Option from 'effect/Option'
 import type * as HttpClient from 'effect/http/HttpClient'
-import type { ChatGpt } from './ChatGpt.ts'
 import * as Config from 'effect/Config'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
 
@@ -26,8 +25,6 @@ import * as Schema from 'effect/Schema'
 import type * as Response from 'effect/ai/Response'
 import type * as Redacted from 'effect/Redacted'
 import * as OpenAiLanguageModel from './OpenAiLanguageModel.ts'
-import * as ChatGptClient from './ChatGptClient.ts'
-import * as ChatGptLanguageModel from './ChatGptLanguageModel.ts'
 
 const fail = (message: string, cause?: unknown) =>
   new ModelError({
@@ -251,18 +248,14 @@ const DescriptorProto = {
 /** Captures the native client now; configuration pins each request to this exact model ID. */
 const descriptorImpl = Effect.fnUntraced(function* (
   self: Entry,
-  options?: { readonly provider?: string | undefined; readonly account?: boolean | undefined },
+  options?: { readonly provider?: string | undefined },
 ): Effect.fn.Return<Descriptor, ModelError, OpenAiClient.OpenAiClient> {
   const defaults = yield* validate(self)
-  const account = options?.account === true
-  if (account && defaults.store === true)
-    return yield* fail('ChatGPT account Responses require store:false')
-  const model = yield* (account ? ChatGptLanguageModel.make : OpenAiLanguageModel.make)({
+  const model = yield* OpenAiLanguageModel.make({
     model: self.modelId,
     config: {
       ...defaults,
       max_output_tokens: defaults.max_output_tokens ?? self.maxOutputTokens,
-      ...(account ? { store: false, useItemReferences: false } : {}),
     },
   })
   const configure = Effect.fnUntraced(function* (request: Model.RequestOptions) {
@@ -310,8 +303,6 @@ const descriptorImpl = Effect.fnUntraced(function* (
       supplied.prompt_cache_key !== request.sessionId
     )
       return yield* fail('prompt_cache_key must match the pinned conversation sessionId')
-    if (account && merged.store === true)
-      return yield* fail('ChatGPT account Responses require store:false')
     const config = yield* decode({
       ...merged,
       max_output_tokens: max,
@@ -319,7 +310,6 @@ const descriptorImpl = Effect.fnUntraced(function* (
       prompt_cache_options: cacheOptions,
       prompt_cache_key:
         request.cache === 'none' ? undefined : (request.sessionId ?? merged.prompt_cache_key),
-      ...(account ? { store: false, useItemReferences: false } : {}),
     })
     return Context.make(
       OpenAiLanguageModel.Config,
@@ -328,7 +318,7 @@ const descriptorImpl = Effect.fnUntraced(function* (
   })
   return makeDescriptor({
     ref: {
-      provider: options?.provider ?? (account ? 'openai-chatgpt' : 'openai'),
+      provider: options?.provider ?? 'openai',
       modelId: self.modelId,
     },
     model,
@@ -353,11 +343,9 @@ const descriptorImpl = Effect.fnUntraced(function* (
 export const descriptor: {
   (): (self: Entry) => ReturnType<typeof descriptorImpl>
   (
-    options: NonNullable<Parameters<typeof descriptorImpl>[1]> &
-      (
-        | { readonly provider: NonNullable<Parameters<typeof descriptorImpl>[1]>['provider'] }
-        | { readonly account: NonNullable<Parameters<typeof descriptorImpl>[1]>['account'] }
-      ),
+    options: NonNullable<Parameters<typeof descriptorImpl>[1]> & {
+      readonly provider: NonNullable<Parameters<typeof descriptorImpl>[1]>['provider']
+    },
   ): (self: Entry) => ReturnType<typeof descriptorImpl>
   (self: Entry, options?: Parameters<typeof descriptorImpl>[1]): ReturnType<typeof descriptorImpl>
   // Empty objects are malformed subjects, not meaningful curried options.
@@ -375,7 +363,7 @@ export const descriptor: {
               Predicate.isObjectOrArray,
               Predicate.and(
                 Predicate.not(Predicate.hasProperty('modelId')),
-                Predicate.or(Predicate.hasProperty('provider'), Predicate.hasProperty('account')),
+                Predicate.hasProperty('provider'),
               ),
             ),
           ),
@@ -397,15 +385,13 @@ export const descriptor: {
  *
  * **Gotchas**
  *
- * Supply the required native client or CLI services. Catalogue construction does not
- * authorize a remote account.
+ * Supply the required native client. Catalogue construction does not authorize requests.
  *
  * @category layers
  */
 export const layer = (options: {
   readonly models: ReadonlyArray<Entry>
   readonly provider?: string | undefined
-  readonly account?: boolean | undefined
 }): Layer.Layer<Model.Catalog, ModelError, OpenAiClient.OpenAiClient> =>
   Layer.effect(Model.Catalog)(
     Effect.gen(function* () {
@@ -452,31 +438,6 @@ export const layerApiKey = (
   },
 ): Layer.Layer<Model.Catalog | OpenAiClient.OpenAiClient, ModelError, HttpClient.HttpClient> =>
   layer(options).pipe(Layer.provideMerge(OpenAiClient.layer(options)))
-// effect-nit-allow P3-provide-vs-provideMerge: catalogue descriptors and callers share the exact native account client and its lifecycle; per-call Config remains open.
-/**
- * Provides a declared catalogue through an authorized ChatGPT account.
- *
- * **Details**
- *
- * Consumes ChatGpt and HttpClient and exposes the captured OpenAI client. Use
- * models(account) to discover visibility, then declare capabilities and limits for selected
- * entries.
- *
- * @category layers
- */
-export const layerChatGpt = (options: {
-  readonly account: string
-  readonly models: ReadonlyArray<Entry>
-  readonly provider?: string | undefined
-}): Layer.Layer<
-  Model.Catalog | OpenAiClient.OpenAiClient,
-  ModelError,
-  ChatGpt | HttpClient.HttpClient
-> =>
-  layer({ ...options, account: true }).pipe(
-    Layer.provideMerge(ChatGptClient.layer({ account: options.account })),
-  )
-
 /**
  * Resolves all layer options through the caller's ConfigProvider.
  *
@@ -506,24 +467,6 @@ export const layerApiKeyConfig = (
   Layer.unwrap(
     Effect.gen(function* () {
       return layerApiKey(yield* Config.unwrap(config))
-    }),
-  )
-
-/**
- * Resolves all layerChatGpt options through the caller's ConfigProvider.
- *
- * @category layers
- */
-export const layerChatGptConfig = (
-  config: Config.Wrap<NonNullable<Parameters<typeof layerChatGpt>[0]>>,
-): Layer.Layer<
-  Model.Catalog | OpenAiClient.OpenAiClient,
-  ModelError | Config.ConfigError,
-  ChatGpt | HttpClient.HttpClient
-> =>
-  Layer.unwrap(
-    Effect.gen(function* () {
-      return layerChatGpt(yield* Config.unwrap(config))
     }),
   )
 

@@ -110,3 +110,5 @@ export const stringPropertyOrUndefined: {
   (key: string): (self: unknown) => string | undefined
   (self: unknown, key: string): string | undefined
 } = dual(2, stringPropertyImpl)
+
+export { json, object } from './internal/Codec.ts'

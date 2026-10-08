@@ -20,7 +20,6 @@ import * as HttpClient from 'effect/http/HttpClient'
 import type * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import * as Catalog from 'effect-harness/provider-openai/Catalog'
-import * as ChatGpt from 'effect-harness/provider-openai/ChatGpt'
 
 const response = {
   id: 'response',
@@ -57,14 +56,14 @@ const bodyUnsafe = (request: HttpClientRequest.HttpClientRequest) => {
     }>
   }
 }
-const fixture = (flow: 'apiKey' | 'account', streaming = false) => {
+const fixture = (streaming = false) => {
   const requests: HttpClientRequest.HttpClientRequest[] = []
   const http = HttpClient.make((request) => {
     requests.push(request)
     return Effect.succeed(
       HttpClientResponse.fromWeb(
         request,
-        flow === 'account' || streaming
+        streaming
           ? new Response(
               `data: ${JSON.stringify({ type: 'response.completed', sequence_number: 1, response })}\n\n`,
               { headers: { 'content-type': 'text/event-stream' } },
@@ -73,29 +72,13 @@ const fixture = (flow: 'apiKey' | 'account', streaming = false) => {
       ),
     )
   })
-  const auth = Layer.succeed(
-    ChatGpt.ChatGpt,
-    ChatGpt.ChatGpt.of({
-      begin: () => Effect.die('No live consent'),
-      complete: () => Effect.die('No live consent'),
-      refresh: () => Effect.die('No live refresh'),
-      signOut: () => Effect.void,
-      cancel: () => Effect.void,
-      models: () => Effect.succeed([]),
-      accessToken: () => Effect.succeed(Redacted.make('account-token')),
-    }),
-  )
-  const dependencies = Layer.merge(Layer.succeed(HttpClient.HttpClient, http), auth)
+  const dependencies = Layer.succeed(HttpClient.HttpClient, http)
   const options = { model: 'fixture', config: { fileIdPrefixes: ['file-'] } }
-  const layer = (
-    flow === 'apiKey'
-      ? HarnessOpenAiLanguageModel.layerApiKey({
-          ...options,
-          apiKey: Redacted.make('api-key'),
-          apiUrl: 'https://fixture.invalid',
-        })
-      : ChatGptLanguageModel.layer({ ...options, account: 'account' })
-  ).pipe(Layer.provide(dependencies))
+  const layer = HarnessOpenAiLanguageModel.layerApiKey({
+    ...options,
+    apiKey: Redacted.make('api-key'),
+    apiUrl: 'https://fixture.invalid',
+  }).pipe(Layer.provide(dependencies))
   return { requests, layer, dependencies }
 }
 const history = (result: Schema.Json) =>
@@ -181,7 +164,7 @@ describe('ToolResult', () => {
   describe('OpenAI canonical tool media', () => {
     it.effect('retains native toolkit schema/mode/error/service generics', () =>
       Effect.gen(function* () {
-        const f = fixture('apiKey')
+        const f = fixture()
         class Audit extends Context.Service<
           Audit,
           { readonly record: (value: number) => Effect.Effect<void> }
@@ -211,10 +194,10 @@ describe('ToolResult', () => {
         }).pipe(Effect.provide(Layer.merge(f.layer, handlers)))
       }),
     )
-    for (const flow of ['apiKey', 'account'] as const) {
-      it.effect(`${flow} applies native dynamic file-ID configuration to tool media`, () =>
+    {
+      it.effect(`API-key applies native dynamic file-ID configuration to tool media`, () =>
         Effect.gen(function* () {
-          const f = fixture(flow)
+          const f = fixture()
           return yield* Effect.gen(function* () {
             const result = yield* Canonical.encode({
               content: [
@@ -240,9 +223,9 @@ describe('ToolResult', () => {
           }).pipe(Effect.provide(f.layer))
         }),
       )
-      it.effect(`${flow} preserves HTTP/data-URI sources and empty canonical content`, () =>
+      it.effect(`API-key preserves HTTP/data-URI sources and empty canonical content`, () =>
         Effect.gen(function* () {
-          const f = fixture(flow)
+          const f = fixture()
           return yield* Effect.gen(function* () {
             const model = yield* LanguageModel.LanguageModel
             const result = yield* Canonical.encode({
@@ -274,10 +257,10 @@ describe('ToolResult', () => {
       )
       for (const mode of ['text', 'stream', 'object'] as const) {
         it.effect(
-          `${flow} ${mode} preserves mixed media/options inside native function output`,
+          `API-key ${mode} preserves mixed media/options inside native function output`,
           () =>
             Effect.gen(function* () {
-              const f = fixture(flow, mode === 'stream')
+              const f = fixture(mode === 'stream')
               return yield* Effect.gen(function* () {
                 const prompt = history(yield* mixed())
                 const model = yield* LanguageModel.LanguageModel
@@ -328,17 +311,14 @@ describe('ToolResult', () => {
                 assert.notInclude(encoded, 'private-control')
                 assert.notInclude(encoded, '987654321')
                 assert.notInclude(encoded, '@effect-harness/ToolContent')
-                assert.strictEqual(
-                  request.headers['authorization'],
-                  `Bearer ${flow === 'apiKey' ? 'api-key' : 'account-token'}`,
-                )
+                assert.strictEqual(request.headers['authorization'], 'Bearer api-key')
               }).pipe(Effect.provide(f.layer))
             }),
         )
       }
-      it.effect(`${flow} leaves ordinary JSON and invalid lookalike markers native`, () =>
+      it.effect(`API-key leaves ordinary JSON and invalid lookalike markers native`, () =>
         Effect.gen(function* () {
-          const f = fixture(flow)
+          const f = fixture()
           return yield* Effect.gen(function* () {
             const model = yield* LanguageModel.LanguageModel
             for (const result of [
@@ -353,9 +333,9 @@ describe('ToolResult', () => {
           }).pipe(Effect.provide(f.layer))
         }),
       )
-      it.effect(`${flow} rejects unsupported media before HTTP`, () =>
+      it.effect(`API-key rejects unsupported media before HTTP`, () =>
         Effect.gen(function* () {
-          const f = fixture(flow)
+          const f = fixture()
           return yield* Effect.gen(function* () {
             const result = yield* Canonical.encode({
               content: [Prompt.filePart({ mediaType: 'audio/wav', data: new Uint8Array([1]) })],
@@ -367,9 +347,9 @@ describe('ToolResult', () => {
           }).pipe(Effect.provide(f.layer))
         }),
       )
-      it.effect(`${flow} rejects invalid native provider options before HTTP`, () =>
+      it.effect(`API-key rejects invalid native provider options before HTTP`, () =>
         Effect.gen(function* () {
-          const f = fixture(flow)
+          const f = fixture()
           return yield* Effect.gen(function* () {
             const malformed: Schema.Json = {
               _tag: '@effect-harness/ToolContent',
@@ -390,37 +370,23 @@ describe('ToolResult', () => {
           }).pipe(Effect.provide(f.layer))
         }),
       )
-      it.effect(`${flow} catalogue retains media translation and declared file prefixes`, () =>
+      it.effect(`API-key catalogue retains media translation and declared file prefixes`, () =>
         Effect.gen(function* () {
-          const f = fixture(flow)
-          const catalog = (
-            flow === 'apiKey'
-              ? Catalog.layerApiKey({
-                  apiKey: Redacted.make('api-key'),
-                  models: [
-                    {
-                      modelId: 'fixture',
-                      contextWindow: 10000,
-                      maxOutputTokens: 1000,
-                      config: { fileIdPrefixes: ['file-'] },
-                    },
-                  ],
-                })
-              : Catalog.layerChatGpt({
-                  account: 'account',
-                  models: [
-                    {
-                      modelId: 'fixture',
-                      contextWindow: 10000,
-                      maxOutputTokens: 1000,
-                      config: { fileIdPrefixes: ['file-'] },
-                    },
-                  ],
-                })
-          ).pipe(Layer.provide(f.dependencies))
+          const f = fixture()
+          const catalog = Catalog.layerApiKey({
+            apiKey: Redacted.make('api-key'),
+            models: [
+              {
+                modelId: 'fixture',
+                contextWindow: 10000,
+                maxOutputTokens: 1000,
+                config: { fileIdPrefixes: ['file-'] },
+              },
+            ],
+          }).pipe(Layer.provide(f.dependencies))
           return yield* Effect.gen(function* () {
             const descriptor = yield* (yield* Model.Catalog).resolve({
-              provider: flow === 'apiKey' ? 'openai' : 'openai-chatgpt',
+              provider: 'openai',
               modelId: 'fixture',
             })
             yield* descriptor.model.generateText({ prompt: history(yield* mixed()) })
@@ -436,4 +402,3 @@ describe('ToolResult', () => {
 })
 
 import * as HarnessOpenAiLanguageModel from 'effect-harness/provider-openai/OpenAiLanguageModel'
-import * as ChatGptLanguageModel from 'effect-harness/provider-openai/ChatGptLanguageModel'
