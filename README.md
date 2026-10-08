@@ -20,6 +20,12 @@ bun run --cwd apps/example test
 
 The offline example calls an uppercase tool, returns `HELLO`, and runs a custom greeting task. It requires no API key. [Run your first conversation](docs/tutorials/first-conversation.md) explains the application.
 
+The [conversation and task tour](apps/example/TOUR.md) provides ten more runnable examples, including process recovery, parallel forks, subagents, compensating tasks and typed documents:
+
+```sh
+bun run --cwd apps/example tour -- all
+```
+
 ## Choose your imports
 
 ```ts
