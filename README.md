@@ -2,6 +2,8 @@
 
 Embedded durable AI conversations, built with Effect.
 
+[effect-harness on npm](https://www.npmjs.com/package/effect-harness)
+
 An application opens a scoped `Harness` with a model catalogue, a tool registry and a `Persistence` Layer. Conversations, task checkpoints, tool results and typed documents share atomic commits. One harness process owns each store; clients call that process's conversation APIs.
 
 - **Native Effect AI.** Models use `LanguageModel`, `Prompt`, `Tool` and `Toolkit`.
