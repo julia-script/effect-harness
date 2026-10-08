@@ -5,6 +5,7 @@
   "scripts": {
     "dependencies:build": "bun run --cwd ../../packages/effect-harness build",
     "tour": "bun dist/Tour.js",
+    "portable": "node dist/PortableMain.js",
     "typecheck": "tsc --noEmit",
     "build": "rm -rf dist && tsc",
     "reproduce:unknown-tool": "bun run dependencies:build && bun src/ReproduceUnknownTool.ts",

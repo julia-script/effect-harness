@@ -10,6 +10,20 @@ An application opens a scoped `Harness` with a model catalogue, a tool registry 
 - **Explicit tool recovery.** Replay policies distinguish safe repeatable work from interrupted external actions.
 - **Committed observations.** Watches start with a snapshot and stream subsequent commits.
 
+## Runtime support
+
+The core uses standard JavaScript, Web APIs and Effect services. It has no Bun or Node runtime dependency and can run in Node, Bun, Deno or a browser. Persistence, model transport and tool capabilities come from your application; choose adapters that your host supports. Bun is the repository's development tool.
+
+Runtime-specific adapters are optional leaf imports: `NodeEnv`, `NodeNativeFiles`, `storage/SqliteNode`, `storage/JsonlNode`, `storage/SqliteBun` and `storage/JsonlBun`. Importing the package root, portable tools or `storage/Memory` does not load them.
+
+The [portable example](apps/example/src/Portable.ts) runs eight conversation and task scenarios without platform services. After building, run it under Node:
+
+```sh
+node apps/example/dist/PortableMain.js
+```
+
+See [the runtime commands](apps/example/README.md#portable-runtime-example) for Bun, Deno and browser bundling.
+
 ## Run the example
 
 ```sh

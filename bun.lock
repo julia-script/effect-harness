@@ -42,18 +42,21 @@
         "diff": "^8.0.2",
       },
       "devDependencies": {
+        "@effect/platform-bun": "4.0.1",
         "@effect/platform-node": "4.0.1",
         "@effect/sql-sqlite-bun": "4.0.1",
         "@effect/sql-sqlite-node": "4.0.1",
         "effect": "catalog:",
       },
       "peerDependencies": {
+        "@effect/platform-bun": "4.0.1",
         "@effect/platform-node": "4.0.1",
         "@effect/sql-sqlite-bun": "4.0.1",
         "@effect/sql-sqlite-node": "4.0.1",
         "effect": "^4.0.1",
       },
       "optionalPeers": [
+        "@effect/platform-bun",
         "@effect/platform-node",
         "@effect/sql-sqlite-bun",
         "@effect/sql-sqlite-node",
