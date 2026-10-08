@@ -66,31 +66,33 @@ export function detectSupportedImageMimeType(self: Uint8Array): Option.Option<st
   return Option.none()
 }
 
-function isPng(u: Uint8Array): boolean {
+function isPng(self: Uint8Array): boolean {
   return (
-    u.length >= 16 && readUint32BE(u, PNG_SIGNATURE.length) === 13 && startsWithAscii(u, 12, 'IHDR')
+    self.length >= 16 &&
+    readUint32BE(self, PNG_SIGNATURE.length) === 13 &&
+    startsWithAscii(self, 12, 'IHDR')
   )
 }
 
-function isAnimatedPng(u: Uint8Array): boolean {
+function isAnimatedPng(self: Uint8Array): boolean {
   let offset = PNG_SIGNATURE.length
-  while (offset + 8 <= u.length) {
-    const chunkLength = readUint32BE(u, offset)
+  while (offset + 8 <= self.length) {
+    const chunkLength = readUint32BE(self, offset)
     const chunkTypeOffset = offset + 4
-    if (startsWithAscii(u, chunkTypeOffset, 'acTL')) return true
-    if (startsWithAscii(u, chunkTypeOffset, 'IDAT')) return false
+    if (startsWithAscii(self, chunkTypeOffset, 'acTL')) return true
+    if (startsWithAscii(self, chunkTypeOffset, 'IDAT')) return false
     const nextOffset = offset + 8 + chunkLength + 4
-    if (nextOffset <= offset || nextOffset > u.length) return false
+    if (nextOffset <= offset || nextOffset > self.length) return false
     offset = nextOffset
   }
   return false
 }
 
-function isBmp(u: Uint8Array): boolean {
-  if (u.length < 26) return false
-  const declaredFileSize = readUint32LE(u, 2)
-  const pixelDataOffset = readUint32LE(u, 10)
-  const dibHeaderSize = readUint32LE(u, 14)
+function isBmp(self: Uint8Array): boolean {
+  if (self.length < 26) return false
+  const declaredFileSize = readUint32LE(self, 2)
+  const pixelDataOffset = readUint32LE(self, 10)
+  const dibHeaderSize = readUint32LE(self, 14)
   if (declaredFileSize !== 0 && declaredFileSize < 26) return false
   if (pixelDataOffset < 14 + dibHeaderSize) return false
   if (declaredFileSize !== 0 && pixelDataOffset >= declaredFileSize) return false
@@ -98,12 +100,12 @@ function isBmp(u: Uint8Array): boolean {
   let colorPlanes: number
   let bitsPerPixel: number
   if (dibHeaderSize === 12) {
-    colorPlanes = readUint16LE(u, 22)
-    bitsPerPixel = readUint16LE(u, 24)
+    colorPlanes = readUint16LE(self, 22)
+    bitsPerPixel = readUint16LE(self, 24)
   } else if (dibHeaderSize >= 40 && dibHeaderSize <= 124) {
-    if (u.length < 30) return false
-    colorPlanes = readUint16LE(u, 26)
-    bitsPerPixel = readUint16LE(u, 28)
+    if (self.length < 30) return false
+    colorPlanes = readUint16LE(self, 26)
+    bitsPerPixel = readUint16LE(self, 28)
   } else {
     return false
   }

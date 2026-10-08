@@ -1,30 +1,26 @@
-/**
- * Native generation, deferred polling and tool-round orchestration.
- */
-import { tagged } from '../internal/legacyTag.ts'
-import * as Arr from 'effect/Array'
+import * as Predicate from 'effect/Predicate'
+import * as Array from 'effect/Array'
 import type { StorageError } from '../StorageError.ts'
 import * as Time from 'effect-harness/Time'
 import * as Ref from 'effect/Ref'
 import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
-import { ModelRetry, remaining, policy as retryPolicy } from './ModelRetry.ts'
+import { ModelRetryError, remaining, policy as retryPolicy } from './ModelRetry.ts'
 import * as Serialization from '../Serialization.ts'
 import * as Entry from '../Entry.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import type * as Layer from 'effect/Layer'
 import * as Agent from 'effect-harness/Agent'
-import * as Context from 'effect-harness/Context'
-import * as compaction from 'effect-harness/Compaction'
+import * as Transcript from 'effect-harness/Transcript'
+import * as Compaction from 'effect-harness/Compaction'
 import * as Executor from 'effect-harness/Executor'
-// effect-review-allow P9-namespace-alias-equals-module: the imported native Compaction Workflow binding collides with harness/Compaction; this lowercase namespace distinguishes the pure policy concept.
 import * as Hook from 'effect-harness/Hook'
 import * as Invocation from 'effect-harness/Invocation'
 import * as Model from 'effect-harness/Model'
 import * as Progress from 'effect-harness/Progress'
 import * as Registry from 'effect-harness/Registry'
-import * as Response from 'effect-harness/Response'
-import * as Tool from 'effect-harness/Tool'
+import * as ResponseAccumulator from 'effect-harness/ResponseAccumulator'
+import * as ToolRegistration from 'effect-harness/ToolRegistration'
 import * as Usage from 'effect-harness/Usage'
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
@@ -32,7 +28,7 @@ import * as Exit from 'effect/Exit'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as Prompt from 'effect/ai/Prompt'
-import { ToolCallPart, AllParts, type FinishReason, type AnyPart } from 'effect/ai/Response'
+import * as Response from 'effect/ai/Response'
 import * as Toolkit from 'effect/ai/Toolkit'
 import * as Activity from 'effect/workflow/Activity'
 import * as DurableClock from 'effect/workflow/DurableClock'
@@ -44,12 +40,18 @@ import * as Record from '../Record.ts'
 import type * as Session from '../Session.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
 import { record as recordUsage } from '../Usage.ts'
-import { ExecutionError, InvalidState, Aborted, NoModel, ModelError } from './ExecutionError.ts'
+import {
+  ExecutionError,
+  InvalidStateError,
+  AbortedError,
+  NoModelError,
+  ModelError,
+} from './ExecutionError.ts'
 import { Generation, Result } from './Generation.ts'
 import * as SubmissionExecutor from './SubmissionExecutor.ts'
 import { ToolCall } from './ToolCall.ts'
 import * as ToolExecutor from './ToolExecutor.ts'
-import { Compaction } from './Compaction.ts'
+import { Compaction as CompactionWorkflow } from './Compaction.ts'
 import * as CompactionExecutor from './CompactionExecutor.ts'
 import { RequestDoc } from './Request.ts'
 import * as Cancellation from './Cancellation.ts'
@@ -61,17 +63,18 @@ const Pinned = Schema.Struct({
   settings: Agent.Settings,
 })
 const Preparation = Schema.Union([
-  tagged('request', {
-    type: Schema.tag('request'),
+  Schema.TaggedStruct('request', {
     ...Pinned.fields,
-    background: Schema.optionalKey(Compaction.payloadSchema),
+    background: Schema.optionalKey(CompactionWorkflow.payloadSchema),
   }),
-  tagged('compaction', { type: Schema.tag('compaction'), compaction: Compaction.payloadSchema }),
+  Schema.TaggedStruct('compaction', {
+    compaction: CompactionWorkflow.payloadSchema,
+  }),
 ])
-const ToolPart = ToolCallPart('', Schema.Json)
+const ToolPart = Response.ToolCallPart('', Schema.Json)
 const ResponseParts = Schema.Array(
   Schema.Union([
-    AllParts(Toolkit.make()),
+    Response.AllParts(Toolkit.make()),
     Schema.Struct({ ...ToolPart.fields, name: Schema.String }),
     Schema.Struct({
       '~effect/ai/Response/Part': ToolPart.fields['~effect/ai/Response/Part'],
@@ -87,6 +90,12 @@ const ResponseParts = Schema.Array(
     }),
   ]),
 )
+const DeferredDecision = Schema.Struct({ handle: Schema.Json, at: Time.DateTimeUtcFromEpochMillis })
+const FailureAttempt = Schema.Struct({
+  at: Time.DateTimeUtcFromEpochMillis,
+  retry: Schema.Boolean,
+  compaction: Schema.optionalKey(CompactionWorkflow.payloadSchema),
+})
 const ResponseStep = Schema.Struct({ disposition: Executor.Disposition, parts: ResponseParts })
 const Settlement = Schema.Struct({
   result: Result,
@@ -98,7 +107,7 @@ const RoundCall = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   args: Schema.Json,
-  unavailable: Schema.optionalKey(Schema.toEncoded(Schema.toCodecJson(Tool.Execution))),
+  unavailable: Schema.optionalKey(Schema.toEncoded(Schema.toCodecJson(ToolRegistration.Execution))),
 })
 const Round = Schema.Struct({
   assistant: Record.EntryId,
@@ -107,7 +116,7 @@ const Round = Schema.Struct({
 })
 const codecError = (cause?: unknown) =>
   new ExecutionError({
-    reason: new InvalidState({
+    reason: new InvalidStateError({
       message: 'Generation data cannot be persisted',
       ...(cause === undefined ? {} : { cause }),
     }),
@@ -116,13 +125,13 @@ const domainError = (error: import('../StorageError.ts').StorageError | Executio
   error._tag === 'StorageError' ? SubmissionExecutor.storageError(error) : error
 
 /**
- * convertPartial schema.
+ * Appends saved partial assistant content as aborted and records available usage.
  *
  * @category combinators
  */
 export const convertPartial = Effect.fnUntraced(function* (
   tx: Session.Transaction,
-  live: Document.Draft<Inbox.LiveState>,
+  live: Document.Document.Draft<Inbox.LiveState>,
   conversationId: Record.ConversationId,
 ): Effect.fn.Return<void, StorageError | ExecutionError> {
   const generation = live.generation
@@ -153,7 +162,7 @@ const appendAssistant = Effect.fnUntraced(function* (
   payload: typeof Generation.payloadSchema.Type,
   request: Executor.Request,
   disposition: Exclude<Executor.Disposition, { readonly _tag: 'deferred' }>,
-  finishReason?: FinishReason,
+  finishReason?: Response.FinishReason,
 ) {
   const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(Schema.Array(Prompt.Message)))(
     disposition.prompt.content,
@@ -221,12 +230,12 @@ export const layer: Layer.Layer<
       const taskOption = yield* session.task(payload.taskId).pipe(Effect.mapError(domainError))
       if (Option.isNone(taskOption))
         return yield* new ExecutionError({
-          reason: new InvalidState({ message: 'Generation projection is absent' }),
+          reason: new InvalidStateError({ message: 'Generation projection is absent' }),
         })
       const task = taskOption.value
       if (task.abortRequested || task.state.status === 'terminal')
         return yield* new ExecutionError({
-          reason: new Aborted({ message: 'Generation has ended' }),
+          reason: new AbortedError({ message: 'Generation has ended' }),
         })
       return task
     })
@@ -298,7 +307,7 @@ export const layer: Layer.Layer<
     const run = Effect.gen(function* () {
       const compacted = yield* Ref.make(false)
       const cycleNumber = yield* Ref.make(1)
-      const attemptModel = Effect.fnUntraced(function* () {
+      const attemptComputation = Effect.gen(function* () {
         const attempt = (yield* Schedule.CurrentMetadata).attempt + 1
         while (true) {
           const cycle = yield* Ref.getAndUpdate(cycleNumber, (cycle) => cycle + 1)
@@ -317,7 +326,7 @@ export const layer: Layer.Layer<
                   const receipts = (yield* session.committed.pipe(
                     Effect.mapError(SubmissionExecutor.storageError),
                   )).receipts
-                  const preparedReceipt = Arr.findFirst(
+                  const preparedReceipt = Array.findFirst(
                     receipts,
                     (receipt) =>
                       receipt.key ===
@@ -327,7 +336,7 @@ export const layer: Layer.Layer<
                     return yield* Schema.decodeEffect(Schema.toCodecJson(Preparation))(
                       preparedReceipt.value.result,
                     ).pipe(Effect.mapError(codecError))
-                  const compactionReceipt = Arr.findFirst(
+                  const compactionReceipt = Array.findFirst(
                     receipts,
                     (receipt) =>
                       receipt.key ===
@@ -336,10 +345,9 @@ export const layer: Layer.Layer<
                   if (Option.isSome(compactionReceipt))
                     return {
                       _tag: 'compaction' as const,
-                      type: 'compaction' as const,
-                      compaction: yield* Schema.decodeUnknownEffect(Compaction.payloadSchema)(
-                        compactionReceipt.value.result,
-                      ).pipe(Effect.mapError(codecError)),
+                      compaction: yield* Schema.decodeUnknownEffect(
+                        CompactionWorkflow.payloadSchema,
+                      )(compactionReceipt.value.result).pipe(Effect.mapError(codecError)),
                     }
                   yield* active
                   const state: Agent.State = yield* session
@@ -366,7 +374,7 @@ export const layer: Layer.Layer<
                   }
                   if (Option.isNone(providerOption) || providerOption.value.value.sessionId === '')
                     return yield* new ExecutionError({
-                      reason: new InvalidState({
+                      reason: new InvalidStateError({
                         message:
                           'Provider identity requires Conversation.layer(options) during Session construction',
                       }),
@@ -378,53 +386,58 @@ export const layer: Layer.Layer<
                   const prepared = yield* executor
                     .prepare({
                       state,
-                      settings: config.settings,
+                      settings: yield* config.settings.pipe(Effect.mapError(codecError)),
                       view,
                       sessionId: provider.value.sessionId,
                     })
                     .pipe(
-                      Effect.provideService(Invocation.Invocation, {
-                        ...invocation,
-                        cwd: state.cwd ?? config.cwd,
-                      }),
+                      Effect.provideService(
+                        Invocation.Invocation,
+                        Invocation.Invocation.of({
+                          ...invocation,
+                          cwd: state.cwd ?? config.cwd,
+                        }),
+                      ),
                       Effect.mapError(
                         (error) =>
                           new ExecutionError({
-                            reason: new ('reason' in error && error.reason._tag === 'ModelNoModel'
-                              ? NoModel
+                            reason: new (Predicate.hasProperty(error, 'reason') &&
+                              error.reason._tag === 'ModelNoModelError'
+                              ? NoModelError
                               : ModelError)({ message: error.message, cause: error }),
                           }),
                       ),
                     )
                   const settings = yield* Schema.decodeEffect(Schema.toType(Agent.Settings))(
-                    config.settings,
+                    yield* config.settings.pipe(Effect.mapError(codecError)),
                   ).pipe(Effect.mapError(codecError))
                   const descriptor = yield* catalog.resolve(prepared.request.model).pipe(
                     Effect.mapError(
                       (error) =>
                         new ExecutionError({
-                          reason: new NoModel({ message: error.message, cause: error }),
+                          reason: new NoModelError({ message: error.message, cause: error }),
                         }),
                     ),
                   )
                   const hasCut = Option.isSome(
-                    compaction.selectCut(
+                    Compaction.selectCut(
                       view,
-                      config.settings.compaction.keepRecentTokens,
+                      (yield* config.settings.pipe(Effect.mapError(codecError))).compaction
+                        .keepRecentTokens,
                       descriptor.estimate,
                     ),
                   )
                   const threshold =
                     (yield* Ref.get(compacted)) || !hasCut
                       ? Option.none()
-                      : compaction.threshold(
-                          Context.estimate(
+                      : Compaction.threshold(
+                          Transcript.estimate(
                             view,
-                            Arr.flatMap(prepared.plan.patches, Context.systemMessages),
+                            Array.flatMap(prepared.plan.patches, Transcript.systemMessages),
                             descriptor.estimate,
                           ),
                           descriptor.contextWindow,
-                          config.settings.compaction,
+                          (yield* config.settings.pipe(Effect.mapError(codecError))).compaction,
                         )
                   if (Option.isSome(threshold) && threshold.value === 'blocking') {
                     const child = yield* session
@@ -433,19 +446,17 @@ export const layer: Layer.Layer<
                           const taskOption = yield* tx.task(payload.taskId)
                           if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                             return yield* new ExecutionError({
-                              reason: new Aborted({ message: 'Generation aborted' }),
+                              reason: new AbortedError({ message: 'Generation aborted' }),
                             })
                           const task = taskOption.value
-                          const child = yield* CompactionExecutor.make(
-                            tx,
-                            payload.sessionId,
-                            payload.conversationId,
-                            'threshold',
-                            payload.taskId,
-                          )
+                          const child = yield* CompactionExecutor.make(tx, {
+                            sessionId: payload.sessionId,
+                            conversationId: payload.conversationId,
+                            reason: 'threshold',
+                            owner: payload.taskId,
+                          })
                           yield* tx.write({
                             _tag: 'task',
-                            type: 'task',
                             value: {
                               ...task,
                               state: {
@@ -464,7 +475,6 @@ export const layer: Layer.Layer<
                       .pipe(Effect.mapError(domainError))
                     return {
                       _tag: 'compaction' as const,
-                      type: 'compaction' as const,
                       compaction: child,
                     }
                   }
@@ -474,7 +484,7 @@ export const layer: Layer.Layer<
                         const taskOption = yield* tx.task(payload.taskId)
                         if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                           return yield* new ExecutionError({
-                            reason: new Aborted({ message: 'Generation aborted' }),
+                            reason: new AbortedError({ message: 'Generation aborted' }),
                           })
                         const task = taskOption.value
                         const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
@@ -483,12 +493,11 @@ export const layer: Layer.Layer<
                           Option.isSome(threshold) &&
                           threshold.value === 'background' &&
                           (live.compactions?.length ?? 0) === 0
-                            ? yield* CompactionExecutor.make(
-                                tx,
-                                payload.sessionId,
-                                payload.conversationId,
-                                'background',
-                              )
+                            ? yield* CompactionExecutor.make(tx, {
+                                sessionId: payload.sessionId,
+                                conversationId: payload.conversationId,
+                                reason: 'background',
+                              })
                             : undefined
                         let tail = prepared.request.tail
                         const edits = yield* Schema.decodeUnknownEffect(
@@ -501,7 +510,9 @@ export const layer: Layer.Layer<
                           const entry = yield* tx.appendEntry(payload.conversationId, {
                             kind: 'harness.system',
                             data: { harness: { system } },
-                            ...(index === 0 && Arr.isReadonlyArrayNonEmpty(edits) ? { edits } : {}),
+                            ...(index === 0 && Array.isReadonlyArrayNonEmpty(edits)
+                              ? { edits }
+                              : {}),
                           })
                           tail = entry.id
                         }
@@ -511,9 +522,10 @@ export const layer: Layer.Layer<
                         }
                         const encoded = yield* Schema.encodeEffect(
                           Schema.toCodecJson(Executor.Request),
-                        )({ ...prepared.request, ...(tail === undefined ? {} : { tail }) }).pipe(
-                          Effect.mapError(codecError),
-                        )
+                        )({
+                          ...prepared.request,
+                          ...(tail === undefined ? {} : { tail }),
+                        }).pipe(Effect.mapError(codecError))
                         const requestDoc = yield* tx.doc(RequestDoc, {
                           owner: payload.taskId,
                           seed: encoded,
@@ -522,12 +534,10 @@ export const layer: Layer.Layer<
                         delete requestDoc.handle
                         yield* tx.write({
                           _tag: 'task',
-                          type: 'task',
                           value: { ...task, state: { status: 'running' } },
                         })
                         return yield* Schema.encodeEffect(Schema.toCodecJson(Preparation))({
                           _tag: 'request',
-                          type: 'request',
                           request: { ...prepared.request, ...(tail === undefined ? {} : { tail }) },
                           state,
                           settings,
@@ -543,23 +553,26 @@ export const layer: Layer.Layer<
                 }),
               ).pipe(Effect.mapError(domainError)),
             })
-            if (planned.type === 'compaction') {
+            if (planned._tag === 'compaction') {
               yield* Ref.set(compacted, true)
-              yield* Effect.result(Compaction.execute(planned.compaction))
+              yield* Effect.result(CompactionWorkflow.execute(planned.compaction))
               continue
             }
             pinned = planned
             if (planned.background !== undefined)
-              yield* Compaction.execute(planned.background, { discard: true })
+              yield* CompactionWorkflow.execute(planned.background, { discard: true })
             break
           }
-          invocation = { ...invocation, cwd: pinned.state.cwd ?? config.cwd }
+          invocation = Invocation.Invocation.of({
+            ...invocation,
+            cwd: pinned.state.cwd ?? config.cwd,
+          })
           const agent = yield* executor
             .resolve(pinned.state, pinned.settings)
             .pipe(Effect.provideService(Invocation.Invocation, invocation))
           let poll: { handle: Schema.Json; at: DateTime.Utc } | undefined
           let disposition: Executor.Disposition
-          let parts: ReadonlyArray<AnyPart> = []
+          let parts: ReadonlyArray<Response.AnyPart> = []
           for (let fetch = 0; ; fetch++) {
             if (poll !== undefined)
               yield* DurableClock.sleep({
@@ -592,21 +605,25 @@ export const layer: Layer.Layer<
                         }),
                       )
                       .pipe(Effect.mapError(domainError))
-                    const responseState = yield* Ref.make(Response.empty())
+                    const responseState = yield* Ref.make(ResponseAccumulator.make())
                     const write = Effect.gen(function* () {
                       const response = yield* Ref.get(responseState)
-                      const message = Response.partial(response)
+                      const message = ResponseAccumulator.partial(response)
                       if (Option.isNone(message)) return 0
                       const encoded = yield* Schema.encodeEffect(
                         Schema.toCodecJson(Prompt.AssistantMessage),
                       )(message.value)
-                      const finish = Arr.findLast(response.parts, (part) => part.type === 'finish')
+                      const finish = Array.findLast(
+                        response.parts,
+                        (part) => part.type === 'finish',
+                      )
                       const descriptor = yield* catalog.resolve(pinned.request.model).pipe(
                         Effect.mapError(
                           (error) =>
                             new ExecutionError({
-                              reason: new ('reason' in error && error.reason._tag === 'ModelNoModel'
-                                ? NoModel
+                              reason: new (Predicate.hasProperty(error, 'reason') &&
+                                error.reason._tag === 'ModelNoModelError'
+                                ? NoModelError
                                 : ModelError)({ message: error.message, cause: error }),
                             }),
                         ),
@@ -641,7 +658,7 @@ export const layer: Layer.Layer<
                       return new TextEncoder().encode(JSON.stringify(encoded)).length
                     }).pipe(Effect.orDie)
                     const progress = yield* Progress.make(write, {
-                      minIntervalMs: pinned.settings.progress.partialIntervalMs,
+                      minInterval: pinned.settings.progress.partialInterval,
                     }).pipe(Effect.mapError(codecError))
                     const source =
                       handle === undefined
@@ -652,7 +669,7 @@ export const layer: Layer.Layer<
                         Stream.runForEach(
                           Effect.fnUntraced(function* (part) {
                             yield* Ref.update(responseState, (response) =>
-                              Response.append(response, part),
+                              ResponseAccumulator.append(response, part),
                             )
                             yield* progress.mark
                           }),
@@ -670,18 +687,32 @@ export const layer: Layer.Layer<
                       streamed._tag === 'Failure' ||
                       !response.parts.some((part) => part.type === 'finish')
                     ) {
+                      if (streamed._tag === 'Failure')
+                        yield* Effect.logError(
+                          'Generation response stream failed',
+                          streamed.failure,
+                        ).pipe(
+                          Effect.annotateLogs({
+                            conversationId: payload.conversationId,
+                            taskId: payload.taskId,
+                          }),
+                        )
                       const text =
                         streamed._tag === 'Failure'
                           ? Model.errorText(streamed.failure)
                           : 'Stream ended before a terminal response event'
-                      const finish = Arr.findLast(response.parts, (part) => part.type === 'finish')
-                      const partial = Response.partial(response)
+                      const finish = Array.findLast(
+                        response.parts,
+                        (part) => part.type === 'finish',
+                      )
+                      const partial = ResponseAccumulator.partial(response)
                       const descriptor = yield* catalog.resolve(pinned.request.model).pipe(
                         Effect.mapError(
                           (error) =>
                             new ExecutionError({
-                              reason: new ('reason' in error && error.reason._tag === 'ModelNoModel'
-                                ? NoModel
+                              reason: new (Predicate.hasProperty(error, 'reason') &&
+                                error.reason._tag === 'ModelNoModelError'
+                                ? NoModelError
                                 : ModelError)({ message: error.message, cause: error }),
                             }),
                         ),
@@ -690,9 +721,8 @@ export const layer: Layer.Layer<
                         parts,
                         disposition: {
                           _tag: 'failure' as const,
-                          type: 'failure' as const,
                           prompt: Option.match(partial, {
-                            onNone: () => Response.message(response),
+                            onNone: () => ResponseAccumulator.message(response),
                             onSome: (message) => Prompt.fromMessages([message]),
                           }),
                           usage: Option.isNone(finish)
@@ -733,8 +763,9 @@ export const layer: Layer.Layer<
                         Effect.mapError(
                           (error) =>
                             new ExecutionError({
-                              reason: new ('reason' in error && error.reason._tag === 'ModelNoModel'
-                                ? NoModel
+                              reason: new (Predicate.hasProperty(error, 'reason') &&
+                                error.reason._tag === 'ModelNoModelError'
+                                ? NoModelError
                                 : ModelError)({ message: error.message, cause: error }),
                             }),
                         ),
@@ -750,7 +781,7 @@ export const layer: Layer.Layer<
             const previousAt = poll?.at
             poll = yield* Activity.make({
               name: `deferred/${cycle}/${fetch}`,
-              success: Schema.Struct({ handle: Schema.Json, at: Time.EpochMillis }),
+              success: DeferredDecision,
               error: ExecutionError,
               execute: session
                 .transaction(
@@ -778,11 +809,7 @@ export const layer: Layer.Layer<
                 )
                 .pipe(
                   Effect.mapError(domainError),
-                  Effect.flatMap(
-                    Schema.decodeEffect(
-                      Schema.Struct({ handle: Schema.Json, at: Time.EpochMillis }),
-                    ),
-                  ),
+                  Effect.flatMap(Schema.decodeEffect(DeferredDecision)),
                   Effect.mapError((cause) =>
                     cause instanceof ExecutionError ? cause : codecError(cause),
                   ),
@@ -793,18 +820,14 @@ export const layer: Layer.Layer<
             const failure = disposition
             const failed = yield* Activity.make({
               name: `failure-attempt/${cycle}`,
-              success: Schema.Struct({
-                at: Time.EpochMillis,
-                retry: Schema.Boolean,
-                compaction: Schema.optionalKey(Compaction.payloadSchema),
-              }),
+              success: FailureAttempt,
               error: ExecutionError,
               execute: Effect.gen(function* () {
                 let shouldCompact = false
                 if (
                   failure.overflow &&
                   !(yield* Ref.get(compacted)) &&
-                  config.settings.compaction.enabled
+                  (yield* config.settings.pipe(Effect.mapError(codecError))).compaction.enabled
                 ) {
                   const cutoff =
                     pinned.request.tail === undefined
@@ -821,14 +844,15 @@ export const layer: Layer.Layer<
                     Effect.mapError(
                       (error) =>
                         new ExecutionError({
-                          reason: new NoModel({ message: error.message, cause: error }),
+                          reason: new NoModelError({ message: error.message, cause: error }),
                         }),
                     ),
                   )
                   shouldCompact = Option.isSome(
-                    compaction.selectCut(
+                    Compaction.selectCut(
                       view,
-                      config.settings.compaction.keepRecentTokens,
+                      (yield* config.settings.pipe(Effect.mapError(codecError))).compaction
+                        .keepRecentTokens,
                       descriptor.estimate,
                     ),
                   )
@@ -839,32 +863,37 @@ export const layer: Layer.Layer<
                       const taskOption = yield* tx.task(payload.taskId)
                       if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                         return yield* new ExecutionError({
-                          reason: new Aborted({ message: 'Generation aborted' }),
+                          reason: new AbortedError({ message: 'Generation aborted' }),
                         })
                       const task = taskOption.value
                       const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
                       const compaction = shouldCompact
-                        ? yield* CompactionExecutor.make(
-                            tx,
-                            payload.sessionId,
-                            payload.conversationId,
-                            'overflow',
-                            payload.taskId,
-                          )
+                        ? yield* CompactionExecutor.make(tx, {
+                            sessionId: payload.sessionId,
+                            conversationId: payload.conversationId,
+                            reason: 'overflow',
+                            owner: payload.taskId,
+                          })
                         : undefined
                       yield* appendAssistant(tx, payload, pinned.request, failure)
                       const retry =
                         !failure.overflow &&
-                        Agent.isRetryAllowed(config.settings.retry, attempt, failure.retryable)
+                        Agent.isRetryAllowed(
+                          (yield* config.settings.pipe(Effect.mapError(codecError))).retry,
+                          attempt,
+                          failure.retryable,
+                        )
                       const at = DateTime.addDuration(
                         yield* DateTime.now,
-                        Agent.retryDelay(config.settings.retry, attempt),
+                        Agent.retryDelay(
+                          (yield* config.settings.pipe(Effect.mapError(codecError))).retry,
+                          attempt,
+                        ),
                       )
                       if (compaction !== undefined) {
                         delete live.generation
                         yield* tx.write({
                           _tag: 'task',
-                          type: 'task',
                           value: {
                             ...task,
                             state: {
@@ -890,15 +919,7 @@ export const layer: Layer.Layer<
                   )
                   .pipe(
                     Effect.mapError(domainError),
-                    Effect.flatMap(
-                      Schema.decodeEffect(
-                        Schema.Struct({
-                          at: Time.EpochMillis,
-                          retry: Schema.Boolean,
-                          compaction: Schema.optionalKey(Compaction.payloadSchema),
-                        }),
-                      ),
-                    ),
+                    Effect.flatMap(Schema.decodeEffect(FailureAttempt)),
                     Effect.mapError((cause) =>
                       cause instanceof ExecutionError ? cause : codecError(cause),
                     ),
@@ -907,13 +928,13 @@ export const layer: Layer.Layer<
             })
             if (failed.compaction !== undefined) {
               yield* Ref.set(compacted, true)
-              const summary = yield* Effect.result(Compaction.execute(failed.compaction))
+              const summary = yield* Effect.result(CompactionWorkflow.execute(failed.compaction))
               if (summary._tag === 'Failure' || summary.success.entryId === undefined)
                 return yield* fail('model_error', failure.message)
               continue
             }
             if (!failed.retry) return yield* fail('model_error', failure.message)
-            return yield* new ModelRetry({ name: `retry/${cycle}`, at: failed.at })
+            return yield* new ModelRetryError({ name: `retry/${cycle}`, at: failed.at })
           }
           if (disposition._tag === 'answer') {
             const answer = disposition
@@ -941,13 +962,13 @@ export const layer: Layer.Layer<
                     const taskOption = yield* tx.task(payload.taskId)
                     if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                       return yield* new ExecutionError({
-                        reason: new Aborted({ message: 'Generation aborted' }),
+                        reason: new AbortedError({ message: 'Generation aborted' }),
                       })
                     const task = taskOption.value
                     const boundary = yield* Inbox.prepare(
                       tx,
                       payload.conversationId,
-                      config.settings,
+                      yield* config.settings.pipe(Effect.mapError(codecError)),
                     )
                     const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
                     const entry = yield* appendAssistant(
@@ -957,7 +978,7 @@ export const layer: Layer.Layer<
                       answer,
                       Option.getOrUndefined(
                         Option.map(
-                          Arr.findLast(parts, (part) => part.type === 'finish'),
+                          Array.findLast(parts, (part) => part.type === 'finish'),
                           (part) => part.reason,
                         ),
                       ),
@@ -967,7 +988,7 @@ export const layer: Layer.Layer<
                     let notify = [...selected.settled]
                     if (
                       Option.isSome(continuation) &&
-                      Arr.isReadonlyArrayEmpty(selected.users) &&
+                      Array.isReadonlyArrayEmpty(selected.users) &&
                       !selected.reset
                     ) {
                       const message = yield* Schema.encodeEffect(
@@ -977,13 +998,12 @@ export const layer: Layer.Layer<
                         kind: 'harness.user',
                         model: [message],
                       })
-                      next = yield* SubmissionExecutor.makeGeneration(
-                        tx,
-                        payload.sessionId,
-                        payload.conversationId,
-                        live.run?.inputs ?? [],
-                        payload.runId,
-                      )
+                      next = yield* SubmissionExecutor.makeGeneration(tx, {
+                        sessionId: payload.sessionId,
+                        conversationId: payload.conversationId,
+                        inputs: live.run?.inputs ?? [],
+                        runId: payload.runId,
+                      })
                     } else {
                       notify.push(
                         ...(yield* Inbox.endRun(tx, live, payload.taskId, {
@@ -991,13 +1011,12 @@ export const layer: Layer.Layer<
                           answer: entry.id,
                         })),
                       )
-                      if (Arr.isReadonlyArrayNonEmpty(selected.users))
-                        next = yield* SubmissionExecutor.makeGeneration(
-                          tx,
-                          payload.sessionId,
-                          payload.conversationId,
-                          selected.users,
-                        )
+                      if (Array.isReadonlyArrayNonEmpty(selected.users))
+                        next = yield* SubmissionExecutor.makeGeneration(tx, {
+                          sessionId: payload.sessionId,
+                          conversationId: payload.conversationId,
+                          inputs: selected.users,
+                        })
                     }
                     const result: Result = { status: 'answered', answer: entry.id }
                     yield* Structured.hold(tx, task, result, graph)
@@ -1020,7 +1039,7 @@ export const layer: Layer.Layer<
                   const taskOption = yield* tx.task(payload.taskId)
                   if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                     return yield* new ExecutionError({
-                      reason: new Aborted({ message: 'Generation aborted' }),
+                      reason: new AbortedError({ message: 'Generation aborted' }),
                     })
                   const task = taskOption.value
                   const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
@@ -1032,9 +1051,11 @@ export const layer: Layer.Layer<
                     const args = yield* Schema.decodeUnknownEffect(Schema.Json)(call.params).pipe(
                       Effect.mapError(codecError),
                     )
-                    const unavailable: Tool.Execution | undefined = offered.has(call.name)
+                    const unavailable: ToolRegistration.Execution | undefined = offered.has(
+                      call.name,
+                    )
                       ? undefined
-                      : { outcome: 'unavailable', result: Tool.unavailable(call.name) }
+                      : { outcome: 'unavailable', result: ToolRegistration.unavailable(call.name) }
                     live.tools.push({ callId: call.id, name: call.name, status: 'pending' })
                     if (unavailable !== undefined)
                       yield* ToolExecutor.appendResult(
@@ -1055,7 +1076,7 @@ export const layer: Layer.Layer<
                         ? {}
                         : {
                             unavailable: yield* Schema.encodeEffect(
-                              Schema.toCodecJson(Tool.Execution),
+                              Schema.toCodecJson(ToolRegistration.Execution),
                             )(unavailable).pipe(Effect.mapError(codecError)),
                           }),
                     })
@@ -1063,18 +1084,17 @@ export const layer: Layer.Layer<
                   delete live.generation
                   yield* tx.write({
                     _tag: 'task',
-                    type: 'task',
                     value: { ...task, state: { status: 'running' } },
                   })
                   return {
                     assistant: assistant.id,
                     calls,
                     sequential:
-                      Tool.executionMode(
-                        Arr.filter(agent.tools, (tool) =>
+                      ToolRegistration.executionMode(
+                        Array.filter(agent.tools, (tool) =>
                           calls.some((call) => call.name === tool.tool.name),
                         ),
-                        config.settings.toolExecution,
+                        (yield* config.settings.pipe(Effect.mapError(codecError))).toolExecution,
                       ) === 'sequential',
                   }
                 }),
@@ -1086,7 +1106,7 @@ export const layer: Layer.Layer<
             round.calls,
             Effect.fnUntraced(function* (call, index) {
               if (call.unavailable !== undefined)
-                return yield* Schema.decodeEffect(Schema.toCodecJson(Tool.Execution))(
+                return yield* Schema.decodeEffect(Schema.toCodecJson(ToolRegistration.Execution))(
                   call.unavailable,
                 ).pipe(Effect.mapError(codecError))
               const child = yield* Activity.make({
@@ -1099,7 +1119,7 @@ export const layer: Layer.Layer<
                       const ownerOption = yield* tx.task(payload.taskId)
                       if (Option.isNone(ownerOption) || ownerOption.value.abortRequested)
                         return yield* new ExecutionError({
-                          reason: new Aborted({ message: 'Generation aborted' }),
+                          reason: new AbortedError({ message: 'Generation aborted' }),
                         })
                       const owner = ownerOption.value
                       const taskId = yield* tx.mint(Record.TaskId)
@@ -1120,7 +1140,6 @@ export const layer: Layer.Layer<
                       }
                       yield* tx.write({
                         _tag: 'task',
-                        type: 'task',
                         value: {
                           id: taskId,
                           conversationId: payload.conversationId,
@@ -1134,14 +1153,13 @@ export const layer: Layer.Layer<
                         },
                       })
                       const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
-                      const slot = Arr.findFirst(
+                      const slot = Array.findFirst(
                         live.tools ?? [],
                         (slot) => slot.callId === call.id,
                       )
                       if (Option.isSome(slot)) slot.value.taskId = taskId
                       yield* tx.write({
                         _tag: 'task',
-                        type: 'task',
                         value: {
                           ...owner,
                           state: {
@@ -1182,7 +1200,10 @@ export const layer: Layer.Layer<
                 for (const [index, call] of round.calls.entries()) {
                   const entryId = live.pipe(
                     Option.flatMap((snapshot) =>
-                      Arr.findFirst(snapshot.value.tools ?? [], (slot) => slot.callId === call.id),
+                      Array.findFirst(
+                        snapshot.value.tools ?? [],
+                        (slot) => slot.callId === call.id,
+                      ),
                     ),
                     Option.flatMap((slot) => Option.fromUndefinedOr(slot.entry)),
                   )
@@ -1202,7 +1223,7 @@ export const layer: Layer.Layer<
               Effect.provideService(Invocation.Invocation, invocation),
             ),
           })
-          const controls = Tool.controls(executions)
+          const controls = ToolRegistration.controls(executions)
           const settlement = yield* Activity.make({
             name: 'after-round',
             success: Settlement,
@@ -1214,12 +1235,16 @@ export const layer: Layer.Layer<
                   const taskOption = yield* tx.task(payload.taskId)
                   if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                     return yield* new ExecutionError({
-                      reason: new Aborted({ message: 'Generation aborted' }),
+                      reason: new AbortedError({ message: 'Generation aborted' }),
                     })
                   const task = taskOption.value
-                  const boundary = yield* Inbox.prepare(tx, payload.conversationId, config.settings)
+                  const boundary = yield* Inbox.prepare(
+                    tx,
+                    payload.conversationId,
+                    yield* config.settings.pipe(Effect.mapError(codecError)),
+                  )
                   const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
-                  if (Arr.isReadonlyArrayNonEmpty(controls.addTools)) {
+                  if (Array.isReadonlyArrayNonEmpty(controls.addTools)) {
                     const agent = yield* tx.doc(Conversation.AgentDoc, {
                       owner: payload.conversationId,
                     })
@@ -1249,21 +1274,19 @@ export const layer: Layer.Layer<
                           : { status: 'done', answer: round.assistant },
                       )),
                     )
-                    if (Arr.isReadonlyArrayNonEmpty(selected.users))
-                      next = yield* SubmissionExecutor.makeGeneration(
-                        tx,
-                        payload.sessionId,
-                        payload.conversationId,
-                        selected.users,
-                      )
+                    if (Array.isReadonlyArrayNonEmpty(selected.users))
+                      next = yield* SubmissionExecutor.makeGeneration(tx, {
+                        sessionId: payload.sessionId,
+                        conversationId: payload.conversationId,
+                        inputs: selected.users,
+                      })
                   } else
-                    next = yield* SubmissionExecutor.makeGeneration(
-                      tx,
-                      payload.sessionId,
-                      payload.conversationId,
-                      [...(live.run?.inputs ?? payload.inputs), ...selected.users],
-                      payload.runId,
-                    )
+                    next = yield* SubmissionExecutor.makeGeneration(tx, {
+                      sessionId: payload.sessionId,
+                      conversationId: payload.conversationId,
+                      inputs: [...(live.run?.inputs ?? payload.inputs), ...selected.users],
+                      runId: payload.runId,
+                    })
                   const result: Result = { status: 'tools', answer: round.assistant }
                   yield* Structured.hold(tx, task, result, graph)
                   return { result, notify, ...(next === undefined ? {} : { next }) }
@@ -1275,17 +1298,22 @@ export const layer: Layer.Layer<
           return yield* finish(settlement)
         }
       })
-      return yield* attemptModel().pipe(
+      const attemptModel: Effect.Effect<
+        Result,
+        ExecutionError,
+        Effect.Services<typeof attemptComputation>
+      > = attemptComputation.pipe(
         Effect.retry(retryPolicy),
-        Effect.catchTag('ModelRetry', (cause) => Effect.fail(codecError(cause))),
+        Effect.catchTag('ModelRetryError', (cause) => Effect.fail(codecError(cause))),
       )
+      return yield* attemptModel
     })
     // A settlement can commit before the engine caches its Activity reply.
     // Register that same native Activity before task-terminal fencing or current
     // model/registry lookup, then finish its recorded notifications and children.
     const receipts = (yield* session.committed.pipe(Effect.mapError(domainError))).receipts
     for (const name of ['answer', 'after-round'] as const) {
-      const saved = Arr.findFirst(
+      const saved = Array.findFirst(
         receipts,
         (receipt) => receipt.key === `workflow/generation/${name}/${executionId}`,
       )
@@ -1301,7 +1329,7 @@ export const layer: Layer.Layer<
         return yield* finish(settlement)
       }
     }
-    const failed = Arr.findFirst(
+    const failed = Array.findFirst(
       receipts,
       (receipt) => receipt.key === `workflow/generation/failure/${executionId}`,
     )
@@ -1317,11 +1345,23 @@ export const layer: Layer.Layer<
     }
     return yield* Cancellation.run(payload, session, run).pipe(
       Effect.mapError(domainError),
-      Effect.catch((error) => {
-        let reason = 'model_error'
-        if (error.reason._tag === 'NoModel') reason = 'no_model'
-        else if (error.reason._tag === 'Aborted') reason = 'aborted'
-        return fail(reason, error.message)
+      Effect.catchTag('ExecutionError', (error) => {
+        switch (error.reason._tag) {
+          case 'NoModelError':
+            return fail('no_model', error.message)
+          case 'AbortedError':
+            return fail('aborted', error.message)
+          case 'ConversationBusyError':
+          case 'RequestConflictError':
+          case 'ToolUnavailableError':
+          case 'InvalidArgumentsError':
+          case 'ModelError':
+          case 'ContextOverflowError':
+          case 'ClosedError':
+          case 'StorageError':
+          case 'InvalidStateError':
+            return fail('model_error', error.message)
+        }
       }),
     )
   }),

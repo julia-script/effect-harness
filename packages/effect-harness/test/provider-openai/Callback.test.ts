@@ -1,11 +1,9 @@
+import { assertSuccess } from '@effect/vitest/utils'
 import * as Time from 'effect-harness/auth/Time'
-import {
-  AuthCallbackError,
-  AuthDeniedError,
-  AuthError,
-  type OAuth,
-} from 'effect-harness/auth/Credential'
+import { AuthCallbackError, AuthDeniedError, AuthError } from 'effect-harness/auth/AuthError'
+import { type OAuth } from 'effect-harness/auth/Credential'
 import { assert, describe, it } from '@effect/vitest'
+import { HostId } from 'effect-harness/auth/HostId'
 import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
@@ -28,14 +26,14 @@ const credential: OAuth = {
   issuer: ChatGpt.issuer,
   subject: 'subject',
   clientId: 'issued',
-  hostId: 'urn:uuid:test',
+  hostId: HostId.make('urn:uuid:test'),
   accessToken: Redacted.make('access'),
   refreshToken: Redacted.make('refresh'),
   idToken: Redacted.make('id'),
   expiresAt: Time.fromEpochMillis(3600000),
   scopes: [ChatGpt.directScope],
 }
-const makeFixture = (
+const makeFixtureUnsafe = (
   address = '127.0.0.1:43210',
   exchange?: Effect.Effect<OAuth, AuthError>,
   afterBegin: Effect.Effect<void> = Effect.void,
@@ -71,12 +69,14 @@ const makeFixture = (
   const auth = ChatGpt.ChatGpt.of({
     begin: ({ redirectUri }) =>
       Clock.currentTimeMillis.pipe(
-        Effect.map((now) => ({
-          url: Redacted.make('https://auth.openai.com/authorize'),
-          state: 'expected',
-          redirectUri,
-          expiresAt: Time.fromEpochMillis(now + 60000),
-        })),
+        Effect.map((now) =>
+          ChatGpt.makeAuthorization({
+            url: Redacted.make('https://auth.openai.com/authorize'),
+            state: 'expected',
+            redirectUri,
+            expiresAt: Time.fromEpochMillis(now + 60000),
+          }),
+        ),
         Effect.tap(() => afterBegin),
       ),
     complete: (url) =>
@@ -145,7 +145,7 @@ describe('Callback', () => {
         Effect.gen(function* () {
           const started = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
-          const f = makeFixture(
+          const f = makeFixtureUnsafe(
             '127.0.0.1:43210',
             undefined,
             Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))),
@@ -167,7 +167,7 @@ describe('Callback', () => {
       'starts before exposing URL, checks method/path/state and tears down with its scope',
       () =>
         Effect.gen(function* () {
-          const f = makeFixture()
+          const f = makeFixtureUnsafe()
           return yield* Effect.gen(function* () {
             yield* Effect.scoped(
               Effect.gen(function* () {
@@ -211,7 +211,7 @@ describe('Callback', () => {
         Effect.gen(function* () {
           const started = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
-          const f = makeFixture(
+          const f = makeFixtureUnsafe(
             undefined,
             Deferred.succeed(started, undefined).pipe(
               Effect.andThen(Deferred.await(release)),
@@ -227,7 +227,7 @@ describe('Callback', () => {
           yield* Deferred.succeed(release, undefined)
           assert.strictEqual((yield* Fiber.join(first)).status, 200)
           const owner = yield* receiver.await.pipe(Effect.result)
-          assert.strictEqual(owner._tag, 'Success')
+          assertSuccess(owner, credential)
           assert.strictEqual((yield* Fiber.join(duplicate)).status, 200)
           assert.strictEqual(f.completed(), 1)
           assert.deepStrictEqual(yield* receiver.await, credential)
@@ -236,7 +236,7 @@ describe('Callback', () => {
 
     it.effect('returns sanitized failure to browser and typed denial to owner', () =>
       Effect.gen(function* () {
-        const f = makeFixture()
+        const f = makeFixtureUnsafe()
         return yield* Effect.gen(function* () {
           const receiver = Context.get(yield* Layer.build(f.layer), Callback.Callback)
           const response = yield* f.request(
@@ -244,19 +244,22 @@ describe('Callback', () => {
           )
           assert.strictEqual(response.status, 400)
           assert.isFalse(JSON.stringify(response).includes('Private server diagnostic'))
-          assert.strictEqual((yield* receiver.await.pipe(Effect.flip)).code, 'denied')
+          assert.strictEqual(
+            (yield* receiver.await.pipe(Effect.flip)).reason._tag,
+            'AuthDeniedError',
+          )
         })
       }),
     )
 
     it.effect('expiration releases the pending authorization instead of waiting forever', () =>
       Effect.gen(function* () {
-        const f = makeFixture()
+        const f = makeFixtureUnsafe()
         return yield* Effect.gen(function* () {
           const receiver = Context.get(yield* Layer.build(f.layer), Callback.Callback)
           const waiter = yield* Effect.forkChild(receiver.await.pipe(Effect.flip))
           yield* TestClock.adjust('61 seconds')
-          assert.strictEqual((yield* Fiber.join(waiter)).code, 'expired')
+          assert.strictEqual((yield* Fiber.join(waiter)).reason._tag, 'AuthExpiredError')
           assert.strictEqual(f.cancelled(), 1)
         })
       }),
@@ -264,10 +267,10 @@ describe('Callback', () => {
 
     it.effect('rejects a server listening on a non-loopback interface', () =>
       Effect.gen(function* () {
-        const f = makeFixture('0.0.0.0:43210')
+        const f = makeFixtureUnsafe('0.0.0.0:43210')
         return yield* Effect.gen(function* () {
           const error = yield* Layer.build(f.layer).pipe(Effect.flip)
-          assert.strictEqual(error.code, 'configuration')
+          assert.strictEqual(error.reason._tag, 'AuthConfigurationError')
           assert.isFalse(f.active())
         })
       }),

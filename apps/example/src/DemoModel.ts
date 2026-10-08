@@ -1,10 +1,6 @@
-import * as Model from 'effect-harness/Model'
-import * as Context from 'effect/Context'
-import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
-import * as Stream from 'effect/Stream'
-import * as LanguageModel from 'effect/ai/LanguageModel'
-import type * as Response from 'effect/ai/Response'
+import { Model } from 'effect-harness'
+import { Context, Effect, Layer, Stream } from 'effect'
+import { LanguageModel, type Response } from 'effect/ai'
 
 export const ref: Model.Descriptor['ref'] = { provider: 'example', modelId: 'deterministic' }
 
@@ -50,21 +46,26 @@ export const provider: Parameters<typeof LanguageModel.make>[0] = {
   },
 }
 
-export const layer = Layer.effect(LanguageModel.LanguageModel, LanguageModel.make(provider))
+export const layer: Layer.Layer<LanguageModel.LanguageModel> = Layer.effect(
+  LanguageModel.LanguageModel,
+  LanguageModel.make(provider),
+)
 
 // Any native LanguageModel can supply the catalogue; the application chooses
 // its concrete provider when composing Layers.
-export const layerCatalogue = Layer.unwrap(
-  Effect.gen(function* () {
-    const model = yield* LanguageModel.LanguageModel
-    return Model.layer([
-      {
-        ref,
-        model,
-        contextWindow: 100000,
-        maxOutputTokens: 1000,
-        configure: () => Effect.succeed(Context.empty()),
-      },
-    ])
-  }),
-)
+export const layerCatalogue: Layer.Layer<Model.Catalog, never, LanguageModel.LanguageModel> =
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const model = yield* LanguageModel.LanguageModel
+      // effect-nit-allow B-no-layer-arguments: catalogue registration retains the already-acquired model instance and its caller-owned lifetime; the public registration contract supports heterogeneous provider/model descriptors without rebuilding or collapsing them.
+      return Model.layer([
+        {
+          ref,
+          model,
+          contextWindow: 100000,
+          maxOutputTokens: 1000,
+          configure: () => Effect.succeed(Context.empty()),
+        },
+      ])
+    }),
+  )

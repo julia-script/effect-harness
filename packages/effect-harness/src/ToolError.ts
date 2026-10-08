@@ -3,90 +3,72 @@
  */
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
+const Payload = Schema.Struct({
+  message: Schema.String,
+  cause: SchemaField.optional(Schema.Defect()),
+  name: Schema.String,
+})
+
 /**
  * Failure reporting a requested tool or local handler that is unavailable.
  *
  * @category errors
  */
-export class ToolUnavailable extends Schema.TaggedError<ToolUnavailable>(
-  '@effect-harness/harness/ToolError/ToolUnavailable',
-)('ToolUnavailable', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  name: Schema.String,
-}) {}
+export class ToolUnavailableError extends Schema.TaggedError<ToolUnavailableError>(
+  '@effect-harness/harness/ToolError/ToolUnavailableError',
+)('ToolUnavailableError', Payload.fields) {}
 /**
  * Failure reporting a tool invocation blocked by hook policy.
  *
  * @category errors
  */
-export class ToolBlocked extends Schema.TaggedError<ToolBlocked>(
-  '@effect-harness/harness/ToolError/ToolBlocked',
-)('ToolBlocked', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  name: Schema.String,
-}) {}
+export class ToolBlockedError extends Schema.TaggedError<ToolBlockedError>(
+  '@effect-harness/harness/ToolError/ToolBlockedError',
+)('ToolBlockedError', Payload.fields) {}
 /**
  * Failure decoding, repairing or encoding tool arguments.
  *
  * @category errors
  */
-export class ToolInvalidParameters extends Schema.TaggedError<ToolInvalidParameters>(
-  '@effect-harness/harness/ToolError/ToolInvalidParameters',
-)('ToolInvalidParameters', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  name: Schema.String,
-}) {}
+export class ToolInvalidParametersError extends Schema.TaggedError<ToolInvalidParametersError>(
+  '@effect-harness/harness/ToolError/ToolInvalidParametersError',
+)('ToolInvalidParametersError', Payload.fields) {}
 /**
  * Failure raised while running a captured tool handler.
  *
  * @category errors
  */
-export class ToolExecution extends Schema.TaggedError<ToolExecution>(
-  '@effect-harness/harness/ToolError/ToolExecution',
-)('ToolExecution', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  name: Schema.String,
-}) {}
+export class ToolExecutionError extends Schema.TaggedError<ToolExecutionError>(
+  '@effect-harness/harness/ToolError/ToolExecutionError',
+)('ToolExecutionError', Payload.fields) {}
 /**
  * Failure encoding or projecting a handler’s terminal result.
  *
  * @category errors
  */
-export class ToolInvalidResult extends Schema.TaggedError<ToolInvalidResult>(
-  '@effect-harness/harness/ToolError/ToolInvalidResult',
-)('ToolInvalidResult', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  name: Schema.String,
-}) {}
+export class ToolInvalidResultError extends Schema.TaggedError<ToolInvalidResultError>(
+  '@effect-harness/harness/ToolError/ToolInvalidResultError',
+)('ToolInvalidResultError', Payload.fields) {}
 /**
  * Failure reporting interruption before tool settlement.
  *
  * @category errors
  */
-export class ToolInterrupted extends Schema.TaggedError<ToolInterrupted>(
-  '@effect-harness/harness/ToolError/ToolInterrupted',
-)('ToolInterrupted', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  name: Schema.String,
-}) {}
+export class ToolInterruptedError extends Schema.TaggedError<ToolInterruptedError>(
+  '@effect-harness/harness/ToolError/ToolInterruptedError',
+)('ToolInterruptedError', Payload.fields) {}
 /**
  * Schema for tool error reason.
  *
  * @category schemas
  */
 export const ToolErrorReason = Schema.Union([
-  ToolUnavailable,
-  ToolBlocked,
-  ToolInvalidParameters,
-  ToolExecution,
-  ToolInvalidResult,
-  ToolInterrupted,
+  ToolUnavailableError,
+  ToolBlockedError,
+  ToolInvalidParametersError,
+  ToolExecutionError,
+  ToolInvalidResultError,
+  ToolInterruptedError,
 ])
 /**
  * Decoded value validated by the `ToolErrorReason` schema.

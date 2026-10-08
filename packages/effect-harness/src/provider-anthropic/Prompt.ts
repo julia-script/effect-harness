@@ -18,6 +18,8 @@ import * as Prompt from 'effect/ai/Prompt'
  * @category combinators
  */
 export function normalize(self: Prompt.Prompt): Prompt.Prompt {
+  // effect-nit-allow P1-stdlib-collection-replacements: this public/native array may contain missing indices or inherited numeric accessors; native filter preserves HasProperty/Get and callback order, skips holes, and keeps explicit undefined distinct. Effect Array.filter visits missing slots.
+
   return Prompt.fromMessages([
     ...self.content.filter((message) => message.role === 'system'),
     ...self.content.filter((message) => message.role !== 'system'),

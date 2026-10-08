@@ -3,10 +3,9 @@
  */
 import * as Result from 'effect/Result'
 import * as Record from 'effect/Record'
-import { constUndefined } from 'effect/Function'
-import * as SchemaTransformation from 'effect/SchemaTransformation'
+import { constant, constUndefined } from 'effect/Function'
 import * as Data from 'effect/Data'
-import * as Arr from 'effect/Array'
+import * as Array from 'effect/Array'
 import * as Option from 'effect/Option'
 import * as SchemaField from './SchemaField.ts'
 import * as Serialization from './Serialization.ts'
@@ -14,42 +13,45 @@ import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
-import * as Ref from 'effect/Ref'
+import * as SynchronizedRef from 'effect/SynchronizedRef'
+import * as Deferred from 'effect/Deferred'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as AiError from 'effect/ai/AiError'
-import * as AiPrompt from 'effect/ai/Prompt'
-// effect-review-allow P9-namespace-alias-equals-module: effect/ai/Prompt and ./Prompt.ts both bind Prompt; AiPrompt preserves the checked imported-name collision.
+import * as Prompt from 'effect/ai/Prompt'
 import * as Response from 'effect/ai/Response'
-import * as AiTool from 'effect/ai/Tool'
-// effect-review-allow P9-namespace-alias-equals-module: effect/ai/Tool and ./Tool.ts both bind Tool; AiTool preserves the checked imported-name collision.
+import * as Tool from 'effect/ai/Tool'
 import type * as Toolkit from 'effect/ai/Toolkit'
 import * as Agent from './Agent.ts'
 import * as Compaction from './Compaction.ts'
-import * as ConversationContext from './Context.ts'
-// effect-review-allow P9-namespace-alias-equals-module: ./Context.ts and effect/Context both bind Context; ConversationContext preserves the checked imported-name collision.
-import { ModelError, ModelInvalidResponse, ModelNoModel, ModelUnsupported } from './ModelError.ts'
+import * as Transcript from './Transcript.ts'
+import {
+  ModelError,
+  ModelInvalidResponseError,
+  ModelNoModelError,
+  ModelUnsupportedError,
+} from './ModelError.ts'
 import {
   ToolError,
-  ToolBlocked,
-  ToolExecution,
-  ToolInvalidParameters,
-  ToolInvalidResult,
-  ToolUnavailable,
+  ToolBlockedError,
+  ToolExecutionError,
+  ToolInvalidParametersError,
+  ToolInvalidResultError,
+  ToolUnavailableError,
 } from './ToolError.ts'
 import * as Hook from './Hook.ts'
 import {
   Invocation,
   ToolCall,
   Result as ToolResultSchema,
-  type ToolResult,
+  type Result as InvocationResult,
   type Diagnostic,
 } from './Invocation.ts'
 import * as Model from './Model.ts'
 import * as Output from './Output.ts'
-import * as Prompt from './Prompt.ts'
+import * as PromptPreparation from './PromptPreparation.ts'
 import * as Registry from './Registry.ts'
-import * as Tool from './Tool.ts'
+import * as ToolRegistration from './ToolRegistration.ts'
 import * as Usage from './Usage.ts'
 import * as Progress from './Progress.ts'
 import * as Exit from 'effect/Exit'
@@ -63,9 +65,9 @@ import { EntryId } from './Identity.ts'
  */
 export const Request = Schema.Struct({
   model: Agent.ModelRef,
-  prompt: AiPrompt.Prompt,
+  prompt: Prompt.Prompt,
   options: Model.RequestOptions,
-  tools: Schema.Array(ConversationContext.ToolDeclaration),
+  tools: Schema.Array(SystemPatch.ToolDeclaration),
   tail: SchemaField.optional(EntryId),
 })
 /**
@@ -74,12 +76,6 @@ export const Request = Schema.Struct({
  * @category models
  */
 export type Request = typeof Request.Type
-/**
- * Prepared request and resolved registry/model inputs.
- *
- * @category models
- */
-export type Preparation = Executor.Preparation
 /**
  * Schema for pinned compaction request with the history cut and retry attempt.
  *
@@ -130,125 +126,32 @@ export const CompactionPreparation = Data.taggedEnum<CompactionPreparation>()
  *
  * @category models
  */
-export type Part = Response.StreamPart<Record<string, AiTool.Any>, 'encoded'>
-/**
- * Conversation context, agent overrides and policy used to prepare a request.
- *
- * @category models
- */
-export type PrepareInput = Executor.PrepareInput
-/**
- * Invocation policy and callbacks supplied to a bound tool execution.
- *
- * @category models
- */
-export type ToolOptions = Executor.ToolOptions
-/**
- * Context and compaction policy used to choose and prepare a summary.
- *
- * @category models
- */
-export type CompactInput = Executor.CompactInput
+export type Part = Response.StreamPart<Record<string, Tool.Any>, 'encoded'>
 const Call = Schema.Struct({
   ...Response.ToolCallPart('', Schema.Unknown).fields,
   name: Schema.String,
 })
-const DispositionWire = Schema.Union([
-  Schema.Struct({ type: Schema.tag('deferred'), decision: Model.DeferredDecision }),
-  Schema.Struct({
-    type: Schema.Literals(['answer', 'tools']),
-    prompt: AiPrompt.Prompt,
-    usage: Usage.Usage,
-    calls: Schema.Array(Call),
-  }),
-  Schema.Struct({
-    type: Schema.tag('failure'),
-    prompt: AiPrompt.Prompt,
-    usage: Usage.Usage,
-    message: Schema.String,
-    error: Schema.optionalKey(AiError.AiError),
-    retryable: Schema.Boolean,
-    overflow: Schema.Boolean,
-  }),
-])
-const DispositionDomain = Schema.Union([
-  Schema.TaggedStruct('deferred', { decision: Model.DeferredDecision }),
-  ...(['answer', 'tools'] as const).map((tag) =>
-    Schema.TaggedStruct(tag, {
-      prompt: AiPrompt.Prompt,
-      usage: Usage.Usage,
-      calls: Schema.Array(Call),
-    }),
-  ),
-  Schema.TaggedStruct('failure', {
-    prompt: AiPrompt.Prompt,
-    usage: Usage.Usage,
-    message: Schema.String,
-    error: Schema.optionalKey(AiError.AiError),
-    retryable: Schema.Boolean,
-    overflow: Schema.Boolean,
-  }),
-])
+const DeferredPayload = Schema.Struct({ decision: Model.DeferredDecision })
+const PromptUsagePayload = Schema.Struct({ prompt: Prompt.Prompt, usage: Usage.Usage })
+const AnswerPayload = Schema.Struct({ ...PromptUsagePayload.fields, calls: Schema.Array(Call) })
+const FailurePayload = Schema.Struct({
+  ...PromptUsagePayload.fields,
+  message: Schema.String,
+  error: Schema.optionalKey(AiError.AiError),
+  retryable: Schema.Boolean,
+  overflow: Schema.Boolean,
+})
 /**
- * Codec for tagged execution dispositions with the legacy type discriminator on the wire.
+ * Tagged execution dispositions produced by model requests.
  *
  * @category schemas
  */
-export const Disposition = DispositionWire.pipe(
-  Schema.decodeTo(
-    Schema.toType(DispositionDomain),
-    SchemaTransformation.transform({
-      decode: (value): typeof DispositionDomain.Type => {
-        switch (value.type) {
-          case 'deferred':
-            return { _tag: 'deferred', decision: value.decision }
-          case 'answer':
-          case 'tools':
-            return {
-              _tag: value.type,
-              prompt: value.prompt,
-              usage: value.usage,
-              calls: value.calls,
-            }
-          case 'failure':
-            return {
-              _tag: 'failure',
-              prompt: value.prompt,
-              usage: value.usage,
-              message: value.message,
-              ...(value.error === undefined ? {} : { error: value.error }),
-              retryable: value.retryable,
-              overflow: value.overflow,
-            }
-        }
-      },
-      encode: (value) => {
-        switch (value._tag) {
-          case 'deferred':
-            return { type: 'deferred', decision: value.decision }
-          case 'answer':
-          case 'tools':
-            return {
-              type: value._tag,
-              prompt: value.prompt,
-              usage: value.usage,
-              calls: value.calls,
-            }
-          case 'failure':
-            return {
-              type: 'failure',
-              prompt: value.prompt,
-              usage: value.usage,
-              message: value.message,
-              ...(value.error === undefined ? {} : { error: value.error }),
-              retryable: value.retryable,
-              overflow: value.overflow,
-            }
-        }
-      },
-    }),
-  ),
-)
+export const Disposition = Schema.Union([
+  Schema.TaggedStruct('deferred', DeferredPayload.fields),
+  Schema.TaggedStruct('answer', AnswerPayload.fields),
+  Schema.TaggedStruct('tools', AnswerPayload.fields),
+  Schema.TaggedStruct('failure', FailurePayload.fields),
+])
 /**
  * Tool-driven decision to continue, terminate, reset or extend available tools.
  *
@@ -284,8 +187,8 @@ export class Executor extends Context.Service<
       settings: Agent.Settings,
     ) => Effect.Effect<Registry.Resolved, never, Invocation>
     readonly prepare: (
-      input: PrepareInput,
-    ) => Effect.Effect<Preparation, ModelError | Schema.SchemaError, Invocation>
+      input: Executor.PrepareInput,
+    ) => Effect.Effect<Executor.Preparation, ModelError | Schema.SchemaError, Invocation>
     readonly generate: (
       request: Request,
       agent: Registry.Resolved,
@@ -309,37 +212,37 @@ export class Executor extends Context.Service<
     ) => Effect.Effect<{ readonly retryable: boolean; readonly overflow: boolean }, ModelError>
     readonly prepareTool: (
       agent: Registry.Resolved,
-      input: Hook.ToolInput,
-    ) => Effect.Effect<Tool.Intent, ToolError, Invocation>
+      input: Hook.Handlers.ToolInput,
+    ) => Effect.Effect<ToolRegistration.Intent, ToolError, Invocation>
     readonly tool: (
-      intent: Tool.Intent,
+      intent: ToolRegistration.Intent,
       agent: Registry.Resolved,
-      options?: ToolOptions,
-    ) => Effect.Effect<Tool.Execution, ToolError, Invocation>
+      options?: Executor.ToolOptions,
+    ) => Effect.Effect<ToolRegistration.Execution, ToolError, Invocation>
     readonly prepareCompaction: (
-      input: CompactInput,
+      input: Executor.CompactInput,
     ) => Effect.Effect<CompactionPreparation, ModelError | Schema.SchemaError, Invocation>
     readonly compact: (
       request: SummaryRequest,
     ) => Effect.Effect<Summary, ModelError | AiError.AiError>
   }
->()('@effect-harness/harness/Executor') {}
+>()('effect-harness/Executor') {}
 const requireModel = (state: Agent.State): Effect.Effect<Agent.ModelRef, ModelError> =>
   state.model === undefined
     ? Effect.fail(
-        new ModelError({ reason: new ModelNoModel({ message: 'No model is configured' }) }),
+        new ModelError({ reason: new ModelNoModelError({ message: 'No model is configured' }) }),
       )
     : Effect.succeed(state.model)
 /** Definitions-only toolkit: native AI validates/declaratively offers tools but never executes them in this boundary. */
 function nativeDeclaration(declaration: Request['tools'][number]) {
   if (declaration.provider === undefined)
-    return AiTool.dynamic(declaration.name, {
+    return Tool.dynamic(declaration.name, {
       parameters: declaration.parameters,
       ...(declaration.description === undefined ? {} : { description: declaration.description }),
     })
   const provider = declaration.provider
   // Request's schema validates the provider namespace separator before this conditional string type assertion.
-  return AiTool.providerDefined({
+  return Tool.providerDefined({
     id: provider.id as `${string}.${string}`,
     providerName: provider.name,
     customName: declaration.name,
@@ -380,14 +283,18 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       settings: Agent.Settings,
     ): Effect.Effect<Registry.Resolved, never, Invocation> =>
       Effect.flatMap(registry.snapshot, (snapshot) => Registry.resolve(snapshot, state, settings))
-    const prepare = Effect.fnUntraced(function* (input: PrepareInput) {
+    const prepare = Effect.fnUntraced(function* (input: Executor.PrepareInput) {
       const ref = yield* requireModel(input.state)
       yield* catalog.resolve(ref)
       const agent = yield* resolve(input.state, input.settings)
-      const patches = ConversationContext.systemPatches(input.view)
-      const sections = yield* Registry.render(agent, input.view, Prompt.replaySections(patches))
-      const declarations = yield* Effect.forEach(agent.tools, Tool.declaration)
-      const plan = Prompt.plan(input.view, sections, declarations)
+      const patches = Transcript.systemPatches(input.view)
+      const sections = yield* Registry.render(
+        agent,
+        input.view,
+        PromptPreparation.replaySections(patches),
+      )
+      const declarations = yield* Effect.forEach(agent.tools, ToolRegistration.declaration)
+      const plan = PromptPreparation.plan(input.view, sections, declarations)
       const options = yield* Schema.decodeUnknownEffect(Model.RequestOptions)({
         thinking: input.state.thinking ?? 'off',
         options: input.settings.stream,
@@ -395,12 +302,12 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       })
       const request: Request = {
         model: ref,
-        prompt: Prompt.toPrompt(input.view.messages, sections, {
-          managedSystemMessages: ConversationContext.managedMessages(input.view),
+        prompt: PromptPreparation.toPrompt(input.view.messages, sections, {
+          managedSystemMessages: Transcript.managedMessages(input.view),
         }),
         options,
         tools: declarations,
-        ...(Option.isNone(Arr.last(input.view.entries))
+        ...(Option.isNone(Array.last(input.view.entries))
           ? {}
           : {
               tail: yield* Schema.decodeEffect(EntryId)(
@@ -441,7 +348,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           const descriptor = yield* catalog.resolve(request.model)
           if (descriptor.deferred === undefined)
             return yield* new ModelError({
-              reason: new ModelUnsupported({
+              reason: new ModelUnsupportedError({
                 message: 'This model does not support deferred fetch',
               }),
             })
@@ -452,7 +359,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       const descriptor = yield* catalog.resolve(request.model)
       if (descriptor.deferred === undefined)
         return yield* new ModelError({
-          reason: new ModelUnsupported({
+          reason: new ModelUnsupportedError({
             message: 'This model does not support deferred cancellation',
           }),
         })
@@ -469,72 +376,72 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
       )
       return yield* Option.match(deferred, {
         onSome: (decision) => Effect.succeed<Disposition>({ _tag: 'deferred', decision }),
-        onNone: () =>
-          Effect.gen(function* () {
-            yield* Hook.afterResponse(Registry.handlers(agent, 'generation'), parts)
-            const finish = Arr.findLast(parts, (part) => part.type === 'finish')
-            const usage = Option.match(finish, {
-              onNone: Usage.zero,
-              onSome: (self) =>
-                descriptor.usage?.(self.usage, self.metadata) ?? Usage.fromResponse(self.usage),
-            })
-            const prompt = AiPrompt.fromResponseParts(parts)
-            const calls = parts.filter(
-              (part): part is Response.ToolCallPart<string, unknown> =>
-                part.type === 'tool-call' && !part.providerExecuted,
+        onNone: Effect.fnUntraced(function* () {
+          yield* Hook.afterResponse(Registry.handlers(agent, 'generation'), parts)
+          const finish = Array.findLast(parts, (part) => part.type === 'finish')
+          const usage = Option.match(finish, {
+            onNone: Usage.make,
+            onSome: (self) =>
+              descriptor.usage?.(self.usage, self.metadata) ?? Usage.fromResponse(self.usage),
+          })
+          const prompt = Prompt.fromResponseParts(parts)
+          // effect-nit-allow P1-stdlib-collection-replacements: classifyResponse accepts caller-owned native response arrays. Native filtering skips missing parts and retains inherited numeric accessor reads; Effect Array.filter would invoke the part guard on holes.
+          const calls = parts.filter(
+            (part): part is Response.ToolCallPart<string, unknown> =>
+              part.type === 'tool-call' && !part.providerExecuted,
+          )
+          const failure = (): Disposition => {
+            const errors = Array.filterMap(parts, (part) =>
+              part.type === 'error' ? Result.succeed(part.error) : Result.failVoid,
             )
-            const failure = (): Disposition => {
-              const errors = Arr.filterMap(parts, (part) =>
-                part.type === 'error' ? Result.succeed(part.error) : Result.failVoid,
-              )
-              const message =
-                errors.map(Model.errorText).join('\n') ||
-                `Model finished with ${Option.getOrElse(
-                  Option.map(finish, (part) => part.reason),
-                  () => 'no finish part',
-                )}`
-              const policies = errors.map(
-                (error) =>
-                  descriptor.classify?.(error) ?? Model.classify(error, request.model.provider),
-              )
-              const policy = {
-                overflow: policies.some((value) => value.overflow),
-                retryable: policies.length > 0 && policies.every((value) => value.retryable),
-              }
-              return {
-                _tag: 'failure',
-                prompt,
-                usage,
-                message,
-                error: Model.providerError(errors[0] ?? message, request.model.provider),
-                ...policy,
-              }
+            const message =
+              errors.map(Model.errorText).join('\n') ||
+              `Model finished with ${Option.getOrElse(
+                Option.map(finish, (part) => part.reason),
+                constant('no finish part'),
+              )}`
+            const policies = errors.map(
+              (error) =>
+                descriptor.classify?.(error) ?? Model.classify(error, request.model.provider),
+            )
+            const policy = {
+              overflow: policies.some((value) => value.overflow),
+              retryable: policies.length > 0 && policies.every((value) => value.retryable),
             }
-            return Option.match(finish, {
-              onNone: failure,
-              onSome: (self): Disposition =>
-                self.reason === 'stop' || self.reason === 'length' || self.reason === 'tool-calls'
-                  ? {
-                      _tag: self.reason === 'tool-calls' && calls.length > 0 ? 'tools' : 'answer',
-                      prompt,
-                      usage,
-                      calls,
-                    }
-                  : failure(),
-            })
-          }),
+            return {
+              _tag: 'failure',
+              prompt,
+              usage,
+              message,
+              error: Model.providerError(errors[0] ?? message, request.model.provider),
+              ...policy,
+            }
+          }
+          return Option.match(finish, {
+            onNone: failure,
+            onSome: (self): Disposition =>
+              self.reason === 'stop' || self.reason === 'length' || self.reason === 'tool-calls'
+                ? {
+                    _tag: self.reason === 'tool-calls' && calls.length > 0 ? 'tools' : 'answer',
+                    prompt,
+                    usage,
+                    calls,
+                  }
+                : failure(),
+          })
+        }),
       })
     })
     const prepareTool = Effect.fnUntraced(function* (
       agent: Registry.Resolved,
-      input: Hook.ToolInput,
+      input: Hook.Handlers.ToolInput,
     ) {
-      const found = Arr.findFirst(agent.tools, (tool) => tool.tool.name === input.name)
+      const found = Array.findFirst(agent.tools, (tool) => tool.tool.name === input.name)
       const registration = yield* Effect.fromOption(found).pipe(
         Effect.mapError(
           () =>
             new ToolError({
-              reason: new ToolUnavailable({
+              reason: new ToolUnavailableError({
                 name: input.name,
                 message: `Tool ${input.name} is not available`,
               }),
@@ -549,7 +456,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           Effect.mapError(
             (cause) =>
               new ToolError({
-                reason: new ToolInvalidParameters({
+                reason: new ToolInvalidParametersError({
                   name: input.name,
                   message: Serialization.errorText(cause),
                   cause: cause,
@@ -569,11 +476,12 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           Effect.catchCause((cause) =>
             Cause.hasInterrupts(cause)
               ? Effect.failCause(
+                  // effect-nit-allow P1-stdlib-collection-replacements: native Cause.fromReasons retains its caller array, which may be sparse. Native filtering skips missing reasons while retaining interruption order; Effect Array.filter would call isInterruptReason(undefined).
                   Cause.fromReasons<never>(cause.reasons.filter(Cause.isInterruptReason)),
                 )
               : Effect.fail(
                   new ToolError({
-                    reason: new ToolBlocked({
+                    reason: new ToolBlockedError({
                       name: input.name,
                       message: Serialization.errorText(Cause.squash(cause)),
                       cause: cause,
@@ -584,38 +492,42 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         )
         if (decision !== undefined && Hook.ToolDecision.$is('Block')(decision))
           return yield* new ToolError({
-            reason: new ToolBlocked({ name: input.name, message: decision.block }),
+            reason: new ToolBlockedError({ name: input.name, message: decision.block }),
           })
         if (decision !== undefined) args = decision.args
       }
       const encoded = yield* registration
         .encodeArgs(args)
         .pipe(Effect.provideService(ToolCall, noToolCall(input.id)))
-      return yield* Tool.makeIntent(registration, { id: input.id, decoded: args, encoded })
+      return yield* ToolRegistration.makeIntent(registration, {
+        id: input.id,
+        decoded: args,
+        encoded,
+      })
     })
     const tool = Effect.fnUntraced(function* (
-      intent: Tool.Intent,
+      intent: ToolRegistration.Intent,
       snapshot: Registry.Resolved,
-      options: ToolOptions = {},
+      options: Executor.ToolOptions = {},
     ) {
       const invocation = yield* Invocation
       const agent =
         options.recovering === true
           ? yield* resolve(snapshot.state, options.settings ?? snapshot.settings)
           : snapshot
-      const found = Arr.findFirst(agent.tools, (value) => value.tool.name === intent.name)
+      const found = Array.findFirst(agent.tools, (value) => value.tool.name === intent.name)
       if (
         options.recovering === true &&
         (intent.replay !== 'safe' ||
           Option.getOrElse(
             Option.map(found, (registration) => registration.metadata.replay),
-            () => 'unsafe',
+            constant('unsafe'),
           ) !== 'safe')
       )
         return {
           outcome: 'interrupted' as const,
           result: {
-            ...Tool.interruption(intent),
+            ...ToolRegistration.interruption(intent),
             ...options.previous,
             isError: true,
             details: { reason: 'interrupted', previous: options.previous?.details ?? null },
@@ -623,208 +535,289 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         }
       const registration = Option.getOrElse(found, constUndefined)
       if (registration === undefined)
-        return { outcome: 'unavailable' as const, result: Tool.unavailable(intent.name) }
+        return {
+          outcome: 'unavailable' as const,
+          result: ToolRegistration.unavailable(intent.name),
+        }
       if (options.recovering === true)
         yield* invocation.progress({ clear: true, output: '', details: null, diagnostics: [] })
-      const limits = Tool.outputLimits(registration.metadata)
+      const limits = ToolRegistration.outputLimits(registration.metadata)
       const outputFailure = (cause: import('./OutputError.ts').OutputError): ToolError =>
         new ToolError({
-          reason: new ToolInvalidResult({ name: intent.name, message: cause.message, cause }),
+          reason: new ToolInvalidResultError({ name: intent.name, message: cause.message, cause }),
         })
-      const buffer = yield* Output.makeWindow(limits)
-      const preview = yield* Ref.make<ToolResult | undefined>(undefined)
-      const details = yield* Ref.make<Schema.Json | undefined>(undefined)
-      const diagnostics = yield* Ref.make<ReadonlyArray<Diagnostic>>([])
-      let written: {
-        output: string
-        details: Schema.Json | undefined
-        hasDetails: boolean
-        diagnostics: number
-      } = { output: '', details: undefined, hasDetails: false, diagnostics: 0 }
+      interface Written {
+        readonly output: string
+        readonly details: Schema.Json | undefined
+        readonly hasDetails: boolean
+        readonly diagnostics: number
+      }
+      interface ToolProgressState {
+        readonly buffer: Output.Window
+        readonly preview: InvocationResult | undefined
+        readonly details: Schema.Json | undefined
+        readonly diagnostics: ReadonlyArray<Diagnostic>
+        readonly ended: boolean
+        readonly written: Written
+        readonly waiters: ReadonlyArray<Deferred.Deferred<void, ToolError>>
+      }
+      const state = yield* SynchronizedRef.make<ToolProgressState>({
+        buffer: yield* Output.makeWindow(limits),
+        preview: undefined,
+        details: undefined,
+        diagnostics: [],
+        ended: false,
+        written: { output: '', details: undefined, hasDetails: false, diagnostics: 0 },
+        waiters: [],
+      })
+      const admit = <A, E>(
+        command: (current: ToolProgressState) => Effect.Effect<readonly [A, ToolProgressState], E>,
+      ): Effect.Effect<A, E | ToolError> =>
+        SynchronizedRef.modifyEffect(
+          state,
+          (current): Effect.Effect<readonly [A, ToolProgressState], E | ToolError> =>
+            current.ended
+              ? Effect.fail(
+                  new ToolError({
+                    reason: new ToolExecutionError({
+                      name: intent.name,
+                      message: `Tool call ${intent.id} has settled`,
+                    }),
+                  }),
+                )
+              : command(current),
+        )
       const write: Effect.Effect<number, ToolError> = Effect.gen(function* () {
-        const retained = yield* buffer.snapshot.pipe(Effect.mapError(outputFailure))
-        const currentDetails = yield* Ref.get(details)
-        const currentDiagnostics = yield* Ref.get(diagnostics)
-        const encodedDetails = JSON.stringify(currentDetails ?? null)
-        const change = Output.delta(written.output, retained.text)
-        const detailsChanged =
-          !written.hasDetails || !Json.equals(currentDetails ?? null, written.details ?? null)
-        const added = currentDiagnostics.slice(written.diagnostics)
-        if (retained.text === written.output && !detailsChanged && added.length === 0) return 0
-        const outputChanged = retained.text !== written.output
-        const bytes = new TextEncoder().encode(
-          (outputChanged ? change.text : '') +
-            (detailsChanged ? encodedDetails : '') +
-            JSON.stringify(added),
-        ).length
-        yield* invocation.progress({
-          ...(outputChanged ? { output: retained.text } : {}),
-          droppedBytes: retained.droppedBytes,
-          droppedLines: retained.droppedLines,
-          ...(detailsChanged && currentDetails !== undefined ? { details: currentDetails } : {}),
-          ...(added.length === 0 ? {} : { diagnostics: added }),
-        })
-        written = {
-          output: retained.text,
-          details: currentDetails,
-          hasDetails: true,
-          diagnostics: currentDiagnostics.length,
-        }
-        return bytes
+        const captured = yield* SynchronizedRef.modifyEffect(
+          state,
+          Effect.fnUntraced(function* (current) {
+            const retained = yield* Effect.exit(
+              current.buffer.snapshot.pipe(Effect.mapError(outputFailure)),
+            )
+            return [
+              {
+                retained,
+                currentDetails: current.details,
+                currentDiagnostics: current.diagnostics,
+                written: current.written,
+                waiters: current.waiters,
+              },
+              { ...current, waiters: [] },
+            ] as const
+          }),
+        )
+        const published = yield* Effect.exit(
+          Effect.gen(function* () {
+            const retained = yield* captured.retained
+            const { currentDetails, currentDiagnostics, written } = captured
+            const encodedDetails = JSON.stringify(currentDetails ?? null)
+            const change = Output.delta(written.output, retained.text)
+            const detailsChanged =
+              !written.hasDetails || !Json.equals(currentDetails ?? null, written.details ?? null)
+            const added = currentDiagnostics.slice(written.diagnostics)
+            if (retained.text === written.output && !detailsChanged && added.length === 0) return 0
+            const outputChanged = retained.text !== written.output
+            const bytes = new TextEncoder().encode(
+              (outputChanged ? change.text : '') +
+                (detailsChanged ? encodedDetails : '') +
+                JSON.stringify(added),
+            ).length
+            yield* invocation.progress({
+              ...(outputChanged ? { output: retained.text } : {}),
+              droppedBytes: retained.droppedBytes,
+              droppedLines: retained.droppedLines,
+              ...(detailsChanged && currentDetails !== undefined
+                ? { details: currentDetails }
+                : {}),
+              ...(added.length === 0 ? {} : { diagnostics: added }),
+            })
+            yield* SynchronizedRef.update(state, (current) => ({
+              ...current,
+              written: {
+                output: retained.text,
+                details: currentDetails,
+                hasDetails: true,
+                diagnostics: currentDiagnostics.length,
+              },
+            }))
+            return bytes
+          }),
+        )
+        yield* Progress.settle(captured.waiters, Exit.map(published, constUndefined))
+        return yield* published
       })
       const progress = yield* Progress.make(write, {
-        minIntervalMs: (options.settings ?? agent.settings).progress.outputIntervalMs,
+        minInterval: (options.settings ?? agent.settings).progress.outputInterval,
       }).pipe(
         Effect.mapError(
           (cause) =>
             new ToolError({
-              reason: new ToolInvalidResult({ name: intent.name, message: cause.message, cause }),
+              reason: new ToolInvalidResultError({
+                name: intent.name,
+                message: cause.message,
+                cause,
+              }),
             }),
         ),
       )
-      const ended = yield* Ref.make(false)
-      const live = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E | ToolError> =>
-        Effect.suspend<A, E | ToolError, never>(() =>
-          Ref.getUnsafe(ended)
-            ? Effect.fail(
-                new ToolError({
-                  reason: new ToolExecution({
-                    name: intent.name,
-                    message: `Tool call ${intent.id} has settled`,
-                  }),
-                }),
-              )
-            : effect,
-        )
       const api = ToolCall.of({
         id: intent.id,
         preliminary: (value) =>
-          live(
-            Schema.encodeEffect(ToolResultSchema)(value).pipe(
-              Effect.flatMap(Schema.decodeEffect(ToolResultSchema)),
-              Effect.mapError(
-                (cause) =>
-                  new ToolError({
-                    reason: new ToolInvalidResult({
-                      name: intent.name,
-                      message: cause.message,
-                      cause: cause,
+          admit(
+            Effect.fnUntraced(function* (current) {
+              const checked = yield* Schema.encodeEffect(ToolResultSchema)(value).pipe(
+                Effect.flatMap(Schema.decodeEffect(ToolResultSchema)),
+                Effect.mapError(
+                  (cause) =>
+                    new ToolError({
+                      reason: new ToolInvalidResultError({
+                        name: intent.name,
+                        message: cause.message,
+                        cause: cause,
+                      }),
                     }),
-                  }),
-              ),
-              Effect.flatMap(
-                Effect.fnUntraced(function* (checked) {
-                  yield* Ref.set(preview, checked)
-                  yield* buffer.reset
-                  yield* buffer
-                    .push(
-                      Arr.filterMap(checked.content ?? [], (part) =>
-                        part.type === 'text' ? Result.succeed(part.text) : Result.failVoid,
-                      ).join(''),
-                    )
-                    .pipe(
-                      Effect.mapError(
-                        (cause) =>
-                          new ToolError({
-                            reason: new ToolExecution({
-                              name: intent.name,
-                              message: cause.message,
-                              cause: cause,
-                            }),
-                          }),
-                      ),
-                    )
-                  if (checked.details !== undefined) yield* Ref.set(details, checked.details)
-                  if (checked.diagnostics !== undefined)
-                    yield* Ref.set(diagnostics, checked.diagnostics)
-                  yield* progress.mark
-                }),
-              ),
-            ),
-          ),
+                ),
+              )
+              // Stage replacement output before admitting any part of the preliminary result.
+              const replacement = yield* Output.makeWindow(limits)
+              yield* replacement
+                .push(
+                  Array.filterMap(checked.content ?? [], (part) =>
+                    part.type === 'text' ? Result.succeed(part.text) : Result.failVoid,
+                  ).join(''),
+                )
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ToolError({
+                        reason: new ToolExecutionError({
+                          name: intent.name,
+                          message: cause.message,
+                          cause: cause,
+                        }),
+                      }),
+                  ),
+                )
+              return [
+                undefined,
+                {
+                  ...current,
+                  buffer: replacement,
+                  preview: checked,
+                  details: checked.details === undefined ? current.details : checked.details,
+                  diagnostics:
+                    checked.diagnostics === undefined ? current.diagnostics : checked.diagnostics,
+                },
+              ] as const
+            }),
+          ).pipe(Effect.andThen(progress.mark)),
         ...(limits.retain === 'tail' && registration.metadata.outputWindow !== false
           ? {
               outputWindow: {
                 maxBytes: limits.maxBytes,
                 maxLines: limits.maxLines,
-                minIntervalMs: (options.settings ?? agent.settings).progress.outputIntervalMs,
+                minInterval: (options.settings ?? agent.settings).progress.outputInterval,
                 bytesPerSecond: Progress.bytesPerSecond,
               },
             }
           : {}),
         output: (chunk, skipped) =>
-          live(
-            buffer.push(chunk, skipped).pipe(
+          admit((current) =>
+            current.buffer.push(chunk, skipped).pipe(
               Effect.mapError(
                 (error) =>
                   new ToolError({
-                    reason: new ToolExecution({
+                    reason: new ToolExecutionError({
                       name: intent.name,
                       message: error.message,
                       cause: error,
                     }),
                   }),
               ),
-              Effect.andThen(progress.mark),
+              Effect.map(() => [undefined, current] as const),
             ),
-          ),
+          ).pipe(Effect.andThen(progress.mark)),
         details: (value) =>
-          live(
-            Schema.decodeEffect(Schema.Json)(value).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ToolError({
-                    reason: new ToolInvalidResult({
-                      name: intent.name,
-                      message: cause.message,
-                      cause: cause,
+          admit(
+            Effect.fnUntraced(function* (current) {
+              const checked = yield* Schema.decodeEffect(Schema.Json)(value).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ToolError({
+                      reason: new ToolInvalidResultError({
+                        name: intent.name,
+                        message: cause.message,
+                        cause: cause,
+                      }),
                     }),
-                  }),
-              ),
-              Effect.flatMap((checked) => Ref.set(details, structuredClone(checked))),
-              Effect.andThen(progress.markAndWait),
-            ),
+                ),
+              )
+              const owned = yield* Effect.sync(() => structuredClone(checked))
+              const waiter = yield* Deferred.make<void, ToolError>()
+              return [
+                waiter,
+                {
+                  ...current,
+                  details: owned,
+                  waiters: [...current.waiters, waiter],
+                },
+              ] as const
+            }),
+          ).pipe(
+            Effect.flatMap((waiter) => progress.mark.pipe(Effect.andThen(Deferred.await(waiter)))),
           ),
         diagnostic: (value) =>
-          live(
-            Ref.update(diagnostics, (old) => [...old, structuredClone(value)]).pipe(
-              Effect.andThen(progress.mark),
+          admit((current) =>
+            Effect.sync(
+              () =>
+                [
+                  undefined,
+                  { ...current, diagnostics: [...current.diagnostics, structuredClone(value)] },
+                ] as const,
             ),
-          ),
+          ).pipe(Effect.andThen(progress.mark)),
       })
       const outcome = yield* Effect.exit(
         registration.execute(intent.args, intent.id).pipe(Effect.provideService(ToolCall, api)),
       )
-      yield* Ref.set(ended, true)
+      yield* SynchronizedRef.update(state, (current) => ({ ...current, ended: true }))
       const retention = yield* Effect.exit(
-        Effect.gen(function* () {
-          yield* buffer.end.pipe(Effect.mapError(outputFailure))
-          const buffered = yield* buffer.snapshot.pipe(Effect.mapError(outputFailure))
-          const recordedDetails = yield* Ref.get(details)
-          const recordedDiagnostics = yield* Ref.get(diagnostics)
-          const preliminaryResult = yield* Ref.get(preview)
-          const partial: ToolResult = {
-            ...preliminaryResult,
-            content: [
-              ...(preliminaryResult?.content?.filter((part) => part.type !== 'text') ?? []),
-              ...(buffered.text === '' ? [] : [AiPrompt.textPart({ text: buffered.text })]),
-            ],
-            ...(recordedDetails === undefined ? {} : { details: recordedDetails }),
-            diagnostics: recordedDiagnostics,
-          }
-          return { buffered, partial, recordedDetails, recordedDiagnostics }
-        }),
+        SynchronizedRef.modifyEffect(
+          state,
+          Effect.fnUntraced(function* (current) {
+            yield* current.buffer.end
+            const buffered = yield* current.buffer.snapshot
+            const recordedDetails = current.details
+            const recordedDiagnostics = current.diagnostics
+            // preview is encoded and decoded through Invocation.Result before storage; its content array is dense.
+            const preliminaryResult = current.preview
+            const partial: InvocationResult = {
+              ...preliminaryResult,
+              content: [
+                ...Array.filter(preliminaryResult?.content ?? [], (part) => part.type !== 'text'),
+                ...(buffered.text === '' ? [] : [Prompt.textPart({ text: buffered.text })]),
+              ],
+              ...(recordedDetails === undefined ? {} : { details: recordedDetails }),
+              diagnostics: recordedDiagnostics,
+            }
+            return [{ buffered, partial, recordedDetails, recordedDiagnostics }, current] as const
+          }, Effect.mapError(outputFailure)),
+        ),
       )
       const pending = yield* progress.stop
+      const unpublished = yield* SynchronizedRef.modify(
+        state,
+        (current) => [current.waiters, { ...current, waiters: [] }] as const,
+      )
       const final = yield* Effect.exit(
         Effect.gen(function* () {
           const { buffered, partial, recordedDetails, recordedDiagnostics } = yield* retention
           const projected = yield* Exit.match(outcome, {
-            onFailure: (cause) => Tool.settleFailure(cause, partial),
-            onSuccess: (native) => Tool.project(registration, native),
+            onFailure: (cause) => ToolRegistration.settleFailure(cause, partial),
+            onSuccess: (native) => ToolRegistration.project(registration, native),
           })
           const finalDetails = projected.details === undefined ? recordedDetails : projected.details
-          const result: ToolResult = {
+          const result: InvocationResult = {
             ...projected,
             content: projected.content ?? partial.content ?? [],
             ...(finalDetails === undefined ? {} : { details: finalDetails }),
@@ -849,7 +842,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
                   },
                 ]
               : []
-          const bounded = Tool.boundResult(
+          const bounded = ToolRegistration.boundResult(
             { ...hooked, diagnostics: [...(hooked.diagnostics ?? []), ...retainedDiagnostic] },
             limits,
           )
@@ -861,11 +854,12 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           return execution
         }),
       )
-      yield* Progress.settle(pending, Exit.map(final, constUndefined))
+      const receipt = Exit.map(final, constUndefined)
+      yield* Progress.settle([...pending, ...unpublished], receipt)
       return yield* final
     }, Effect.scoped)
     const prepareCompaction = Effect.fnUntraced(function* (
-      input: CompactInput,
+      input: Executor.CompactInput,
     ): Effect.fn.Return<CompactionPreparation, ModelError | Schema.SchemaError, Invocation> {
       const ref = yield* requireModel(input.state)
       const descriptor = yield* catalog.resolve(ref)
@@ -874,66 +868,64 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         input.settings.compaction.keepRecentTokens,
         descriptor.estimate,
       )
-      const first = cut.pipe(Option.flatMap((index) => Arr.get(input.view.entries, index)))
+      const first = cut.pipe(Option.flatMap((index) => Array.get(input.view.entries, index)))
       const selected = Option.product(cut, first)
       return yield* Option.match(selected, {
         onNone: () => Effect.succeed(CompactionPreparation.none()),
-        onSome: ([cutIndex, firstKept]) =>
-          Effect.gen(function* () {
-            const agent = yield* resolve(input.state, input.settings)
-            const decision = yield* Hook.beforeCompact(Registry.handlers(agent, 'compaction'), {
-              reason: input.reason,
-              view: input.view,
-              firstKept: firstKept.id,
-              instructions: input.instructions,
-            })
-            return yield* Option.match(decision, {
-              onSome: (self) =>
-                Effect.succeed(
-                  Hook.CompactDecision.$match(self, {
-                    Decline: () => CompactionPreparation.none(),
-                    Summary: (value) =>
-                      CompactionPreparation.summary({
-                        firstKept: firstKept.id,
-                        summary: value.summary,
-                      }),
-                  }),
-                ),
-              onNone: () =>
-                Effect.gen(function* () {
-                  const options = yield* Schema.decodeUnknownEffect(Model.RequestOptions)({
-                    thinking: input.state.thinking ?? 'off',
-                    options: Record.filter(input.settings.stream, (_, key) => key !== 'deferred'),
-                    cache: 'none',
-                    maxTokens: Math.min(
-                      Math.floor(0.8 * input.settings.compaction.reserveTokens),
-                      descriptor.maxOutputTokens > 0 ? descriptor.maxOutputTokens : Infinity,
-                    ),
-                    ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
-                  })
-                  const tail = yield* Schema.decodeEffect(EntryId)(
-                    Math.max(...input.view.entries.map((entry) => entry.id)),
-                  )
-                  return CompactionPreparation.request({
-                    request: {
-                      request: {
-                        model: ref,
-                        prompt: Compaction.prompt(
-                          Compaction.summarizedMessages(input.view, cutIndex),
-                          input.instructions,
-                        ),
-                        tools: [],
-                        options,
-                        tail,
-                      },
+        onSome: Effect.fnUntraced(function* ([cutIndex, firstKept]) {
+          const agent = yield* resolve(input.state, input.settings)
+          const decision = yield* Hook.beforeCompact(Registry.handlers(agent, 'compaction'), {
+            reason: input.reason,
+            view: input.view,
+            firstKept: firstKept.id,
+            instructions: input.instructions,
+          })
+          return yield* Option.match(decision, {
+            onSome: (self) =>
+              Effect.succeed(
+                Hook.CompactDecision.$match(self, {
+                  Decline: () => CompactionPreparation.none(),
+                  Summary: (value) =>
+                    CompactionPreparation.summary({
                       firstKept: firstKept.id,
-                      tail,
-                      attempt: 1,
-                    },
-                  })
+                      summary: value.summary,
+                    }),
                 }),
-            })
-          }),
+              ),
+            onNone: Effect.fnUntraced(function* () {
+              const options = yield* Schema.decodeUnknownEffect(Model.RequestOptions)({
+                thinking: input.state.thinking ?? 'off',
+                options: Record.filter(input.settings.stream, (_, key) => key !== 'deferred'),
+                cache: 'none',
+                maxTokens: Math.min(
+                  Math.floor(0.8 * input.settings.compaction.reserveTokens),
+                  descriptor.maxOutputTokens > 0 ? descriptor.maxOutputTokens : Infinity,
+                ),
+                ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+              })
+              const tail = yield* Schema.decodeEffect(EntryId)(
+                Math.max(...input.view.entries.map((entry) => entry.id)),
+              )
+              return CompactionPreparation.request({
+                request: {
+                  request: {
+                    model: ref,
+                    prompt: Compaction.prompt(
+                      Compaction.summarizedMessages(input.view, cutIndex),
+                      input.instructions,
+                    ),
+                    tools: [],
+                    options,
+                    tail,
+                  },
+                  firstKept: firstKept.id,
+                  tail,
+                  attempt: 1,
+                },
+              })
+            }),
+          })
+        }),
       })
     })
     const compact = Effect.fnUntraced(function* (pinned: SummaryRequest) {
@@ -951,13 +943,13 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
         response.text.trim() === ''
       )
         return yield* new ModelError({
-          reason: new ModelInvalidResponse({
+          reason: new ModelInvalidResponseError({
             usage:
               descriptor.usage?.(
                 response.usage,
                 Option.getOrElse(
                   Option.map(
-                    Arr.findFirst(response.content, (part) => part.type === 'finish'),
+                    Array.findFirst(response.content, (part) => part.type === 'finish'),
                     (part) => part.metadata,
                   ),
                   () => ({}),
@@ -969,9 +961,9 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
                 : 'Summarization did not produce a clean nonempty text response',
           }),
         })
-      const finish = Arr.findFirst(response.content, (part) => part.type === 'finish')
+      const finish = Array.findFirst(response.content, (part) => part.type === 'finish')
       return {
-        summary: Arr.filterMap(response.content, (part) =>
+        summary: Array.filterMap(response.content, (part) =>
           part.type === 'text' ? Result.succeed(part.text) : Result.failVoid,
         )
           .join('\n')
@@ -1063,8 +1055,6 @@ export const isDisposition: (u: unknown) => u is Disposition = Schema.is(Disposi
 
 /**
  * Type-level contracts for `Executor`.
- *
- * @category utility types
  */
 export declare namespace Executor {
   /**
@@ -1075,7 +1065,7 @@ export declare namespace Executor {
   interface Preparation {
     readonly request: Request
     readonly agent: Registry.Resolved
-    readonly plan: ReturnType<typeof Prompt.plan>
+    readonly plan: ReturnType<typeof PromptPreparation.plan>
   }
   /**
    * Conversation context, agent overrides and policy used to prepare a request.
@@ -1085,7 +1075,7 @@ export declare namespace Executor {
   interface PrepareInput {
     readonly state: Agent.State
     readonly settings: Agent.Settings
-    readonly view: ConversationContext.View
+    readonly view: Transcript.View
     readonly sessionId?: string | undefined
   }
   /**
@@ -1095,10 +1085,10 @@ export declare namespace Executor {
    */
   interface ToolOptions {
     readonly recovering?: boolean | undefined
-    readonly previous?: ToolResult | undefined
+    readonly previous?: InvocationResult | undefined
     readonly settings?: Agent.Settings | undefined
     /** Persist the terminal result before detached progress acknowledgements settle. */
-    readonly commit?: ((execution: Tool.Execution) => Effect.Effect<void>) | undefined
+    readonly commit?: ((execution: ToolRegistration.Execution) => Effect.Effect<void>) | undefined
   }
   /**
    * Context and compaction policy used to choose and prepare a summary.
@@ -1106,7 +1096,9 @@ export declare namespace Executor {
    * @category models
    */
   interface CompactInput extends PrepareInput {
-    readonly reason: Hook.CompactInput['reason']
+    readonly reason: Hook.Handlers.CompactInput['reason']
     readonly instructions?: string | undefined
   }
 }
+
+import * as SystemPatch from './SystemPatch.ts'

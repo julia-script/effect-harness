@@ -35,7 +35,6 @@ const Handler = Recovery.toLayer(() =>
         [
           {
             _tag: 'conversation',
-            type: 'conversation',
             value: { id: Record.ROOT_CONVERSATION_ID },
           },
         ],

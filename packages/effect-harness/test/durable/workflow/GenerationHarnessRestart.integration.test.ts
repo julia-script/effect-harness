@@ -1,3 +1,4 @@
+import { assertKilled } from '../restart/ProcessExitFixture.ts'
 import { RestartWorker } from '../restart/RestartWorker.ts'
 import * as Option from 'effect/Option'
 import { assert, describe, it } from '@effect/vitest'
@@ -9,15 +10,15 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
-import * as Spawner from 'effect/process/ChildProcessSpawner'
+import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
 import * as Conversation from 'effect-harness/durable/Conversation'
-import * as SqlStore from '../storage/TestStore.ts'
+import * as TestStore from '../storage/TestStore.ts'
 import * as Usage from 'effect-harness/durable/Usage'
 import * as Inbox from 'effect-harness/durable/Inbox'
 
-const marker = (handle: Spawner.ChildProcessHandle, prefix: string) =>
+const marker = (handle: ChildProcessSpawner.ChildProcessHandle, prefix: string) =>
   handle.stdout.pipe(
     Stream.decodeText,
     Stream.splitLines,
@@ -32,7 +33,7 @@ const marker = (handle: Spawner.ChildProcessHandle, prefix: string) =>
   )
 const inspect = (filename: string) =>
   Effect.gen(function* () {
-    const state = yield* (yield* SqlStore.make).committed
+    const state = yield* (yield* TestStore.make).committed
     const fs = yield* FileSystem.FileSystem
     const text = yield* fs.readFileString(filename + '.audit.jsonl')
     const Audit = Schema.Struct({ phase: Schema.String, kind: Schema.String, data: Schema.String })
@@ -49,7 +50,7 @@ const inspect = (filename: string) =>
           .snapshot(Inbox.LiveDoc, { owner: Record.ROOT_CONVERSATION_ID })
           .pipe(Effect.map(Option.getOrUndefined)))?.value,
       }
-    }).pipe(Effect.provide(Session.layer.pipe(Layer.provide(SqlStore.layer))))
+    }).pipe(Effect.provide(Session.layer.pipe(Layer.provide(TestStore.layer))))
     return { state, audit, ...documents }
   }).pipe(Effect.provide(SqliteClient.layer({ filename })))
 type Snapshot = Effect.Success<ReturnType<typeof inspect>>
@@ -65,7 +66,7 @@ const run = <E, R>(
     const first = yield* worker.spawn('start')
     assert.strictEqual(yield* marker(first, 'HARNESS_READY'), 'HARNESS_READY')
     yield* first.kill({ killSignal: 'SIGKILL' })
-    assert.strictEqual((yield* Effect.result(first.exitCode))._tag, 'Failure')
+    assertKilled(yield* Effect.result(first.exitCode))
     assert.strictEqual(yield* first.isRunning, false)
     const before = yield* inspect(filename)
     assert.isAbove(before.state.nextSeq, 1)
@@ -88,7 +89,7 @@ const run = <E, R>(
       }).pipe(
         Effect.provide(
           Session.layer.pipe(
-            Layer.provide(SqlStore.layer),
+            Layer.provide(TestStore.layer),
             Layer.provide(SqliteClient.layer({ filename })),
           ),
         ),
@@ -144,6 +145,7 @@ describe('GenerationHarnessRestart', () => {
     'compaction-commit-placement',
     'compaction-commit-failure',
   ] as const)
+    // effect-nit-allow P8-it-live-or-withLive-for-real-time: native child stdout admission, SIGKILL and SQLite receipt replay witness a physical commit before Activity acknowledgement.
     it.live(
       `recovers ${scenario} after the domain commit and before the native Activity reply`,
       () =>
@@ -212,6 +214,7 @@ describe('GenerationHarnessRestart', () => {
     )
   for (const scenario of ['prepare', 'request', 'partial', 'retry', 'deferred'] as const) {
     // SIGKILL, child stdout and independent SQL COMMIT progress use host processes outside TestClock.
+    // effect-nit-allow P8-it-live-or-withLive-for-real-time: native child stdout admission, SIGKILL and SQLite receipt replay witness a physical commit before Activity acknowledgement.
     it.live(`recovers ${scenario} through actual Generation and Submission executors`, () =>
       run(scenario, (before, after) =>
         Effect.sync(() => {
@@ -285,6 +288,7 @@ describe('GenerationHarnessRestart', () => {
     'tool-deselected',
   ] as const) {
     // SIGKILL, child stdout and independent SQL COMMIT progress use host processes outside TestClock.
+    // effect-nit-allow P8-it-live-or-withLive-for-real-time: native child stdout admission, SIGKILL and SQLite receipt replay witness a physical commit before Activity acknowledgement.
     it.live(`recovers committed intent with both-safe policy (${scenario})`, () =>
       run(scenario, (before, after) =>
         Effect.sync(() => {
@@ -347,6 +351,7 @@ describe('GenerationHarnessRestart', () => {
   )
   for (const scenario of ['compaction-queued', 'compaction-stale'] as const) {
     // SIGKILL, child stdout and independent SQL COMMIT progress use host processes outside TestClock.
+    // effect-nit-allow P8-it-live-or-withLive-for-real-time: native child stdout admission, SIGKILL and SQLite receipt replay witness a physical commit before Activity acknowledgement.
     it.live(`compaction passive placement survives or rejects a newer reset (${scenario})`, () =>
       run(scenario, (before, after) =>
         Effect.sync(() => {
@@ -420,6 +425,7 @@ describe('GenerationHarnessRestart', () => {
   )
   for (const scenario of ['request-missing-model', 'deferred-missing-model'] as const) {
     // SIGKILL, child stdout and independent SQL COMMIT progress use host processes outside TestClock.
+    // effect-nit-allow P8-it-live-or-withLive-for-real-time: native child stdout admission, SIGKILL and SQLite receipt replay witness a physical commit before Activity acknowledgement.
     it.live(`missing pinned catalogue entry settles unanswered (${scenario})`, () =>
       run(scenario, (_before, after) =>
         Effect.sync(() => {
@@ -440,6 +446,7 @@ describe('GenerationHarnessRestart', () => {
     'compaction-blocking',
   ] as const) {
     // SIGKILL, child stdout and independent SQL COMMIT progress use host processes outside TestClock.
+    // effect-nit-allow P8-it-live-or-withLive-for-real-time: native child stdout admission, SIGKILL and SQLite receipt replay witness a physical commit before Activity acknowledgement.
     it.live(`compaction recovers its native boundary (${scenario})`, () =>
       run(scenario, (before, after) =>
         Effect.sync(() => {
@@ -494,6 +501,7 @@ describe('GenerationHarnessRestart', () => {
   )
   for (const scenario of ['abort', 'abort-deferred'] as const) {
     // SIGKILL, child stdout and independent SQL COMMIT progress use host processes outside TestClock.
+    // effect-nit-allow P8-it-live-or-withLive-for-real-time: native child stdout admission, SIGKILL and SQLite receipt replay witness a physical commit before Activity acknowledgement.
     it.live(
       `durable abort marks fence restarted work and native Abort reconciles receipts (${scenario})`,
       () =>

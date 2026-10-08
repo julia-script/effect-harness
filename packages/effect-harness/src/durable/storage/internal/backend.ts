@@ -1,3 +1,5 @@
+/** Scoped backend coordination over committed storage snapshots. */
+import * as MutableHashMap from 'effect/MutableHashMap'
 import * as Arr from 'effect/Array'
 import * as Option from 'effect/Option'
 import * as Outcome from '../../workflow/Outcome.ts'
@@ -10,61 +12,66 @@ import * as Schema from 'effect/Schema'
 import { StrictReceiptJson } from '../StrictReceiptJson.ts'
 import * as Semaphore from 'effect/Semaphore'
 import * as Record from '../../Record.ts'
-import { rejected, StorageError, Invalid, Closed, Poisoned, Conflict } from '../../StorageError.ts'
-import { makeCandidate, Store, type CommitOptions, type Candidate } from '../../Store.ts'
+import {
+  rejected,
+  StorageError,
+  InvalidError,
+  ClosedError,
+  PoisonedError,
+  ConflictError,
+} from '../../StorageError.ts'
+import { makeCandidate, Store } from '../../Store.ts'
 import { applyWrites, detachedEffect, materialize, validate } from './state.ts'
-
-/** Compatibility alias for Backend.Snapshot. */
-export type Snapshot = Backend.Snapshot
 export interface Backend {
-  readonly load: Effect.Effect<Snapshot, StorageError>
+  readonly load: Effect.Effect<Backend.Snapshot, StorageError>
   readonly readContext?: Effect.Effect<object> | undefined
-  readonly committed: Effect.Effect<Snapshot, StorageError>
-  readonly save: (snapshot: Snapshot) => Effect.Effect<void, StorageError>
+  readonly committed: Effect.Effect<Backend.Snapshot, StorageError>
+  readonly save: (snapshot: Backend.Snapshot) => Effect.Effect<void, StorageError>
   readonly atomic: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, StorageError | E, R>
 }
 /** Keeps global, document and conversation tails for exact bounded observer backlogs. */
 export const retainFrames = (self: ReadonlyArray<Record.Frame>): Array<Record.Frame> => {
-  const counts = new Map<Record.DocumentId, number>()
-  const paths = new Map<string, number>()
-  const conversations = new Map<Record.ConversationId, number>()
-  const categories = new Map<string, number>()
+  const counts = MutableHashMap.empty<Record.DocumentId, number>()
+  const paths = MutableHashMap.empty<string, number>()
+  const conversations = MutableHashMap.empty<Record.ConversationId, number>()
+  const categories = MutableHashMap.empty<string, number>()
   const retained: Array<Record.Frame> = []
   for (let index = self.length - 1; index >= 0; index--) {
     const frame = self[index]
     if (frame === undefined) continue
     let retain = index >= self.length - 101
     for (const publication of frame.documents) {
-      const count = (counts.get(publication.record.id) ?? 0) + 1
-      counts.set(publication.record.id, count)
+      const count =
+        (Option.getOrUndefined(MutableHashMap.get(counts, publication.record.id)) ?? 0) + 1
+      MutableHashMap.set(counts, publication.record.id, count)
       if (count <= 101) retain = true
-      const changed = new Set(
+      const changed = Arr.dedupe(
         publication.ops.map((op) =>
           JSON.stringify([publication.record.id, op[0] === 'replace' ? [] : op[1]]),
         ),
       )
       for (const path of changed) {
-        const count = (paths.get(path) ?? 0) + 1
-        paths.set(path, count)
+        const count = (Option.getOrUndefined(MutableHashMap.get(paths, path)) ?? 0) + 1
+        MutableHashMap.set(paths, path, count)
         if (count <= 101) retain = true
       }
     }
-    const touched = new Set<Record.ConversationId>()
-    const buckets = new Set<string>()
+    const touched: Array<Record.ConversationId> = []
+    const buckets: Array<string> = []
     for (const write of frame.writes) {
-      if (write.type === 'conversation') touched.add(write.value.id)
-      else if (write.type === 'entry' || write.type === 'task' || write.type === 'submission')
-        touched.add(write.value.conversationId)
-      if (write.type === 'entry' || write.type === 'submission')
-        buckets.add(JSON.stringify([write.value.conversationId, write.type]))
+      if (write._tag === 'conversation') touched.push(write.value.id)
+      else if (write._tag === 'entry' || write._tag === 'task' || write._tag === 'submission')
+        touched.push(write.value.conversationId)
+      if (write._tag === 'entry' || write._tag === 'submission')
+        buckets.push(JSON.stringify([write.value.conversationId, write._tag]))
       else if (
-        write.type === 'task' &&
+        write._tag === 'task' &&
         (write.value.state.status === 'terminal' || write.value.state.status === 'completing')
       ) {
-        const status = Outcome.classifyTask(write.value)?.rawDirectStatus ?? null
-        buckets.add(
+        const status = Outcome.classifyTaskOrUndefined(write.value)?.rawDirectStatus ?? null
+        buckets.push(
           JSON.stringify([
             write.value.conversationId,
             'task',
@@ -76,16 +83,16 @@ export const retainFrames = (self: ReadonlyArray<Record.Frame>): Array<Record.Fr
       }
     }
     for (const publication of frame.documents)
-      if (publication.record.scope.kind === 'conversation')
-        touched.add(publication.record.scope.conversationId)
-    for (const id of touched) {
-      const count = (conversations.get(id) ?? 0) + 1
-      conversations.set(id, count)
+      if (publication.record.scope._tag === 'conversation')
+        touched.push(publication.record.scope.conversationId)
+    for (const id of Arr.dedupe(touched)) {
+      const count = (Option.getOrUndefined(MutableHashMap.get(conversations, id)) ?? 0) + 1
+      MutableHashMap.set(conversations, id, count)
       if (count <= 101) retain = true
     }
-    for (const bucket of buckets) {
-      const count = (categories.get(bucket) ?? 0) + 1
-      categories.set(bucket, count)
+    for (const bucket of Arr.dedupe(buckets)) {
+      const count = (Option.getOrUndefined(MutableHashMap.get(categories, bucket)) ?? 0) + 1
+      MutableHashMap.set(categories, bucket, count)
       if (count <= 101) retain = true
     }
     if (retain) retained.push(frame)
@@ -94,7 +101,9 @@ export const retainFrames = (self: ReadonlyArray<Record.Frame>): Array<Record.Fr
 }
 const receiptResult = (input: unknown) =>
   Schema.decodeUnknownEffect(StrictReceiptJson)(input).pipe(
-    Effect.mapError((cause) => rejected('Receipt result is not serializable JSON', Invalid, cause)),
+    Effect.mapError((cause) =>
+      rejected('Receipt result is not serializable JSON', InvalidError, cause),
+    ),
   )
 export const make = Effect.fnUntraced(function* (
   backend: Backend,
@@ -106,6 +115,7 @@ export const make = Effect.fnUntraced(function* (
   )
   const handle = yield* FiberHandle.make<boolean, never>().pipe(Scope.provide(cleanupScope))
   const started = yield* Ref.make(false)
+  const drained = yield* Deferred.make<void>()
   const terminal = yield* Deferred.make<void, StorageError>()
   const lifecycle = yield* Ref.make<{
     readonly closed: boolean
@@ -115,11 +125,15 @@ export const make = Effect.fnUntraced(function* (
   const shutdown = Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
       if (!(yield* Ref.getAndSet(started, true))) {
-        yield* Ref.update(lifecycle, (state) => ({ ...state, closed: true }))
+        const empty = yield* Ref.modify(lifecycle, (state) => [
+          state.readers === 0,
+          { ...state, closed: true },
+        ])
+        if (empty) yield* Deferred.succeed(drained, undefined)
         yield* FiberHandle.run(
           handle,
           Effect.gen(function* () {
-            while ((yield* Ref.get(lifecycle)).readers > 0) yield* Effect.sleep('1 millis')
+            yield* Deferred.await(drained)
             yield* release
           }).pipe(Effect.uninterruptible, Deferred.into(terminal)),
         )
@@ -132,9 +146,9 @@ export const make = Effect.fnUntraced(function* (
     readonly closed: boolean
     readonly poison: StorageError | undefined
   }) => {
-    if (state.closed) return rejected('Store is closed', Closed)
+    if (state.closed) return rejected('Store is closed', ClosedError)
     if (state.poison !== undefined)
-      return rejected('Store is poisoned; reopen it', Poisoned, state.poison)
+      return rejected('Store is poisoned; reopen it', PoisonedError, state.poison)
     return undefined
   }
   const usable = Ref.get(lifecycle).pipe(
@@ -147,19 +161,22 @@ export const make = Effect.fnUntraced(function* (
     const error = failure(state)
     return [error, error === undefined ? { ...state, readers: state.readers + 1 } : state] as const
   }).pipe(Effect.flatMap((error) => (error === undefined ? Effect.void : Effect.fail(error))))
-  const settled = Ref.update(lifecycle, (state) => ({ ...state, readers: state.readers - 1 }))
-  const snapshot = (load: Effect.Effect<Snapshot, StorageError>) =>
+  const settled = Ref.modify(lifecycle, (state) => {
+    const readers = state.readers - 1
+    return [state.closed && readers === 0, { ...state, readers }] as const
+  }).pipe(Effect.flatMap((empty) => (empty ? Deferred.succeed(drained, undefined) : Effect.void)))
+  const snapshot = (load: Effect.Effect<Backend.Snapshot, StorageError>) =>
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         yield* admit
         return yield* restore(load).pipe(Effect.ensuring(settled))
       }),
     )
-  const read = (load: Effect.Effect<Snapshot, StorageError>) =>
+  const read = (load: Effect.Effect<Backend.Snapshot, StorageError>) =>
     snapshot(load).pipe(Effect.flatMap((value) => detachedEffect(value.state)))
   const transact = <A, E, R>(
-    change: (state: Record.State) => Effect.Effect<Candidate<A>, E, R>,
-    options: CommitOptions = {},
+    change: (state: Record.State) => Effect.Effect<Store.Candidate<A>, E, R>,
+    options: Store.CommitOptions = {},
   ): Effect.Effect<A, StorageError | E, R> =>
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
@@ -181,7 +198,7 @@ export const make = Effect.fnUntraced(function* (
                       if (receipt.value.fingerprint !== (options.fingerprint ?? ''))
                         return yield* rejected(
                           'Idempotency key reused with different input',
-                          Conflict,
+                          ConflictError,
                         )
                       // The generic result type is chosen by the same stable operation key, not a runtime decoder.
                       return (
@@ -227,11 +244,11 @@ export const make = Effect.fnUntraced(function* (
                     }
                   state = yield* validate(Record.State, state)
                   const publications: Array<Record.Publication> = []
-                  const documentIds = new Set(
+                  const documentIds = Arr.dedupe(
                     Arr.flatMap(candidate.writes, (write) => {
-                      if (write.type === 'document.create' || write.type === 'document.copy')
+                      if (write._tag === 'document.create' || write._tag === 'document.copy')
                         return [write.record.id]
-                      if (write.type === 'document.change' || write.type === 'document.retire')
+                      if (write._tag === 'document.change' || write._tag === 'document.retire')
                         return [write.id]
                       return []
                     }),
@@ -248,13 +265,13 @@ export const make = Effect.fnUntraced(function* (
                     const snapshotValue = snapshotOption.value
                     const write = Arr.findFirst(
                       candidate.writes,
-                      (item) => item.type === 'document.change' && item.id === id,
+                      (item) => item._tag === 'document.change' && item.id === id,
                     )
                     let ops: ReadonlyArray<Record.Op> = [['replace', snapshotValue.value]]
-                    if (Option.isSome(write) && write.value.type === 'document.change')
+                    if (Option.isSome(write) && write.value._tag === 'document.change')
                       ops =
                         write.value.publicationOps ??
-                        (write.value.content.kind === 'delta' ? write.value.content.ops : ops)
+                        (write.value.content._tag === 'delta' ? write.value.content.ops : ops)
                     publications.push({
                       record: document.value.record,
                       version: snapshotValue.version,
@@ -291,7 +308,7 @@ export const make = Effect.fnUntraced(function* (
         )
       }),
     )
-  const commit = (writes: ReadonlyArray<Record.Write>, options?: CommitOptions) =>
+  const commit = (writes: ReadonlyArray<Record.Write>, options?: Store.CommitOptions) =>
     transact(
       (state) => Effect.succeed(makeCandidate({ state, writes, result: state.nextSeq })),
       options,

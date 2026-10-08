@@ -1,9 +1,11 @@
+import * as Predicate from 'effect/Predicate'
 /**
  * Token and price ledgers with explicit partial-cost metadata.
  */
 import { dual } from 'effect/Function'
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
+import * as Record from 'effect/Record'
 import type * as Response from 'effect/ai/Response'
 
 /**
@@ -44,7 +46,7 @@ export const Usage = Schema.Struct({
  */
 export type Usage = typeof Usage.Type
 /**
- * Schema for accumulated usage and request count.
+ * Schema for accumulated model and tool usage ledgers.
  *
  * @category schemas
  */
@@ -53,7 +55,7 @@ export const State = Schema.Struct({
   tools: Schema.Record(Schema.String, Usage),
 })
 /**
- * Accumulated usage and request count.
+ * Accumulated model and tool usage ledgers.
  *
  * @category models
  */
@@ -63,7 +65,7 @@ export type State = typeof State.Type
  *
  * @category constructors
  */
-export const zero = (): Usage => ({
+export const make = (): Usage => ({
   input: 0,
   output: 0,
   cacheRead: 0,
@@ -71,12 +73,18 @@ export const zero = (): Usage => ({
   totalTokens: 0,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 })
+const copyLedger = (self: Readonly<Record<string, Usage>>): Record<string, Usage> => {
+  const copy = { ...self }
+  // Own ledger names are arbitrary, including __proto__; dictionaries never inherit setters.
+  Object.setPrototypeOf(copy, null)
+  return copy
+}
 /**
  * Creates an empty usage state.
  *
  * @category constructors
  */
-export const empty = (): State => ({ models: {}, tools: {} })
+export const makeState = (): State => ({ models: copyLedger({}), tools: copyLedger({}) })
 function addImpl(self: Usage, that: Usage): Usage {
   return {
     input: self.input + that.input,
@@ -123,13 +131,8 @@ export const add: {
 } = dual(2, addImpl)
 function recordImpl(self: State, bucket: keyof State, key: string, usage: Usage): State {
   const old = Object.hasOwn(self[bucket], key) ? self[bucket][key] : undefined
-  const totals = { ...self[bucket] }
-  Object.defineProperty(totals, key, {
-    value: add(old ?? zero(), usage),
-    enumerable: true,
-    configurable: true,
-    writable: true,
-  })
+  const totals = copyLedger(self[bucket])
+  Record.assignProperty(totals, key, add(old ?? make(), usage))
   return { ...self, [bucket]: totals }
 }
 /**
@@ -147,7 +150,9 @@ export const record: {
  * @category combinators
  */
 export function sum(self: ReadonlyArray<State>): State {
-  let total = empty()
+  // effect-nit-allow P1-stdlib-collection-replacements: this public record may have accessors that delete or change later own keys. Native reflective enumeration rechecks each descriptor before reading; Record.collect snapshots keys and can read a newly inherited value instead.
+
+  let total = makeState()
   for (const state of self)
     for (const bucket of ['models', 'tools'] as const)
       for (const [key, value] of Object.entries(state[bucket]))
@@ -180,7 +185,7 @@ function fromResponseImpl(
       ? {}
       : { reasoning: self.outputTokens.reasoning }),
     ...extra,
-    cost: extra.cost ?? { ...zero().cost, known: false, totalKnown: false },
+    cost: extra.cost ?? { ...make().cost, known: false, totalKnown: false },
   }
 }
 /**
@@ -192,7 +197,10 @@ export const fromResponse: {
   (extra?: Partial<Pick<Usage, 'cost' | 'cacheWrite1h'>>): (self: Response.Usage) => Usage
   (self: Response.Usage, extra?: Partial<Pick<Usage, 'cost' | 'cacheWrite1h'>>): Usage
 } = dual(
-  (args) => typeof args[0] === 'object' && args[0] != null && 'inputTokens' in args[0],
+  Predicate.mapInput(
+    Predicate.and(Predicate.isObjectOrArray, Predicate.hasProperty('inputTokens')),
+    (args: IArguments) => args[0],
+  ),
   fromResponseImpl,
 )
 /**

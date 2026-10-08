@@ -33,12 +33,6 @@ export * as ChatGptClient from './ChatGptClient.ts'
  */
 export * as ChatGptLanguageModel from './ChatGptLanguageModel.ts'
 /**
- * Compatibility forwarding paths for concrete provider language models.
- *
- * @category re-exports
- */
-export * as LanguageModel from './LanguageModel.ts'
-/**
  * Native Effect AI OpenAI client service and protocol facade.
  *
  * @category re-exports

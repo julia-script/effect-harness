@@ -1,6 +1,8 @@
 import * as Arr from 'effect/Array'
 import * as Effect from 'effect/Effect'
-import { Env, type FileError } from '../../Env.ts'
+import { Env } from '../../Env.ts'
+import type { FileError } from '../../FileError.ts'
+
 import { Invocation } from '../../Invocation.ts'
 const unicodeSpaces = /[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g
 export const normalize = (self: string): string => {

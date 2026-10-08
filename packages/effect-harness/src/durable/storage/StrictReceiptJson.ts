@@ -1,15 +1,21 @@
+import * as Predicate from 'effect/Predicate'
+import * as Function from 'effect/Function'
 /**
  * Descriptor-based JSON validation for durable receipt values.
  */
 import * as Effect from 'effect/Effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
+import type * as SchemaAST from 'effect/SchemaAST'
 import * as SchemaGetter from 'effect/SchemaGetter'
 import * as SchemaIssue from 'effect/SchemaIssue'
 
-const issue = (message: string) => new SchemaIssue.InvalidValue({ message })
 /** Descriptor checks and copying never read a source property, including Proxy get traps. */
-const inspect = (input: unknown): Result.Result<Schema.Json, SchemaIssue.Issue> => {
+const inspect = (
+  input: unknown,
+  options: SchemaAST.ParseOptions,
+): Result.Result<Schema.Json, SchemaIssue.Issue> => {
+  const issue = (message: string) => new SchemaIssue.InvalidValue({ message }, input, options)
   const reflected = Result.try({
     try: () => {
       const visited = new Set<object>()
@@ -28,15 +34,30 @@ const inspect = (input: unknown): Result.Result<Schema.Json, SchemaIssue.Issue> 
         }
         visited.add(value)
         const output: Schema.Json = array ? [] : {}
+        const length = array ? Object.getOwnPropertyDescriptor(value, 'length')?.value : undefined
+        if (array && (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0))
+          return Result.fail(issue('Receipt arrays require a valid length'))
+        let indices = 0
         for (const key of Reflect.ownKeys(value)) {
           if (array && key === 'length') continue
           const descriptor = Object.getOwnPropertyDescriptor(value, key)
           if (
             typeof key !== 'string' ||
             descriptor?.enumerable !== true ||
-            !('value' in descriptor)
+            !Predicate.hasProperty(descriptor, 'value')
           )
             return Result.fail(issue('Receipt results require enumerable JSON data properties'))
+          if (array) {
+            const index = Number(key)
+            if (
+              !Number.isSafeInteger(index) ||
+              index < 0 ||
+              index >= length ||
+              String(index) !== key
+            )
+              return Result.fail(issue('Receipt arrays cannot have named properties'))
+            indices++
+          }
           const copied = visit(descriptor.value)
           if (Result.isFailure(copied)) return copied
           Object.defineProperty(output, key, {
@@ -46,26 +67,19 @@ const inspect = (input: unknown): Result.Result<Schema.Json, SchemaIssue.Issue> 
             configurable: true,
           })
         }
-        if (array) {
-          const length = Object.getOwnPropertyDescriptor(value, 'length')?.value
-          for (let index = 0; index < length; index++)
-            if (!Object.hasOwn(value, index))
-              return Result.fail(issue('Receipt arrays cannot have holes'))
-        }
+        if (array && indices !== length)
+          return Result.fail(issue('Receipt arrays cannot have holes'))
         visited.delete(value)
         return Result.succeed(output)
       }
       return visit(input)
     },
-    catch: (cause) =>
-      new SchemaIssue.InvalidValue({ message: 'Cannot inspect receipt JSON' }, cause, {
-        reportInput: true,
-      }),
+    catch: () => issue('Cannot inspect receipt JSON'),
   })
   return Result.isFailure(reflected) ? Result.fail(reflected.failure) : reflected.success
 }
-const policy = Schema.makeFilter<unknown>((input) => {
-  const result = inspect(input)
+const policy = Schema.makeFilter<unknown>((input, _ast, options) => {
+  const result = inspect(input, options)
   return Result.isFailure(result) ? result.failure : undefined
 })
 /**
@@ -75,8 +89,10 @@ const policy = Schema.makeFilter<unknown>((input) => {
  */
 export const StrictReceiptJson = Schema.Unknown.check(policy).pipe(
   Schema.decodeTo(Schema.Json, {
-    decode: SchemaGetter.transformEffect((input) => Effect.fromResult(inspect(input))),
-    encode: SchemaGetter.transform((input) => input),
+    decode: SchemaGetter.transformEffect((input, options) =>
+      Effect.fromResult(inspect(input, options)),
+    ),
+    encode: SchemaGetter.transform(Function.identity),
   }),
 )
 /**

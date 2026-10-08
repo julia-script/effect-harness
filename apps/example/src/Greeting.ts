@@ -1,7 +1,5 @@
-import * as Effect from 'effect/Effect'
-import * as Schema from 'effect/Schema'
-import * as Activity from 'effect/workflow/Activity'
-import * as Workflow from 'effect/workflow/Workflow'
+import { Effect, type Layer, Schema } from 'effect'
+import { Activity, Workflow, type WorkflowEngine } from 'effect/workflow'
 
 // User-authored workflows use Effect's ordinary declaration and handler APIs.
 export const Greeting = Workflow.make('example/greeting/v1', {
@@ -11,10 +9,11 @@ export const Greeting = Workflow.make('example/greeting/v1', {
   idempotencyKey: ({ name }) => name,
 })
 
-export const layer = Greeting.toLayer(({ name }) =>
-  Activity.make({
-    name: 'greet',
-    success: Schema.String,
-    execute: Effect.succeed(`Hello, ${name}`),
-  }),
+export const layer: Layer.Layer<never, never, WorkflowEngine.WorkflowEngine> = Greeting.toLayer(
+  ({ name }) =>
+    Activity.make({
+      name: 'greet',
+      success: Schema.String,
+      execute: Effect.succeed(`Hello, ${name}`),
+    }),
 )

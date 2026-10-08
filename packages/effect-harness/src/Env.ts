@@ -1,13 +1,13 @@
 /**
  * Portable scoped file, directory, watch and process capabilities.
  */
+import { NativeFiles, type FileInfo } from './NativeFiles.ts'
 import { constant } from 'effect/Function'
 import * as Pipeable from 'effect/Pipeable'
 import * as Inspectable from 'effect/Inspectable'
 import { dual, constFalse } from 'effect/Function'
 import * as Data from 'effect/Data'
 import * as Predicate from 'effect/Predicate'
-import * as DateTime from 'effect/DateTime'
 import * as Ref from 'effect/Ref'
 import type * as Duration from 'effect/Duration'
 import * as NativeError from './env/NativeError.ts'
@@ -20,105 +20,15 @@ import * as Path from 'effect/Path'
 import * as PlatformError from 'effect/PlatformError'
 import type * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
-import type * as Stream from 'effect/Stream'
+import * as Stream from 'effect/Stream'
 import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import * as Decode from './env/Decode.ts'
 import * as AtomicWrite from './env/AtomicWrite.ts'
 import * as exec from './env/internal/exec.ts'
 import * as watch from './env/internal/watch.ts'
 
-import { FileError, FileInvalid, fileReason } from './FileError.ts'
-import { ExecutionError } from './ExecutionError.ts'
-/**
- * Semantic file operation failures with retained native causes and paths.
- *
- * @category re-exports
- */
-export * from './FileError.ts'
-/**
- * Semantic process execution failures with retained native causes and spill metadata.
- *
- * @category re-exports
- */
-export * from './ExecutionError.ts'
-
-/**
- * File metadata returned by environment readers and directory scans.
- *
- * @category models
- */
-export interface FileInfo {
-  readonly name: string
-  readonly path: string
-  readonly kind: 'file' | 'directory' | 'symlink'
-  readonly size: number
-  /**
-   * File modification instant as DateTime.Utc, preserving fractional epoch-millisecond
-   * precision.
-   */
-  readonly mtimeMs: DateTime.Utc
-  /** Native identity used by watch snapshots; adapters without stable identities may omit it. */
-  readonly identity?: string | undefined
-}
-/**
- * Byte offsets and newline counts for a requested text window.
- *
- * @category models
- */
-export interface LineScan {
-  readonly newlines: number
-  readonly start: number
-  readonly end: number
-  readonly firstLineEnd: number
-  readonly lastLineStart: number
-  readonly selectedBytes: number
-  readonly firstLineBytes: number
-}
-const BinaryReaderTypeId = '~@effect-harness/harness/Env/BinaryReader'
-/**
- * Scoped random-access file reader and line-window scanner.
- *
- * @category models
- */
-export interface BinaryReader extends Pipeable.Pipeable, Inspectable.Inspectable {
-  readonly [BinaryReaderTypeId]: typeof BinaryReaderTypeId
-  readonly info: Effect.Effect<FileInfo, FileError>
-  readonly read: (offset: number, length: number) => Effect.Effect<Uint8Array, FileError>
-  readonly scanLines: (options: {
-    readonly startLine: number
-    readonly endLine?: number | undefined
-  }) => Effect.Effect<LineScan, FileError>
-}
-/**
- * Attaches handle identity without evaluating or changing capability getters.
- *
- * @category constructors
- */
-export const makeBinaryReader = (
-  input: Omit<
-    BinaryReader,
-    typeof BinaryReaderTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
-  >,
-): BinaryReader => {
-  const handle: BinaryReader = Object.create(BinaryReaderProto)
-  Object.defineProperties(handle, Object.getOwnPropertyDescriptors(input))
-  Object.defineProperty(handle, BinaryReaderTypeId, {
-    value: BinaryReaderTypeId,
-    enumerable: false,
-  })
-  return handle
-}
-/**
- * Checks whether a value carries the nominal `BinaryReader` marker.
- *
- * **Gotchas**
- *
- * This checks library identity, not the validity of arbitrary fields or stored JSON.
- *
- * @category guards
- */
-export const isBinaryReader = (u: unknown): u is BinaryReader =>
-  Predicate.hasProperty(u, BinaryReaderTypeId)
+import { FileError, FileInvalidError, fileReason } from './FileError.ts'
+import type { ExecutionError } from './ExecutionError.ts'
 
 /**
  * Decoded line and whether it ended with a line terminator.
@@ -129,7 +39,7 @@ export interface TextLine {
   readonly text: string
   readonly terminated: boolean
 }
-const TextLineReaderTypeId = '~@effect-harness/harness/Env/TextLineReader'
+const TextLineReaderTypeId = '~effect-harness/Env/TextLineReader'
 /**
  * Scoped sequential reader returning decoded lines until Option.none.
  *
@@ -183,48 +93,6 @@ export const makeTextLineReader = (
 export const isTextLineReader = (u: unknown): u is TextLineReader =>
   Predicate.hasProperty(u, TextLineReaderTypeId)
 
-const DirReaderTypeId = '~@effect-harness/harness/Env/DirReader'
-/**
- * Scoped directory reader returning bounded batches.
- *
- * @category models
- */
-export interface DirReader extends Pipeable.Pipeable, Inspectable.Inspectable {
-  readonly [DirReaderTypeId]: typeof DirReaderTypeId
-  readonly next: (
-    maxEntries: number,
-  ) => Effect.Effect<
-    { readonly entries: ReadonlyArray<FileInfo>; readonly done: boolean },
-    FileError
-  >
-}
-/**
- * Attaches handle identity without evaluating or changing capability getters.
- *
- * @category constructors
- */
-export const makeDirReader = (
-  input: Omit<
-    DirReader,
-    typeof DirReaderTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
-  >,
-): DirReader => {
-  const handle: DirReader = Object.create(DirReaderProto)
-  Object.defineProperties(handle, Object.getOwnPropertyDescriptors(input))
-  Object.defineProperty(handle, DirReaderTypeId, { value: DirReaderTypeId, enumerable: false })
-  return handle
-}
-/**
- * Checks whether a value carries the nominal `DirReader` marker.
- *
- * **Gotchas**
- *
- * This checks library identity, not the validity of arbitrary fields or stored JSON.
- *
- * @category guards
- */
-export const isDirReader = (u: unknown): u is DirReader => Predicate.hasProperty(u, DirReaderTypeId)
-
 /**
  * Directory path, recursion and exclusions for environment watching.
  *
@@ -253,7 +121,7 @@ export type WatchChange = Data.TaggedEnum<{
  * @category constants
  */
 export const WatchChange = Data.taggedEnum<WatchChange>()
-const WatcherTypeId = '~@effect-harness/harness/Env/Watcher'
+const WatcherTypeId = '~effect-harness/Env/Watcher'
 /**
  * Scoped native or polling stream of environment changes.
  *
@@ -293,61 +161,6 @@ export const makeWatcher = (
  * @category guards
  */
 export const isWatcher = (u: unknown): u is Watcher => Predicate.hasProperty(u, WatcherTypeId)
-
-/**
- * Backend selection and timing policy for environment watching.
- *
- * @category models
- */
-export type WatchOptions = Env.WatchOptions
-/**
- * Scoped native directory notifications and installation readiness.
- *
- * **Details**
- *
- * Consuming changes installs the watcher. started reports installation success or failure,
- * allowing callers to await readiness before mutating files.
- *
- * **Gotchas**
- *
- * changes is single-consumer and owned by the consumption Scope. Closing that Scope joins
- * native producers.
- *
- * @category models
- */
-export interface DirectoryNotifications {
-  /**
-   * Single-consumer stream of watcher changes owned by the consumption Scope.
-   */
-  readonly changes: Stream.Stream<string | undefined, FileError>
-  /**
-   * Waits for native watcher installation and reports installation failure before callers rely
-   * on notifications.
-   */
-  readonly started: Effect.Effect<void, FileError>
-}
-/**
- * Service supplying native directory watches, lstat and bounded file readers.
- *
- * **Details**
- *
- * Adapters fill capabilities absent from the generic FileSystem contract. Supply this
- * service with the native platform filesystem/process Layers at the application boundary.
- *
- * @category services
- */
-export class NativeFiles extends Context.Service<
-  NativeFiles,
-  {
-    readonly lstat: (path: string) => Effect.Effect<FileInfo, FileError>
-    readonly openBinaryReader: (
-      path: string,
-      options?: { readonly noFollow?: boolean | undefined },
-    ) => Effect.Effect<BinaryReader, FileError, Scope.Scope>
-    readonly openDirReader: (path: string) => Effect.Effect<DirReader, FileError, Scope.Scope>
-    readonly watchDirectory: (path: string) => Effect.Effect<DirectoryNotifications, FileError>
-  }
->()('@effect-harness/harness/Env/NativeFiles') {}
 /**
  * Output stream identity and metadata for skipped bytes.
  *
@@ -360,24 +173,6 @@ export interface ShellOutputInfo {
     | undefined
 }
 /**
- * Retained stdout/stderr window with bounds and omission metadata.
- *
- * @category models
- */
-export type ShellOutputWindow = Env.ShellOutputWindow
-/**
- * Command environment, timeout and output-reporting options.
- *
- * @category models
- */
-export type ShellExecOptions = Env.ShellExecOptions
-/**
- * Exit status and bounded output from a completed shell command.
- *
- * @category models
- */
-export type ShellExecResult = Env.ShellExecResult
-/**
  * Executable and argument prefix used to launch shell commands.
  *
  * @category models
@@ -387,12 +182,6 @@ export interface ShellConfiguration {
   readonly args: ReadonlyArray<string>
   readonly commandOnStdin?: boolean | undefined
 }
-/**
- * Environment identity, cwd, home and shell/watch configuration.
- *
- * @category models
- */
-export type Options = Env.Options
 /**
  * Service for bounded file access, shell execution and scoped environment watching.
  *
@@ -442,7 +231,7 @@ export class Env extends Context.Service<
     readonly openDirReader: NativeFiles['Service']['openDirReader']
     readonly watch: (
       targets: ReadonlyArray<WatchTarget>,
-      options?: WatchOptions,
+      options?: Env.WatchOptions,
     ) => Effect.Effect<Watcher, FileError, Scope.Scope>
     readonly canonicalPath: (path: string) => Effect.Effect<string, FileError>
     readonly exists: (path: string) => Effect.Effect<boolean, FileError>
@@ -461,14 +250,14 @@ export class Env extends Context.Service<
     }) => Effect.Effect<string, FileError>
     readonly exec: (
       command: string | ReadonlyArray<string>,
-      options?: ShellExecOptions,
-    ) => Effect.Effect<ShellExecResult, ExecutionError>
+      options?: Env.ShellExecOptions,
+    ) => Effect.Effect<Env.ShellExecResult, ExecutionError>
   }
->()('@effect-harness/harness/Env') {}
+>()('effect-harness/Env') {}
 const fromPlatformImpl = (self: PlatformError.PlatformError, path?: string): FileError => {
   let code: FileError['code'] = 'unknown'
   const cause = self.reason.cause
-  const nativeCode = NativeError.code(cause) ?? ''
+  const nativeCode = NativeError.codeOrUndefined(cause) ?? ''
   let reasonCode: FileError['code']
   switch (self.reason._tag) {
     case 'NotFound':
@@ -525,7 +314,7 @@ export const fromPlatform: {
  * @category constructors
  */
 export const make = Effect.fnUntraced(function* (
-  options: Options,
+  options: Env.Options,
 ): Effect.fn.Return<
   Env['Service'],
   never,
@@ -539,14 +328,17 @@ export const make = Effect.fnUntraced(function* (
   const path = yield* Path.Path
   const native = yield* NativeFiles
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-  const shell = yield* exec.make({ fs, path, spawner, defaults: options })
-  const absolutePath = Effect.fnUntraced(function* (value: string, cwd = options.cwd) {
+  const cwd = path.resolve(options.cwd)
+  const atomicWrite = yield* AtomicWrite.make
+  const openWatcher = yield* watch.acquire
+  const shell = yield* exec.make({ fs, path, spawner, defaults: { ...options, cwd } })
+  const absolutePath = Effect.fnUntraced(function* (value: string, base = cwd) {
     let input = value
     if (input.startsWith('file:')) {
       const url = yield* Effect.try({
         try: () => new URL(input),
         catch: (cause) =>
-          new FileError({ reason: new FileInvalid({ message: 'Invalid URL', cause }) }),
+          new FileError({ reason: new FileInvalidError({ message: 'Invalid URL', cause }) }),
       }).pipe(Effect.option)
       input = yield* Option.match(url, {
         onNone: () => Effect.succeed(input),
@@ -558,7 +350,7 @@ export const make = Effect.fnUntraced(function* (
       (input === '~' || input.startsWith('~/') || (path.sep === '\\' && input.startsWith('~\\')))
     )
       input = options.home + input.slice(1)
-    return path.resolve(cwd, input)
+    return path.resolve(cwd, base, input)
   })
   const at = <A, E, R>(
     self: string,
@@ -590,7 +382,7 @@ export const make = Effect.fnUntraced(function* (
       Effect.gen(function* () {
         if ((yield* Ref.get(state)).closed)
           return yield* new FileError({
-            reason: new FileInvalid({ message: 'Reader is closed', path: value }),
+            reason: new FileInvalidError({ message: 'Reader is closed', path: value }),
           })
         while (true) {
           const current = yield* Ref.get(state)
@@ -641,7 +433,7 @@ export const make = Effect.fnUntraced(function* (
     )
   return Env.of({
     id: options.id,
-    cwd: options.cwd,
+    cwd,
     path,
     absolutePath,
     joinPath: (parts) => Effect.succeed(path.join(...parts)),
@@ -657,7 +449,7 @@ export const make = Effect.fnUntraced(function* (
       const max = lineOptions?.maxLines ?? Infinity
       if (max !== Infinity && (!Number.isSafeInteger(max) || max < 0))
         return yield* new FileError({
-          reason: new FileInvalid({ message: 'Invalid maxLines', path: value }),
+          reason: new FileInvalidError({ message: 'Invalid maxLines', path: value }),
         })
       const reader = yield* openTextLineReader(value)
       const lines: Array<string> = []
@@ -675,15 +467,13 @@ export const make = Effect.fnUntraced(function* (
       return lines
     }, Effect.scoped),
     writeFile: (value, content) =>
-      at(value, (resolved) =>
-        Effect.uninterruptible(AtomicWrite.write(fs, path, native, resolved, content)),
-      ),
+      at(value, (resolved) => Effect.uninterruptible(atomicWrite(resolved, content))),
     appendFile: append,
     truncateFile: (value, size) =>
       !Number.isSafeInteger(size) || size < 0
         ? Effect.fail(
             new FileError({
-              reason: new FileInvalid({ message: 'Invalid truncate size', path: value }),
+              reason: new FileInvalidError({ message: 'Invalid truncate size', path: value }),
             }),
           )
         : io(value, (resolved) =>
@@ -727,13 +517,7 @@ export const make = Effect.fnUntraced(function* (
               (options.resolveWatchMode === undefined
                 ? 'native'
                 : yield* options.resolveWatchMode(resolved))
-            return yield* watch.make({
-              fs,
-              path,
-              native,
-              targets: resolved,
-              options: { ...settings, mode },
-            })
+            return yield* openWatcher(resolved, { ...settings, mode })
           }),
         ),
       ),
@@ -774,34 +558,18 @@ export const make = Effect.fnUntraced(function* (
  * @category layers
  */
 export const layer = (
-  options: Options,
+  options: Env.Options,
 ): Layer.Layer<
   Env,
   never,
   FileSystem.FileSystem | Path.Path | NativeFiles | ChildProcessSpawner.ChildProcessSpawner
 > => Layer.effect(Env, make(options))
 
-const BinaryReaderProto = {
-  ...Pipeable.Prototype,
-  ...Inspectable.BaseProto,
-  toJSON(): unknown {
-    return { _id: '@effect-harness/harness/Env/BinaryReader' }
-  },
-}
-
 const TextLineReaderProto = {
   ...Pipeable.Prototype,
   ...Inspectable.BaseProto,
   toJSON(): unknown {
     return { _id: '@effect-harness/harness/Env/TextLineReader' }
-  },
-}
-
-const DirReaderProto = {
-  ...Pipeable.Prototype,
-  ...Inspectable.BaseProto,
-  toJSON(): unknown {
-    return { _id: '@effect-harness/harness/Env/DirReader' }
   },
 }
 
@@ -816,7 +584,6 @@ const WatcherProto = {
 /**
  * Type-level contracts for `Env`.
  *
- * @category utility types
  */
 export declare namespace Env {
   /**
@@ -826,7 +593,7 @@ export declare namespace Env {
    */
   interface WatchOptions {
     readonly mode?: 'native' | 'polling' | undefined
-    readonly pollIntervalMs?: Duration.Input | undefined
+    readonly pollInterval?: Duration.Input | undefined
     readonly directoryBudget?: number | undefined
   }
   /**
@@ -834,11 +601,11 @@ export declare namespace Env {
    *
    * @category models
    */
-  interface ShellOutputWindow {
+  type ShellOutputWindow = {
     readonly maxBytes: number
     readonly maxLines: number
-    readonly minIntervalMs: Duration.Input
     readonly bytesPerSecond: number
+    readonly minInterval: Duration.Input
   }
   /**
    * Command environment, timeout and output-reporting options.
@@ -884,3 +651,47 @@ export declare namespace Env {
     readonly env?: Readonly<Record<string, string>> | undefined
   }
 }
+
+/** Streams decoded text lines with a fresh scoped reader for every subscription.
+ * @category combinators
+ */
+export const streamTextLines = (self: string): Stream.Stream<TextLine, FileError, Env> =>
+  Stream.unwrap(
+    Effect.flatMap(Env, (env) =>
+      Effect.map(env.openTextLineReader(self), (reader) =>
+        Stream.paginate(undefined, () =>
+          reader.readLine.pipe(
+            Effect.map((line) =>
+              Option.match(line, {
+                onNone: () => [[], Option.none<void>()] as const,
+                onSome: (value) => [[value], Option.some(undefined)] as const,
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+  )
+/** Streams directory metadata in bounded pages with a fresh reader per subscription.
+ * @category combinators
+ */
+export const streamDirEntries = (
+  self: string,
+  options?: { readonly pageSize?: number | undefined },
+): Stream.Stream<FileInfo, FileError, Env> =>
+  Stream.unwrap(
+    Effect.flatMap(Env, (env) =>
+      Effect.map(env.openDirReader(self), (reader) =>
+        Stream.paginate(undefined, () =>
+          reader
+            .next(options?.pageSize ?? 64)
+            .pipe(
+              Effect.map(
+                (page) =>
+                  [page.entries, page.done ? Option.none<void>() : Option.some(undefined)] as const,
+              ),
+            ),
+        ),
+      ),
+    ),
+  )

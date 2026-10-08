@@ -7,13 +7,14 @@ import * as Inspectable from 'effect/Inspectable'
 import * as Effect from 'effect/Effect'
 import * as Predicate from 'effect/Predicate'
 // Adapted from pi-durable (MIT), pinned 636703a0; see package NOTICE.
-import { rangeDecoder, hasBom } from './Decode.ts'
-import { FileError, FileInvalid, FileUnknown, type LineScan } from '../Env.ts'
+import { makeRangeDecoder, hasBom } from './Decode.ts'
+import type { LineScan } from 'effect-harness/NativeFiles'
+import { FileError, FileInvalidError, FileUnknownError } from '../FileError.ts'
 import * as Result from 'effect/Result'
 const NEWLINE = 10
 const encoder = new TextEncoder()
 const decodedBytes = (self: string): number => encoder.encode(self).length
-const TypeId = '~@effect-harness/harness/env/LineScan'
+const TypeId = '~effect-harness/env/LineScan'
 /**
  * Incremental newline and byte-offset accumulator for a selected line window.
  *
@@ -56,7 +57,7 @@ function makeImpl(startLine: number, options: make.Options = {}): Result.Result<
     (endLine !== Infinity && !Number.isSafeInteger(endLine))
   )
     return Result.fail(
-      new FileError({ reason: new FileInvalid({ message: 'Invalid line range' }) }),
+      new FileError({ reason: new FileInvalidError({ message: 'Invalid line range' }) }),
     )
   const state: State = Object.assign(Object.create(StateProto), {
     [TypeId]: TypeId,
@@ -77,7 +78,7 @@ function makeImpl(startLine: number, options: make.Options = {}): Result.Result<
     bom: false,
   })
   Object.defineProperty(state, TypeId, { enumerable: false })
-  if (startLine === 0) begin(state, 0)
+  if (startLine === 0) beginUnsafe(state, 0)
   return Result.succeed(state)
 }
 /**
@@ -90,40 +91,60 @@ export function pushUnsafe(self: State, chunk: Uint8Array): void {
     const take = Math.min(3 - self.head.length, chunk.length)
     self.head.push(...chunk.subarray(0, take))
     if (self.head.length < 3) return
-    releaseHead(self)
+    releaseHeadUnsafe(self)
     chunk = chunk.subarray(take)
   }
-  process(self, chunk)
+  processUnsafe(self, chunk)
 }
-function releaseHead(self: State): void {
-  const head = Uint8Array.from(self.head ?? [])
-  self.head = undefined
-  self.bom = hasBom(head)
-  process(self, head)
+function releaseHead(self: State): Result.Result<void, MutationFailure> {
+  return Result.try({
+    try: () => {
+      const head = Uint8Array.from(self.head ?? [])
+      self.head = undefined
+      self.bom = hasBom(head)
+      processUnsafe(self, head)
+    },
+    catch: (cause) => ({ cause }),
+  })
 }
-function process(self: State, chunk: Uint8Array): void {
-  const base = self.position
-  let from = 0
-  for (
-    let index = chunk.indexOf(NEWLINE);
-    index !== -1;
-    index = chunk.indexOf(NEWLINE, index + 1)
-  ) {
-    // The newline ends line `state.newlines`. It belongs to the selection between selected lines only.
-    feed(self, chunk, base, from, index)
-    const line = self.newlines
-    const position = base + index
-    if (line === self.startLine) endFirstLine(self, position)
-    if (line === self.endLine - 1) endSelection(self, position)
-    feed(self, chunk, base, index, index + 1)
-    from = index + 1
-    self.newlines++
-    self.lineStart = position + 1
-    if (self.newlines === self.startLine) begin(self, self.lineStart)
-    if (self.newlines === self.endLine - 1) self.lastLineStart = self.lineStart
-  }
-  feed(self, chunk, base, from, chunk.length)
-  self.position += chunk.length
+
+// The public Effect.try/Result boundary retains its original cause and owned mutation timing.
+function releaseHeadUnsafe(self: State): void {
+  return Result.getOrThrowWith(releaseHead(self), (failure) => failure.cause)
+}
+function process(self: State, chunk: Uint8Array): Result.Result<void, MutationFailure> {
+  return Result.try({
+    try: () => {
+      const base = self.position
+      let from = 0
+      for (
+        let index = chunk.indexOf(NEWLINE);
+        index !== -1;
+        index = chunk.indexOf(NEWLINE, index + 1)
+      ) {
+        // The newline ends line `state.newlines`. It belongs to the selection between selected lines only.
+        feedUnsafe(self, chunk, base, from, index)
+        const line = self.newlines
+        const position = base + index
+        if (line === self.startLine) endFirstLineUnsafe(self, position)
+        if (line === self.endLine - 1) endSelectionUnsafe(self, position)
+        feedUnsafe(self, chunk, base, index, index + 1)
+        from = index + 1
+        self.newlines++
+        self.lineStart = position + 1
+        if (self.newlines === self.startLine) beginUnsafe(self, self.lineStart)
+        if (self.newlines === self.endLine - 1) self.lastLineStart = self.lineStart
+      }
+      feedUnsafe(self, chunk, base, from, chunk.length)
+      self.position += chunk.length
+    },
+    catch: (cause) => ({ cause }),
+  })
+}
+
+// The public Effect.try/Result boundary retains its original cause and owned mutation timing.
+function processUnsafe(self: State, chunk: Uint8Array): void {
+  return Result.getOrThrowWith(process(self, chunk), (failure) => failure.cause)
 }
 /**
  * Completes scanner offsets synchronously; native decoder and accessor faults can throw.
@@ -131,7 +152,7 @@ function process(self: State, chunk: Uint8Array): void {
  * @category unsafe
  */
 export function finishUnsafe(self: State): LineScan {
-  if (self.head !== undefined) releaseHead(self)
+  if (self.head !== undefined) releaseHeadUnsafe(self)
   const size = self.position
   if (self.start === undefined) {
     return {
@@ -144,8 +165,8 @@ export function finishUnsafe(self: State): LineScan {
       firstLineBytes: 0,
     }
   }
-  if (self.firstLineEnd === undefined) endFirstLine(self, size)
-  if (self.end === undefined) endSelection(self, size)
+  if (self.firstLineEnd === undefined) endFirstLineUnsafe(self, size)
+  if (self.end === undefined) endSelectionUnsafe(self, size)
   return {
     newlines: self.newlines,
     start: self.start,
@@ -157,33 +178,79 @@ export function finishUnsafe(self: State): LineScan {
     firstLineBytes: self.firstLineBytes,
   }
 }
-function begin(self: State, start: number): void {
-  self.start = start
-  if (self.startLine === self.endLine - 1) self.lastLineStart = start
-  self.selection = rangeDecoder()
-  self.firstLine = rangeDecoder()
+function begin(self: State, start: number): Result.Result<void, MutationFailure> {
+  return Result.try({
+    try: () => {
+      self.start = start
+      if (self.startLine === self.endLine - 1) self.lastLineStart = start
+      self.selection = makeRangeDecoder()
+      self.firstLine = makeRangeDecoder()
+    },
+    catch: (cause) => ({ cause }),
+  })
 }
-function endFirstLine(self: State, position: number): void {
-  self.firstLineEnd = position
-  if (self.firstLine !== undefined) self.firstLineBytes += decodedBytes(self.firstLine.decode())
-  self.firstLine = undefined
+
+// The public Effect.try/Result boundary retains its original cause and owned mutation timing.
+function beginUnsafe(self: State, start: number): void {
+  return Result.getOrThrowWith(begin(self, start), (failure) => failure.cause)
 }
-function endSelection(self: State, position: number): void {
-  self.end = position
-  if (self.selection !== undefined) self.selectedBytes += decodedBytes(self.selection.decode())
-  self.selection = undefined
+function endFirstLine(self: State, position: number): Result.Result<void, MutationFailure> {
+  return Result.try({
+    try: () => {
+      self.firstLineEnd = position
+      if (self.firstLine !== undefined) self.firstLineBytes += decodedBytes(self.firstLine.decode())
+      self.firstLine = undefined
+    },
+    catch: (cause) => ({ cause }),
+  })
 }
-function feed(self: State, chunk: Uint8Array, base: number, from: number, to: number): void {
-  // Decoding the whole file drops a leading byte-order mark.
-  if (self.bom && base + from < 3) from = Math.min(to, 3 - base)
-  if (to <= from) return
-  const bytes = chunk.subarray(from, to)
-  if (self.selection !== undefined) {
-    self.selectedBytes += decodedBytes(self.selection.decode(bytes, { stream: true }))
-  }
-  if (self.firstLine !== undefined) {
-    self.firstLineBytes += decodedBytes(self.firstLine.decode(bytes, { stream: true }))
-  }
+
+// The public Effect.try/Result boundary retains its original cause and owned mutation timing.
+function endFirstLineUnsafe(self: State, position: number): void {
+  return Result.getOrThrowWith(endFirstLine(self, position), (failure) => failure.cause)
+}
+function endSelection(self: State, position: number): Result.Result<void, MutationFailure> {
+  return Result.try({
+    try: () => {
+      self.end = position
+      if (self.selection !== undefined) self.selectedBytes += decodedBytes(self.selection.decode())
+      self.selection = undefined
+    },
+    catch: (cause) => ({ cause }),
+  })
+}
+
+// The public Effect.try/Result boundary retains its original cause and owned mutation timing.
+function endSelectionUnsafe(self: State, position: number): void {
+  return Result.getOrThrowWith(endSelection(self, position), (failure) => failure.cause)
+}
+function feed(
+  self: State,
+  chunk: Uint8Array,
+  base: number,
+  from: number,
+  to: number,
+): Result.Result<void, MutationFailure> {
+  return Result.try({
+    try: () => {
+      // Decoding the whole file drops a leading byte-order mark.
+      if (self.bom && base + from < 3) from = Math.min(to, 3 - base)
+      if (to <= from) return
+      const bytes = chunk.subarray(from, to)
+      if (self.selection !== undefined) {
+        self.selectedBytes += decodedBytes(self.selection.decode(bytes, { stream: true }))
+      }
+      if (self.firstLine !== undefined) {
+        self.firstLineBytes += decodedBytes(self.firstLine.decode(bytes, { stream: true }))
+      }
+    },
+    catch: (cause) => ({ cause }),
+  })
+}
+
+// The public Effect.try/Result boundary retains its original cause and owned mutation timing.
+function feedUnsafe(self: State, chunk: Uint8Array, base: number, from: number, to: number): void {
+  return Result.getOrThrowWith(feed(self, chunk, base, from, to), (failure) => failure.cause)
 }
 
 /**
@@ -194,9 +261,9 @@ function feed(self: State, chunk: Uint8Array, base: number, from: number, to: nu
 export const push = (self: State, chunk: Uint8Array): Effect.Effect<void, FileError> =>
   Effect.try({
     try: () => pushUnsafe(self, chunk),
-    catch: (self) =>
+    catch: (cause) =>
       new FileError({
-        reason: new FileUnknown({ message: 'Unable to scan file bytes', cause: self }),
+        reason: new FileUnknownError({ message: 'Unable to scan file bytes', cause }),
       }),
   })
 /**
@@ -208,7 +275,9 @@ export const finish = (self: State): Effect.Effect<LineScan, FileError> =>
   Effect.try({
     try: () => finishUnsafe(self),
     catch: (cause) =>
-      new FileError({ reason: new FileUnknown({ message: 'Unable to finish file scan', cause }) }),
+      new FileError({
+        reason: new FileUnknownError({ message: 'Unable to finish file scan', cause }),
+      }),
   })
 /**
  * Creates a mutable line scanner or synchronously throws the typed range failure.
@@ -220,7 +289,6 @@ export const makeUnsafe = (startLine: number, options: make.Options = {}): State
 /**
  * Type-level contracts for `make`.
  *
- * @category utility types
  */
 export declare namespace make {
   /**
@@ -253,5 +321,10 @@ export const make = (
   Result.try({
     try: () => makeImpl(startLine, options),
     catch: (cause) =>
-      new FileError({ reason: new FileInvalid({ message: 'Invalid line range', cause }) }),
+      new FileError({ reason: new FileInvalidError({ message: 'Invalid line range', cause }) }),
   }).pipe(Result.flatMap(identity))
+
+/** Private native-fault token: safe Results retain the original cause for the existing outer boundary. */
+interface MutationFailure {
+  readonly cause: unknown
+}

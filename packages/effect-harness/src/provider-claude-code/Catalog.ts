@@ -1,6 +1,11 @@
+const DescriptorTypeId = '~effect-harness/provider-claude-code/Catalog/Descriptor'
+
 /**
  * Validated model catalogues with pinned request configuration and usage accounting.
  */
+import * as Pipeable from 'effect/Pipeable'
+import * as Inspectable from 'effect/Inspectable'
+import * as Predicate from 'effect/Predicate'
 import { dual, constUndefined } from 'effect/Function'
 import * as Arr from 'effect/Array'
 import type * as AiError from 'effect/ai/AiError'
@@ -9,11 +14,12 @@ import type * as IntentServer from './IntentServer.ts'
 import * as HashMap from 'effect/HashMap'
 import * as Option from 'effect/Option'
 import * as Model from 'effect-harness/Model'
-import { ModelError, ModelNoModel, ModelUnsupported } from 'effect-harness/ModelError'
+import { ModelError, ModelNoModelError, ModelUnsupportedError } from 'effect-harness/ModelError'
 import * as Usage from 'effect-harness/Usage'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import * as Config from 'effect/Config'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import type * as Response from 'effect/ai/Response'
@@ -55,8 +61,6 @@ export const Entry = Schema.Struct({
 export type Entry = typeof Entry.Type
 /**
  * Type-level contracts for `Catalog`.
- *
- * @category utility types
  */
 export declare namespace Catalog {
   /**
@@ -68,18 +72,14 @@ export declare namespace Catalog {
     readonly models: ReadonlyArray<Entry>
     readonly provider?: string | undefined
     readonly cwd?: string | undefined
-    readonly historyMode?: ClaudeCodeLanguageModel.Options['historyMode'] | undefined
+    readonly historyMode?:
+      | ClaudeCodeLanguageModel.ClaudeCodeLanguageModel.Options['historyMode']
+      | undefined
   }
 }
-/**
- * Declared catalogue entries and defaults for provider model construction.
- *
- * @category models
- */
-export type Options = Catalog.Options
 const fail = (message: string, cause?: unknown) =>
   new ModelError({
-    reason: new ModelUnsupported({ message, ...(cause === undefined ? {} : { cause }) }),
+    reason: new ModelUnsupportedError({ message, ...(cause === undefined ? {} : { cause }) }),
   })
 const NativeOptions = Schema.Struct({ effort: Schema.optionalKey(Effort) })
 const positive = (value: number) => Number.isSafeInteger(value) && value > 0
@@ -119,10 +119,16 @@ const usage = (value: Response.Usage, provider: Response.ProviderMetadata): Usag
  * Native model with validated provider configuration, usage accounting and error
  * classification.
  *
+ * **Details**
+ *
+ * This owned handle supports piping and bounded inspection. `toJSON` is a diagnostic
+ * projection; use the original fields for protocol values and resource references.
+ *
  * @category models
  */
-export interface Descriptor {
-  readonly ref: { provider: string; modelId: string }
+export interface Descriptor extends Pipeable.Pipeable, Inspectable.Inspectable {
+  readonly [DescriptorTypeId]: typeof DescriptorTypeId
+  readonly ref: Model.Descriptor['ref']
   readonly model: Model.Descriptor['model']
   readonly contextWindow: number
   readonly maxOutputTokens: number
@@ -133,10 +139,56 @@ export interface Descriptor {
   readonly classify: NonNullable<Model.Descriptor['classify']>
 }
 
+/**
+ * Checks the established nominal `Descriptor` marker; it does not validate arbitrary payload fields.
+ *
+ * @category guards
+ */
+export const isDescriptor = (u: unknown): u is Descriptor =>
+  Predicate.hasProperty(u, DescriptorTypeId) && u[DescriptorTypeId] === DescriptorTypeId
+
+/**
+ * Owns a `Descriptor` handle while preserving payload descriptors and exact resource references.
+ *
+ * **Details**
+ *
+ * Construction and diagnostics do not evaluate payload accessors. Inspection is a bounded
+ * diagnostic projection; read the original fields for protocol values.
+ *
+ * @category constructors
+ */
+export const makeDescriptor = (
+  input: Omit<
+    Descriptor,
+    typeof DescriptorTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
+  >,
+): Descriptor => {
+  const handle: Descriptor = Object.create(DescriptorProto)
+  const descriptors = Object.getOwnPropertyDescriptors(input)
+  // The owned protocol cannot be replaced by extra runtime payload keys.
+  for (const key of [DescriptorTypeId, 'pipe', 'toJSON', 'toString', Inspectable.NodeInspectSymbol])
+    Reflect.deleteProperty(descriptors, key)
+  Object.defineProperties(handle, descriptors)
+  Object.defineProperty(handle, DescriptorTypeId, { value: DescriptorTypeId, enumerable: false })
+  return handle
+}
+
+const DescriptorProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  toJSON(): unknown {
+    return {
+      _id: 'effect-harness/provider-claude-code/Catalog/Descriptor',
+      model: '<LanguageModel>',
+      configure: '<function>',
+    }
+  },
+}
+
 /** Native CLI catalogue. Transport and policy/history opt-ins remain explicit caller-owned Layers. */
 const descriptorImpl = Effect.fnUntraced(function* (
   self: Entry,
-  options?: Omit<Options, 'models'>,
+  options?: Omit<Catalog.Options, 'models'>,
 ): Effect.fn.Return<Descriptor, ModelError | AiError.AiError, Cli.Cli | IntentServer.IntentServer> {
   yield* Schema.decodeEffect(Entry)(self).pipe(
     Effect.mapError((cause) => fail('Invalid CLI catalogue entry or declared limits', cause)),
@@ -194,7 +246,7 @@ const descriptorImpl = Effect.fnUntraced(function* (
       autoCompact: false,
     })
   })
-  return {
+  return makeDescriptor({
     ref: { provider: options?.provider ?? 'claude-code', modelId: self.modelId },
     model,
     contextWindow: self.contextWindow,
@@ -202,7 +254,7 @@ const descriptorImpl = Effect.fnUntraced(function* (
     configure,
     usage,
     classify: (error) => Model.classify(error, 'claude-code'),
-  } satisfies Model.Descriptor
+  }) satisfies Model.Descriptor
 })
 /**
  * Creates a model descriptor from a validated catalogue entry.
@@ -228,16 +280,30 @@ export const descriptor: {
   // Empty objects are malformed subjects, not meaningful curried options.
   // The data-last form requires a known supplied option key, or no argument for defaults.
 } = dual(
-  (args) =>
-    args.length >= 2 ||
-    (args.length === 1 &&
-      args[0] !== undefined &&
-      !(
-        typeof args[0] === 'object' &&
-        args[0] !== null &&
-        !('modelId' in args[0]) &&
-        ('provider' in args[0] || 'cwd' in args[0] || 'historyMode' in args[0])
-      )),
+  Predicate.or(
+    (args: IArguments) => args.length >= 2,
+    Predicate.and(
+      (args: IArguments) => args.length === 1,
+      Predicate.mapInput(
+        Predicate.and(
+          Predicate.isNotUndefined,
+          Predicate.not(
+            Predicate.and(
+              Predicate.isObjectOrArray,
+              Predicate.and(
+                Predicate.not(Predicate.hasProperty('modelId')),
+                Predicate.or(
+                  Predicate.hasProperty('provider'),
+                  Predicate.or(Predicate.hasProperty('cwd'), Predicate.hasProperty('historyMode')),
+                ),
+              ),
+            ),
+          ),
+        ),
+        (args: IArguments) => args[0],
+      ),
+    ),
+  ),
   descriptorImpl,
 )
 
@@ -247,7 +313,7 @@ export const descriptor: {
  * **Details**
  *
  * Validates entries and resolves only the registered provider/model pairs. Duplicate model
- * IDs are rejected; unknown references fail with ModelNoModel.
+ * IDs are rejected; unknown references fail with ModelNoModelError.
  *
  * **Gotchas**
  *
@@ -257,7 +323,7 @@ export const descriptor: {
  * @category layers
  */
 export const layer = (
-  options: Options,
+  options: Catalog.Options,
 ): Layer.Layer<Model.Catalog, ModelError | AiError.AiError, Cli.Cli | IntentServer.IntentServer> =>
   Layer.effect(Model.Catalog)(
     Effect.gen(function* () {
@@ -272,7 +338,7 @@ export const layer = (
             Option.filter(found, (self) => self.ref.provider === ref.provider),
             () =>
               new ModelError({
-                reason: new ModelNoModel({
+                reason: new ModelNoModelError({
                   message: 'CLI model is not available in this catalogue',
                 }),
               }),
@@ -281,3 +347,20 @@ export const layer = (
       })
     }),
   )
+
+/** Checks the decoded Entry contract without decoding or coercing input.
+ * @category guards
+ */
+export const isEntry: (u: unknown) => u is Entry = Schema.is(Schema.toType(Entry))
+/**
+ * Provides declared CLI models from the caller's ConfigProvider.
+ *
+ * @category layers
+ */
+export const layerConfig = (
+  config: Config.Wrap<Catalog.Options>,
+): Layer.Layer<
+  Model.Catalog,
+  ModelError | AiError.AiError | Config.ConfigError,
+  Cli.Cli | IntentServer.IntentServer
+> => Layer.unwrap(Config.unwrap(config).pipe(Effect.map(layer)))

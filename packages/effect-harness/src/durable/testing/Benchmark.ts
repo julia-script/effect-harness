@@ -1,13 +1,15 @@
 /**
  * Deterministic storage workloads and benchmark reports.
  */
+import * as MutableHashMap from 'effect/MutableHashMap'
 import { constant } from 'effect/Function'
 import * as Option from 'effect/Option'
 import { validate } from '../storage/internal/state.ts'
+import * as Schema from 'effect/Schema'
 import * as Effect from 'effect/Effect'
 import * as Record from '../Record.ts'
 import { Session } from '../Session.ts'
-import type { Service, Transaction } from '../Session.ts'
+import type { Transaction } from '../Session.ts'
 import { Store } from '../Store.ts'
 import { rejected, type StorageError } from '../StorageError.ts'
 
@@ -42,6 +44,18 @@ export const TIMING_SCALE: Scale = {
   taskCount: 300,
   documentCount: 300,
 }
+const Counter = Schema.Struct({ count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) })
+const counterValue = (record: Option.Option<{ readonly value: Schema.JsonObject }>) =>
+  Option.match(record, {
+    onNone: () => Effect.succeed(Number.NaN),
+    onSome: (document) =>
+      Schema.decodeUnknownEffect(Counter)(document.value).pipe(
+        Effect.map((value) => value.count),
+        Effect.mapError((cause) =>
+          rejected('Invalid benchmark counter document', undefined, cause),
+        ),
+      ),
+  })
 const TAILS = [0, 16, 128, 1024] as const
 /**
  * Stable record identities and historical cutoffs used by benchmark cases.
@@ -97,17 +111,6 @@ const entries = Effect.fnUntraced(function* (
   }
   return ids
 })
-const delta = (session: Service, id: Record.DocumentId, count: number) =>
-  session.transaction((tx) =>
-    tx
-      .write({
-        _tag: 'document.change',
-        type: 'document.change',
-        id,
-        content: { _tag: 'delta', kind: 'delta', version: 1, ops: [['set', ['count'], count]] },
-      })
-      .pipe(Effect.as(null)),
-  )
 const creation = Effect.fnUntraced(function* (
   tx: Transaction,
   kind: string,
@@ -117,9 +120,8 @@ const creation = Effect.fnUntraced(function* (
   const id = yield* tx.mint(Record.DocumentId)
   yield* tx.write({
     _tag: 'document.create',
-    type: 'document.create',
     record: { id, kind, scope, ...extra },
-    content: { _tag: 'base', kind: 'base', version: 1, value: { count: 0 } },
+    content: { _tag: 'base', version: 1, value: Counter.make({ count: 0 }) },
   })
   return id
 })
@@ -138,6 +140,16 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
   )
     return yield* rejected('Benchmark counts must be positive safe integers')
   const session = yield* Session
+  const delta = (id: Record.DocumentId, count: number) =>
+    session.transaction((tx) =>
+      tx
+        .write({
+          _tag: 'document.change',
+          id,
+          content: { _tag: 'delta', version: 1, ops: [['set', ['count'], count]] },
+        })
+        .pipe(Effect.as(null)),
+    )
   const store = yield* Store
   yield* session.root()
   let firstEntryId: Record.EntryId | undefined
@@ -152,7 +164,7 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
       Effect.fnUntraced(function* (tx) {
         for (let index = start; index < Math.min(start + 100, scale.taskCount); index++) {
           const id = yield* tx.mint(Record.TaskId)
-          yield* tx.write({ _tag: 'task', type: 'task', value: task(id, index) })
+          yield* tx.write({ _tag: 'task', value: task(id, index) })
         }
         return null
       }),
@@ -167,7 +179,7 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
             last = yield* creation(
               tx,
               'benchmark.family',
-              { _tag: 'session', kind: 'session' },
+              { _tag: 'session' },
               { key: `key-${index}` },
             )
           return last ?? 0
@@ -179,35 +191,34 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
           () => rejected('Missing benchmark document'),
         ),
       )
-  const replayDocumentIds = new Map<number, Record.DocumentId>()
+  const replayDocumentIds = MutableHashMap.empty<number, Record.DocumentId>()
   for (const tail of TAILS) {
     const id = yield* session.transaction((tx) =>
-      creation(tx, `benchmark.replay.${tail}`, { _tag: 'session', kind: 'session' }),
+      creation(tx, `benchmark.replay.${tail}`, { _tag: 'session' }),
     )
-    replayDocumentIds.set(tail, id)
-    for (let count = 1; count <= tail; count++) yield* delta(session, id, count)
+    MutableHashMap.set(replayDocumentIds, tail, id)
+    for (let count = 1; count <= tail; count++) yield* delta(id, count)
   }
   const historicalDocumentId = yield* session.transaction((tx) =>
     creation(
       tx,
       'benchmark.history',
-      { _tag: 'conversation', kind: 'conversation', conversationId: Record.ROOT_CONVERSATION_ID },
+      { _tag: 'conversation', conversationId: Record.ROOT_CONVERSATION_ID },
       { history: 'rewindable', fork: 'asOf' },
     ),
   )
-  for (let count = 1; count <= 128; count++) yield* delta(session, historicalDocumentId, count)
+  for (let count = 1; count <= 128; count++) yield* delta(historicalDocumentId, count)
   const ancientAt = yield* validate(Record.Seq, (yield* store.read).nextSeq - 1)
   yield* session.transaction((tx) =>
     tx
       .write({
         _tag: 'document.change',
-        type: 'document.change',
         id: historicalDocumentId,
-        content: { _tag: 'base', kind: 'base', version: 1, value: { count: 128 } },
+        content: { _tag: 'base', version: 1, value: Counter.make({ count: 128 }) },
       })
       .pipe(Effect.as(null)),
   )
-  for (let count = 129; count <= 256; count++) yield* delta(session, historicalDocumentId, count)
+  for (let count = 129; count <= 256; count++) yield* delta(historicalDocumentId, count)
   const recentAt = yield* validate(Record.Seq, (yield* store.read).nextSeq - 1)
   if (firstEntryId === undefined || exactDocumentId === undefined)
     return yield* rejected('Incomplete benchmark scale')
@@ -219,7 +230,6 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
         const id = yield* tx.mint(Record.ConversationId)
         yield* tx.write({
           _tag: 'conversation',
-          type: 'conversation',
           value: { id, parent: { conversationId: parent, at: cutoff } },
         })
         const ids = yield* entries(tx, 32, 'benchmark.fork', id)
@@ -234,7 +244,8 @@ export const seedStorageBenchmark = Effect.fnUntraced(function* (
     filteredTaskCount: Math.min(50, Math.ceil(scale.taskCount / 60)),
     exactDocumentId,
     exactDocumentKey: `key-${scale.documentCount - 1}`,
-    replayDocumentIds,
+    // effect-nit-allow P1-stdlib-collection-replacements: Dataset publishes a native ReadonlyMap; snapshot the private primitive index at that interoperability boundary.
+    replayDocumentIds: new Map(replayDocumentIds),
     historicalDocumentId,
     ancientAt,
     recentAt,
@@ -254,6 +265,9 @@ export interface ReadBenchmark {
 }
 /**
  * Committed storage read benchmark definitions.
+ *
+ * Counter replay/historical reads include schema validation in their measured run;
+ * missing documents retain the benchmark's NaN sentinel.
  *
  * @category models
  */
@@ -301,7 +315,7 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
           .findDocument({
             kind: 'benchmark.family',
             key: d.exactDocumentKey,
-            scope: { _tag: 'session', kind: 'session' },
+            scope: { _tag: 'session' },
           })
           .pipe(
             Effect.map((record) =>
@@ -321,15 +335,7 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
         const id = Option.fromUndefinedOr(d.replayDocumentIds.get(tail))
         return Option.match(id, {
           onNone: () => rejected('Missing replay benchmark'),
-          onSome: (id) =>
-            s.document(id).pipe(
-              Effect.map((record) =>
-                record.pipe(
-                  Option.map((r) => Number(r.value.count)),
-                  Option.getOrElse(() => Number.NaN),
-                ),
-              ),
-            ),
+          onSome: (id) => s.document(id).pipe(Effect.flatMap(counterValue)),
         })
       }),
     expected: constant(tail),
@@ -338,14 +344,7 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
     name: 'ancient historical read before newer base',
     run: (d) =>
       Session.use((s) =>
-        s.document(d.historicalDocumentId, d.ancientAt).pipe(
-          Effect.map((record) =>
-            record.pipe(
-              Option.map((r) => Number(r.value.count)),
-              Option.getOrElse(() => Number.NaN),
-            ),
-          ),
-        ),
+        s.document(d.historicalDocumentId, d.ancientAt).pipe(Effect.flatMap(counterValue)),
       ),
     expected: constant(128),
   },
@@ -353,14 +352,7 @@ export const STORAGE_READ_BENCHMARKS: ReadonlyArray<ReadBenchmark> = [
     name: 'recent historical read after newer base',
     run: (d) =>
       Session.use((s) =>
-        s.document(d.historicalDocumentId, d.recentAt).pipe(
-          Effect.map((record) =>
-            record.pipe(
-              Option.map((r) => Number(r.value.count)),
-              Option.getOrElse(() => Number.NaN),
-            ),
-          ),
-        ),
+        s.document(d.historicalDocumentId, d.recentAt).pipe(Effect.flatMap(counterValue)),
       ),
     expected: constant(256),
   },
@@ -440,7 +432,7 @@ export const STORAGE_WRITE_BENCHMARKS: ReadonlyArray<WriteBenchmark> = [
             kind: 'benchmark.mixed',
           })
           const id = yield* tx.mint(Record.TaskId)
-          yield* tx.write({ _tag: 'task', type: 'task', value: task(id, id) })
+          yield* tx.write({ _tag: 'task', value: task(id, id) })
           yield* tx.createSubmission({
             _tag: 'WriteDone' as const,
             conversationId: Record.ROOT_CONVERSATION_ID,
@@ -448,12 +440,7 @@ export const STORAGE_WRITE_BENCHMARKS: ReadonlyArray<WriteBenchmark> = [
             status: 'done',
             entry: entry.id,
           })
-          yield* creation(
-            tx,
-            'benchmark.mixed',
-            { _tag: 'session', kind: 'session' },
-            { key: String(id) },
-          )
+          yield* creation(tx, 'benchmark.mixed', { _tag: 'session' }, { key: String(id) })
           return 4
         }),
       ),

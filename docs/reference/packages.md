@@ -14,9 +14,9 @@ Install `effect-harness` for the generic harness, durable state, authorization a
 | `Agent`                                            | Model references, conversation overrides and host settings         |
 | `Registry`, `Extension`                            | Named extensions containing tools, sections, hooks and wrappers    |
 | `Executor`                                         | Request preparation, model streams, tool execution and compaction  |
-| `Tool`, `ToolResult`, `Invocation`                 | Toolkit binding, result projection and dynamic invocation services |
+| `ToolRegistration`, `ToolResult`, `Invocation`     | Toolkit binding, result projection and dynamic invocation services |
 | `Hook`                                             | Captured host dependencies and declared per-request services       |
-| `Context`, `Response`, `Usage`                     | Transcript projection, response state and usage accounting         |
+| `Transcript`, `ResponseAccumulator`, `Usage`       | Transcript projection, response state and usage accounting         |
 | `Env`, `NativeFiles`, `NodeEnv`, `NodeNativeFiles` | Filesystem/process environment and narrow platform capabilities    |
 | `MutationLocks`, `tools`                           | Shared mutation coordination and portable coding tools             |
 | `testing`                                          | Adapter assertions, conformance cases and test-runner integration  |
@@ -83,7 +83,7 @@ These module paths have the prefix `effect-harness/`. API-key constructors accep
 
 ## Installed Claude Code
 
-`effect-harness/provider-claude-code` exports Cli, ClaudeCodeLanguageModel, LanguageModel, Catalog, IntentServer, Prompt and RequestOptions. `Cli.layer` requires ChildProcessSpawner. Its defaults are executable `claude` and maximum output of 16 MiB. Requests require `policyTrust: 'trusted-installed-cli'`; without it they fail. Authentication belongs to the installed CLI.
+`effect-harness/provider-claude-code` exports Cli, ClaudeCodeLanguageModel, Catalog, IntentServer, Prompt and RequestOptions. `Cli.layer` requires ChildProcessSpawner. Its defaults are executable `claude` and maximum output of 16 MiB. Requests require `policyTrust: 'trusted-installed-cli'`; without it they fail. Authentication belongs to the installed CLI.
 
 `ClaudeCodeLanguageModel.layer({ model, cwd?, effort?, historyMode? })` requires Cli and IntentServer, and exposes LanguageModel plus the captured Cli. IntentServer uses a scoped loopback HttpServer; `layerDisabled` supports requests without tools. Native AiError describes unsupported, authentication, subprocess and protocol failures.
 

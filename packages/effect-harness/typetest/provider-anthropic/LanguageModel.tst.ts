@@ -2,17 +2,17 @@ import { expect, test } from 'tstyche'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as LanguageModel from 'effect/ai/LanguageModel'
+import type * as LanguageModel from 'effect/ai/LanguageModel'
 import type * as AiError from 'effect/ai/AiError'
 import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
-import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
-import * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
-import * as Anthropic from 'effect-harness/provider-anthropic/Anthropic'
+import type * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
+import type * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
+
 import * as Catalog from 'effect-harness/provider-anthropic/Catalog'
 import * as Prompt from 'effect-harness/provider-anthropic/Prompt'
-import * as OAuth from 'effect-harness/provider-anthropic/OAuth'
-import * as Account from 'effect-harness/provider-anthropic/Account'
+import type * as OAuth from 'effect-harness/provider-anthropic/OAuth'
+
 import type * as Layer from 'effect/Layer'
 import type * as HttpClient from 'effect/http/HttpClient'
 import type { ModelError } from 'effect-harness/ModelError'
@@ -75,7 +75,7 @@ test('owned construction pins native client outputs and account inputs', () => {
       AnthropicClient.AnthropicClient
     >
   >()
-  expect(Account.layer({ model: 'declared', account: 'key' })).type.toBe<
+  expect(AnthropicAccountLanguageModel.layer({ model: 'declared', account: 'key' })).type.toBe<
     Layer.Layer<
       LanguageModel.LanguageModel | AnthropicClient.AnthropicClient,
       AiError.AiError,
@@ -93,15 +93,19 @@ test('owned construction pins native client outputs and account inputs', () => {
 
 test('both native config override forms retain caller services and foreign errors', () => {
   const request = Effect.flatMap(Audit, () => Effect.fail('foreign' as const))
-  expect(Anthropic.withConfigOverride(request, { max_tokens: 1 })).type.toBe<
+  expect(HarnessAnthropicLanguageModel.withConfigOverride(request, { max_tokens: 1 })).type.toBe<
     Effect.Effect<never, 'foreign', Audit>
   >()
-  expect(request.pipe(Anthropic.withConfigOverride({ max_tokens: 1 }))).type.toBe<
-    Effect.Effect<never, 'foreign', Audit>
-  >()
+  expect(
+    request.pipe(HarnessAnthropicLanguageModel.withConfigOverride({ max_tokens: 1 })),
+  ).type.toBe<Effect.Effect<never, 'foreign', Audit>>()
   expect<[Effect.Success<typeof request>]>().type.toBe<[never]>()
-  expect(Anthropic.withConfigOverride).type.toBe<typeof AnthropicLanguageModel.withConfigOverride>()
-  expect(Anthropic.withConfigOverride).type.not.toBeCallableWith(request, { max_tokens: 'wrong' })
+  expect(HarnessAnthropicLanguageModel.withConfigOverride).type.toBe<
+    typeof AnthropicLanguageModel.withConfigOverride
+  >()
+  expect(HarnessAnthropicLanguageModel.withConfigOverride).type.not.toBeCallableWith(request, {
+    max_tokens: 'wrong',
+  })
 })
 
 test('curried catalogue projection retains captured native client channels', () => {
@@ -120,5 +124,39 @@ test('root namespaces expose native client and canonical account model channels'
   expect(ProviderAnthropic.AnthropicClient.AnthropicClient).type.toBe<
     typeof AnthropicClient.AnthropicClient
   >()
-  expect(ProviderAnthropic.AnthropicAccountLanguageModel.layer).type.toBe<typeof Account.layer>()
+  expect(ProviderAnthropic.AnthropicAccountLanguageModel.layer).type.toBe<
+    typeof AnthropicAccountLanguageModel.layer
+  >()
 })
+
+test('encoded tool parameters retain the exact indexed shape through concrete and generic handlers', () => {
+  const concrete = model.generateText({
+    prompt: 'question',
+    toolkit,
+    disableToolCallResolution: true,
+  })
+  type Expected = { readonly value: string } | undefined
+  expect<Effect.Success<typeof concrete>['toolCalls'][number]['params']>().type.toBe<{
+    readonly value: string
+  }>()
+  const indexed = Effect.map(concrete, (response) => response.toolCalls[0]?.params)
+  expect(indexed).type.toBe<Effect.Effect<Expected, AiError.AiError>>()
+  const generic = <Tools extends Record<string, Tool.Any>>(input: Toolkit.WithHandler<Tools>) =>
+    model.generateText({ prompt: 'question', toolkit: input, disableToolCallResolution: true })
+  const instantiated = generic(withHandlers)
+  expect(instantiated).type.toBe<
+    Effect.Effect<
+      LanguageModel.GenerateTextResponse<Toolkit.Tools<typeof toolkit>, 'encoded'>,
+      AiError.AiError
+    >
+  >()
+  expect(Effect.map(instantiated, (response) => response.toolCalls[0]?.params)).type.toBe<
+    Effect.Effect<Expected, AiError.AiError>
+  >()
+  expect<Effect.Success<typeof concrete>['toolCalls'][number]['params']>().type.not.toBe<{
+    readonly value: number
+  }>()
+})
+
+import * as AnthropicAccountLanguageModel from 'effect-harness/provider-anthropic/AnthropicAccountLanguageModel'
+import * as HarnessAnthropicLanguageModel from 'effect-harness/provider-anthropic/AnthropicLanguageModel'

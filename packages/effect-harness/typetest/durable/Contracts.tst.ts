@@ -9,24 +9,26 @@ import * as Entry from 'effect-harness/durable/Entry'
 import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
 import * as Store from 'effect-harness/durable/Store'
-import * as StorageError from 'effect-harness/durable/StorageError'
+import type * as StorageError from 'effect-harness/durable/StorageError'
 import * as Ownership from 'effect-harness/durable/Ownership'
 import * as Observation from 'effect-harness/durable/Observation'
 import * as View from 'effect-harness/durable/View'
 import * as Executor from 'effect-harness/durable/Executor'
 import * as Conversation from 'effect-harness/durable/Conversation'
-import * as Directory from 'effect-harness/durable/SessionDirectory'
-import * as Memory from 'effect-harness/durable/storage/Memory'
+import type * as SessionDirectory from 'effect-harness/durable/SessionDirectory'
+
 import * as SnapshotStore from 'effect-harness/durable/storage/SnapshotStore'
 import type * as EventJournal from 'effect/eventlog/EventJournal'
 import type * as KeyValueStore from 'effect/persistence/KeyValueStore'
-import * as Jsonl from 'effect-harness/durable/storage/JsonlStore'
-import * as Cancellation from 'effect-harness/durable/workflow/Cancellation'
+import * as JsonlStore from 'effect-harness/durable/storage/JsonlStore'
+import type * as Cancellation from 'effect-harness/durable/workflow/Cancellation'
 import { Generation } from 'effect-harness/durable/workflow/Generation'
 import { ToolCall } from 'effect-harness/durable/workflow/ToolCall'
 import { Compaction } from 'effect-harness/durable/workflow/Compaction'
 import * as Structured from 'effect-harness/durable/workflow/Structured'
-import * as Execution from 'effect-harness/durable/workflow/ExecutionError'
+import * as Outcome from 'effect-harness/durable/workflow/Outcome'
+import type * as ExecutionError from 'effect-harness/durable/workflow/ExecutionError'
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/Executor and effect-harness/durable/Executor both own Executor; Harness keeps their distinct native/harness APIs available together for these constructor, service and declaration assertions.
 import type * as Harness from 'effect-harness/Executor'
 import type * as Model from 'effect-harness/Model'
 import * as Context from 'effect/Context'
@@ -45,9 +47,9 @@ class Caller extends Context.Service<Caller, { readonly value: string }>()(
   'typetest/durable/Caller',
 ) {}
 class Failure extends Schema.TaggedError<Failure>()('Failure', { message: Schema.String }) {}
-declare const session: Session.Service
+declare const session: Session.Session.Service
 declare const tx: Session.Transaction
-declare const store: Store.Service
+declare const store: Store.Store.Service
 declare const schema: Schema.Codec<string, string, Caller, Caller>
 declare const document: Document.Document<{ readonly count: number }>
 declare const unknownValue: unknown
@@ -63,7 +65,7 @@ test('session and transaction lookups expose explicit Option with exact channels
   >()
   expect(session.snapshot(document)).type.toBe<
     Effect.Effect<
-      Option.Option<Document.Snapshot<{ readonly count: number }>>,
+      Option.Option<Document.Document.Snapshot<{ readonly count: number }>>,
       StorageError.StorageError
     >
   >()
@@ -82,7 +84,7 @@ test('session and transaction lookups expose explicit Option with exact channels
     >
   >()
   expect(tx.doc(document)).type.toBe<
-    Effect.Effect<Document.Draft<{ readonly count: number }>, StorageError.StorageError>
+    Effect.Effect<Document.Document.Draft<{ readonly count: number }>, StorageError.StorageError>
   >()
   expect(tx.mint(schema)).type.toBe<Effect.Effect<string, StorageError.StorageError, Caller>>()
   expect(Store.mintId(schema)).type.toBe<
@@ -109,7 +111,7 @@ test('native ownership helpers retain supplied schema and caller requirements', 
   expect(Ownership.memo('key', schema, Caller.pipe(Effect.as('value')))).type.toBe<
     Effect.Effect<
       string,
-      Schema.SchemaError | StorageError.StorageError | Execution.ExecutionError,
+      Schema.SchemaError | StorageError.StorageError | ExecutionError.ExecutionError,
       Caller | Ownership.Current
     >
   >()
@@ -118,7 +120,7 @@ test('native ownership helpers retain supplied schema and caller requirements', 
   ).type.toBe<
     Effect.Effect<
       unknown,
-      Execution.ExecutionError,
+      ExecutionError.ExecutionError,
       Ownership.Declarations | WorkflowEngine.WorkflowEngine
     >
   >()
@@ -134,17 +136,14 @@ test('native ownership helpers retain supplied schema and caller requirements', 
     ),
   ).type.toBe<
     Effect.Effect<
-      Record.Json,
-      StorageError.StorageError | Execution.ExecutionError,
+      Schema.Json,
+      StorageError.StorageError | ExecutionError.ExecutionError,
       Caller | Ownership.Declarations | Cancellation.Cancellation | WorkflowEngine.WorkflowEngine
     >
   >()
   expect(
-    Ownership.reach(
-      { tasks: [], conversations: [] },
-      Ownership.Target.conversation({ kind: 'conversation', id }),
-    ),
-  ).type.toBe<Option.Option<Ownership.Reached>>()
+    Ownership.reach({ tasks: [], conversations: [] }, Ownership.Target.conversation({ id })),
+  ).type.toBe<Option.Option<Ownership.reach.Reached>>()
 })
 
 test('all native storage and executor layers expose full inputs and acquisition errors', () => {
@@ -158,7 +157,7 @@ test('all native storage and executor layers expose full inputs and acquisition 
   expect(Conversation.layerFromSession).type.toBe<
     Layer.Layer<Conversation.Conversation, never, Session.Session>
   >()
-  expect(Memory.layer).type.toBe<Layer.Layer<Store.Store>>()
+  expect(Store.layerMemory).type.toBe<Layer.Layer<Store.Store>>()
   expect(Session.layer).type.toBe<Layer.Layer<Session.Session, never, Store.Store>>()
   expect(View.layer).type.toBe<Layer.Layer<View.View, never, Store.Store>>()
   expect(SnapshotStore.layer).type.toBe<
@@ -168,7 +167,7 @@ test('all native storage and executor layers expose full inputs and acquisition 
       EventJournal.EventJournal | KeyValueStore.KeyValueStore
     >
   >()
-  expect(Jsonl.layer({ directory: 'data' })).type.toBe<
+  expect(JsonlStore.layer({ directory: 'data' })).type.toBe<
     Layer.Layer<Store.Store, StorageError.StorageError, FileSystem.FileSystem | Path.Path>
   >()
   expect(Executor.layerExecutors).type.toBe<
@@ -178,7 +177,7 @@ test('all native storage and executor layers expose full inputs and acquisition 
       | Model.Catalog
       | Conversation.Configuration
       | Harness.Executor
-      | Directory.SessionDirectory
+      | SessionDirectory.SessionDirectory
       | WorkflowEngine.WorkflowEngine
       | Ownership.Declarations
     >
@@ -190,7 +189,7 @@ test('all native storage and executor layers expose full inputs and acquisition 
       | Model.Catalog
       | Conversation.Configuration
       | Harness.Executor
-      | Directory.SessionDirectory
+      | SessionDirectory.SessionDirectory
       | WorkflowEngine.WorkflowEngine
     >
   >()
@@ -226,35 +225,47 @@ test('private runtime carriers cannot be fabricated and nonempty operations reje
       ['set', [], { conversation: { id }, entries: [], docs: {} }],
     ]),
   ).type.toBe<Result.Result<View.Value, View.ViewOperationError>>()
-  if (Record.isEntryToken(unknownValue)) expect(unknownValue).type.toBe<Record.EntryToken>()
+  if (Record.isEntryToken(unknownValue)) expect(unknownValue).type.toBe<Record.Entry.Token>()
   if (Document.isMigrationCache(unknownValue))
     expect(unknownValue).type.toBe<Document.MigrationCache>()
   if (Observation.isWatch(unknownValue)) expect(unknownValue).type.toBe<Observation.Watch<object>>()
   if (View.isProjectionWatch(unknownValue))
-    expect(unknownValue).type.toBe<View.ProjectionWatch<unknown>>()
+    expect(unknownValue).type.toBe<View.View.ProjectionWatch<unknown>>()
   if (Entry.ToolResultEntry.is(rawEntry)) {
     expect(rawEntry).type.toBe<Record.Entry & { readonly kind: 'harness.tool' }>()
-    expect(rawEntry.data).type.toBe<Record.Json | undefined>()
+    expect(rawEntry.data).type.toBe<Schema.Json | undefined>()
   }
 })
 
 type Narrow = { readonly value: 'specific' }
 type Wide = { readonly value: string }
 test('constructed carrier variance follows each public ownership contract', () => {
-  expect<Document.Definition<Narrow>>().type.not.toBeAssignableTo<Document.Definition<Wide>>()
-  expect<Document.Definition<Wide>>().type.not.toBeAssignableTo<Document.Definition<Narrow>>()
+  expect<Document.Document.Definition<Narrow>>().type.not.toBeAssignableTo<
+    Document.Document.Definition<Wide>
+  >()
+  expect<Document.Document.Definition<Wide>>().type.not.toBeAssignableTo<
+    Document.Document.Definition<Narrow>
+  >()
   expect<Document.Document<Narrow>>().type.not.toBeAssignableTo<Document.Document<Wide>>()
   expect<Document.Document<Wide>>().type.not.toBeAssignableTo<Document.Document<Narrow>>()
-  expect<Document.Snapshot<Narrow>>().type.toBeAssignableTo<Document.Snapshot<Wide>>()
-  expect<Document.Snapshot<Wide>>().type.not.toBeAssignableTo<Document.Snapshot<Narrow>>()
+  expect<Document.Document.Snapshot<Narrow>>().type.toBeAssignableTo<
+    Document.Document.Snapshot<Wide>
+  >()
+  expect<Document.Document.Snapshot<Wide>>().type.not.toBeAssignableTo<
+    Document.Document.Snapshot<Narrow>
+  >()
   expect<Record.Page<Narrow>>().type.toBeAssignableTo<Record.Page<Wide>>()
   expect<Record.Page<Wide>>().type.not.toBeAssignableTo<Record.Page<Narrow>>()
-  expect<Store.Candidate<Narrow>>().type.toBeAssignableTo<Store.Candidate<Wide>>()
-  expect<Store.Candidate<Wide>>().type.not.toBeAssignableTo<Store.Candidate<Narrow>>()
-  expect<View.Projection<Narrow>>().type.toBeAssignableTo<View.Projection<Wide>>()
-  expect<View.Projection<Wide>>().type.not.toBeAssignableTo<View.Projection<Narrow>>()
-  expect<View.ProjectionWatch<Narrow>>().type.toBeAssignableTo<View.ProjectionWatch<Wide>>()
-  expect<View.ProjectionWatch<Wide>>().type.not.toBeAssignableTo<View.ProjectionWatch<Narrow>>()
+  expect<Store.Store.Candidate<Narrow>>().type.toBeAssignableTo<Store.Store.Candidate<Wide>>()
+  expect<Store.Store.Candidate<Wide>>().type.not.toBeAssignableTo<Store.Store.Candidate<Narrow>>()
+  expect<View.View.Projection<Narrow>>().type.toBeAssignableTo<View.View.Projection<Wide>>()
+  expect<View.View.Projection<Wide>>().type.not.toBeAssignableTo<View.View.Projection<Narrow>>()
+  expect<View.View.ProjectionWatch<Narrow>>().type.toBeAssignableTo<
+    View.View.ProjectionWatch<Wide>
+  >()
+  expect<View.View.ProjectionWatch<Wide>>().type.not.toBeAssignableTo<
+    View.View.ProjectionWatch<Narrow>
+  >()
   expect<Observation.Watch<Narrow>>().type.toBeAssignableTo<Observation.Watch<Wide>>()
   expect<Observation.Watch<Wide>>().type.not.toBeAssignableTo<Observation.Watch<Narrow>>()
   expect<Observation.State<Narrow>>().type.toBeAssignableTo<Observation.State<Wide>>()
@@ -264,8 +275,8 @@ test('constructed carrier variance follows each public ownership contract', () =
 test('secondary value carriers and runner input channels have deliberate variance', () => {
   expect<Observation.Change<Narrow>>().type.toBeAssignableTo<Observation.Change<Wide>>()
   expect<Observation.Change<Wide>>().type.not.toBeAssignableTo<Observation.Change<Narrow>>()
-  expect<Record.EntryToken<'narrow'>>().type.toBeAssignableTo<Record.EntryToken<string>>()
-  expect<Record.EntryToken<string>>().type.not.toBeAssignableTo<Record.EntryToken<'narrow'>>()
+  expect<Record.Entry.Token<'narrow'>>().type.toBeAssignableTo<Record.Entry.Token<string>>()
+  expect<Record.Entry.Token<string>>().type.not.toBeAssignableTo<Record.Entry.Token<'narrow'>>()
   expect<Runner.Runner<Failure, Caller>>().type.toBeAssignableTo<Runner.Runner<never, never>>()
   expect<Runner.Runner<never, never>>().type.not.toBeAssignableTo<Runner.Runner<Failure, Caller>>()
   expect<Storage.Case<Caller>>().type.not.toBeAssignableTo<Storage.Case<never>>()
@@ -273,17 +284,19 @@ test('secondary value carriers and runner input channels have deliberate varianc
 })
 
 test('lazy scoped factories and deliberate never channels are exact', () => {
-  expect(Session.make).type.toBe<Effect.Effect<Session.Service, never, Store.Store | Scope.Scope>>()
-  expect(View.make).type.toBe<Effect.Effect<View.Service, never, Store.Store | Scope.Scope>>()
-  expect(Memory.make).type.toBe<Effect.Effect<Store.Service, never, Scope.Scope>>()
+  expect(Session.make).type.toBe<
+    Effect.Effect<Session.Session.Service, never, Store.Store | Scope.Scope>
+  >()
+  expect(View.make).type.toBe<Effect.Effect<View.View.Service, never, Store.Store | Scope.Scope>>()
+  expect(Store.makeMemory).type.toBe<Effect.Effect<Store.Store.Service, never, Scope.Scope>>()
   expect<{ readonly error: Effect.Error<typeof Session.make> }>().type.toBe<{
     readonly error: never
   }>()
-  expect<{ readonly services: Layer.Services<typeof Memory.layer> }>().type.toBe<{
+  expect<{ readonly services: Layer.Services<typeof Store.layerMemory> }>().type.toBe<{
     readonly services: never
   }>()
   expect(Document.copy({ count: 1 })).type.toBe<
-    Result.Result<Document.Draft<{ count: number }>, Document.CloneError>
+    Result.Result<Document.Document.Draft<{ count: number }>, Document.CloneError>
   >()
   expect<Record.Op>().type.not.toBeAssignableFrom<readonly ['delete', readonly []]>()
   expect<Record.Op>().type.not.toBeAssignableFrom<readonly ['set', readonly [], null]>()
@@ -294,7 +307,7 @@ declare const contextualEntrySchema: Schema.Codec<
   Record.Entry,
   Caller
 >
-declare const brandedDraft: Document.Draft<{
+declare const brandedDraft: Document.Document.Draft<{
   readonly id: Record.TaskId
   readonly items: ReadonlyArray<Record.SubmissionId>
 }>
@@ -312,9 +325,10 @@ test('migrated runtime compiler proofs retain native metadata, schema services a
   expect(brandedDraft.items[0]).type.toBe<Record.SubmissionId | undefined>()
 })
 
-declare const snapshot: Document.Snapshot
+declare const recordDocument: Record.Document
+declare const snapshot: Document.Document.Snapshot
 declare const graph: Ownership.Graph
-declare const target: Ownership.Target
+declare const target: Ownership.reach.Target
 declare const view: View.Value
 declare const ops: ReadonlyArray<View.Op>
 declare const beforeMessage: Prompt.AssistantMessage
@@ -331,16 +345,19 @@ test('dual public operations preserve exact results with optional tails in both 
     Effect.Effect<Record.Address, StorageError.StorageError>
   >()
   expect(Document.typed(document, snapshot)).type.toBe<
-    Effect.Effect<Document.Snapshot<{ readonly count: number }>, StorageError.StorageError>
+    Effect.Effect<Document.Document.Snapshot<{ readonly count: number }>, StorageError.StorageError>
   >()
   expect(Document.typed(snapshot)(document)).type.toBe<
-    Effect.Effect<Document.Snapshot<{ readonly count: number }>, StorageError.StorageError>
+    Effect.Effect<Document.Document.Snapshot<{ readonly count: number }>, StorageError.StorageError>
   >()
+  expect(Record.isAlive(recordDocument, 'current')).type.toBe<boolean>()
+  expect(Record.isAlive('current')(recordDocument)).type.toBe<boolean>()
   expect(Record.isAlive('current')).type.toBe<(self: Record.Document) => boolean>()
-  expect(Ownership.reach(graph, target, true)).type.toBe<Option.Option<Ownership.Reached>>()
-  expect(Ownership.reach(target, true)(graph)).type.toBe<Option.Option<Ownership.Reached>>()
+  expect(Ownership.reach(graph, target, true)).type.toBe<Option.Option<Ownership.reach.Reached>>()
+  expect(Ownership.reach(target, true)(graph)).type.toBe<Option.Option<Ownership.reach.Reached>>()
   expect(View.apply(view, ops)).type.toBe<Result.Result<View.Value, View.ViewOperationError>>()
   expect(View.apply(ops)(view)).type.toBe<Result.Result<View.Value, View.ViewOperationError>>()
+  expect(View.applyUnsafe(view, ops)).type.toBe<View.Value>()
   expect(View.applyUnsafe(ops)(view)).type.toBe<View.Value>()
   expect(Event.messageChanges([], beforeMessage, afterMessage)).type.toBe<
     Array<Event.MessageChange>
@@ -356,24 +373,34 @@ test('dual public operations preserve exact results with optional tails in both 
   expect(View.apply).type.not.toBeCallableWith(view, [['delete', []]])
 })
 
-test('owner companions preserve compatibility alias equality and scoped memory channels', () => {
-  expect<Document.Definition<{ count: number }>>().type.toBe<
+test('owner companions expose scoped memory channels', () => {
+  expect<Document.Document.Definition<{ count: number }>>().type.toBe<
     Document.Document.Definition<{ count: number }>
   >()
-  expect<Document.DefinitionInput<{ count: number }>>().type.toBe<
+  expect<Document.Document.DefinitionInput<{ count: number }>>().type.toBe<
     Document.Document.DefinitionInput<{ count: number }>
   >()
-  expect<Document.Snapshot<{ count: number }>>().type.toBe<
+  expect<Document.Document.Snapshot<{ count: number }>>().type.toBe<
     Document.Document.Snapshot<{ count: number }>
   >()
-  expect<Record.EntryToken<'custom'>>().type.toBe<Record.Entry.Token<'custom'>>()
-  expect<Record.EntryDraft>().type.toBe<Record.Entry.Draft>()
-  expect<Record.SubmissionCreate>().type.toBe<Record.Submission.Create>()
-  expect<Conversation.Options>().type.toBe<Conversation.Conversation.Options>()
-  expect<Store.Candidate<number>>().type.toBe<Store.Store.Candidate<number>>()
-  expect<Session.ConversationQuery>().type.toBe<Session.Session.ConversationQuery>()
-  expect<View.ProjectionWatch<number>>().type.toBe<View.View.ProjectionWatch<number>>()
-  expect(Store.makeMemory).type.toBe<Effect.Effect<Store.Service, never, Scope.Scope>>()
+  expect<Record.Entry.Token<'custom'>>().type.toBe<Record.Entry.Token<'custom'>>()
+  expect<Record.Entry.Draft>().type.toBe<Record.Entry.Draft>()
+  expect<Record.Submission.Create>().type.toBe<Record.Submission.Create>()
+  expect<Conversation.Conversation.Options>().type.toBe<Conversation.Conversation.Options>()
+  expect<Store.Store.Candidate<number>>().type.toBe<Store.Store.Candidate<number>>()
+  expect<Session.Session.ConversationQuery>().type.toBe<Session.Session.ConversationQuery>()
+  expect<View.View.ProjectionWatch<number>>().type.toBe<View.View.ProjectionWatch<number>>()
+  expect(Store.makeMemory).type.toBe<Effect.Effect<Store.Store.Service, never, Scope.Scope>>()
   expect(Store.layerMemory).type.toBe<Layer.Layer<Store.Store>>()
   expect(Observation.makeWatch).type.not.toBeCallableWith({ value: {}, stop: Effect.void })
+})
+
+test('unknown decoded guards expose their actual domains and retain task-result erasure', () => {
+  const u: unknown = undefined
+  if (Record.isTaskId(u)) {
+    expect(u).type.toBe<Record.TaskId>()
+    expect(u).type.not.toBeAssignableTo<Record.TaskId<{ readonly answer: string }>>()
+  }
+  if (View.isChange(u)) expect(u).type.toBe<View.Change>()
+  if (Outcome.isFailedOutcome(u)) expect(u).type.toBe<Outcome.Failed>()
 })

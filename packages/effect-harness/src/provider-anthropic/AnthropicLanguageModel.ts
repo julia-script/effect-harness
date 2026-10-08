@@ -1,8 +1,8 @@
 /**
  * Captured native Anthropic models and API-key transport composition.
  */
-import * as Config from 'effect/Config'
-// effect-review-allow P9-namespace-alias-equals-module: @effect/ai-anthropic/AnthropicLanguageModel and packages/effect-harness/src/provider-anthropic/AnthropicLanguageModel.ts both bind AnthropicLanguageModel; anthropicLanguageModel distinguishes the concepts.
+import * as config from 'effect/Config'
+// effect-nit-allow P9-namespace-alias-equals-module: @effect/ai-anthropic/AnthropicLanguageModel and packages/effect-harness/src/provider-anthropic/AnthropicLanguageModel.ts both bind AnthropicLanguageModel; anthropicLanguageModel distinguishes the concepts.
 import * as anthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
 import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import * as Context from 'effect/Context'
@@ -59,21 +59,20 @@ export const layer = (
  * @category layers
  */
 export const layerConfig = (
-  config: Config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
+  configuration: config.Wrap<NonNullable<Parameters<typeof layer>[0]>>,
 ): Layer.Layer<
   LanguageModel.LanguageModel | AnthropicClient.AnthropicClient,
-  Config.ConfigError,
+  config.ConfigError,
   AnthropicClient.AnthropicClient
 > =>
   Layer.unwrap(
     Effect.gen(function* () {
-      return layer(yield* Config.unwrap(config))
+      return layer(yield* config.unwrap(configuration))
     }),
   )
 /**
  * Type-level contracts for `AnthropicLanguageModel`.
  *
- * @category utility types
  */
 export declare namespace AnthropicLanguageModel {
   /**
@@ -87,12 +86,6 @@ export declare namespace AnthropicLanguageModel {
     readonly config?: Omit<typeof anthropicLanguageModel.Config.Service, 'model'> | undefined
   }
 }
-/**
- * Redacted API key, selected native model and Anthropic client/request configuration.
- *
- * @category models
- */
-export type Options = AnthropicLanguageModel.Options
 
 /**
  * Provides a native Anthropic LanguageModel and client using a Redacted API key.
@@ -105,7 +98,7 @@ export type Options = AnthropicLanguageModel.Options
  * @category layers
  */
 export const layerApiKey = (
-  options: Options,
+  options: AnthropicLanguageModel.Options,
 ): Layer.Layer<
   LanguageModel.LanguageModel | AnthropicClient.AnthropicClient,
   never,
@@ -121,15 +114,15 @@ export const layerApiKey = (
  * @category layers
  */
 export const layerApiKeyConfig = (
-  config: Config.Wrap<Options>,
+  configuration: config.Wrap<AnthropicLanguageModel.Options>,
 ): Layer.Layer<
   LanguageModel.LanguageModel | AnthropicClient.AnthropicClient,
-  Config.ConfigError,
+  config.ConfigError,
   HttpClient.HttpClient
 > =>
   Layer.unwrap(
     Effect.gen(function* () {
-      return layerApiKey(yield* Config.unwrap(config))
+      return layerApiKey(yield* config.unwrap(configuration))
     }),
   )
 
@@ -139,16 +132,16 @@ export const layerApiKeyConfig = (
  * @category layers
  */
 export const layerDefaultConfig = (
-  config: Config.Wrap<Omit<Options, 'apiKey'>>,
+  configuration: config.Wrap<Omit<AnthropicLanguageModel.Options, 'apiKey'>>,
 ): Layer.Layer<
   LanguageModel.LanguageModel | AnthropicClient.AnthropicClient,
-  Config.ConfigError,
+  config.ConfigError,
   HttpClient.HttpClient
 > =>
   Layer.unwrap(
     Effect.gen(function* () {
-      const options = yield* Config.unwrap(config)
-      const apiKey = yield* Config.Redacted('ANTHROPIC_API_KEY')
+      const options = yield* config.unwrap(configuration)
+      const apiKey = yield* config.Redacted('ANTHROPIC_API_KEY')
       return layerApiKey({ ...options, apiKey })
     }),
   )

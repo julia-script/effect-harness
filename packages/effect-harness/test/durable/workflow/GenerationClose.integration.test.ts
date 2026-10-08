@@ -1,13 +1,14 @@
+import { withLayer } from '../StorageFixture.ts'
 import { awaitTransition } from './ModeledWorkflow.ts'
 import { assertFailure } from '@effect/vitest/utils'
-import { ResourceScope, withLayer } from 'effect-harness/durable/testing/Storage'
+import { ResourceScope } from 'effect-harness/durable/testing/Storage'
 import * as Exit from 'effect/Exit'
 import * as Scope from 'effect/Scope'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Context from 'effect/Context'
 import * as Option from 'effect/Option'
 import * as SqlClient from 'effect/sql/SqlClient'
-import * as Sqlite from '../storage/TestStore.ts'
+import * as TestStore from '../storage/TestStore.ts'
 import * as Store from 'effect-harness/durable/Store'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
@@ -24,9 +25,9 @@ import * as Event from 'effect-harness/durable/Event'
 import * as Session from 'effect-harness/durable/Session'
 import * as Record from 'effect-harness/durable/Record'
 import * as View from 'effect-harness/durable/View'
-import * as Memory from 'effect-harness/durable/storage/Memory'
-import { rejected as storageRejected, Closed } from 'effect-harness/durable/StorageError'
-import { ExecutionError, InvalidState } from 'effect-harness/durable/workflow/ExecutionError'
+
+import { rejected as storageRejected, ClosedError } from 'effect-harness/durable/StorageError'
+import { ExecutionError, InvalidStateError } from 'effect-harness/durable/workflow/ExecutionError'
 
 describe('GenerationClose', () => {
   it.effect('View, Event and document watches end while Session cleanup is still blocked', () =>
@@ -64,13 +65,13 @@ describe('GenerationClose', () => {
       )
       assert.isUndefined(closing.pollUnsafe())
       const rejected = yield* Effect.result((yield* View.View).watch(root.id))
-      assertFailure(rejected, storageRejected('View service is closed', Closed))
+      assertFailure(rejected, storageRejected('View service is closed', ClosedError))
       yield* Deferred.succeed(release, undefined)
       yield* Fiber.join(closing)
     }).pipe((effect) =>
       withLayer(
         effect.pipe(Effect.provide(Event.layer.pipe(Layer.provideMerge(View.layer)))),
-        Session.layer.pipe(Layer.provideMerge(Memory.layer)),
+        Session.layer.pipe(Layer.provideMerge(Store.layerMemory)),
       ),
     ),
   )
@@ -95,7 +96,7 @@ describe('GenerationClose', () => {
           get: (target, key, receiver) =>
             key === 'withTransaction' ? withTransaction : Reflect.get(target, key, receiver),
         })
-        const store = yield* Sqlite.make.pipe(
+        const store = yield* TestStore.make.pipe(
           Effect.provideService(SqlClient.SqlClient, instrumented),
         )
         const session = yield* Session.make.pipe(Effect.provideService(Store.Store, store))
@@ -145,7 +146,7 @@ describe('GenerationClose', () => {
               execute: Effect.succeed('resource'),
             }).pipe(task.withCompensation((value) => Ref.update(calls, (old) => [...old, value])))
             return yield* new ExecutionError({
-              reason: new InvalidState({ message: 'native failure' }),
+              reason: new InvalidStateError({ message: 'native failure' }),
             })
           }),
         )
@@ -154,7 +155,7 @@ describe('GenerationClose', () => {
             const result = yield* Effect.result(task.execute({ key: 'same' }))
             assertFailure(
               result,
-              new ExecutionError({ reason: new InvalidState({ message: 'native failure' }) }),
+              new ExecutionError({ reason: new InvalidStateError({ message: 'native failure' }) }),
             )
           }
           assert.deepStrictEqual(yield* Ref.get(calls), ['resource'])

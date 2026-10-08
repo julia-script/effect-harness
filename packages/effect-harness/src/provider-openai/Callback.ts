@@ -3,13 +3,13 @@
  */
 import * as Option from 'effect/Option'
 import * as Config from 'effect/Config'
+import type { OAuth } from 'effect-harness/auth/Credential'
 import {
   AuthCallbackError,
   AuthConfigurationError,
   AuthExpiredError,
   AuthError,
-  type OAuth,
-} from 'effect-harness/auth/Credential'
+} from 'effect-harness/auth/AuthError'
 import * as Context from 'effect/Context'
 import * as DateTime from 'effect/DateTime'
 import * as Duration from 'effect/Duration'
@@ -34,7 +34,7 @@ export class Callback extends Context.Service<
     readonly authorization: Authorization
     readonly await: Effect.Effect<OAuth, AuthError>
   }
->()('@effect-harness/provider-openai/Callback') {}
+>()('effect-harness/provider-openai/Callback') {}
 
 /**
  * Installs a scoped loopback callback for ChatGPT authorization.
@@ -105,19 +105,24 @@ export const layer = (options?: {
               ),
             ),
           )
-          return HttpServerResponse.text(
-            Exit.isSuccess(exit)
-              ? 'Sign-in complete. You may close this window.'
-              : 'Sign-in failed. Restart sign-in in the application.',
-            {
-              status: Exit.isSuccess(exit) ? 200 : 400,
-              headers: {
-                'cache-control': 'no-store',
-                'content-security-policy': "default-src 'none'",
-                'referrer-policy': 'no-referrer',
-              },
+          const response = Exit.match(exit, {
+            onSuccess: () => ({
+              text: 'Sign-in complete. You may close this window.',
+              status: 200,
+            }),
+            onFailure: () => ({
+              text: 'Sign-in failed. Restart sign-in in the application.',
+              status: 400,
+            }),
+          })
+          return HttpServerResponse.text(response.text, {
+            status: response.status,
+            headers: {
+              'cache-control': 'no-store',
+              'content-security-policy': "default-src 'none'",
+              'referrer-policy': 'no-referrer',
             },
-          )
+          })
         }),
       )
       return Callback.of({

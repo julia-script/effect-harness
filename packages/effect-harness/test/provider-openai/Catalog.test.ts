@@ -1,11 +1,11 @@
 import { vi } from 'vitest'
+// effect-nit-allow P8-test-doubles-are-layers: this external npm SDK factory is the adapter construction-count subject; native HTTP/service layer wiring remains real.
 vi.mock('@effect/ai-openai/OpenAiLanguageModel', { spy: true })
 import * as Config from 'effect/Config'
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Context from 'effect/Context'
 import * as LanguageModel from 'effect/ai/LanguageModel'
-// effect-review-allow P9-namespace-alias-equals-module: effect-harness/provider-openai/LanguageModel and packages/effect-harness/test/provider-openai/Catalog.test.ts both bind LanguageModel; Provider distinguishes the concepts.
-import * as Provider from 'effect-harness/provider-openai/LanguageModel'
+
 import { assert, describe, it } from '@effect/vitest'
 import * as Model from 'effect-harness/Model'
 import * as Usage from 'effect-harness/Usage'
@@ -17,7 +17,7 @@ import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
 import * as Response from 'effect/ai/Response'
 import * as HttpClient from 'effect/http/HttpClient'
-import * as HttpClientRequest from 'effect/http/HttpClientRequest'
+import type * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import * as Catalog from 'effect-harness/provider-openai/Catalog'
 import { ChatGpt } from 'effect-harness/provider-openai/ChatGpt'
@@ -53,7 +53,7 @@ const response = {
     output_tokens_details: { reasoning_tokens: 1 },
   },
 }
-const body = (request: HttpClientRequest.HttpClientRequest) => {
+const bodyUnsafe = (request: HttpClientRequest.HttpClientRequest) => {
   assert.strictEqual(request.body._tag, 'Uint8Array')
   if (request.body._tag !== 'Uint8Array') throw new Error('Expected native JSON body')
   return Schema.decodeUnknownSync(Schema.JsonObject)(
@@ -74,7 +74,7 @@ const fixture = () => {
   return { requests, layer }
 }
 
-describe('Catalog', () => {
+describe('Catalog', { concurrent: false }, () => {
   it.effect('empty malformed subjects fail semantically before any native model work', () =>
     Effect.gen(function* () {
       // Deliberately model an untyped JavaScript caller that supplies a malformed subject.
@@ -96,7 +96,7 @@ describe('Catalog', () => {
         Effect.flip,
       )
       assert.strictEqual(error._tag, 'ModelError')
-      assert.strictEqual(error.reason._tag, 'ModelUnsupported')
+      assert.strictEqual(error.reason._tag, 'ModelUnsupportedError')
     }),
   )
 
@@ -125,7 +125,7 @@ describe('Catalog', () => {
           const request = f.requests[0]
           assert.isDefined(request)
           if (request === undefined) return yield* Effect.die('No captured request')
-          const sent = body(request)
+          const sent = bodyUnsafe(request)
           assert.strictEqual(sent.model, entry.modelId)
           assert.strictEqual(sent.max_output_tokens, 9000)
           assert.strictEqual(sent.prompt_cache_key, sessionId)
@@ -172,14 +172,14 @@ describe('Catalog', () => {
           for (const request of negatives)
             assert.strictEqual(
               (yield* descriptor.configure(request).pipe(Effect.flip)).reason._tag,
-              'ModelUnsupported',
+              'ModelUnsupportedError',
             )
           assert.strictEqual(f.requests.length, 0)
           assert.strictEqual(
             (yield* Model.Catalog.use((catalog) =>
               catalog.resolve({ provider: 'other', modelId: entry.modelId }),
             ).pipe(Effect.flip)).reason._tag,
-            'ModelNoModel',
+            'ModelNoModelError',
           )
         }).pipe(Effect.provide(fixtureLayer())),
     )
@@ -200,12 +200,15 @@ describe('Catalog', () => {
             .generateText({ prompt: 'Hi' })
             .pipe(
               Effect.provideContext(context),
-              Effect.provideService(OpenAiLanguageModel.Config, { model: 'other-model' }),
+              Effect.provideService(
+                OpenAiLanguageModel.Config,
+                OpenAiLanguageModel.Config.of({ model: 'other-model' }),
+              ),
               Effect.provideService(HttpClient.HttpClient, unsafe),
             )
           const request = f.requests[0]
           if (request === undefined) return yield* Effect.die('No captured request')
-          const sent = body(request)
+          const sent = bodyUnsafe(request)
           assert.strictEqual(sent.model, entry.modelId)
           assert.deepStrictEqual(sent.prompt_cache_options, { mode: 'explicit' })
           assert.strictEqual(sent.prompt_cache_key, undefined)
@@ -223,7 +226,7 @@ describe('Catalog', () => {
           )
           assert.strictEqual(value?.cost.known, false)
           assert.strictEqual(value?.cost.totalKnown, false)
-          const merged = Usage.add(Usage.zero(), value ?? Usage.zero())
+          const merged = Usage.add(Usage.make(), value ?? Usage.make())
           assert.strictEqual(merged.cost.known, false)
           const partial = yield* Catalog.descriptor({
             ...entry,
@@ -251,19 +254,19 @@ describe('Catalog', () => {
               ...entry,
               config: { max_output_tokens: entry.maxOutputTokens + 1 },
             }).pipe(Effect.flip)).reason._tag,
-            'ModelUnsupported',
+            'ModelUnsupportedError',
           )
           assert.strictEqual(
             (yield* Catalog.descriptor({ ...entry, contextWindow: 0 }).pipe(Effect.flip)).reason
               ._tag,
-            'ModelUnsupported',
+            'ModelUnsupportedError',
           )
           assert.strictEqual(
             (yield* Catalog.descriptor({
               ...entry,
               prices: { input: -1, output: 0, cacheRead: 0, cacheWrite: 0 },
             }).pipe(Effect.flip)).reason._tag,
-            'ModelUnsupported',
+            'ModelUnsupportedError',
           )
         }).pipe(Effect.provide(fixtureLayer())),
     )
@@ -273,15 +276,18 @@ describe('Catalog', () => {
         Effect.gen(function* () {
           let fresh = 0
           const requests: Array<HttpClientRequest.HttpClientRequest> = []
-          const auth = Layer.succeed(ChatGpt, {
-            begin: () => Effect.die('unexpected login'),
-            complete: () => Effect.die('unexpected callback'),
-            refresh: () => Effect.die('unexpected refresh'),
-            accessToken: () => Effect.sync(() => Redacted.make(`fake-token-${++fresh}`)),
-            models: () => Effect.succeed([]),
-            signOut: () => Effect.void,
-            cancel: () => Effect.void,
-          })
+          const auth = Layer.succeed(
+            ChatGpt,
+            ChatGpt.of({
+              begin: () => Effect.die('unexpected login'),
+              complete: () => Effect.die('unexpected callback'),
+              refresh: () => Effect.die('unexpected refresh'),
+              accessToken: () => Effect.sync(() => Redacted.make(`fake-token-${++fresh}`)),
+              models: () => Effect.succeed([]),
+              signOut: () => Effect.void,
+              cancel: () => Effect.void,
+            }),
+          )
           const client = HttpClient.make((request) => {
             requests.push(request)
             return Effect.succeed(
@@ -317,7 +323,7 @@ describe('Catalog', () => {
               (yield* descriptor
                 .configure({ thinking: 'off', options: { store: true }, sessionId })
                 .pipe(Effect.flip)).reason._tag,
-              'ModelUnsupported',
+              'ModelUnsupportedError',
             )
             assert.isDefined(yield* OpenAiClient.OpenAiClient)
           }).pipe(Effect.provide(layer))
@@ -325,7 +331,7 @@ describe('Catalog', () => {
           for (const [index, request] of requests.entries()) {
             assert.strictEqual(request.url, 'https://api.openai.com/v1/responses')
             assert.strictEqual(request.headers.authorization, `Bearer fake-token-${index + 1}`)
-            const sent = body(request)
+            const sent = bodyUnsafe(request)
             assert.strictEqual(sent.store, false)
             assert.strictEqual(sent.stream, true)
             assert.strictEqual(sent.max_output_tokens, 500)
@@ -356,7 +362,7 @@ describe('Catalog', () => {
         spy.mockClear()
         yield* Effect.gen(function* () {
           const context = yield* Layer.build(
-            Provider.layerConfig({ model: Config.String('MODEL') }).pipe(
+            HarnessOpenAiLanguageModel.layerConfig({ model: Config.String('MODEL') }).pipe(
               Layer.provide(Layer.succeed(OpenAiClient.OpenAiClient, client)),
             ),
           ).pipe(
@@ -382,7 +388,7 @@ describe('Catalog', () => {
               HttpClientResponse.fromWeb(request, globalThis.Response.json(response)),
             )
           })
-          const layer = Provider.layerApiKeyConfig({
+          const layer = HarnessOpenAiLanguageModel.layerApiKeyConfig({
             model: Config.String('MODEL'),
             apiKey: Config.Redacted('API_KEY'),
             apiUrl: Config.String('API_URL'),
@@ -395,8 +401,8 @@ describe('Catalog', () => {
             if (request === undefined) return yield* Effect.die('Expected configured request')
             assert.strictEqual(request.headers.authorization, 'Bearer configured-key')
             assert.strictEqual(request.url, 'https://config.example/responses')
-            assert.strictEqual(body(request).model, 'configured-model')
-            assert.strictEqual(body(request).max_output_tokens, 1000)
+            assert.strictEqual(bodyUnsafe(request).model, 'configured-model')
+            assert.strictEqual(bodyUnsafe(request).max_output_tokens, 1000)
             assert.isDefined(yield* OpenAiClient.OpenAiClient)
           }).pipe(
             Effect.provide(layer),
@@ -434,7 +440,7 @@ describe('Catalog', () => {
             ]
             for (const value of invalid) {
               const error = yield* Catalog.descriptor(value).pipe(Effect.flip)
-              assert.strictEqual(error.reason._tag, 'ModelUnsupported')
+              assert.strictEqual(error.reason._tag, 'ModelUnsupportedError')
               assert.isTrue(Schema.isSchemaError(error.cause))
             }
             assert.strictEqual(vi.mocked(OpenAiLanguageModel.make).mock.calls.length, constructions)
@@ -479,7 +485,7 @@ describe('Catalog', () => {
           const constructions = vi.mocked(OpenAiLanguageModel.make).mock.calls.length
           const malformed = { ...entry, prices: { input: 1 } } as Catalog.Entry
           const error = yield* Catalog.descriptor(malformed).pipe(Effect.flip)
-          assert.strictEqual(error.reason._tag, 'ModelUnsupported')
+          assert.strictEqual(error.reason._tag, 'ModelUnsupportedError')
           assert.isTrue(Schema.isSchemaError(error.cause))
           assert.strictEqual(vi.mocked(OpenAiLanguageModel.make).mock.calls.length, constructions)
           assert.strictEqual(f.requests.length, 0)
@@ -487,3 +493,5 @@ describe('Catalog', () => {
       }),
   )
 })
+
+import * as HarnessOpenAiLanguageModel from 'effect-harness/provider-openai/OpenAiLanguageModel'

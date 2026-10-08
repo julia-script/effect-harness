@@ -1,27 +1,40 @@
+import { AuthConfigurationError } from '../auth/AuthError.ts'
+import * as PendingAuthorization from '../internal/PendingAuthorization.ts'
+const AuthorizationTypeId = '~effect-harness/provider-anthropic/OAuth/Authorization'
+
 /**
  * Single-use Anthropic OAuth consent, refresh and scoped browser callbacks.
  */
+import * as Pipeable from 'effect/Pipeable'
+import * as Inspectable from 'effect/Inspectable'
+import * as Predicate from 'effect/Predicate'
 import * as Arr from 'effect/Array'
 import * as String from 'effect/String'
-// effect-review-allow P9-namespace-alias-equals-module: effect-harness/auth/Duration and effect/Duration both bind Duration; AuthDuration distinguishes the concepts.
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/auth/Duration and effect/Duration both bind Duration; AuthDuration distinguishes the concepts.
 import * as AuthDuration from 'effect-harness/auth/Duration'
 import * as Config from 'effect/Config'
+import { Secret, type OpaqueOAuth } from 'effect-harness/auth/Credential'
 import {
   AuthError,
-  makeAuthErrorReason,
-  Secret,
-  type AuthErrorCode,
-  type OpaqueOAuth,
-} from 'effect-harness/auth/Credential'
+  AuthDeniedError,
+  AuthPermissionError,
+  AuthProtocolError,
+  AuthNetworkError,
+  AuthMissingError,
+  AuthCallbackError,
+  AuthExpiredError,
+  AuthTokenError,
+  type AuthErrorReason,
+} from 'effect-harness/auth/AuthError'
 import { CredentialStore } from 'effect-harness/auth/CredentialStore'
 import * as Pkce from 'effect-harness/auth/Pkce'
-import type { Fields as TokenFields } from 'effect-harness/auth/Token'
+import * as Token from 'effect-harness/auth/Token'
 import * as HashMap from 'effect/HashMap'
 import * as Equal from 'effect/Equal'
 import * as DateTime from 'effect/DateTime'
 import * as Duration from 'effect/Duration'
 import * as Context from 'effect/Context'
-import * as Crypto from 'effect/Crypto'
+import type * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
 import * as Deferred from 'effect/Deferred'
 import * as Exit from 'effect/Exit'
@@ -89,19 +102,81 @@ export const scopes = [
 /**
  * Pending Anthropic consent URL, secret state, redirect and expiry.
  *
+ * **Details**
+ *
+ * This owned handle supports piping and bounded inspection. `toJSON` is a diagnostic
+ * projection; use the original fields for protocol values and resource references.
+ *
  * @category models
  */
-export interface Authorization {
+export interface Authorization extends Pipeable.Pipeable, Inspectable.Inspectable {
+  readonly [AuthorizationTypeId]: typeof AuthorizationTypeId
   readonly url: Redacted.Redacted<string>
   /** Pi uses the PKCE verifier as state, so this value is a secret too. */
   readonly state: Redacted.Redacted<string>
   readonly redirectUri: string
   readonly expiresAt: DateTime.Utc
 }
+
+/**
+ * Checks the established nominal `Authorization` marker; it does not validate arbitrary payload fields.
+ *
+ * @category guards
+ */
+export const isAuthorization = (u: unknown): u is Authorization =>
+  Predicate.hasProperty(u, AuthorizationTypeId) && u[AuthorizationTypeId] === AuthorizationTypeId
+
+/**
+ * Owns a `Authorization` handle while preserving payload descriptors and exact resource references.
+ *
+ * **Details**
+ *
+ * Construction and diagnostics do not evaluate payload accessors. Inspection is a bounded
+ * diagnostic projection; read the original fields for protocol values.
+ *
+ * @category constructors
+ */
+export const makeAuthorization = (
+  input: Omit<
+    Authorization,
+    typeof AuthorizationTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
+  >,
+): Authorization => {
+  const handle: Authorization = Object.create(AuthorizationProto)
+  const descriptors = Object.getOwnPropertyDescriptors(input)
+  // The owned protocol cannot be replaced by extra runtime payload keys.
+  for (const key of [
+    AuthorizationTypeId,
+    'pipe',
+    'toJSON',
+    'toString',
+    Inspectable.NodeInspectSymbol,
+  ])
+    Reflect.deleteProperty(descriptors, key)
+  Object.defineProperties(handle, descriptors)
+  Object.defineProperty(handle, AuthorizationTypeId, {
+    value: AuthorizationTypeId,
+    enumerable: false,
+  })
+  return handle
+}
+
+const AuthorizationProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  toJSON(): unknown {
+    return {
+      _id: 'effect-harness/provider-anthropic/OAuth/Authorization',
+      url: '<redacted>',
+      state: '<redacted>',
+      expiresAt: '<DateTime.Utc>',
+    }
+  },
+}
+
 /**
  * Type-level contracts for `OAuth`.
  *
- * @category utility types
  */
 export declare namespace OAuth {
   /**
@@ -148,12 +223,6 @@ export declare namespace OAuth {
   }
 }
 /**
- * Explicit Anthropic consent, completion and serialized token refresh.
- *
- * @category models
- */
-export type Service = OAuth.Service
-/**
  * Service for explicit Anthropic account consent and serialized token refresh.
  *
  * **Details**
@@ -168,24 +237,32 @@ export type Service = OAuth.Service
  *
  * @category services
  */
-export class OAuth extends Context.Service<OAuth, Service>()(
-  '@effect-harness/provider-anthropic/OAuth',
+export class OAuth extends Context.Service<OAuth, OAuth.Service>()(
+  'effect-harness/provider-anthropic/OAuth',
 ) {}
 interface Pending {
   readonly account: string
   readonly authorization: Authorization
   readonly challenge: Pkce.Challenge
 }
-const failure = (reason: AuthErrorCode, message: string, status?: number, cause?: unknown) =>
+const failure = (
+  Reason: new (fields: {
+    readonly message: string
+    readonly status?: number
+    readonly cause?: unknown
+  }) => AuthErrorReason,
+  message: string,
+  status?: number,
+  cause?: unknown,
+) =>
   new AuthError({
-    reason: makeAuthErrorReason({
-      reason,
+    reason: new Reason({
       message,
       ...(status === undefined ? {} : { status }),
       ...(cause === undefined ? {} : { cause }),
     }),
   })
-const Token = Schema.Struct({
+const TokenResponse = Schema.Struct({
   access_token: Secret,
   refresh_token: Secret,
   expires_in: Schema.Finite.check(Schema.isGreaterThan(0)),
@@ -195,9 +272,9 @@ const Token = Schema.Struct({
 const permission = (value: ReadonlyArray<string>) =>
   value.includes('user:inference')
     ? Effect.void
-    : Effect.fail(failure('permission', 'Anthropic inference scope was not granted'))
-const splitScopes = (value: string): ReadonlyArray<string> => [
-  ...Arr.dedupe(value.split(/\s+/).filter(String.isNonEmpty)),
+    : Effect.fail(failure(AuthPermissionError, 'Anthropic inference scope was not granted'))
+const splitScopes = (value: string): Array<string> => [
+  ...Arr.dedupe(Arr.filter(String.split(value, /\s+/), String.isNonEmpty)),
 ]
 const matches = (value: OpaqueOAuth) =>
   value.provider === 'anthropic' &&
@@ -220,50 +297,42 @@ const matches = (value: OpaqueOAuth) =>
  * @category layers
  */
 export const layer = (options?: {
-  readonly authorizationLifetimeMs?: Duration.Input | undefined
-  readonly refreshSkewMs?: Duration.Input | undefined
+  readonly authorizationLifetime?: Duration.Input | undefined
+  readonly refreshSkew?: Duration.Input | undefined
 }): Layer.Layer<OAuth, AuthError, CredentialStore | Crypto.Crypto | HttpClient.HttpClient> =>
   Layer.effect(OAuth)(
     Effect.gen(function* () {
       const message = 'Authorization and refresh durations must be finite valid durations'
       const lifetime = yield* AuthDuration.fromInput(
-        options?.authorizationLifetimeMs ?? '10 minutes',
+        options?.authorizationLifetime ?? '10 minutes',
         message,
       )
-      const skew = yield* AuthDuration.fromInput(options?.refreshSkewMs ?? '5 minutes', message)
+      const skew = yield* AuthDuration.fromInput(options?.refreshSkew ?? '5 minutes', message)
       if (
         !Number.isFinite(Duration.toMillis(lifetime)) ||
         Duration.toMillis(lifetime) <= 0 ||
         !Number.isFinite(Duration.toMillis(skew)) ||
         Duration.toMillis(skew) < 0
       )
-        return yield* failure('configuration', message)
+        return yield* failure(AuthConfigurationError, message)
       const store = yield* CredentialStore
       const http = yield* HttpClient.HttpClient
       const crypto = yield* Effect.context<Crypto.Crypto>()
-      const pending = yield* Ref.make(HashMap.empty<Redacted.Redacted<string>, Pending>())
-      yield* Effect.addFinalizer(() => Ref.set(pending, HashMap.empty()))
+      const pending = yield* PendingAuthorization.make<Redacted.Redacted<string>, Pending>()
+      yield* Effect.addFinalizer(() => pending.set(HashMap.empty()))
       const request = Effect.fnUntraced(
-        function* (fields: TokenFields) {
+        function* (fields: Token.Fields) {
           const response = yield* http
             .execute(
               HttpClientRequest.post(tokenUrl).pipe(
-                HttpClientRequest.bodyJsonUnsafe(
-                  Object.fromEntries(
-                    Object.entries(fields).flatMap(([key, value]) =>
-                      value === undefined
-                        ? []
-                        : [[key, Redacted.isRedacted(value) ? Redacted.value(value) : value]],
-                    ),
-                  ),
-                ),
+                HttpClientRequest.bodyJsonUnsafe(yield* Token.encodeFields(fields)),
                 HttpClientRequest.acceptJson,
               ),
             )
             .pipe(
               Effect.mapError((cause) =>
                 failure(
-                  'network',
+                  AuthNetworkError,
                   'Anthropic token endpoint could not be reached',
                   undefined,
                   cause,
@@ -272,31 +341,31 @@ export const layer = (options?: {
             )
           if (response.status !== 200)
             return yield* failure(
-              'token',
+              AuthTokenError,
               'Anthropic token endpoint rejected the grant',
               response.status,
             )
           const json = yield* response.json.pipe(
             Effect.mapError((cause) =>
-              failure('protocol', 'Invalid Anthropic token response', undefined, cause),
+              failure(AuthProtocolError, 'Invalid Anthropic token response', undefined, cause),
             ),
           )
-          const token = yield* Schema.decodeUnknownEffect(Token)(json).pipe(
+          const token = yield* Schema.decodeUnknownEffect(TokenResponse)(json).pipe(
             Effect.mapError((cause) =>
-              failure('protocol', 'Invalid Anthropic token response', undefined, cause),
+              failure(AuthProtocolError, 'Invalid Anthropic token response', undefined, cause),
             ),
           )
           if (token.token_type !== undefined && token.token_type.toLowerCase() !== 'bearer')
-            return yield* failure('protocol', 'Unsupported Anthropic token type')
+            return yield* failure(AuthProtocolError, 'Unsupported Anthropic token type')
           return token
         },
         Effect.timeoutOrElse({
           duration: '30 seconds',
-          orElse: () => Effect.fail(failure('network', 'Anthropic token request timed out')),
+          orElse: () => Effect.fail(failure(AuthNetworkError, 'Anthropic token request timed out')),
         }),
       )
       const credential = Effect.fnUntraced(function* (
-        token: typeof Token.Type,
+        token: typeof TokenResponse.Type,
         previousScopes: ReadonlyArray<string>,
         redirectUri?: string,
       ) {
@@ -307,7 +376,7 @@ export const layer = (options?: {
           Duration.seconds(token.expires_in),
         )
         if (!Number.isSafeInteger(DateTime.toEpochMillis(expiresAt)))
-          return yield* failure('protocol', 'Invalid Anthropic token lifetime')
+          return yield* failure(AuthProtocolError, 'Invalid Anthropic token lifetime')
         return {
           _tag: 'opaqueOAuth',
           provider: 'anthropic',
@@ -320,36 +389,41 @@ export const layer = (options?: {
           ...(redirectUri === undefined ? {} : { redirectUri }),
         } satisfies OpaqueOAuth
       })
-      const refresh: Service['refresh'] = Effect.fnUntraced(function* (account, refreshOptions) {
-        const updated = yield* store.modify(
-          account,
-          Effect.fnUntraced(function* (current) {
-            const previous = yield* Effect.fromOption(current, () =>
-              failure('missing', 'Anthropic account credential was not found'),
-            )
-            if (previous._tag !== 'opaqueOAuth' || !matches(previous))
-              return yield* failure('missing', 'Anthropic account credential was not found')
-            yield* permission(previous.scopes)
-            if (
-              !refreshOptions?.force &&
-              DateTime.isGreaterThan(
-                previous.expiresAt,
-                DateTime.addDuration(yield* DateTime.now, skew),
+      const refresh: OAuth.Service['refresh'] = Effect.fnUntraced(
+        function* (account, refreshOptions) {
+          const updated = yield* store.modify(
+            account,
+            Effect.fnUntraced(function* (current) {
+              const previous = yield* Effect.fromOption(current, () =>
+                failure(AuthMissingError, 'Anthropic account credential was not found'),
               )
-            )
-              return previous
-            const token = yield* request({
-              grant_type: 'refresh_token',
-              client_id: clientId,
-              refresh_token: previous.refreshToken,
-            })
-            return yield* credential(token, previous.scopes, previous.redirectUri)
-          }),
-        )
-        if (updated?._tag !== 'opaqueOAuth')
-          return yield* failure('missing', 'Anthropic account credential was not found')
-        return updated
-      })
+              if (previous._tag !== 'opaqueOAuth' || !matches(previous))
+                return yield* failure(
+                  AuthMissingError,
+                  'Anthropic account credential was not found',
+                )
+              yield* permission(previous.scopes)
+              if (
+                !refreshOptions?.force &&
+                DateTime.isGreaterThan(
+                  previous.expiresAt,
+                  DateTime.addDuration(yield* DateTime.now, skew),
+                )
+              )
+                return previous
+              const token = yield* request({
+                grant_type: 'refresh_token',
+                client_id: clientId,
+                refresh_token: previous.refreshToken,
+              })
+              return yield* credential(token, previous.scopes, previous.redirectUri)
+            }),
+          )
+          if (updated?._tag !== 'opaqueOAuth')
+            return yield* failure(AuthMissingError, 'Anthropic account credential was not found')
+          return updated
+        },
+      )
       return OAuth.of({
         begin: Effect.fnUntraced(function* (beginOptions) {
           if (
@@ -357,9 +431,9 @@ export const layer = (options?: {
             beginOptions.method !== 'browser' &&
             beginOptions.method !== 'copyCode'
           )
-            return yield* failure('configuration', 'Unsupported Anthropic consent method')
+            return yield* failure(AuthConfigurationError, 'Unsupported Anthropic consent method')
           if (beginOptions.account.length === 0)
-            return yield* failure('configuration', 'Supply a nonempty account storage key')
+            return yield* failure(AuthConfigurationError, 'Supply a nonempty account storage key')
           const challenge = yield* Pkce.make.pipe(Effect.provideContext(crypto))
           const state = challenge.verifier
           const redirectUri =
@@ -376,13 +450,13 @@ export const layer = (options?: {
             code_challenge_method: 'S256',
             state: Redacted.value(state),
           })
-          const authorization = {
+          const authorization = makeAuthorization({
             url: Redacted.make(`${authorizeUrl}?${params.toString()}`),
             state: challenge.verifier,
             redirectUri,
             expiresAt,
-          }
-          yield* Ref.update(pending, (attempts) =>
+          })
+          yield* pending.update((attempts) =>
             HashMap.set(
               HashMap.filter(attempts, (attempt) =>
                 DateTime.isGreaterThan(attempt.authorization.expiresAt, now),
@@ -395,17 +469,16 @@ export const layer = (options?: {
         }),
         complete: Effect.fnUntraced(function* (secretState, input) {
           const state = secretState
-          const attempt = yield* Effect.fromOption(
-            HashMap.get(yield* Ref.get(pending), state),
-            () => failure('callback', 'Unknown or consumed Anthropic authorization'),
+          const attempt = yield* Effect.fromOption(HashMap.get(yield* pending.read, state), () =>
+            failure(AuthCallbackError, 'Unknown or consumed Anthropic authorization'),
           )
           if (DateTime.isLessThanOrEqualTo(attempt.authorization.expiresAt, yield* DateTime.now)) {
-            yield* Ref.update(pending, (attempts) =>
+            yield* pending.update((attempts) =>
               Option.exists(HashMap.get(attempts, state), (current) => current === attempt)
                 ? HashMap.remove(attempts, state)
                 : attempts,
             )
-            return yield* failure('expired', 'Anthropic authorization expired')
+            return yield* failure(AuthExpiredError, 'Anthropic authorization expired')
           }
           const value = input.trim()
           let code = value
@@ -413,7 +486,8 @@ export const layer = (options?: {
           if (/^https?:\/\//.test(value)) {
             const url = yield* Effect.try({
               try: () => new URL(value),
-              catch: (cause) => failure('callback', 'Invalid Anthropic callback', undefined, cause),
+              catch: (cause) =>
+                failure(AuthCallbackError, 'Invalid Anthropic callback', undefined, cause),
             })
             const redirect = new URL(attempt.authorization.redirectUri)
             if (
@@ -422,42 +496,53 @@ export const layer = (options?: {
               url.username !== '' ||
               url.password !== ''
             )
-              return yield* failure('callback', 'Unexpected Anthropic callback address')
+              return yield* failure(AuthCallbackError, 'Unexpected Anthropic callback address')
             if (url.searchParams.has('error'))
-              return yield* failure('denied', 'Anthropic authorization was denied')
+              return yield* new AuthError({
+                reason: new AuthDeniedError({
+                  message: 'Anthropic authorization was denied',
+                  ...(url.searchParams.getAll('error').length === 1 &&
+                  url.searchParams.get('error') === 'access_denied'
+                    ? { authorizationError: 'access_denied' as const }
+                    : {}),
+                }),
+              })
             if (
               url.searchParams.getAll('code').length !== 1 ||
               url.searchParams.getAll('state').length !== 1
             )
-              return yield* failure('callback', 'Incomplete or ambiguous Anthropic callback')
+              return yield* failure(AuthCallbackError, 'Incomplete or ambiguous Anthropic callback')
             code = url.searchParams.get('code') ?? ''
             receivedState = Redacted.make(url.searchParams.get('state') ?? '')
           } else if (value.includes('#')) {
             const pieces = value.split('#')
             if (pieces.length !== 2)
-              return yield* failure('callback', 'Invalid Anthropic authorization input')
+              return yield* failure(AuthCallbackError, 'Invalid Anthropic authorization input')
             code = pieces[0] ?? ''
             receivedState = pieces[1] === undefined ? undefined : Redacted.make(pieces[1])
           } else if (value.includes('code=')) {
             const params = new URLSearchParams(value)
             if (params.getAll('code').length !== 1 || params.getAll('state').length > 1)
-              return yield* failure('callback', 'Ambiguous Anthropic authorization input')
+              return yield* failure(AuthCallbackError, 'Ambiguous Anthropic authorization input')
             code = params.get('code') ?? ''
             const parsedState = params.get('state')
             receivedState = parsedState === null ? undefined : Redacted.make(parsedState)
           }
           if (receivedState !== undefined && !Equal.equals(receivedState, state))
-            return yield* failure('callback', 'Anthropic authorization state mismatch')
+            return yield* failure(AuthCallbackError, 'Anthropic authorization state mismatch')
           if (code.length === 0)
-            return yield* failure('callback', 'Missing Anthropic authorization code')
+            return yield* failure(AuthCallbackError, 'Missing Anthropic authorization code')
           // Consume before yielding: an attempt cannot exchange twice, even concurrently or after failure.
-          const consumed = yield* Ref.modify(pending, (attempts) =>
+          const consumed = yield* pending.modify((attempts) =>
             Option.exists(HashMap.get(attempts, state), (current) => current === attempt)
               ? ([true, HashMap.remove(attempts, state)] as const)
               : ([false, attempts] as const),
           )
           if (!consumed)
-            return yield* failure('callback', 'Consumed or cancelled Anthropic authorization')
+            return yield* failure(
+              AuthCallbackError,
+              'Consumed or cancelled Anthropic authorization',
+            )
           const token = yield* request({
             grant_type: 'authorization_code',
             client_id: clientId,
@@ -476,7 +561,7 @@ export const layer = (options?: {
           return credential.accessToken
         }),
         signOut: (account) => store.remove(account),
-        cancel: (state) => Ref.update(pending, HashMap.remove(state)),
+        cancel: (state) => pending.update(HashMap.remove(state)),
       })
     }),
   )
@@ -492,7 +577,7 @@ export class Callback extends Context.Service<
     readonly authorization: Authorization
     readonly await: Effect.Effect<OpaqueOAuth, AuthError>
   }
->()('@effect-harness/provider-anthropic/OAuth/Callback') {}
+>()('effect-harness/provider-anthropic/OAuth/Callback') {}
 
 /**
  * Installs a scoped browser callback at the account protocol’s loopback address.
@@ -521,7 +606,7 @@ export const layerCallback = (options: {
         server.address.port !== 53692
       )
         return yield* failure(
-          'configuration',
+          AuthConfigurationError,
           'Anthropic browser callback must bind 127.0.0.1:53692',
         )
       const auth = yield* OAuth
@@ -536,7 +621,8 @@ export const layerCallback = (options: {
           const request = yield* HttpServerRequest.HttpServerRequest
           const parsed = yield* Effect.try({
             try: () => new URL(request.url, browserRedirectUri),
-            catch: (cause) => failure('callback', 'Invalid Anthropic callback', undefined, cause),
+            catch: (cause) =>
+              failure(AuthCallbackError, 'Invalid Anthropic callback', undefined, cause),
           }).pipe(Effect.option)
           const url = yield* Option.match(parsed, {
             onNone: () => Effect.void,
@@ -560,19 +646,24 @@ export const layerCallback = (options: {
               ),
             ),
           )
-          return HttpServerResponse.text(
-            Exit.isSuccess(exit)
-              ? 'Sign-in complete. You may close this window.'
-              : 'Sign-in failed. Restart sign-in in the application.',
-            {
-              status: Exit.isSuccess(exit) ? 200 : 400,
-              headers: {
-                'cache-control': 'no-store',
-                'content-security-policy': "default-src 'none'",
-                'referrer-policy': 'no-referrer',
-              },
+          const response = Exit.match(exit, {
+            onSuccess: () => ({
+              text: 'Sign-in complete. You may close this window.',
+              status: 200,
+            }),
+            onFailure: () => ({
+              text: 'Sign-in failed. Restart sign-in in the application.',
+              status: 400,
+            }),
+          })
+          return HttpServerResponse.text(response.text, {
+            status: response.status,
+            headers: {
+              'cache-control': 'no-store',
+              'content-security-policy': "default-src 'none'",
+              'referrer-policy': 'no-referrer',
             },
-          )
+          })
         }),
       )
       return Callback.of({
@@ -590,7 +681,7 @@ export const layerCallback = (options: {
                   .cancel(authorization.state)
                   .pipe(
                     Effect.andThen(
-                      Effect.fail(failure('expired', 'Anthropic authorization expired')),
+                      Effect.fail(failure(AuthExpiredError, 'Anthropic authorization expired')),
                     ),
                   ),
             }),

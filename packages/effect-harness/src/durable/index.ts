@@ -63,7 +63,7 @@ export * as Observation from './Observation.ts'
  */
 export * as Ownership from './Ownership.ts'
 /**
- * Durable facts, identifiers, journal frames and legacy-compatible codecs.
+ * Durable facts, identifiers, journal frames and validated codecs.
  *
  * @category re-exports
  */

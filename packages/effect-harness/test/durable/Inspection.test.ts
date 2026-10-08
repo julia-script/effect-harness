@@ -1,7 +1,9 @@
+import { withLayer } from './StorageFixture.ts'
+import { assertExitFailure } from '@effect/vitest/utils'
 import * as TestClock from 'effect/testing/TestClock'
 import * as Cause from 'effect/Cause'
 import * as Option from 'effect/Option'
-import { ResourceScope, withLayer } from 'effect-harness/durable/testing/Storage'
+import { ResourceScope } from 'effect-harness/durable/testing/Storage'
 import * as Exit from 'effect/Exit'
 import * as Scope from 'effect/Scope'
 import { assert, describe, it } from '@effect/vitest'
@@ -17,7 +19,6 @@ import * as Ownership from 'effect-harness/durable/Ownership'
 import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
 import * as Store from 'effect-harness/durable/Store'
-import * as Memory from 'effect-harness/durable/storage/Memory'
 
 const Work = Workflow.make('inspection/ordinary', {
   payload: { value: Schema.String },
@@ -25,11 +26,11 @@ const Work = Workflow.make('inspection/ordinary', {
   idempotencyKey: ({ value }) => value,
 })
 const layers = Layer.mergeAll(Session.layer, Ownership.layerDeclarations([Work])).pipe(
-  Layer.provideMerge(Memory.layer),
+  Layer.provideMerge(Store.layerMemory),
 )
 const reserve = (
-  session: Session.Service,
-  input: Record.Json = {
+  session: Session.Session.Service,
+  input: Schema.Json = {
     workflow: Work._tag,
     executionId: 'never-executed',
     payload: { deliberately: 'invalid-native-payload' },
@@ -46,12 +47,12 @@ const reserve = (
       state: { status: 'pending' },
     }),
   )
-const update = (session: Session.Service, id: Record.TaskId, state: Record.Task['state']) =>
+const update = (session: Session.Session.Service, id: Record.TaskId, state: Record.Task['state']) =>
   session.transaction(
     Effect.fnUntraced(function* (tx) {
       const task = yield* tx.task(id).pipe(Effect.map(Option.getOrUndefined))
       if (task === undefined) return yield* Effect.die('Fixture task missing')
-      yield* tx.write({ _tag: 'task' as const, type: 'task', value: { ...task, state } })
+      yield* tx.write({ _tag: 'task' as const, value: { ...task, state } })
     }),
   )
 const replay = (
@@ -106,17 +107,17 @@ describe('Inspection', () => {
         assert.deepStrictEqual(
           inspected.tasks.map((task) => [task.record.id, task.state]),
           [
-            [ready, { _tag: 'ready' as const, kind: 'ready' }],
-            [missing, { _tag: 'blocked' as const, kind: 'blocked', reason: 'missing_workflow' }],
-            [invalid, { _tag: 'blocked' as const, kind: 'blocked', reason: 'invalid_binding' }],
-            [owner, { _tag: 'waiting' as const, kind: 'waiting', on: [ready, missing] }],
+            [ready, { _tag: 'ready' as const }],
+            [missing, { _tag: 'blocked' as const, reason: 'missing_workflow' }],
+            [invalid, { _tag: 'blocked' as const, reason: 'invalid_binding' }],
+            [owner, { _tag: 'waiting' as const, on: [ready, missing] }],
           ],
         )
         assert.deepStrictEqual(yield* session.committed, before)
         yield* update(session, ready, { status: 'terminal', outcome: { status: 'completed' } })
         assert.deepStrictEqual(
           (yield* Inspection.get(session)).tasks.find((task) => task.record.id === owner)?.state,
-          { _tag: 'waiting' as const, kind: 'waiting', on: [missing] },
+          { _tag: 'waiting' as const, on: [missing] },
         )
         assert.ok(!JSON.stringify(Inspection.graph(before)).includes('never-in-graph'))
       }).pipe(Effect.provide(layers)),
@@ -180,7 +181,7 @@ describe('Inspection', () => {
         yield* update(session, task, { status: 'pending', checkpoint: { changed: 1 } })
         const conversation = yield* session.transaction((tx) =>
           tx.createConversation({
-            ownership: { _tag: 'task' as const, kind: 'task', taskId: task },
+            ownership: { _tag: 'task' as const, taskId: task },
           }),
         )
         const frames = yield* joinObserved(collected)
@@ -247,13 +248,10 @@ describe('Inspection', () => {
         Effect.forkScoped,
       )
       yield* Deferred.await(entered)
+      const interruptor = yield* Effect.withFiber((fiber) => Effect.succeed(fiber.id))
       yield* Fiber.interrupt(first)
       const interrupted = yield* Fiber.await(first)
-      assert.isTrue(Exit.isFailure(interrupted))
-      if (Exit.isFailure(interrupted)) {
-        // Native fiber IDs vary; assert the complete cause consists only of controlled interruption.
-        assert.isTrue(Cause.hasInterruptsOnly(interrupted.cause))
-      }
+      assertExitFailure(interrupted, Cause.interrupt(interruptor))
       const collected = yield* Inspection.changes(store).pipe(
         Stream.tap(() => Effect.flatMap(ResourceScope, (scope) => Scope.close(scope, Exit.void))),
         Stream.runCollect,

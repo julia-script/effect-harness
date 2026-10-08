@@ -3,7 +3,7 @@
  */
 import * as Arr from 'effect/Array'
 import * as String from 'effect/String'
-import { dual, constant } from 'effect/Function'
+import { constant } from 'effect/Function'
 import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import * as Generated from '@effect/ai-anthropic/Generated'
 import * as ToolResult from 'effect-harness/ToolResult'
@@ -128,7 +128,7 @@ const requestImpl = Effect.fnUntraced(function* (
     }),
   )
   const betas = Arr.dedupe(
-    self.params?.['anthropic-beta']?.split(',').filter(String.isNonEmpty) ?? [],
+    Arr.filter(String.split(self.params?.['anthropic-beta'] ?? '', ','), String.isNonEmpty),
   )
   const requestedBetas = documents ? Arr.union(betas, ['pdfs-2024-09-25']) : betas
   return {
@@ -159,27 +159,20 @@ const clientImpl = (self: AnthropicClient.Service): AnthropicClient.Service =>
  *
  * @category combinators
  */
-export const content: {
-  (): (self: ReadonlyArray<Prompt.UserMessagePart>) => ReturnType<typeof contentImpl>
-  (self: ReadonlyArray<Prompt.UserMessagePart>): ReturnType<typeof contentImpl>
-} = dual((args) => args.length >= 1, contentImpl)
+export const content: (
+  self: ReadonlyArray<Prompt.UserMessagePart>,
+) => ReturnType<typeof contentImpl> = contentImpl
 /**
  * Projects a request through the provider boundary without changing opaque protocol fields.
  *
  * @category combinators
  */
-export const request: {
-  (): (
-    self: Parameters<AnthropicClient.Service['createMessage']>[0],
-  ) => ReturnType<typeof requestImpl>
-  (self: Parameters<AnthropicClient.Service['createMessage']>[0]): ReturnType<typeof requestImpl>
-} = dual((args) => args.length >= 1, requestImpl)
+export const request: (
+  self: Parameters<AnthropicClient.Service['createMessage']>[0],
+) => ReturnType<typeof requestImpl> = requestImpl
 /**
  * Adapts the exact captured native client while preserving unrelated capabilities.
  *
  * @category combinators
  */
-export const client: {
-  (): (self: AnthropicClient.Service) => AnthropicClient.Service
-  (self: AnthropicClient.Service): AnthropicClient.Service
-} = dual((args) => args.length >= 1, clientImpl)
+export const client: (self: AnthropicClient.Service) => AnthropicClient.Service = clientImpl

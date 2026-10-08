@@ -1,9 +1,16 @@
+import type { Store } from './Store.ts'
 /**
  * Scoped journal observers and consumed-value watch handles.
  */
 import * as handle from './internal/handle.ts'
-const WatchProto = handle.prototype('@effect-harness/durable/Observation/Watch')
-const StateProto = handle.prototype('@effect-harness/durable/Observation/State')
+const WatchProto = handle.prototype({
+  id: '@effect-harness/durable/Observation/Watch',
+  fields: ['value', 'record'],
+})
+const StateProto = handle.prototype({
+  id: '@effect-harness/durable/Observation/State',
+  fields: ['value', 'record', 'cursor'],
+})
 import type * as Pipeable from 'effect/Pipeable'
 import type * as Inspectable from 'effect/Inspectable'
 import { identity } from 'effect/Function'
@@ -20,8 +27,8 @@ import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as Document from './Document.ts'
 import type * as Record from './Record.ts'
-import { rejected, type StorageError, Corrupt } from './StorageError.ts'
-import type { Service as StoreService } from './Store.ts'
+import { rejected, type StorageError, CorruptError } from './StorageError.ts'
+
 import { findDocument, materialize } from './storage/internal/state.ts'
 
 /**
@@ -55,7 +62,7 @@ export interface Watch<out T extends object> extends Pipeable.Pipeable, Inspecta
   readonly record: Record.Document
   readonly changes: Stream.Stream<Change<T>, StorageError>
   readonly closed: Effect.Effect<End>
-  /** effect-review-allow P3-scope-in-r-not-dispose-method: semantic subscription completion stops future deliveries and resolves closed as stopped; resource release remains owned by Scope. */
+  /** effect-nit-allow P3-scope-in-r-not-dispose-method: semantic subscription completion stops future deliveries and resolves closed as stopped; resource release remains owned by Scope. */
   readonly stop: Effect.Effect<void>
   readonly listen: <E, R>(
     listener: (change: Change<T>) => Effect.Effect<void, E, R>,
@@ -66,10 +73,11 @@ export interface Watch<out T extends object> extends Pipeable.Pipeable, Inspecta
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: watch is a public combinator over the supplied Store self capability; its facts, journal and owning lifetime must remain those of the selected instance even when ambient services differ.
 export const watch = Effect.fnUntraced(function* <T extends object>(
-  store: StoreService,
+  store: Store.Service,
   token: Document.Document<T>,
-  target: Document.Target = {},
+  target: Document.Document.Target = {},
   migrationCache?: Document.MigrationCache,
 ): Effect.fn.Return<Option.Option<Watch<T>>, StorageError, Scope.Scope> {
   const logical = yield* Document.address(token, target)
@@ -101,8 +109,11 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
         yield* Effect.sleep('20 millis')
       }
     }).pipe(
-      Effect.catch((error) =>
-        stop(error.reason._tag === 'Closed' ? 'session_closed' : 'listener_error'),
+      Effect.catchReason(
+        'StorageError',
+        'ClosedError',
+        () => stop('session_closed'),
+        () => stop('listener_error'),
       ),
     ),
   )
@@ -129,12 +140,13 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
           let refresh = true
           while ((refresh || Arr.isArrayEmpty(pending)) && !(yield* Ref.get(ended))) {
             refresh = false
-            const journal = yield* store.journal(after).pipe(
-              Effect.catchIf(
-                (error) => error.reason._tag === 'Closed',
-                () => stop('session_closed').pipe(Effect.as(undefined)),
-              ),
-            )
+            const journal = yield* store
+              .journal(after)
+              .pipe(
+                Effect.catchReason('StorageError', 'ClosedError', () =>
+                  stop('session_closed').pipe(Effect.as(undefined)),
+                ),
+              )
             if (journal === undefined) return undefined
             after = yield* journalCursor(journal.state.nextSeq)
             const relevant = Arr.flatMap(journal.frames, (frame) =>
@@ -150,7 +162,7 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
                 (item) => item.record.id === persisted.record.id,
               )
               const currentSnapshot = yield* Option.match(current, {
-                onNone: () => Effect.succeed(Option.none<Document.Snapshot<Record.JsonObject>>()),
+                onNone: () => Effect.succeedNone,
                 onSome: (document) => materialize(document, 'current'),
               })
               const replacement = yield* Option.match(currentSnapshot, {
@@ -180,7 +192,10 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
                 }
                 const frameVersion = publication.version
                 if (frameVersion === undefined)
-                  return yield* rejected('Committed document publication lacks version', Corrupt)
+                  return yield* rejected(
+                    'Committed document publication lacks version',
+                    CorruptError,
+                  )
                 const converted = yield* Document.typed(
                   token,
                   Document.makeSnapshot({
@@ -244,7 +259,8 @@ export const watch = Effect.fnUntraced(function* <T extends object>(
  *
  * @category combinators
  */
-export const commits = (store: StoreService): Stream.Stream<Record.Frame, StorageError> =>
+// effect-nit-allow B-no-service-arguments: commits is a public combinator over the supplied Store self capability; its facts, journal and owning lifetime must remain those of the selected instance even when ambient services differ.
+export const commits = (store: Store.Service): Stream.Stream<Record.Frame, StorageError> =>
   Stream.unwrap(
     Effect.gen(function* () {
       const state = yield* store.committed
@@ -291,10 +307,11 @@ export interface State<out T extends object> extends Pipeable.Pipeable, Inspecta
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: state is a public combinator over the supplied Store self capability; its facts, journal and owning lifetime must remain those of the selected instance even when ambient services differ.
 export const state = Effect.fnUntraced(function* <T extends object>(
-  store: StoreService,
+  store: Store.Service,
   token: Document.Document<T>,
-  target: Document.Target = {},
+  target: Document.Document.Target = {},
   migrationCache?: Document.MigrationCache,
 ): Effect.fn.Return<Option.Option<State<T>>, StorageError, Scope.Scope> {
   const found = yield* watch(store, token, target, migrationCache)
@@ -323,10 +340,11 @@ export const state = Effect.fnUntraced(function* <T extends object>(
  *
  * @category constructors
  */
+// effect-nit-allow P1-pipeable-data-types: this shallow carrier contains application-owned values and descriptors; inheriting inspection or JSON hooks can override payload keys and execute those accessors during serialization. Its nonenumerable marker provides identity without exposing or transforming the payload.
 export const makeChange = <T extends object>(
   input: Omit<Change<T>, typeof ChangeTypeId>,
 ): Change<T> => {
-  const value = Object.assign({}, input, { [ChangeTypeId]: { _T: identity } })
+  const value = { ...input, [ChangeTypeId]: { _T: identity } }
   Object.defineProperties(value, Object.getOwnPropertyDescriptors(input))
   Object.defineProperty(value, ChangeTypeId, { enumerable: false })
   return value
@@ -340,8 +358,7 @@ export const makeChange = <T extends object>(
  *
  * @category guards
  */
-export const isChange = (input: unknown): input is Change<object> =>
-  Predicate.hasProperty(input, ChangeTypeId)
+export const isChange = (u: unknown): u is Change<object> => Predicate.hasProperty(u, ChangeTypeId)
 
 /**
  * Creates a watch handle with live getters and shared inspection.
@@ -364,8 +381,7 @@ export const makeWatch = <T extends object>(
  *
  * @category guards
  */
-export const isWatch = (input: unknown): input is Watch<object> =>
-  Predicate.hasProperty(input, WatchTypeId)
+export const isWatch = (u: unknown): u is Watch<object> => Predicate.hasProperty(u, WatchTypeId)
 
 /**
  * Creates a state handle with live getters and shared inspection.
@@ -388,5 +404,4 @@ export const makeState = <T extends object>(
  *
  * @category guards
  */
-export const isState = (input: unknown): input is State<object> =>
-  Predicate.hasProperty(input, StateTypeId)
+export const isState = (u: unknown): u is State<object> => Predicate.hasProperty(u, StateTypeId)

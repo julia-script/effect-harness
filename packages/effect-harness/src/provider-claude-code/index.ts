@@ -27,23 +27,11 @@ export * as ClaudeCodeLanguageModel from './ClaudeCodeLanguageModel.ts'
  */
 export * as Cli from './Cli.ts'
 /**
- * Compatibility forwarding path for the Claude Code error concept.
- *
- * @category re-exports
- */
-export * as Error from './Error.ts'
-/**
  * Scoped intent-only MCP sessions with tool execution blocked at the provider boundary.
  *
  * @category re-exports
  */
 export * as IntentServer from './IntentServer.ts'
-/**
- * Compatibility forwarding paths for concrete provider language models.
- *
- * @category re-exports
- */
-export * as LanguageModel from './LanguageModel.ts'
 /**
  * Provider prompt projections that retain native message roles and opaque protocol data.
  *

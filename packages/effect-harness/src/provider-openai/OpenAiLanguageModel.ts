@@ -1,15 +1,15 @@
 /**
  * Captured native OpenAI models and API-key transport composition.
  */
-import * as Config from 'effect/Config'
+import * as config from 'effect/Config'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
 import * as OpenAiLanguageModel from '@effect/ai-openai/OpenAiLanguageModel'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
-import * as Redacted from 'effect/Redacted'
+import type * as Redacted from 'effect/Redacted'
 import * as LanguageModel from 'effect/ai/LanguageModel'
-import * as HttpClient from 'effect/http/HttpClient'
+import type * as HttpClient from 'effect/http/HttpClient'
 import * as ToolResult from './ToolResult.ts'
 
 /**
@@ -79,15 +79,15 @@ export const layerApiKey = (options: {
  * @category layers
  */
 export const layerApiKeyConfig = (
-  config: Config.Wrap<NonNullable<Parameters<typeof layerApiKey>[0]>>,
+  configuration: config.Wrap<NonNullable<Parameters<typeof layerApiKey>[0]>>,
 ): Layer.Layer<
   LanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
-  Config.ConfigError,
+  config.ConfigError,
   HttpClient.HttpClient
 > =>
   Layer.unwrap(
     Effect.gen(function* () {
-      return layerApiKey(yield* Config.unwrap(config))
+      return layerApiKey(yield* config.unwrap(configuration))
     }),
   )
 
@@ -97,15 +97,15 @@ export const layerApiKeyConfig = (
  * @category layers
  */
 export const layerConfig = (
-  config: Config.Wrap<Parameters<typeof layer>[0]>,
+  configuration: config.Wrap<Parameters<typeof layer>[0]>,
 ): Layer.Layer<
   LanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
-  Config.ConfigError,
+  config.ConfigError,
   OpenAiClient.OpenAiClient
 > =>
   Layer.unwrap(
     Effect.gen(function* () {
-      return layer(yield* Config.unwrap(config))
+      return layer(yield* config.unwrap(configuration))
     }),
   )
 /**

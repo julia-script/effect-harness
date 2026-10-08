@@ -2,8 +2,7 @@ import { assert, describe, it } from '@effect/vitest'
 import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
 import * as Model from 'effect-harness/Model'
-// effect-review-allow P9-namespace-alias-equals-module: effect-harness/Prompt and effect-harness/provider-anthropic/Prompt both bind Prompt; HarnessPrompt distinguishes the concepts.
-import * as HarnessPrompt from 'effect-harness/Prompt'
+import * as PromptPreparation from 'effect-harness/PromptPreparation'
 import * as Config from 'effect/Config'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -12,15 +11,14 @@ import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
-// effect-review-allow P9-namespace-alias-equals-module: effect/ai/Prompt and effect-harness/provider-anthropic/Prompt both bind Prompt; NativePrompt distinguishes the concepts.
+// effect-nit-allow P9-namespace-alias-equals-module: effect/ai/Prompt and effect-harness/provider-anthropic/Prompt both bind Prompt; NativePrompt distinguishes the concepts.
 import * as NativePrompt from 'effect/ai/Prompt'
 import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
-import * as Account from 'effect-harness/provider-anthropic/Account'
-import * as Anthropic from 'effect-harness/provider-anthropic/Anthropic'
+
 import * as Catalog from 'effect-harness/provider-anthropic/Catalog'
 import * as OAuth from 'effect-harness/provider-anthropic/OAuth'
 import * as Prompt from 'effect-harness/provider-anthropic/Prompt'
@@ -139,7 +137,7 @@ const frames = [
   },
   { type: 'message_stop' },
 ]
-const body = (request: HttpClientRequest.HttpClientRequest) => {
+const bodyUnsafe = (request: HttpClientRequest.HttpClientRequest) => {
   if (request.body._tag !== 'Uint8Array') throw new Error('Expected JSON request')
   return Schema.decodeUnknownSync(Schema.JsonObject)(
     JSON.parse(new TextDecoder().decode(request.body.body)),
@@ -192,16 +190,22 @@ const fixture = (flow: 'apiKey' | 'account', stream = false) => {
   const client = (
     flow === 'apiKey'
       ? AnthropicClient.layer({ ...options, apiKey: Redacted.make('fixture-key') })
-      : Account.layerClient({ ...options, account: 'fixture-account' })
+      : AnthropicAccountClient.layer({ ...options, account: 'fixture-account' })
   ).pipe(Layer.provide(dependencies))
   const layer = (
     flow === 'apiKey'
-      ? Anthropic.layer({ ...options, apiKey: Redacted.make('fixture-key') })
-      : Account.layer({ ...options, account: 'fixture-account' })
+      ? HarnessAnthropicLanguageModel.layerApiKey({
+          ...options,
+          apiKey: Redacted.make('fixture-key'),
+        })
+      : AnthropicAccountLanguageModel.layer({ ...options, account: 'fixture-account' })
   ).pipe(Layer.provide(dependencies))
   return { requests, dependencies, client, layer }
 }
-const requestAt = (requests: ReadonlyArray<HttpClientRequest.HttpClientRequest>, index = 0) => {
+const requestAtUnsafe = (
+  requests: ReadonlyArray<HttpClientRequest.HttpClientRequest>,
+  index = 0,
+) => {
   const request = requests[index]
   assert.isDefined(request)
   if (request === undefined) throw new Error('Missing captured request')
@@ -211,7 +215,7 @@ const systems = (
   flow: 'apiKey' | 'account',
   texts = ['base instructions', 'later plain instructions', 'hook-added instructions'],
 ) => [
-  ...(flow === 'account' ? [{ type: 'text', text: Account.identity }] : []),
+  ...(flow === 'account' ? [{ type: 'text', text: AnthropicAccountClient.identity }] : []),
   ...texts.map((text) => ({
     type: 'text',
     text,
@@ -314,7 +318,7 @@ describe('PromptNormalization', () => {
               disableToolCallResolution: true,
             })
             const intent = yield* intents
-            const params: { readonly value: string } | undefined = intent.toolCalls[0]?.params
+            const params = intent.toolCalls[0]?.params
             assert.deepStrictEqual(params, { value: '7' })
             const stream = model.streamText({
               prompt: history,
@@ -336,17 +340,19 @@ describe('PromptNormalization', () => {
                 disableToolCallResolution: true,
               })
             const genericOutput = yield* generic(withHandlers)
-            const genericParams: { readonly value: string } | undefined =
-              genericOutput.toolCalls[0]?.params
+            const genericParams = genericOutput.toolCalls[0]?.params
             assert.deepStrictEqual(genericParams, { value: '7' })
           }).pipe(
             Effect.provide(handlers),
-            Effect.provideService(Audit, {
-              record: (value) =>
-                Effect.sync(() => {
-                  observed.push(value)
-                }),
-            }),
+            Effect.provideService(
+              Audit,
+              Audit.of({
+                record: (value) =>
+                  Effect.sync(() => {
+                    observed.push(value)
+                  }),
+              }),
+            ),
           )
         }),
     )
@@ -368,7 +374,10 @@ describe('PromptNormalization', () => {
           const f = fixture('apiKey')
           return yield* Effect.gen(function* () {
             yield* LanguageModel.generateText({ prompt: history })
-            assert.deepStrictEqual(body(requestAt(f.requests)).system, systems('apiKey'))
+            assert.deepStrictEqual(
+              bodyUnsafe(requestAtUnsafe(f.requests)).system,
+              systems('apiKey'),
+            )
           }).pipe(
             Effect.provide(
               AnthropicLanguageModel.layer({
@@ -392,13 +401,17 @@ describe('PromptNormalization', () => {
           assert.isFalse(yield* model.supportsSystemMessagesInHistory)
           assert.isTrue(
             yield* model.supportsSystemMessagesInHistory.pipe(
-              Anthropic.withConfigOverride({ midConversationSystemMessages: true }),
+              HarnessAnthropicLanguageModel.withConfigOverride({
+                midConversationSystemMessages: true,
+              }),
             ),
           )
           yield* LanguageModel.generateText({ prompt: inlineHistory }).pipe(
-            Anthropic.withConfigOverride({ midConversationSystemMessages: true }),
+            HarnessAnthropicLanguageModel.withConfigOverride({
+              midConversationSystemMessages: true,
+            }),
           )
-          const sent = body(requestAt(f.requests))
+          const sent = bodyUnsafe(requestAtUnsafe(f.requests))
           assert.deepStrictEqual(sent.system, systems('apiKey', ['base instructions']))
           const messages = yield* Schema.decodeUnknownEffect(
             Schema.Array(Schema.Struct({ role: Schema.String })),
@@ -425,12 +438,12 @@ describe('PromptNormalization', () => {
                 { role: 'system', content: 'encoded later' },
               ],
             })
-            assert.deepStrictEqual(body(requestAt(f.requests)).system, [
+            assert.deepStrictEqual(bodyUnsafe(requestAtUnsafe(f.requests)).system, [
               { type: 'text', text: 'encoded base', cache_control: null },
               { type: 'text', text: 'encoded later', cache_control: null },
             ])
             yield* LanguageModel.generateText({ prompt: 'raw question' })
-            const sent = body(requestAt(f.requests, 1))
+            const sent = bodyUnsafe(requestAtUnsafe(f.requests, 1))
             assert.strictEqual(sent.system, undefined)
             assert.deepStrictEqual(sent.messages, [
               {
@@ -479,8 +492,8 @@ describe('PromptNormalization', () => {
               })
               assert.strictEqual(output.finishReason, 'stop')
               assert.strictEqual(output.usage.inputTokens.total, 17)
-              const request = requestAt(f.requests)
-              const sent = body(request)
+              const request = requestAtUnsafe(f.requests)
+              const sent = bodyUnsafe(request)
               assert.deepStrictEqual(sent.system, systems(flow))
               assert.deepStrictEqual(sent.messages, expectedMessages(flow))
               assert.strictEqual(sent.model, 'declared-model')
@@ -514,9 +527,12 @@ describe('PromptNormalization', () => {
               parts.find((part) => part.type === 'finish')?.usage.outputTokens.total,
               6,
             )
-            assert.deepStrictEqual(body(requestAt(f.requests)).system, systems(flow))
-            assert.deepStrictEqual(body(requestAt(f.requests)).messages, expectedMessages(flow))
-            assert.strictEqual(body(requestAt(f.requests)).stream, true)
+            assert.deepStrictEqual(bodyUnsafe(requestAtUnsafe(f.requests)).system, systems(flow))
+            assert.deepStrictEqual(
+              bodyUnsafe(requestAtUnsafe(f.requests)).messages,
+              expectedMessages(flow),
+            )
+            assert.strictEqual(bodyUnsafe(requestAtUnsafe(f.requests)).stream, true)
           }).pipe(Effect.provide(f.layer))
         }),
       )
@@ -544,12 +560,12 @@ describe('PromptNormalization', () => {
               const patch = NativePrompt.systemMessage({
                 content: 'obsolete encoded section patch',
               })
-              const sections = HarnessPrompt.replaySections([
+              const sections = PromptPreparation.replaySections([
                 { sections: { first: 'obsolete first', gone: 'removed', second: 'second' } },
                 { sections: { first: null, gone: null } },
                 { sections: { first: 'current first' } },
               ])
-              const projected = HarnessPrompt.toPrompt(
+              const projected = PromptPreparation.toPrompt(
                 [base, user, patch, assistant, result, next],
                 sections,
                 { managedSystemMessages: [patch] },
@@ -568,9 +584,12 @@ describe('PromptNormalization', () => {
                 .generateText({ prompt: normalized, toolkit, disableToolCallResolution: true })
                 .pipe(
                   Effect.provideContext(context),
-                  Anthropic.withConfigOverride({ model: 'must-not-override', max_tokens: 999 }),
+                  HarnessAnthropicLanguageModel.withConfigOverride({
+                    model: 'must-not-override',
+                    max_tokens: 999,
+                  }),
                 )
-              const sent = body(requestAt(f.requests))
+              const sent = bodyUnsafe(requestAtUnsafe(f.requests))
               // Account's identity receives request cache settings; each saved block keeps its original options.
               const expectedSystem = systems(flow, [
                 'base instructions',
@@ -580,7 +599,7 @@ describe('PromptNormalization', () => {
               if (flow === 'account')
                 expectedSystem.splice(0, 1, {
                   type: 'text',
-                  text: Account.identity,
+                  text: AnthropicAccountClient.identity,
                   cache_control: { type: 'ephemeral', ttl: '1h' },
                 })
               assert.deepStrictEqual(sent.system, expectedSystem)
@@ -606,9 +625,12 @@ describe('PromptNormalization', () => {
                 schema: Schema.Struct({ answer: Schema.String }),
               })
               assert.deepStrictEqual(output.value, { answer: 'ok' })
-              assert.deepStrictEqual(body(requestAt(f.requests)).system, systems(flow))
-              assert.deepStrictEqual(body(requestAt(f.requests)).messages, expectedMessages(flow))
-              assert.isDefined(body(requestAt(f.requests)).output_config)
+              assert.deepStrictEqual(bodyUnsafe(requestAtUnsafe(f.requests)).system, systems(flow))
+              assert.deepStrictEqual(
+                bodyUnsafe(requestAtUnsafe(f.requests)).messages,
+                expectedMessages(flow),
+              )
+              assert.isDefined(bodyUnsafe(requestAtUnsafe(f.requests)).output_config)
             }).pipe(Effect.provide(f.layer))
           }),
       )
@@ -619,7 +641,7 @@ describe('PromptNormalization', () => {
       () =>
         Effect.gen(function* () {
           const f = fixture('apiKey')
-          const layer = Anthropic.layerConfig({
+          const layer = HarnessAnthropicLanguageModel.layerApiKeyConfig({
             model: Config.succeed(options.model),
             config: Config.succeed(options.config),
             transformClient: Config.succeed(options.transformClient),
@@ -635,8 +657,8 @@ describe('PromptNormalization', () => {
                 temperature: 0.5,
               }),
             )
-            const request = requestAt(f.requests)
-            const sent = body(request)
+            const request = requestAtUnsafe(f.requests)
+            const sent = bodyUnsafe(request)
             assert.deepStrictEqual(sent.system, systems('apiKey'))
             assert.strictEqual(sent.model, 'native-override')
             assert.strictEqual(sent.max_tokens, 7654)
@@ -649,3 +671,7 @@ describe('PromptNormalization', () => {
     )
   })
 })
+
+import * as AnthropicAccountClient from 'effect-harness/provider-anthropic/AnthropicAccountClient'
+import * as HarnessAnthropicLanguageModel from 'effect-harness/provider-anthropic/AnthropicLanguageModel'
+import * as AnthropicAccountLanguageModel from 'effect-harness/provider-anthropic/AnthropicAccountLanguageModel'

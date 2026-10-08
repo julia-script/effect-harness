@@ -3,12 +3,20 @@
  */
 import { dual } from 'effect/Function'
 import * as handle from './internal/handle.ts'
-const DefinitionProto = handle.prototype('@effect-harness/durable/Document/Definition')
-const DocumentProto = handle.prototype('@effect-harness/durable/Document/Document')
-const SnapshotProto = handle.prototype('@effect-harness/durable/Document/Snapshot')
+const DefinitionProto = handle.prototype({
+  id: '@effect-harness/durable/Document/Definition',
+  fields: ['kind', 'version', 'scope', 'history', 'fork'],
+})
+const DocumentProto = handle.prototype({
+  id: '@effect-harness/durable/Document/Document',
+  fields: ['kind', 'version', 'scope', 'family'],
+})
+const SnapshotProto = handle.prototype({
+  id: '@effect-harness/durable/Document/Snapshot',
+  fields: ['record', 'version', 'value', 'deltasSinceBase'],
+})
 import type * as Pipeable from 'effect/Pipeable'
 import type * as Inspectable from 'effect/Inspectable'
-import * as Serialization from './Serialization.ts'
 import { identity } from 'effect/Function'
 import * as Predicate from 'effect/Predicate'
 import type * as Types from 'effect/Types'
@@ -21,7 +29,7 @@ import * as Schema from 'effect/Schema'
 import * as Record from './Record.ts'
 import * as Effect from 'effect/Effect'
 import * as Result from 'effect/Result'
-import { rejected, StorageError, Invalid } from './StorageError.ts'
+import { rejected, type StorageError, InvalidError } from './StorageError.ts'
 import {
   detached,
   detachedUnsafe,
@@ -39,19 +47,11 @@ export { CloneError } from './storage/internal/state.ts'
 const DefinitionTypeId = '~@effect-harness/durable/Document/Definition'
 const TypeId = '~@effect-harness/durable/Document'
 const SnapshotTypeId = '~@effect-harness/durable/Document/Snapshot'
+const MigrationCacheProto = handle.prototype({
+  id: '@effect-harness/durable/Document/MigrationCache',
+  fields: ['values'],
+})
 const MigrationCacheTypeId = '~@effect-harness/durable/Document/MigrationCache'
-/**
- * Schema, initialization, migration and history policies for a document kind.
- *
- * @category models
- */
-export type Definition<T extends object> = Document.Definition<T>
-/**
- * Document definition supplied before the library adds its nominal identity.
- *
- * @category models
- */
-export type DefinitionInput<T extends object> = Document.DefinitionInput<T>
 /**
  * Typed token identifying a singleton or keyed document family.
  *
@@ -69,7 +69,7 @@ export type DefinitionInput<T extends object> = Document.DefinitionInput<T>
 export interface Document<in out T extends object>
   extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [TypeId]: { readonly _T: Types.Invariant<T> }
-  readonly definition: Definition<T>
+  readonly definition: Document.Definition<T>
   readonly family: boolean
 }
 /**
@@ -81,15 +81,23 @@ export interface Document<in out T extends object>
  *
  * @category guards
  */
-export const isDocument = (input: unknown): input is Document<object> =>
-  Predicate.hasProperty(input, TypeId)
-const construct = <T extends object>(input: DefinitionInput<T>, family: boolean): Document<T> => {
+export const isDocument = (u: unknown): u is Document.Any => Predicate.hasProperty(u, TypeId)
+const makeDocument = <T extends object>(
+  input: Document.DefinitionInput<T>,
+  family: boolean,
+): Document<T> => {
   const definition = handle.make(DefinitionProto, {
     ...input,
     [DefinitionTypeId]: { _T: identity },
   })
   Object.defineProperty(definition, DefinitionTypeId, { enumerable: false })
-  const token = handle.make(DocumentProto, { definition, family, [TypeId]: { _T: identity } })
+  // Definition fields above are owned data properties captured by the original spread.
+  // Reusing them for diagnostics does not resample the caller's accessors.
+  const token = handle.make(
+    DocumentProto,
+    { definition, family, [TypeId]: { _T: identity } },
+    { kind: definition.kind, version: definition.version, scope: definition.scope },
+  )
   return Object.defineProperty(token, TypeId, { enumerable: false })
 }
 /**
@@ -101,7 +109,7 @@ export class DocumentDefinitionError extends Schema.TaggedError<DocumentDefiniti
   '@effect-harness/durable/Document/DocumentDefinitionError',
 )('DocumentDefinitionError', { message: Schema.String }) {}
 const checkDefinition = <T extends object>(
-  definition: DefinitionInput<T>,
+  definition: Document.DefinitionInput<T>,
 ): Result.Result<void, DocumentDefinitionError> => {
   if (
     definition.kind.length === 0 ||
@@ -153,9 +161,9 @@ const checkDefinition = <T extends object>(
  * @category constructors
  */
 export const define = <T extends object>(
-  definition: DefinitionInput<T>,
+  definition: Document.DefinitionInput<T>,
 ): Result.Result<Document<T>, DocumentDefinitionError> =>
-  Result.map(checkDefinition(definition), () => construct(definition, false))
+  Result.map(checkDefinition(definition), () => makeDocument(definition, false))
 /**
  * Validates a document definition and creates a keyed-family token.
  *
@@ -172,9 +180,9 @@ export const define = <T extends object>(
  * @category constructors
  */
 export const family = <T extends object>(
-  definition: DefinitionInput<T>,
+  definition: Document.DefinitionInput<T>,
 ): Result.Result<Document<T>, DocumentDefinitionError> =>
-  Result.map(checkDefinition(definition), () => construct(definition, true))
+  Result.map(checkDefinition(definition), () => makeDocument(definition, true))
 /**
  * Creates a singleton token or throws for an invalid definition.
  *
@@ -190,8 +198,9 @@ export const family = <T extends object>(
  * @see {@link define} for validation as a Result.
  * @category constructors
  */
-export const defineUnsafe = <T extends object>(definition: DefinitionInput<T>): Document<T> =>
-  Result.getOrThrow(define(definition))
+export const defineUnsafe = <T extends object>(
+  definition: Document.DefinitionInput<T>,
+): Document<T> => Result.getOrThrow(define(definition))
 /**
  * Creates a family token or throws for an invalid definition.
  *
@@ -203,27 +212,9 @@ export const defineUnsafe = <T extends object>(definition: DefinitionInput<T>): 
  * @see {@link family} for validation as a Result.
  * @category constructors
  */
-export const familyUnsafe = <T extends object>(definition: DefinitionInput<T>): Document<T> =>
-  Result.getOrThrow(family(definition))
-/**
- * Ownership traversal target constructors.
- *
- * @category models
- */
-export type Target = Document.Target
-/**
- * Detached document record and decoded value at a stored revision.
- *
- * @category models
- */
-export type Snapshot<T extends object = Record.JsonObject> = Document.Snapshot<T>
-
-/**
- * Fields supplied when constructing a nominal document snapshot.
- *
- * @category models
- */
-export type SnapshotInput<T extends object = Record.JsonObject> = Document.SnapshotInput<T>
+export const familyUnsafe = <T extends object>(
+  definition: Document.DefinitionInput<T>,
+): Document<T> => Result.getOrThrow(family(definition))
 /**
  * Creates a nominal document-snapshot carrier from supplied fields.
  *
@@ -238,14 +229,16 @@ export type SnapshotInput<T extends object = Record.JsonObject> = Document.Snaps
  *
  * @category constructors
  */
-export const makeSnapshot = <T extends object>(input: SnapshotInput<T>): Snapshot<T> => {
+export const makeSnapshot = <T extends object>(
+  input: Document.SnapshotInput<T>,
+): Document.Snapshot<T> => {
   const value = handle.make(SnapshotProto, handle.marked(input, SnapshotTypeId, { _T: identity }))
   return Object.defineProperty(value, SnapshotTypeId, { enumerable: false })
 }
 
 const addressImpl = Effect.fnUntraced(function* <T extends object>(
   self: Document<T>,
-  target: Target = {},
+  target: Document.Target = {},
 ): Effect.fn.Return<Record.Address, StorageError> {
   const definition = self.definition
   if (
@@ -257,14 +250,13 @@ const addressImpl = Effect.fnUntraced(function* <T extends object>(
   if (self.family !== (target.key !== undefined))
     return yield* rejected('Document family requires an explicit key; singleton excludes it')
   let scope: Record.Scope
-  if (definition.scope === 'session') scope = { _tag: 'session', kind: 'session' }
+  if (definition.scope === 'session') scope = { _tag: 'session' }
   else if (definition.scope === 'conversation')
     scope = {
       _tag: 'conversation',
-      kind: 'conversation',
       conversationId: yield* validate(Record.ConversationId, target.owner),
     }
-  else scope = { _tag: 'task', kind: 'task', taskId: yield* validate(Record.TaskId, target.owner) }
+  else scope = { _tag: 'task', taskId: yield* validate(Record.TaskId, target.owner) }
   if (definition.scope === 'conversation') {
     if (
       definition.history === undefined ||
@@ -282,9 +274,9 @@ const addressImpl = Effect.fnUntraced(function* <T extends object>(
  *
  * @category models
  */
-export interface MigrationCache {
+export interface MigrationCache extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [MigrationCacheTypeId]: typeof MigrationCacheTypeId
-  readonly values: WeakMap<object, Cache.Cache<string, Record.JsonObject, StorageError>>
+  readonly values: WeakMap<object, Cache.Cache<string, Schema.JsonObject, StorageError>>
   readonly permit: Semaphore.Semaphore
 }
 /**
@@ -296,36 +288,32 @@ export interface MigrationCache {
  *
  * @category guards
  */
-export const isMigrationCache = (input: unknown): input is MigrationCache =>
-  Predicate.hasProperty(input, MigrationCacheTypeId)
+export const isMigrationCache = (u: unknown): u is MigrationCache =>
+  Predicate.hasProperty(u, MigrationCacheTypeId)
 /**
  * Creates a token-local migration cache with captured decoding services.
  *
  * @category constructors
  */
 export const makeMigrationCache: Effect.Effect<MigrationCache> = Effect.gen(function* () {
-  const cache: MigrationCache = {
+  const cache = handle.make<
+    Omit<MigrationCache, keyof Pipeable.Pipeable | keyof Inspectable.Inspectable>
+  >(MigrationCacheProto, {
     [MigrationCacheTypeId]: MigrationCacheTypeId,
-    values: new WeakMap(),
+    values: new WeakMap<object, Cache.Cache<string, Schema.JsonObject, StorageError>>(),
     permit: yield* Semaphore.make(1),
-  }
+  })
   return Object.defineProperty(cache, MigrationCacheTypeId, { enumerable: false })
 })
-/**
- * Recursively mutable view of decoded document data.
- *
- * @category models
- */
-export type Draft<T> = Document.Draft<T>
 
 const typedImpl = Effect.fnUntraced(function* <T extends object>(
   self: Document<T>,
-  snapshot: Snapshot,
+  snapshot: Document.Snapshot,
   cache?: MigrationCache,
-): Effect.fn.Return<Snapshot<T>, StorageError> {
+): Effect.fn.Return<Document.Snapshot<T>, StorageError> {
   const definition = self.definition
   if (
-    snapshot.record.scope.kind !== definition.scope ||
+    snapshot.record.scope._tag !== definition.scope ||
     snapshot.record.history !== definition.history ||
     snapshot.record.fork !== definition.fork
   )
@@ -342,12 +330,14 @@ const typedImpl = Effect.fnUntraced(function* <T extends object>(
       const [_id, version, storedValue] = yield* Schema.decodeEffect(
         Schema.fromJsonString(Schema.Tuple([Record.DocumentId, Schema.Int, Schema.JsonObject])),
       )(key).pipe(
-        Effect.mapError((cause) => rejected('Invalid migration cache snapshot', Invalid, cause)),
+        Effect.mapError((cause) =>
+          rejected('Invalid migration cache snapshot', InvalidError, cause),
+        ),
       )
       const input = yield* detachedEffect(storedValue)
       const migrated = yield* Effect.try({
         try: () => definition.migrate?.(input, version) ?? storedValue,
-        catch: (cause) => rejected('Document migration failed', Invalid, cause),
+        catch: (cause) => rejected('Document migration failed', InvalidError, cause),
       })
       const domain = yield* validate(
         Schema.toType(definition.schema),
@@ -385,23 +375,16 @@ const typedImpl = Effect.fnUntraced(function* <T extends object>(
 })
 
 /**
- * Canonical domain schemas may decode undefined-friendly fields; their storage form remains an object.
- *
- * @category combinators
- */
-export const jsonObjectCodec: typeof Serialization.object = Serialization.object
-
-/**
  * Encodes the decoded domain model into the separately validated JSON storage representation.
  *
  * @category schemas
  */
-export const encode = <T extends object>(
+const encodeImpl = <T extends object>(
   token: Document<T>,
   value: T,
-): Effect.Effect<Record.JsonObject, StorageError> =>
+): Effect.Effect<Schema.JsonObject, StorageError> =>
   Schema.encodeEffect(token.definition.schema)(value).pipe(
-    Effect.mapError((cause) => rejected('Document cannot be encoded', Invalid, cause)),
+    Effect.mapError((cause) => rejected('Document cannot be encoded', InvalidError, cause)),
     Effect.flatMap((encoded) => validate(Schema.JsonObject, encoded)),
   )
 
@@ -420,8 +403,8 @@ export const encode = <T extends object>(
  * @see {@link copyEffect} for the StorageError channel inside an Effect.
  * @category combinators
  */
-export const copy = <T>(self: T): Result.Result<Draft<T>, CloneError> =>
-  Result.map(detached(self), (self) => self as Draft<T>)
+export const copy = <T>(self: T): Result.Result<Document.Draft<T>, CloneError> =>
+  Result.map(detached(self), (self) => self as Document.Draft<T>)
 /**
  * Copies JSON data or throws when it cannot be detached.
  *
@@ -432,14 +415,15 @@ export const copy = <T>(self: T): Result.Result<Draft<T>, CloneError> =>
  * @see {@link copy} for a Result-based alternative.
  * @category combinators
  */
-export const copyUnsafe = <T>(self: T): Draft<T> => detachedUnsafe(self) as Draft<T>
+export const copyUnsafe = <T>(self: T): Document.Draft<T> =>
+  detachedUnsafe(self) as Document.Draft<T>
 /**
  * Copies active drafts into the typed storage channel inside Effect transactions.
  *
  * @category combinators
  */
-export const copyEffect = <T>(self: T): Effect.Effect<Draft<T>, StorageError> =>
-  detachedEffect(self).pipe(Effect.map((self) => self as Draft<T>))
+export const copyEffect = <T>(self: T): Effect.Effect<Document.Draft<T>, StorageError> =>
+  detachedEffect(self).pipe(Effect.map((self) => self as Document.Draft<T>))
 
 /**
  * Resolves a document token and target into its durable address.
@@ -448,11 +432,11 @@ export const copyEffect = <T>(self: T): Effect.Effect<Draft<T>, StorageError> =>
  */
 export const address: {
   (
-    target?: Target,
+    target?: Document.Target,
   ): <T extends object>(self: Document<T>) => Effect.Effect<Record.Address, StorageError>
   <T extends object>(
     self: Document<T>,
-    target?: Target,
+    target?: Document.Target,
   ): Effect.Effect<Record.Address, StorageError>
 } = dual((args) => isDocument(args[0]), addressImpl)
 
@@ -473,22 +457,53 @@ export const address: {
  */
 export const typed: {
   (
-    snapshot: Snapshot,
+    snapshot: Document.Snapshot,
     cache?: MigrationCache,
-  ): <T extends object>(self: Document<T>) => Effect.Effect<Snapshot<T>, StorageError>
+  ): <T extends object>(self: Document<T>) => Effect.Effect<Document.Snapshot<T>, StorageError>
   <T extends object>(
     self: Document<T>,
-    snapshot: Snapshot,
+    snapshot: Document.Snapshot,
     cache?: MigrationCache,
-  ): Effect.Effect<Snapshot<T>, StorageError>
+  ): Effect.Effect<Document.Snapshot<T>, StorageError>
 } = dual((args) => isDocument(args[0]), typedImpl)
 
 /**
  * Type-level contracts for `Document`.
  *
- * @category utility types
  */
 export declare namespace Document {
+  /** A document token whose invariant decoded type is deliberately erased.
+   * @category models
+   */
+  export interface Any extends Pipeable.Pipeable, Inspectable.Inspectable {
+    readonly [TypeId]: { readonly _T: unknown }
+    readonly definition: AnyDefinition
+    readonly family: boolean
+  }
+  /** Definition metadata and callbacks that remain safe after erasing the decoded type.
+   *
+   * The schema retains its identity through Schema.Constraint. Initialization and migration
+   * yield only object; checkpointWhen cannot be called with an unproven decoded value.
+   * @category models
+   */
+  export interface AnyDefinition extends Pipeable.Pipeable, Inspectable.Inspectable {
+    readonly [DefinitionTypeId]: { readonly _T: unknown }
+    readonly kind: string
+    readonly version: number
+    readonly scope: Record.Scope['_tag']
+    readonly history?: 'latest' | 'rewindable' | undefined
+    readonly fork?: 'asOf' | 'current' | 'initial' | undefined
+    readonly schema: Schema.Constraint
+    readonly initial: (seed?: Schema.Json) => object
+    readonly migrate?: ((value: Schema.JsonObject, fromVersion: number) => object) | undefined
+    readonly checkpointWhen?:
+      | ((
+          value: never,
+          ops: ReadonlyArray<Record.Op>,
+          info: { readonly deltasSinceBase: number },
+        ) => boolean)
+      | undefined
+  }
   /**
    * Schema and lifecycle policy for a document kind.
    *
@@ -520,7 +535,7 @@ export declare namespace Document {
     /**
      * Ownership scope determining whether an owner identity is required.
      */
-    readonly scope: Record.Scope['kind']
+    readonly scope: Record.Scope['_tag']
     /**
      * Conversation history policy: latest keeps present content; rewindable supports historical
      * cutoffs.
@@ -534,7 +549,7 @@ export declare namespace Document {
     /**
      * Codec between decoded document data and its JSON-object storage form.
      */
-    readonly schema: Schema.Codec<T, Record.JsonObject>
+    readonly schema: Schema.Codec<T, Schema.JsonObject>
     /**
      * Returns the initial decoded value.
      *
@@ -543,11 +558,11 @@ export declare namespace Document {
      * Seed decoding may throw. Session.transaction maps initializer failures to
      * rejected StorageError before commit.
      */
-    readonly initial: (seed?: Record.Json) => T
+    readonly initial: (seed?: Schema.Json) => T
     /**
      * Pure transformation from an older stored version to the current decoded model.
      */
-    readonly migrate?: ((value: Record.JsonObject, fromVersion: number) => T) | undefined
+    readonly migrate?: ((value: Schema.JsonObject, fromVersion: number) => T) | undefined
     /**
      * Selects when staged operations should be saved as a full checkpoint instead of another
      * delta.
@@ -596,7 +611,7 @@ export declare namespace Document {
     /**
      * JSON initialization input used only when creating a document incarnation.
      */
-    readonly seed?: Record.Json | undefined
+    readonly seed?: Schema.Json | undefined
   }
   /**
    * Detached decoded value and metadata at a document revision.
@@ -608,7 +623,7 @@ export declare namespace Document {
    *
    * @category models
    */
-  export interface Snapshot<out T extends object = Record.JsonObject>
+  export interface Snapshot<out T extends object = Schema.JsonObject>
     extends Pipeable.Pipeable, Inspectable.Inspectable {
     readonly [SnapshotTypeId]: { readonly _T: Types.Covariant<T> }
     readonly record: Record.Document
@@ -624,7 +639,7 @@ export declare namespace Document {
    *
    * @category models
    */
-  export type SnapshotInput<T extends object = Record.JsonObject> = Omit<
+  export type SnapshotInput<T extends object = Schema.JsonObject> = Omit<
     Snapshot<T>,
     typeof SnapshotTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
   >
@@ -641,3 +656,34 @@ export declare namespace Document {
         ? { -readonly [K in keyof T]: Draft<T[K]> }
         : T
 }
+
+/** Encodes a document value through its owned storage codec.
+ * @category combinators
+ */
+export const encode: {
+  <A extends object>(
+    value: A,
+  ): <T extends object>(
+    self: Document<T> & ([A] extends [T] ? unknown : never),
+  ) => Effect.Effect<Schema.JsonObject, StorageError>
+  <T extends object>(self: Document<T>, value: T): Effect.Effect<Schema.JsonObject, StorageError>
+} = dual(2, encodeImpl)
+
+/** Checks the decoded DocumentDefinitionError contract without decoding or coercing input.
+ * @category guards
+ */
+export const isDocumentDefinitionError: (u: unknown) => u is DocumentDefinitionError = Schema.is(
+  Schema.toType(DocumentDefinitionError),
+)
+
+/** Checks the nominal definition identity without recovering its invariant decoded type.
+ * @category guards
+ */
+export const isDefinition = (u: unknown): u is Document.AnyDefinition =>
+  Predicate.hasProperty(u, DefinitionTypeId)
+
+/** Checks the nominal snapshot identity at its safe covariant object target.
+ * @category guards
+ */
+export const isSnapshot = (u: unknown): u is Document.Snapshot<object> =>
+  Predicate.hasProperty(u, SnapshotTypeId)

@@ -22,21 +22,7 @@ export const DEFAULT_MAX_LINES = 2000
  *
  * @category constants
  */
-export const DEFAULT_MAX_BYTES = 50 * 1024 // 50KB
-
-/**
- * Retained head text with truncation and continuation metadata.
- *
- * @category models
- */
-export type TruncationResult = truncateHead.Result
-
-/**
- * Maximum retained lines and UTF-8 bytes.
- *
- * @category models
- */
-export type TruncationOptions = truncateHead.Options
+export const DEFAULT_MAX_BYTES = 50 * 1024
 
 const encoder = new TextEncoder()
 /**
@@ -60,13 +46,13 @@ function splitLinesForCounting(self: string): Array<string> {
  *
  * @category combinators
  */
-export function formatSize(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes}B`
-  } else if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)}KB`
+export function formatSize(self: number): string {
+  if (self < 1024) {
+    return `${self}B`
+  } else if (self < 1024 * 1024) {
+    return `${(self / 1024).toFixed(1)}KB`
   } else {
-    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
+    return `${(self / (1024 * 1024)).toFixed(1)}MB`
   }
 }
 
@@ -77,7 +63,7 @@ export function formatSize(bytes: number): string {
  * Never returns partial lines. If first line exceeds byte limit,
  * returns empty content with firstLineExceedsLimit=true.
  */
-function truncateHeadImpl(self: string, options: TruncationOptions = {}): TruncationResult {
+function truncateHeadImpl(self: string, options: truncateHead.Options = {}): truncateHead.Result {
   return truncateHeadOf(
     self,
     { lines: splitLinesForCounting(self).length, bytes: utf8ByteLength(self) },
@@ -90,8 +76,8 @@ function truncateHeadImpl(self: string, options: TruncationOptions = {}): Trunca
  * @category combinators
  */
 export const truncateHead: {
-  (options?: TruncationOptions): (self: string) => TruncationResult
-  (self: string, options?: TruncationOptions): TruncationResult
+  (options?: truncateHead.Options): (self: string) => truncateHead.Result
+  (self: string, options?: truncateHead.Options): truncateHead.Result
 } = dual((args) => typeof args[0] === 'string', truncateHeadImpl)
 
 /**
@@ -108,8 +94,8 @@ export const truncateHead: {
 function truncateHeadOfImpl(
   self: string,
   totals: { readonly lines: number; readonly bytes: number },
-  options: TruncationOptions = {},
-): TruncationResult {
+  options: truncateHead.Options = {},
+): truncateHead.Result {
   const maxLines = options.maxLines ?? DEFAULT_MAX_LINES
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES
 
@@ -194,7 +180,6 @@ function truncateHeadOfImpl(
 /**
  * Type-level contracts for `truncateHead`.
  *
- * @category utility types
  */
 export declare namespace truncateHead {
   /**
@@ -247,11 +232,11 @@ export declare namespace truncateHead {
 export const truncateHeadOf: {
   (
     totals: { readonly lines: number; readonly bytes: number },
-    options?: TruncationOptions,
-  ): (self: string) => TruncationResult
+    options?: truncateHead.Options,
+  ): (self: string) => truncateHead.Result
   (
     self: string,
     totals: { readonly lines: number; readonly bytes: number },
-    options?: TruncationOptions,
-  ): TruncationResult
+    options?: truncateHead.Options,
+  ): truncateHead.Result
 } = dual((args) => typeof args[0] === 'string', truncateHeadOfImpl)

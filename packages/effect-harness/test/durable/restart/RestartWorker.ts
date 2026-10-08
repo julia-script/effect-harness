@@ -7,7 +7,7 @@ import type * as Scope from 'effect/Scope'
 import type * as PlatformError from 'effect/PlatformError'
 import type * as Option from 'effect/Option'
 import * as ChildProcess from 'effect/process/ChildProcess'
-import * as Spawner from 'effect/process/ChildProcessSpawner'
+import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import * as Stream from 'effect/Stream'
 
 /** Each test owns its directory and native handles; SIGKILL remains a deliberate fault injection. */
@@ -17,16 +17,20 @@ export class RestartWorker extends Context.Service<
     readonly filename: string
     readonly spawn: (
       phase: string,
-    ) => Effect.Effect<Spawner.ChildProcessHandle, PlatformError.PlatformError, Scope.Scope>
+    ) => Effect.Effect<
+      ChildProcessSpawner.ChildProcessHandle,
+      PlatformError.PlatformError,
+      Scope.Scope
+    >
     readonly marker: (
-      handle: Spawner.ChildProcessHandle,
+      handle: ChildProcessSpawner.ChildProcessHandle,
       prefix: string,
     ) => Effect.Effect<
       Option.Option<string>,
       PlatformError.PlatformError | import('effect/Cause').TimeoutError
     >
   }
->()('test/RestartWorker') {
+>()('effect-harness/test/durable/restart/RestartWorker/RestartWorker') {
   static layer(options: {
     readonly fixture: string
     readonly databaseEnv: string
@@ -35,14 +39,14 @@ export class RestartWorker extends Context.Service<
   }): Layer.Layer<
     RestartWorker,
     PlatformError.PlatformError,
-    FileSystem.FileSystem | Path.Path | Spawner.ChildProcessSpawner
+    FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
   > {
     return Layer.effect(
       RestartWorker,
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const path = yield* Path.Path
-        const spawner = yield* Spawner.ChildProcessSpawner
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'durable-restart-' })
         const filename = path.join(directory, 'workflow.sqlite')
         return RestartWorker.of({

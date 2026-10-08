@@ -1,3 +1,4 @@
+import * as Serialization from './Serialization.ts'
 /**
  * Persisted model and tool accounting documents.
  */
@@ -21,8 +22,8 @@ export const UsageDoc = Document.defineUnsafe({
   scope: 'conversation',
   history: 'latest',
   fork: 'initial',
-  schema: Document.jsonObjectCodec(Usage.State),
-  initial: Usage.empty,
+  schema: Serialization.object(Usage.State),
+  initial: Usage.makeState,
   checkpointWhen: constTrue,
 })
 
@@ -42,7 +43,7 @@ export const record = Effect.fnUntraced(function* (
   const totals = state[bucket]
   const previous = Object.hasOwn(totals, key) ? totals[key] : undefined
   // Draft assignment defines own properties, including __proto__ and inherited Object names.
-  totals[key] = Usage.add(previous ?? Usage.zero(), usage)
+  totals[key] = Usage.add(previous ?? Usage.make(), usage)
 })
 
 /**
@@ -50,8 +51,9 @@ export const record = Effect.fnUntraced(function* (
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: sessionTotals is a public combinator over the supplied Session self capability; its facts, journal and owning lifetime must remain those of the selected instance even when ambient services differ.
 export const sessionTotals = Effect.fnUntraced(function* (
-  session: Session.Service,
+  session: Session.Session.Service,
 ): Effect.fn.Return<Usage.State, StorageError> {
   const states: Array<Usage.State> = []
   let cursor: Record.Cursor | undefined

@@ -1,10 +1,13 @@
 /**
  * Provider prompt projections that retain native message roles and opaque protocol data.
  */
+import * as Record from 'effect/Record'
+
 import { dual } from 'effect/Function'
 import * as Effect from 'effect/Effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
+import * as Predicate from 'effect/Predicate'
 import * as Base64 from 'effect/encoding/Base64'
 import type * as AiError from 'effect/ai/AiError'
 import type * as LanguageModel from 'effect/ai/LanguageModel'
@@ -46,7 +49,7 @@ export type ContentBlock = typeof ContentBlock.Type
  * @category models
  */
 export const AttachmentReference = Schema.Struct({
-  type: Schema.Literal('file'),
+  type: Schema.tag('file'),
   mediaType: Schema.String,
   fileName: Schema.optionalKey(Schema.String),
   attachment: Schema.NonEmptyString,
@@ -167,13 +170,14 @@ const prepareImpl = Effect.fnUntraced(function* (
         if (part.type === 'file') {
           const attachment = `attachment_${attachments.length}`
           attachments.push(yield* fileContent(part))
-          parts.push({
-            type: 'file',
-            mediaType: part.mediaType,
-            ...(part.fileName === undefined ? {} : { fileName: part.fileName }),
-            attachment,
-            options: part.options ?? {},
-          })
+          parts.push(
+            AttachmentReference.make({
+              mediaType: part.mediaType,
+              ...(part.fileName === undefined ? {} : { fileName: part.fileName }),
+              attachment,
+              options: part.options ?? {},
+            }),
+          )
         } else parts.push(part)
       }
       messages.push({ role: message.role, content: parts, options: encoded.options ?? {} })
@@ -191,7 +195,7 @@ const prepareImpl = Effect.fnUntraced(function* (
     )
   } else
     for (const message of self.prompt.content) {
-      if (Object.keys(message.options).length > 0)
+      if (!Record.isEmptyReadonlyRecord(message.options))
         return yield* unsupported('message provider options')
       if (message.role === 'system') {
         system.push(message.content)
@@ -202,7 +206,8 @@ const prepareImpl = Effect.fnUntraced(function* (
           'importing arbitrary assistant/tool or multi-turn user history; explicitly opt into transcript historyMode',
         )
       for (const part of message.content) {
-        if (Object.keys(part.options).length > 0) return yield* unsupported('part provider options')
+        if (!Record.isEmptyReadonlyRecord(part.options))
+          return yield* unsupported('part provider options')
         if (part.type === 'text') content.push({ type: 'text', text: part.text })
         else content.push(yield* fileContent(part))
       }
@@ -214,11 +219,13 @@ const prepareImpl = Effect.fnUntraced(function* (
   else if (self.toolChoice !== 'auto') {
     if (
       typeof self.toolChoice === 'string' ||
+      // effect-nit-allow P1-predicate-module-guards: this foreign ToolChoice union needs TypeScript's negative in-operator narrowing for the oneOf variant; hasProperty cannot exclude its tool sibling on false.
       'tool' in self.toolChoice ||
       self.toolChoice.mode === 'required'
     )
       return yield* unsupported('required tool choice')
     const names = new Set(self.toolChoice.oneOf)
+    // effect-nit-allow P1-stdlib-collection-replacements: this public/native array may contain missing indices or inherited numeric accessors; native filter preserves HasProperty/Get and callback order, skips holes, and keeps explicit undefined distinct. Effect Array.filter visits missing slots.
     tools = tools.filter((tool) => names.has(tool.name))
   }
   return { system: system.join('\n\n'), content, tools }
@@ -244,4 +251,31 @@ export const prepare: {
     historyMode?: HistoryMode,
   ): (self: LanguageModel.ProviderOptions) => ReturnType<typeof prepareImpl>
   (self: LanguageModel.ProviderOptions, historyMode?: HistoryMode): ReturnType<typeof prepareImpl>
-} = dual((args) => typeof args[0] === 'object' && args[0] !== null, prepareImpl)
+} = dual(
+  Predicate.mapInput(Predicate.isObjectOrArray, (args: IArguments) => args[0]),
+  prepareImpl,
+)
+
+/** Checks the decoded ContentBlock contract without decoding or coercing input.
+ * @category guards
+ */
+export const isContentBlock: (u: unknown) => u is ContentBlock = Schema.is(
+  Schema.toType(ContentBlock),
+)
+
+/** Checks the decoded AttachmentReference contract without decoding or coercing input.
+ * @category guards
+ */
+export const isAttachmentReference: (u: unknown) => u is AttachmentReference = Schema.is(
+  Schema.toType(AttachmentReference),
+)
+
+/** Checks the decoded Transcript contract without decoding or coercing input.
+ * @category guards
+ */
+export const isTranscript: (u: unknown) => u is Transcript = Schema.is(Schema.toType(Transcript))
+
+/** Checks the decoded UserFrame contract without decoding or coercing input.
+ * @category guards
+ */
+export const isUserFrame: (u: unknown) => u is UserFrame = Schema.is(Schema.toType(UserFrame))

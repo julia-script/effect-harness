@@ -6,14 +6,14 @@ This reference covers Session transactions, document definitions and the built-i
 
 `session.transaction(callback, options?)` evaluates an Effect callback against an isolated candidate. Success publishes all validated writes atomically; failure rejects the candidate. Callback error and environment channels are retained alongside StorageError.
 
-Table queries must precede table mutations. A later table read fails with ReadAfterWrite. Document drafts support staged reads and writes within the callback. Transactions and drafts are revoked when that callback ends; access afterward fails with Revoked.
+Table queries must precede table mutations. A later table read fails with ReadAfterWriteError. Document drafts support staged reads and writes within the callback. Transactions and drafts are revoked when that callback ends; access afterward fails with RevokedError.
 
 | Options                 | Result contract                           | Replay behavior                                                                                 |
 | ----------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | Omitted / unkeyed       | Arbitrary callback result, including void | Callback executes each time                                                                     |
 | `{ key, fingerprint? }` | JSON-safe result or void                  | Writes and result commit together; same key returns original result without evaluating callback |
 
-A changed fingerprint fails with Conflict. An omitted fingerprint is stored as the empty string. Void has its own receipt representation and is distinct from JSON null. Transaction keys are scoped to the Store.
+A changed fingerprint fails with ConflictError. An omitted fingerprint is stored as the empty string. Void has its own receipt representation and is distinct from JSON null. Transaction keys are scoped to the Store.
 
 `Document.copy(draft)` returns a Result with detached data or CloneError. `copyEffect` maps copying into the StorageError channel. `copyUnsafe` throws synchronously. Copies must be taken while the draft is active. External actions performed during a callback are not rolled back by candidate rejection.
 
@@ -75,20 +75,20 @@ JSONL fsync is enabled only when explicitly true; without it, successful writes 
 
 StorageError carries a structured reason, message/cause projections and `certainty: 'rejected' | 'uncertain'`. No reason currently supplies automatic retry policy.
 
-| Reason         | Meaning                                                         |
-| -------------- | --------------------------------------------------------------- |
-| Invalid        | Invalid domain data or rejected operation                       |
-| Conflict       | Incompatible update or receipt fingerprint reuse                |
-| NotFound       | Required record absent                                          |
-| Closed         | Admission after sealing                                         |
-| Poisoned       | Open Store has an unresolved persistence outcome                |
-| Corrupt        | Invalid persisted state, receipt or frame                       |
-| Io             | Backend failure; certainty states rejected or uncertain outcome |
-| ReadAfterWrite | Table query after table mutations in one transaction            |
-| Revoked        | Transaction/draft used after its callback ended                 |
+| Reason              | Meaning                                                         |
+| ------------------- | --------------------------------------------------------------- |
+| InvalidError        | InvalidError domain data or rejected operation                  |
+| ConflictError       | Incompatible update or receipt fingerprint reuse                |
+| NotFoundError       | Required record absent                                          |
+| ClosedError         | Admission after sealing                                         |
+| PoisonedError       | Open Store has an unresolved persistence outcome                |
+| CorruptError        | InvalidError persisted state, receipt or frame                  |
+| IoError             | Backend failure; certainty states rejected or uncertain outcome |
+| ReadAfterWriteError | Table query after table mutations in one transaction            |
+| RevokedError        | Transaction/draft used after its callback ended                 |
 
 Rejected means the candidate was not published. Uncertain means publication may have happened. Uncertain persistence or coordination outcomes poison the open Store; reopening and inspecting receipts is required before continuing writes.
 
-## Format compatibility
+## Storage format
 
-Version-1 key/value snapshots retain their envelope. Retired bespoke SQLite tables (`durable_state`, `durable_journal`, `durable_receipt`) are not imported automatically. Their adapters and platform factory subpaths are excluded from exports. An old format needs an explicit export/migration with the software version that understands it. Replacing domain state with an empty snapshot while retaining native engine records is unsupported.
+The library stores versioned key/value snapshots and validates their envelopes on read. Domain state and native workflow records must be restored together; replacing domain state with an empty snapshot while retaining native engine records is unsupported.

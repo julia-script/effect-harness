@@ -1,3 +1,4 @@
+import * as Function from 'effect/Function'
 /**
  * Exact finite epoch-millisecond codecs for UTC domain timestamps.
  */
@@ -12,7 +13,7 @@ const origin = DateTime.fromEpochSeconds(0)
  * @category constructors
  */
 export const fromEpochMillis = (millis: number): DateTime.Utc =>
-  DateTime.mapEpochMillis(origin, () => millis)
+  DateTime.mapEpochMillis(origin, Function.constant(millis))
 /**
  * Domain instant codec retaining the exact finite numeric epoch-millisecond storage representation.
  *
@@ -24,3 +25,9 @@ export const EpochMillis = Schema.Finite.pipe(
     encode: SchemaGetter.transform(DateTime.toEpochMillis),
   }),
 )
+/**
+ * Native UTC instant encoded as exact finite epoch milliseconds.
+ *
+ * @category models
+ */
+export type EpochMillis = typeof EpochMillis.Type

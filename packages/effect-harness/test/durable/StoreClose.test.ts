@@ -1,6 +1,5 @@
 import * as TestClock from 'effect/testing/TestClock'
-import { assertFailure } from '@effect/vitest/utils'
-// effect-review-allow P8-tests-import-public-specifiers: these adversarial tests exercise private storage validation seams that intentionally have no public package export; all public behavior uses package specifiers.
+import { assertExitFailure, assertFailure } from '@effect/vitest/utils'
 import * as Identity from 'effect-harness/durable/Identity'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
@@ -12,9 +11,11 @@ import * as Cause from 'effect/Cause'
 import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
 import * as Store from 'effect-harness/durable/Store'
-import * as Backend from '../../src/durable/storage/internal/backend.ts'
+// effect-nit-allow P8-tests-import-public-specifiers: these adversarial tests exercise private storage validation seams that intentionally have no public package export; all public behavior uses package specifiers.
+// effect-nit-allow P9-no-internal-cross-import: these adversarial tests exercise private storage validation seams that intentionally have no public package export; all public behavior uses package specifiers.
+import * as backend from '../../src/durable/storage/internal/backend.ts'
 import * as Cancellation from 'effect-harness/durable/workflow/Cancellation'
-import { rejected, Io, Closed } from 'effect-harness/durable/StorageError'
+import { rejected, IoError, ClosedError } from 'effect-harness/durable/StorageError'
 
 const child = Effect.acquireRelease(Scope.make(), (scope, exit) => Scope.close(scope, exit))
 // Polling is modeled time: the caller first admits a stream/read or scope-close fiber.
@@ -32,22 +33,24 @@ describe('StoreClose', () => {
     () =>
       Effect.gen(function* () {
         const scope = yield* child
-        let saved: Backend.Snapshot = { state: Record.emptyState(), frames: [] }
+        let saved: backend.Backend.Snapshot = { state: Record.emptyState(), frames: [] }
         let releases = 0
-        const store = yield* Backend.make(
-          {
-            load: Effect.sync(() => saved),
-            committed: Effect.sync(() => saved),
-            save: (value) =>
-              Effect.sync(() => {
-                saved = value
-              }),
-            atomic: (effect) => effect,
-          },
-          Effect.sync(() => {
-            releases++
-          }),
-        ).pipe(Scope.provide(scope))
+        const store = yield* backend
+          .make(
+            {
+              load: Effect.sync(() => saved),
+              committed: Effect.sync(() => saved),
+              save: (value) =>
+                Effect.sync(() => {
+                  saved = value
+                }),
+              atomic: (effect) => effect,
+            },
+            Effect.sync(() => {
+              releases++
+            }),
+          )
+          .pipe(Scope.provide(scope))
         const session = yield* Session.make.pipe(
           Effect.provideService(Store.Store, store),
           Scope.provide(scope),
@@ -72,14 +75,13 @@ describe('StoreClose', () => {
         const late = yield* session
           .transaction((tx) => tx.appendEntry(root.id, { kind: 'late' }))
           .pipe(Effect.result)
-        assertFailure(late, rejected('Session is closed', Closed))
+        assertFailure(late, rejected('Session is closed', ClosedError))
         assert.strictEqual(releases, 0)
         const waiter = yield* session.awaitClosed.pipe(Effect.forkScoped)
+        const interruptor = yield* Effect.withFiber((fiber) => Effect.succeed(fiber.id))
         yield* Fiber.interrupt(waiter)
         const cancelled = yield* Fiber.await(waiter)
-        assert.ok(Exit.isFailure(cancelled))
-        // Only this receipt waiter is cancelled; runtime-assigned fiber IDs vary.
-        if (Exit.isFailure(cancelled)) assert.ok(Cause.hasInterruptsOnly(cancelled.cause))
+        assertExitFailure(cancelled, Cause.interrupt(interruptor))
         const repeated = yield* session.awaitClosed.pipe(Effect.forkScoped)
         yield* Deferred.succeed(release, undefined)
         const entry = yield* joinObserved(admitted)
@@ -93,7 +95,7 @@ describe('StoreClose', () => {
           [entry.id],
         )
         const sealed = yield* session.committed.pipe(Effect.flip)
-        assert.strictEqual(sealed.reason._tag, 'Closed')
+        assert.strictEqual(sealed.reason._tag, 'ClosedError')
         assert.strictEqual(sealed.message, 'Session is closed')
       }),
   )
@@ -105,22 +107,24 @@ describe('StoreClose', () => {
         const entered = yield* Deferred.make<void>()
         const release = yield* Deferred.make<void>()
         let releases = 0
-        const failure = rejected('release fixture', Io)
-        const value: Backend.Snapshot = { state: Record.emptyState(), frames: [] }
-        const store = yield* Backend.make(
-          {
-            load: Effect.succeed(value),
-            committed: Deferred.succeed(entered, undefined).pipe(
-              Effect.andThen(Deferred.await(release)),
-              Effect.as(value),
-            ),
-            save: () => Effect.void,
-            atomic: (effect) => effect,
-          },
-          Effect.sync(() => {
-            releases++
-          }).pipe(Effect.andThen(Effect.fail(failure))),
-        ).pipe(Scope.provide(scope))
+        const failure = rejected('release fixture', IoError)
+        const value: backend.Backend.Snapshot = { state: Record.emptyState(), frames: [] }
+        const store = yield* backend
+          .make(
+            {
+              load: Effect.succeed(value),
+              committed: Deferred.succeed(entered, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.as(value),
+              ),
+              save: () => Effect.void,
+              atomic: (effect) => effect,
+            },
+            Effect.sync(() => {
+              releases++
+            }).pipe(Effect.andThen(Effect.fail(failure))),
+          )
+          .pipe(Scope.provide(scope))
         const session = yield* Session.make.pipe(
           Effect.provideService(Store.Store, store),
           Scope.provide(scope),
@@ -133,8 +137,7 @@ describe('StoreClose', () => {
         yield* Deferred.succeed(release, undefined)
         assert.deepStrictEqual(yield* joinObserved(reader), value.state)
         const closed = yield* joinObserved(closing)
-        assert.ok(Exit.isFailure(closed))
-        if (Exit.isFailure(closed)) assert.strictEqual(Cause.squash(closed.cause), failure)
+        assertExitFailure(closed, Cause.die(failure))
         for (let repeat = 0; repeat < 2; repeat++) {
           const receipt = yield* store.awaitClosed.pipe(Effect.result)
           assertFailure(receipt, failure)
@@ -150,18 +153,20 @@ describe('StoreClose', () => {
       Effect.gen(function* () {
         const scope = yield* child
         const calls: string[] = []
-        const value: Backend.Snapshot = { state: Record.emptyState(), frames: [] }
-        const store = yield* Backend.make(
-          {
-            load: Effect.succeed(value),
-            committed: Effect.succeed(value),
-            save: () => Effect.void,
-            atomic: (effect) => effect,
-          },
-          Effect.sync(() => {
-            calls.push('backend')
-          }),
-        ).pipe(Scope.provide(scope))
+        const value: backend.Backend.Snapshot = { state: Record.emptyState(), frames: [] }
+        const store = yield* backend
+          .make(
+            {
+              load: Effect.succeed(value),
+              committed: Effect.succeed(value),
+              save: () => Effect.void,
+              atomic: (effect) => effect,
+            },
+            Effect.sync(() => {
+              calls.push('backend')
+            }),
+          )
+          .pipe(Scope.provide(scope))
         const session = yield* Session.make.pipe(
           Effect.provideService(Store.Store, store),
           Scope.provide(scope),
@@ -203,7 +208,7 @@ describe('StoreClose', () => {
         yield* session.awaitClosed
         assert.deepStrictEqual(calls, ['second', 'first', 'backend'])
         const rejectedRegistration = yield* session.onClose(Effect.void).pipe(Effect.result)
-        assertFailure(rejectedRegistration, rejected('Session is closed', Closed))
+        assertFailure(rejectedRegistration, rejected('Session is closed', ClosedError))
       }),
   )
   it.effect('Cancellation registration membership belongs independently to each caller Scope', () =>
@@ -211,16 +216,18 @@ describe('StoreClose', () => {
       const scope = yield* child
       const first = yield* child
       const second = yield* child
-      let value: Backend.Snapshot = { state: Record.emptyState(), frames: [] }
-      const store = yield* Backend.make({
-        load: Effect.sync(() => value),
-        committed: Effect.sync(() => value),
-        save: (next) =>
-          Effect.sync(() => {
-            value = next
-          }),
-        atomic: (effect) => effect,
-      }).pipe(Scope.provide(scope))
+      let value: backend.Backend.Snapshot = { state: Record.emptyState(), frames: [] }
+      const store = yield* backend
+        .make({
+          load: Effect.sync(() => value),
+          committed: Effect.sync(() => value),
+          save: (next) =>
+            Effect.sync(() => {
+              value = next
+            }),
+          atomic: (effect) => effect,
+        })
+        .pipe(Scope.provide(scope))
       const session = yield* Session.make.pipe(
         Effect.provideService(Store.Store, store),
         Scope.provide(scope),
@@ -264,18 +271,20 @@ describe('StoreClose', () => {
       const scope = yield* child
       const calls: string[] = []
       const failure = new Error('cleanup defect fixture')
-      const value: Backend.Snapshot = { state: Record.emptyState(), frames: [] }
-      const store = yield* Backend.make(
-        {
-          load: Effect.succeed(value),
-          committed: Effect.succeed(value),
-          save: () => Effect.void,
-          atomic: (effect) => effect,
-        },
-        Effect.sync(() => {
-          calls.push('backend')
-        }),
-      ).pipe(Scope.provide(scope))
+      const value: backend.Backend.Snapshot = { state: Record.emptyState(), frames: [] }
+      const store = yield* backend
+        .make(
+          {
+            load: Effect.succeed(value),
+            committed: Effect.succeed(value),
+            save: () => Effect.void,
+            atomic: (effect) => effect,
+          },
+          Effect.sync(() => {
+            calls.push('backend')
+          }),
+        )
+        .pipe(Scope.provide(scope))
       const session = yield* Session.make.pipe(
         Effect.provideService(Store.Store, store),
         Scope.provide(scope),
@@ -286,11 +295,10 @@ describe('StoreClose', () => {
         }),
       )
       yield* session.onClose(Effect.die(failure))
-      assert.ok(Exit.isFailure(yield* Scope.close(scope, Exit.void).pipe(Effect.exit)))
+      assertExitFailure(yield* Scope.close(scope, Exit.void).pipe(Effect.exit), Cause.die(failure))
       for (let repeat = 0; repeat < 2; repeat++) {
         const receipt = yield* session.awaitClosed.pipe(Effect.exit)
-        assert.ok(Exit.isFailure(receipt))
-        if (Exit.isFailure(receipt)) assert.strictEqual(Cause.squash(receipt.cause), failure)
+        assertExitFailure(receipt, Cause.die(failure))
       }
       yield* store.awaitClosed
       assert.deepStrictEqual(calls, ['remaining', 'backend'])
@@ -304,18 +312,20 @@ describe('StoreClose', () => {
         let entered = false
         let backendReleased = false
         const registered = yield* Deferred.make<void>()
-        const value: Backend.Snapshot = { state: Record.emptyState(), frames: [] }
-        const store = yield* Backend.make(
-          {
-            load: Effect.succeed(value),
-            committed: Effect.succeed(value),
-            save: () => Effect.void,
-            atomic: (effect) => effect,
-          },
-          Effect.sync(() => {
-            backendReleased = true
-          }),
-        ).pipe(Scope.provide(scope))
+        const value: backend.Backend.Snapshot = { state: Record.emptyState(), frames: [] }
+        const store = yield* backend
+          .make(
+            {
+              load: Effect.succeed(value),
+              committed: Effect.succeed(value),
+              save: () => Effect.void,
+              atomic: (effect) => effect,
+            },
+            Effect.sync(() => {
+              backendReleased = true
+            }),
+          )
+          .pipe(Scope.provide(scope))
         const session = yield* Session.make.pipe(
           Effect.provideService(Store.Store, store),
           Scope.provide(scope),
@@ -356,18 +366,20 @@ describe('StoreClose', () => {
         const scope = yield* child
         let backendReleased = false
         let bodyReleased = false
-        const value: Backend.Snapshot = { state: Record.emptyState(), frames: [] }
-        const store = yield* Backend.make(
-          {
-            load: Effect.succeed(value),
-            committed: Effect.succeed(value),
-            save: () => Effect.void,
-            atomic: (effect) => effect,
-          },
-          Effect.sync(() => {
-            backendReleased = true
-          }),
-        ).pipe(Scope.provide(scope))
+        const value: backend.Backend.Snapshot = { state: Record.emptyState(), frames: [] }
+        const store = yield* backend
+          .make(
+            {
+              load: Effect.succeed(value),
+              committed: Effect.succeed(value),
+              save: () => Effect.void,
+              atomic: (effect) => effect,
+            },
+            Effect.sync(() => {
+              backendReleased = true
+            }),
+          )
+          .pipe(Scope.provide(scope))
         const session = yield* Session.make.pipe(
           Effect.provideService(Store.Store, store),
           Scope.provide(scope),

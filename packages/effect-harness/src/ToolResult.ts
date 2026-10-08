@@ -4,7 +4,7 @@
 import * as Effect from 'effect/Effect'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
-import type { Diagnostic, ToolResult } from './Invocation.ts'
+import type { Diagnostic, Result } from './Invocation.ts'
 import * as Serialization from './Serialization.ts'
 
 /**
@@ -51,7 +51,7 @@ export function renderDiagnostics(self: ReadonlyArray<Diagnostic>): string {
  *
  * @category combinators
  */
-export const encode = (self: ToolResult): Effect.Effect<Schema.Json, Schema.SchemaError> =>
+export const encode = (self: Result): Effect.Effect<Schema.Json, Schema.SchemaError> =>
   Schema.encodeEffect(Schema.toCodecJson(Envelope))({
     _tag: '@effect-harness/ToolContent',
     content: [
@@ -63,7 +63,11 @@ export const encode = (self: ToolResult): Effect.Effect<Schema.Json, Schema.Sche
   }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Json)))
 
 /**
- * Decode only the explicit harness envelope; unrelated native tool results are handled by the native provider.
+ * Decodes the explicit harness tool-content envelope.
+ *
+ * **Details**
+ *
+ * Unrelated native tool results are handled by the native provider.
  *
  * @category combinators
  */

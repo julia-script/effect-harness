@@ -1,3 +1,5 @@
+import * as Function from 'effect/Function'
+import { dual } from 'effect/Function'
 /**
  * Typed arbitrary-value conversion and explicit unencodable display markers.
  */
@@ -25,13 +27,13 @@ export class SerializationError extends Schema.TaggedError<SerializationError>(
 export const unencodable = '[unencodable value]'
 
 /**
- * Preserve JSON conversion failures without invoking arbitrary object coercion.
+ * Serializes a value to JSON while retaining conversion failures as SerializationError.
  *
  * @category combinators
  */
-export const stringify = (value: unknown): Result.Result<string, SerializationError> =>
+export const stringify = (self: unknown): Result.Result<string, SerializationError> =>
   Result.try({
-    try: () => JSON.stringify(value),
+    try: () => JSON.stringify(self),
     catch: (cause) => new SerializationError({ message: 'Value cannot be encoded as JSON', cause }),
   }).pipe(
     Result.flatMap((text) =>
@@ -42,15 +44,17 @@ export const stringify = (value: unknown): Result.Result<string, SerializationEr
   )
 
 /**
- * Best-effort display preserves literal strings and marks all failed conversions.
+ * Returns literal strings or a JSON display with a marker for failed conversions.
  *
  * @category combinators
  */
-export const display = (value: unknown): string =>
-  typeof value === 'string' ? value : Result.getOrElse(stringify(value), () => unencodable)
+export const display = (self: unknown): string =>
+  typeof self === 'string'
+    ? self
+    : Result.getOrElse(stringify(self), Function.constant(unencodable))
 
 /**
- * Convert a foreign synchronous operation into an explicit serialization failure.
+ * Runs a synchronous operation and retains its failure as SerializationError.
  *
  * @category combinators
  */
@@ -61,23 +65,22 @@ export const attempt = <A>(operation: () => A): Result.Result<A, SerializationEr
   })
 
 /**
- * Guard property access and other foreign display callbacks as well as JSON conversion.
+ * Returns synchronous display text or the unencodable marker when its callback fails.
  *
  * @category combinators
  */
 export const textOrMarker = (operation: () => string): string =>
-  Result.getOrElse(attempt(operation), () => unencodable)
+  Result.getOrElse(attempt(operation), Function.constant(unencodable))
 
 /**
- * Error diagnostics retain string messages; foreign getters are guarded before rendering.
+ * Returns guarded error text while retaining readable string messages.
  *
  * @category combinators
  */
-export const errorText = (value: unknown): string =>
+export const errorText = (self: unknown): string =>
   textOrMarker(() => {
-    if (value instanceof Error)
-      return typeof value.message === 'string' ? value.message : unencodable
-    return display(value)
+    if (self instanceof Error) return typeof self.message === 'string' ? self.message : unencodable
+    return display(self)
   })
 
 /**
@@ -85,13 +88,13 @@ export const errorText = (value: unknown): string =>
  *
  * @category combinators
  */
-export const stringProperty = (value: unknown, key: string): string | undefined =>
+const stringPropertyImpl = (self: unknown, key: string): string | undefined =>
   Result.getOrElse(
     Result.try({
       try: () => {
-        if ((typeof value !== 'object' || value === null) && typeof value !== 'function')
+        if ((typeof self !== 'object' || self === null) && typeof self !== 'function')
           return undefined
-        const property: unknown = Reflect.get(value, key)
+        const property: unknown = Reflect.get(self, key)
         return typeof property === 'string' ? property : undefined
       },
       catch: (cause) =>
@@ -99,3 +102,11 @@ export const stringProperty = (value: unknown, key: string): string | undefined 
     }),
     constUndefined,
   )
+
+/** Returns a guarded string property, or undefined when unavailable.
+ * @category combinators
+ */
+export const stringPropertyOrUndefined: {
+  (key: string): (self: unknown) => string | undefined
+  (self: unknown, key: string): string | undefined
+} = dual(2, stringPropertyImpl)

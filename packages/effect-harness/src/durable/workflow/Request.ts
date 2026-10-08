@@ -19,6 +19,6 @@ export const RequestDoc = Document.defineUnsafe({
   version: 1,
   scope: 'task',
   schema: State,
-  // effect-review-allow P4-decode-effect-at-boundary: this synchronous document initializer may throw; Session.transaction catches its seed decoder with Effect.try before commit.
+  // effect-nit-allow P4-decode-effect-at-boundary: this synchronous document initializer may throw; Session.transaction catches its seed decoder with Effect.try before commit.
   initial: (seed) => Schema.decodeUnknownSync(State)({ request: seed }),
 })

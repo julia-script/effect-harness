@@ -4,18 +4,20 @@
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
 import * as Usage from './Usage.ts'
+const Payload = Schema.Struct({
+  message: Schema.String,
+  cause: SchemaField.optional(Schema.Defect()),
+  usage: SchemaField.optional(Usage.Usage),
+})
+
 /**
  * Failure reporting a provider/model reference absent from the catalogue.
  *
  * @category errors
  */
-export class ModelNoModel extends Schema.TaggedError<ModelNoModel>(
-  '@effect-harness/harness/ModelError/ModelNoModel',
-)('ModelNoModel', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  usage: SchemaField.optional(Usage.Usage),
-}) {
+export class ModelNoModelError extends Schema.TaggedError<ModelNoModelError>(
+  '@effect-harness/harness/ModelError/ModelNoModelError',
+)('ModelNoModelError', Payload.fields) {
   get isRetryable(): boolean {
     return false
   }
@@ -25,13 +27,9 @@ export class ModelNoModel extends Schema.TaggedError<ModelNoModel>(
  *
  * @category errors
  */
-export class ModelUnsupported extends Schema.TaggedError<ModelUnsupported>(
-  '@effect-harness/harness/ModelError/ModelUnsupported',
-)('ModelUnsupported', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  usage: SchemaField.optional(Usage.Usage),
-}) {
+export class ModelUnsupportedError extends Schema.TaggedError<ModelUnsupportedError>(
+  '@effect-harness/harness/ModelError/ModelUnsupportedError',
+)('ModelUnsupportedError', Payload.fields) {
   get isRetryable(): boolean {
     return false
   }
@@ -41,13 +39,9 @@ export class ModelUnsupported extends Schema.TaggedError<ModelUnsupported>(
  *
  * @category errors
  */
-export class ModelInvalidResponse extends Schema.TaggedError<ModelInvalidResponse>(
-  '@effect-harness/harness/ModelError/ModelInvalidResponse',
-)('ModelInvalidResponse', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  usage: SchemaField.optional(Usage.Usage),
-}) {
+export class ModelInvalidResponseError extends Schema.TaggedError<ModelInvalidResponseError>(
+  '@effect-harness/harness/ModelError/ModelInvalidResponseError',
+)('ModelInvalidResponseError', Payload.fields) {
   get isRetryable(): boolean {
     return false
   }
@@ -57,7 +51,11 @@ export class ModelInvalidResponse extends Schema.TaggedError<ModelInvalidRespons
  *
  * @category schemas
  */
-export const ModelErrorReason = Schema.Union([ModelNoModel, ModelUnsupported, ModelInvalidResponse])
+export const ModelErrorReason = Schema.Union([
+  ModelNoModelError,
+  ModelUnsupportedError,
+  ModelInvalidResponseError,
+])
 /**
  * Decoded value validated by the `ModelErrorReason` schema.
  *

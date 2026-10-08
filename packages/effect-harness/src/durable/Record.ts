@@ -1,12 +1,14 @@
 /**
- * Durable facts, identifiers, journal frames and legacy-compatible codecs.
+ * Durable facts, identifiers, journal frames and tagged codecs.
  */
 import { dual } from 'effect/Function'
 import * as handle from './internal/handle.ts'
-const EntryTokenProto = handle.prototype('@effect-harness/durable/Record/EntryToken')
+const EntryTokenProto = handle.prototype({
+  id: '@effect-harness/durable/Record/EntryToken',
+  fields: ['kind'],
+})
 import type * as Pipeable from 'effect/Pipeable'
 import type * as Inspectable from 'effect/Inspectable'
-import { tagged } from './internal/legacyTag.ts'
 import { identity } from 'effect/Function'
 import type * as Types from 'effect/Types'
 import * as Predicate from 'effect/Predicate'
@@ -108,18 +110,6 @@ export type JournalCursor = typeof JournalCursor.Type
  */
 export const ROOT_CONVERSATION_ID = Schema.decodeSync(ConversationId)(1)
 /**
- * JSON value accepted by domain storage and replay receipts.
- *
- * @category models
- */
-export type Json = Schema.Json
-/**
- * JSON object used as a document storage representation.
- *
- * @category models
- */
-export type JsonObject = Schema.JsonObject
-/**
  * Schema for conversation identity, parent history and ownership recorded in a session.
  *
  * @category schemas
@@ -141,10 +131,9 @@ export type Conversation = typeof Conversation.Type
  * @category schemas
  */
 export const ContextEdit = Schema.Union([
-  tagged('omit', { target: EntryId, action: Schema.tag('omit') }),
-  tagged('replace', {
+  Schema.TaggedStruct('omit', { target: EntryId }),
+  Schema.TaggedStruct('replace', {
     target: EntryId,
-    action: Schema.tag('replace'),
     messages: Schema.Array(Schema.Json),
   }),
 ])
@@ -175,12 +164,6 @@ export const Entry = Schema.Struct({
  * @category models
  */
 export type Entry = typeof Entry.Type
-/**
- * Entry content supplied before the session assigns its durable identity.
- *
- * @category models
- */
-export type EntryDraft = Entry.Draft
 /**
  * Schema for owned work with its native execution binding, abort mark and domain completion
  * state.
@@ -226,7 +209,7 @@ const noSettlement = {
  *
  * @category schemas
  */
-export const InputQueued = tagged('InputQueued', {
+export const InputQueued = Schema.TaggedStruct('InputQueued', {
   ...submissionIdentity,
   type: Schema.tag('input'),
   status: Schema.tag('queued'),
@@ -245,7 +228,7 @@ export type InputQueued = typeof InputQueued.Type
  *
  * @category schemas
  */
-export const InputPlaced = tagged('InputPlaced', {
+export const InputPlaced = Schema.TaggedStruct('InputPlaced', {
   ...submissionIdentity,
   type: Schema.tag('input'),
   status: Schema.tag('placed'),
@@ -264,7 +247,7 @@ export type InputPlaced = typeof InputPlaced.Type
  *
  * @category schemas
  */
-export const InputDone = tagged('InputDone', {
+export const InputDone = Schema.TaggedStruct('InputDone', {
   ...submissionIdentity,
   type: Schema.tag('input'),
   status: Schema.tag('done'),
@@ -285,7 +268,7 @@ export type InputDone = typeof InputDone.Type
  *
  * @category schemas
  */
-export const InputUnanswered = tagged('InputUnanswered', {
+export const InputUnanswered = Schema.TaggedStruct('InputUnanswered', {
   ...submissionIdentity,
   type: Schema.tag('input'),
   status: Schema.tag('unanswered'),
@@ -306,7 +289,7 @@ export type InputUnanswered = typeof InputUnanswered.Type
  *
  * @category schemas
  */
-export const WriteQueued = tagged('WriteQueued', {
+export const WriteQueued = Schema.TaggedStruct('WriteQueued', {
   ...submissionIdentity,
   type: Schema.tag('write'),
   status: Schema.tag('queued'),
@@ -325,7 +308,7 @@ export type WriteQueued = typeof WriteQueued.Type
  *
  * @category schemas
  */
-export const WriteDone = tagged('WriteDone', {
+export const WriteDone = Schema.TaggedStruct('WriteDone', {
   ...submissionIdentity,
   type: Schema.tag('write'),
   status: Schema.tag('done'),
@@ -344,7 +327,7 @@ export type WriteDone = typeof WriteDone.Type
  *
  * @category schemas
  */
-export const WriteUnanswered = tagged('WriteUnanswered', {
+export const WriteUnanswered = Schema.TaggedStruct('WriteUnanswered', {
   ...submissionIdentity,
   type: Schema.tag('write'),
   status: Schema.tag('unanswered'),
@@ -398,20 +381,14 @@ export const Submission = Schema.Union([
  */
 export type Submission = typeof Submission.Type
 /**
- * Submission content supplied before durable identity allocation.
- *
- * @category models
- */
-export type SubmissionCreate = Submission.Create
-/**
  * Schema for session, conversation or task ownership of a document.
  *
  * @category schemas
  */
 export const Scope = Schema.Union([
-  tagged('session', { kind: Schema.tag('session') }),
-  tagged('conversation', { kind: Schema.tag('conversation'), conversationId: ConversationId }),
-  tagged('task', { kind: Schema.tag('task'), taskId: TaskId }),
+  Schema.TaggedStruct('session', {}),
+  Schema.TaggedStruct('conversation', { conversationId: ConversationId }),
+  Schema.TaggedStruct('task', { taskId: TaskId }),
 ])
 /**
  * Session, conversation or task ownership of a document.
@@ -493,8 +470,8 @@ export type Op = typeof Op.Type
  * @category schemas
  */
 export const Content = Schema.Union([
-  tagged('base', { kind: Schema.tag('base'), version: safe, value: Schema.JsonObject }),
-  tagged('delta', { kind: Schema.tag('delta'), version: safe, ops: Schema.Array(Op) }),
+  Schema.TaggedStruct('base', { version: safe, value: Schema.JsonObject }),
+  Schema.TaggedStruct('delta', { version: safe, ops: Schema.Array(Op) }),
 ])
 /**
  * Full document checkpoint or incremental mutation payload.
@@ -508,27 +485,24 @@ export type Content = typeof Content.Type
  * @category schemas
  */
 export const Write = Schema.Union([
-  tagged('conversation', { type: Schema.tag('conversation'), value: Conversation }),
-  tagged('entry', { type: Schema.tag('entry'), value: Entry }),
-  tagged('task', { type: Schema.tag('task'), value: Task }),
-  tagged('submission', { type: Schema.tag('submission'), value: Submission }),
-  tagged('document.create', {
-    type: Schema.tag('document.create'),
+  Schema.TaggedStruct('conversation', { value: Conversation }),
+  Schema.TaggedStruct('entry', { value: Entry }),
+  Schema.TaggedStruct('task', { value: Task }),
+  Schema.TaggedStruct('submission', { value: Submission }),
+  Schema.TaggedStruct('document.create', {
     record: DocumentCreate,
     content: Content,
   }),
-  tagged('document.copy', {
-    type: Schema.tag('document.copy'),
+  Schema.TaggedStruct('document.copy', {
     record: DocumentCreate,
     source: Schema.Struct({ id: DocumentId, at: Schema.Union([Seq, Schema.Literal('current')]) }),
   }),
-  tagged('document.change', {
-    type: Schema.tag('document.change'),
+  Schema.TaggedStruct('document.change', {
     id: DocumentId,
     content: Content,
     publicationOps: Schema.optionalKey(Schema.Array(Op)),
   }),
-  tagged('document.retire', { type: Schema.tag('document.retire'), id: DocumentId }),
+  Schema.TaggedStruct('document.retire', { id: DocumentId }),
 ])
 /**
  * Domain mutation included in an atomic Store commit.
@@ -675,9 +649,14 @@ export const addressKey = (self: Address): string =>
  * @category combinators
  */
 export const scopeKey = (self: Scope): string => {
-  if (self.kind === 'session') return 'session'
-  if (self.kind === 'conversation') return `conversation:${self.conversationId}`
-  return `task:${self.taskId}`
+  switch (self._tag) {
+    case 'session':
+      return 'session'
+    case 'conversation':
+      return `conversation:${self.conversationId}`
+    case 'task':
+      return `task:${self.taskId}`
+  }
 }
 const isAliveImpl = (self: Document, at: Point): boolean =>
   at === 'current'
@@ -689,7 +668,7 @@ const isAliveImpl = (self: Document, at: Point): boolean =>
  * @category guards
  */
 export const isCurrentOnly = (self: DocumentCreate): boolean =>
-  self.scope.kind !== 'conversation' || self.history === 'latest'
+  self.scope._tag !== 'conversation' || self.history === 'latest'
 /**
  * Creates an empty durable state with initial allocation counters.
  *
@@ -706,26 +685,7 @@ export const emptyState = (): State => ({
   documents: [],
   receipts: [],
 })
-
-/**
- * Committed entry whose data is decoded by an entry token.
- *
- * @category models
- */
-export type TypedEntry<D extends Json> = Entry.WithData<D>
-/**
- * Decoded entry data supplied before durable identity allocation.
- *
- * @category models
- */
-export type TypedEntryDraft<D extends Json> = Entry.DraftWithData<D>
 const EntryTokenTypeId = '~@effect-harness/durable/Record/EntryToken'
-/**
- * Entry-kind token with identity guard and schema-based decoding.
- *
- * @category models
- */
-export type EntryToken<K extends string = string> = Entry.Token<K>
 /**
  * Failure reporting an invalid typed entry kind or definition.
  *
@@ -741,8 +701,8 @@ export class EntryDefinitionError extends Schema.TaggedError<EntryDefinitionErro
  */
 export interface DecodedEntryToken<
   K extends string,
-  S extends Schema.Constraint,
-> extends EntryToken<K> {
+  out S extends Schema.Constraint,
+> extends Entry.Token<K> {
   readonly schema: S
   readonly decode: (
     input: unknown,
@@ -789,8 +749,9 @@ export const SubmissionStatus = Schema.Literals(['queued', 'placed', 'done', 'un
  *
  * @category constructors
  */
+// effect-nit-allow P1-pipeable-data-types: this shallow carrier contains application-owned values and descriptors; inheriting inspection or JSON hooks can override payload keys and execute those accessors during serialization. Its nonenumerable marker provides identity without exposing or transforming the payload.
 export const makePage = <A>(input: Omit<Page<A>, typeof PageTypeId>): Page<A> => {
-  const value = Object.assign({}, input, { [PageTypeId]: { _A: identity } })
+  const value = { ...input, [PageTypeId]: { _A: identity } }
   Object.defineProperties(value, Object.getOwnPropertyDescriptors(input))
   Object.defineProperty(value, PageTypeId, { enumerable: false })
   return value
@@ -804,8 +765,7 @@ export const makePage = <A>(input: Omit<Page<A>, typeof PageTypeId>): Page<A> =>
  *
  * @category guards
  */
-export const isPage = (input: unknown): input is Page<unknown> =>
-  Predicate.hasProperty(input, PageTypeId)
+export const isPage = (u: unknown): u is Page<unknown> => Predicate.hasProperty(u, PageTypeId)
 
 /**
  * Creates a typed entry token without reading input accessors.
@@ -830,8 +790,8 @@ export const makeEntryToken = <K extends string, S extends Schema.Constraint>(
  *
  * @category guards
  */
-export const isEntryToken = (input: unknown): input is EntryToken =>
-  Predicate.hasProperty(input, EntryTokenTypeId)
+export const isEntryToken = (u: unknown): u is Entry.Token =>
+  Predicate.hasProperty(u, EntryTokenTypeId)
 
 /**
  * Admission, placement and terminal settlement states of a submission.
@@ -853,7 +813,6 @@ export const isAlive: {
 /**
  * Type-level contracts for `Entry`.
  *
- * @category utility types
  */
 export declare namespace Entry {
   /**
@@ -869,14 +828,14 @@ export declare namespace Entry {
    *
    * @category models
    */
-  export type WithData<D extends Json> = Omit<Entry, 'data'> &
+  export type WithData<D extends Schema.Json> = Omit<Entry, 'data'> &
     ([D] extends [never] ? { readonly data?: undefined } : { readonly data: D })
   /**
    * Uncommitted entry draft with caller-selected decoded data.
    *
    * @category models
    */
-  export type DraftWithData<D extends Json> = Omit<EntryDraft, 'kind' | 'data'> &
+  export type DraftWithData<D extends Schema.Json> = Omit<Entry.Draft, 'kind' | 'data'> &
     ([D] extends [never] ? { readonly data?: undefined } : { readonly data: D })
   /**
    * Nominal kind token used to identify typed entry records.
@@ -894,7 +853,6 @@ export declare namespace Entry {
 /**
  * Type-level contracts for `Submission`.
  *
- * @category utility types
  */
 export declare namespace Submission {
   /**
@@ -904,7 +862,7 @@ export declare namespace Submission {
    */
   export type Create = Submission extends infer A
     ? A extends Submission
-      ? Omit<A, 'id' | '_tag'> & { readonly _tag?: A['_tag'] | undefined }
+      ? Omit<A, 'id'>
       : never
     : never
 }
@@ -912,7 +870,6 @@ export declare namespace Submission {
 /**
  * Type-level contracts for `Document`.
  *
- * @category utility types
  */
 export declare namespace Document {
   /**
@@ -922,3 +879,195 @@ export declare namespace Document {
    */
   export type Create = DocumentCreate
 }
+
+/** Checks the decoded EntryDefinitionError contract without decoding or coercing input.
+ * @category guards
+ */
+export const isEntryDefinitionError: (u: unknown) => u is EntryDefinitionError = Schema.is(
+  Schema.toType(EntryDefinitionError),
+)
+
+/** Checks the decoded ConversationId contract without decoding or coercing input.
+ * @category guards
+ */
+export const isConversationId: (u: unknown) => u is ConversationId = Schema.is(
+  Schema.toType(ConversationId),
+)
+
+/** Checks the decoded EntryId contract without decoding or coercing input.
+ * @category guards
+ */
+export const isEntryId: (u: unknown) => u is EntryId = Schema.is(Schema.toType(EntryId))
+
+/** Checks the decoded SubmissionId contract without decoding or coercing input.
+ * @category guards
+ */
+export const isSubmissionId: (u: unknown) => u is SubmissionId = Schema.is(
+  Schema.toType(SubmissionId),
+)
+
+/** Checks the decoded DocumentId contract without decoding or coercing input.
+ * @category guards
+ */
+export const isDocumentId: (u: unknown) => u is DocumentId = Schema.is(Schema.toType(DocumentId))
+
+/** Checks the decoded Seq contract without decoding or coercing input.
+ * @category guards
+ */
+export const isSeq: (u: unknown) => u is Seq = Schema.is(Schema.toType(Seq))
+
+/** Checks the decoded JournalCursor contract without decoding or coercing input.
+ * @category guards
+ */
+export const isJournalCursor: (u: unknown) => u is JournalCursor = Schema.is(
+  Schema.toType(JournalCursor),
+)
+
+/** Checks the decoded Conversation contract without decoding or coercing input.
+ * @category guards
+ */
+export const isConversation: (u: unknown) => u is Conversation = Schema.is(
+  Schema.toType(Conversation),
+)
+
+/** Checks the decoded ContextEdit contract without decoding or coercing input.
+ * @category guards
+ */
+export const isContextEdit: (u: unknown) => u is ContextEdit = Schema.is(Schema.toType(ContextEdit))
+
+/** Checks the decoded Entry contract without decoding or coercing input.
+ * @category guards
+ */
+export const isEntry: (u: unknown) => u is Entry = Schema.is(Schema.toType(Entry))
+
+/** Checks the decoded Task contract without decoding or coercing input.
+ * @category guards
+ */
+export const isTask: (u: unknown) => u is Task = Schema.is(Schema.toType(Task))
+
+/** Checks the decoded InputQueued contract without decoding or coercing input.
+ * @category guards
+ */
+export const isInputQueued: (u: unknown) => u is InputQueued = Schema.is(Schema.toType(InputQueued))
+
+/** Checks the decoded InputPlaced contract without decoding or coercing input.
+ * @category guards
+ */
+export const isInputPlaced: (u: unknown) => u is InputPlaced = Schema.is(Schema.toType(InputPlaced))
+
+/** Checks the decoded InputDone contract without decoding or coercing input.
+ * @category guards
+ */
+export const isInputDone: (u: unknown) => u is InputDone = Schema.is(Schema.toType(InputDone))
+
+/** Checks the decoded InputUnanswered contract without decoding or coercing input.
+ * @category guards
+ */
+export const isInputUnanswered: (u: unknown) => u is InputUnanswered = Schema.is(
+  Schema.toType(InputUnanswered),
+)
+
+/** Checks the decoded WriteQueued contract without decoding or coercing input.
+ * @category guards
+ */
+export const isWriteQueued: (u: unknown) => u is WriteQueued = Schema.is(Schema.toType(WriteQueued))
+
+/** Checks the decoded WriteDone contract without decoding or coercing input.
+ * @category guards
+ */
+export const isWriteDone: (u: unknown) => u is WriteDone = Schema.is(Schema.toType(WriteDone))
+
+/** Checks the decoded WriteUnanswered contract without decoding or coercing input.
+ * @category guards
+ */
+export const isWriteUnanswered: (u: unknown) => u is WriteUnanswered = Schema.is(
+  Schema.toType(WriteUnanswered),
+)
+
+/** Checks the decoded SettledSubmission contract without decoding or coercing input.
+ * @category guards
+ */
+export const isSettledSubmission: (u: unknown) => u is SettledSubmission = Schema.is(
+  Schema.toType(SettledSubmission),
+)
+
+/** Checks the decoded Submission contract without decoding or coercing input.
+ * @category guards
+ */
+export const isSubmission: (u: unknown) => u is Submission = Schema.is(Schema.toType(Submission))
+
+/** Checks the decoded Scope contract without decoding or coercing input.
+ * @category guards
+ */
+export const isScope: (u: unknown) => u is Scope = Schema.is(Schema.toType(Scope))
+
+/** Checks the decoded Document contract without decoding or coercing input.
+ * @category guards
+ */
+export const isDocument: (u: unknown) => u is Document = Schema.is(Schema.toType(Document))
+
+/** Checks the decoded DocumentCreate contract without decoding or coercing input.
+ * @category guards
+ */
+export const isDocumentCreate: (u: unknown) => u is DocumentCreate = Schema.is(
+  Schema.toType(DocumentCreate),
+)
+
+/** Checks the decoded Op contract without decoding or coercing input.
+ * @category guards
+ */
+export const isOp: (u: unknown) => u is Op = Schema.is(Schema.toType(Op))
+
+/** Checks the decoded Content contract without decoding or coercing input.
+ * @category guards
+ */
+export const isContent: (u: unknown) => u is Content = Schema.is(Schema.toType(Content))
+
+/** Checks the decoded Write contract without decoding or coercing input.
+ * @category guards
+ */
+export const isWrite: (u: unknown) => u is Write = Schema.is(Schema.toType(Write))
+
+/** Checks the decoded Revision contract without decoding or coercing input.
+ * @category guards
+ */
+export const isRevision: (u: unknown) => u is Revision = Schema.is(Schema.toType(Revision))
+
+/** Checks the decoded StoredDocument contract without decoding or coercing input.
+ * @category guards
+ */
+export const isStoredDocument: (u: unknown) => u is StoredDocument = Schema.is(
+  Schema.toType(StoredDocument),
+)
+
+/** Checks the decoded Receipt contract without decoding or coercing input.
+ * @category guards
+ */
+export const isReceipt: (u: unknown) => u is Receipt = Schema.is(Schema.toType(Receipt))
+
+/** Checks the decoded State contract without decoding or coercing input.
+ * @category guards
+ */
+export const isState: (u: unknown) => u is State = Schema.is(Schema.toType(State))
+
+/** Checks the decoded Publication contract without decoding or coercing input.
+ * @category guards
+ */
+export const isPublication: (u: unknown) => u is Publication = Schema.is(Schema.toType(Publication))
+
+/** Checks the decoded Frame contract without decoding or coercing input.
+ * @category guards
+ */
+export const isFrame: (u: unknown) => u is Frame = Schema.is(Schema.toType(Frame))
+
+/** Checks the decoded SubmissionStatus contract without decoding or coercing input.
+ * @category guards
+ */
+export const isSubmissionStatus: (u: unknown) => u is SubmissionStatus = Schema.is(
+  Schema.toType(SubmissionStatus),
+)
+
+/** Checks a task identity without recovering its phantom result type.
+ * @category guards
+ */
+export const isTaskId: (u: unknown) => u is TaskId = Schema.is(TaskId)

@@ -1,3 +1,4 @@
+import type { Env } from '../../Env.ts'
 import { constant } from 'effect/Function'
 import * as Ref from 'effect/Ref'
 import * as HashSet from 'effect/HashSet'
@@ -10,6 +11,7 @@ import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Deferred from 'effect/Deferred'
 import * as Fiber from 'effect/Fiber'
+import * as FiberHandle from 'effect/FiberHandle'
 import type * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
 import * as Pull from 'effect/Pull'
@@ -20,21 +22,20 @@ import * as ChildProcess from 'effect/process/ChildProcess'
 import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import {
   ExecutionError,
-  type Options,
-  type ShellExecOptions,
-  type ShellExecResult,
   ExecutionCallbackError,
   ExecutionSpawnError,
-  ExecutionTimeout,
-  ExecutionUnknown,
-} from '../../Env.ts'
+  ExecutionTimeoutError,
+  ExecutionUnknownError,
+} from '../../ExecutionError.ts'
+
 import * as Decode from '../Decode.ts'
 
+// effect-nit-allow B-no-service-arguments: This capability constructor builds the scoped Env.exec implementation and its child-process admission/finalizer owner from explicitly selected filesystem/path/spawner implementations. Env.make and native lifetime fixtures require these exact instances; exec operation arguments contain only command and options.
 export const make = Effect.fnUntraced(function* (input: {
   readonly fs: FileSystem.FileSystem
   readonly path: Path.Path
   readonly spawner: ChildProcessSpawner.ChildProcessSpawner['Service']
-  readonly defaults: Options
+  readonly defaults: Env.Options
 }): Effect.fn.Return<
   Pick<import('../../Env.ts').Env['Service'], 'exec'>,
   never,
@@ -46,11 +47,11 @@ export const make = Effect.fnUntraced(function* (input: {
   const closed = yield* Ref.make(false)
   const exec = Effect.fnUntraced(function* (
     command: string | ReadonlyArray<string>,
-    options: ShellExecOptions = {},
-  ): Effect.fn.Return<ShellExecResult, ExecutionError, import('effect/Scope').Scope> {
+    options: Env.ShellExecOptions = {},
+  ): Effect.fn.Return<Env.ShellExecResult, ExecutionError, import('effect/Scope').Scope> {
     if (yield* Ref.get(closed))
       return yield* new ExecutionError({
-        reason: new ExecutionUnknown({ message: 'Execution owner is closed' }),
+        reason: new ExecutionUnknownError({ message: 'Execution owner is closed' }),
       })
     if (typeof command !== 'string' && command.length === 0)
       return yield* new ExecutionError({
@@ -60,21 +61,24 @@ export const make = Effect.fnUntraced(function* (input: {
       options.timeout === undefined
         ? undefined
         : yield* Time.duration(options.timeout).pipe(
-            Effect.flatMap(Schema.decodeEffect(Schema.toType(Time.CommandTimeout))),
+            Effect.flatMap(Schema.decodeEffect(Schema.toType(Time.CommandTimeoutFromSeconds))),
             Effect.mapError(
               (cause) =>
                 new ExecutionError({
-                  reason: new ExecutionTimeout({ message: 'Invalid timeout', cause }),
+                  reason: new ExecutionTimeoutError({ message: 'Invalid timeout', cause }),
                 }),
             ),
           )
     if (options.window !== undefined)
-      yield* Time.duration(options.window.minIntervalMs).pipe(
-        Effect.flatMap(Schema.decodeEffect(Schema.toType(Time.NonnegativeMillis))),
+      yield* Time.duration(options.window.minInterval).pipe(
+        Effect.flatMap(Schema.decodeEffect(Schema.toType(Time.NonnegativeDurationFromMillis))),
         Effect.mapError(
           (cause) =>
             new ExecutionError({
-              reason: new ExecutionUnknown({ message: 'Invalid output window interval', cause }),
+              reason: new ExecutionUnknownError({
+                message: 'Invalid output window interval',
+                cause,
+              }),
             }),
         ),
       )
@@ -86,10 +90,13 @@ export const make = Effect.fnUntraced(function* (input: {
         options.spill.afterLines < 0)
     )
       return yield* new ExecutionError({
-        reason: new ExecutionUnknown({ message: 'Invalid spill threshold' }),
+        reason: new ExecutionUnknownError({ message: 'Invalid spill threshold' }),
       })
     const nativeOptions = {
-      cwd: path.resolve(defaults.cwd, options.cwd ?? defaults.cwd),
+      cwd:
+        options.cwd === undefined
+          ? path.resolve(defaults.cwd)
+          : path.resolve(defaults.cwd, options.cwd),
       env: options.inheritEnv === false ? { ...options.env } : { ...defaults.env, ...options.env },
       extendEnv: options.inheritEnv !== false,
       forceKillAfter: '1 second' as const,
@@ -127,7 +134,7 @@ export const make = Effect.fnUntraced(function* (input: {
         Effect.gen(function* () {
           if (yield* Ref.get(closed))
             return yield* new ExecutionError({
-              reason: new ExecutionUnknown({ message: 'Execution owner is closed' }),
+              reason: new ExecutionUnknownError({ message: 'Execution owner is closed' }),
             })
           const handle = yield* spawner.spawn(instruction).pipe(
             Effect.mapError(
@@ -149,9 +156,9 @@ export const make = Effect.fnUntraced(function* (input: {
     let newlines = 0
     let lastByte = 0
     const decoders = { stdout: Decode.make(), stderr: Decode.make() }
-    const spillError = (error: { readonly message: string }) =>
+    const spillErrorUnsafe = (error: { readonly message: string }) =>
       new ExecutionError({
-        reason: new ExecutionUnknown({
+        reason: new ExecutionUnknownError({
           message: error.message,
           ...(Ref.getUnsafe(spillPath) === undefined
             ? {}
@@ -164,6 +171,7 @@ export const make = Effect.fnUntraced(function* (input: {
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)
             ? Effect.failCause(
+                // effect-nit-allow P1-stdlib-collection-replacements: native Cause.fromReasons retains its caller array, which may be sparse. Native filtering skips missing reasons while retaining interruption order; Effect Array.filter would call isInterruptReason(undefined).
                 Cause.fromReasons<never>(cause.reasons.filter(Cause.isInterruptReason)),
               )
             : Effect.fail(
@@ -197,7 +205,7 @@ export const make = Effect.fnUntraced(function* (input: {
             Effect.gen(function* () {
               const published = yield* fs
                 .makeTempFile({ prefix: 'effect-harness-output-', suffix: '.log' })
-                .pipe(Effect.mapError(spillError))
+                .pipe(Effect.mapError(spillErrorUnsafe))
               yield* Ref.set(spillPath, published)
               const prefix = new Uint8Array(bytes)
               let offset = 0
@@ -207,7 +215,7 @@ export const make = Effect.fnUntraced(function* (input: {
               }
               chunks = []
               yield* Effect.uninterruptible(
-                fs.writeFile(published, prefix).pipe(Effect.mapError(spillError)),
+                fs.writeFile(published, prefix).pipe(Effect.mapError(spillErrorUnsafe)),
               )
               if (options.onSpill !== undefined) {
                 yield* callback(() => options.onSpill?.(published) ?? Effect.void)
@@ -219,7 +227,9 @@ export const make = Effect.fnUntraced(function* (input: {
         const destination = yield* Ref.get(spillPath)
         if (destination !== undefined)
           yield* Effect.uninterruptible(
-            fs.writeFile(destination, chunk.bytes, { flag: 'a' }).pipe(Effect.mapError(spillError)),
+            fs
+              .writeFile(destination, chunk.bytes, { flag: 'a' })
+              .pipe(Effect.mapError(spillErrorUnsafe)),
           )
       }
       const text = Decode.decodeUnsafe(decoders[chunk.stream], chunk.bytes)
@@ -234,7 +244,7 @@ export const make = Effect.fnUntraced(function* (input: {
     )
     const run = Effect.gen(function* () {
       const failed = yield* Deferred.make<never, ExecutionError>()
-      const pull = yield* Stream.toPull(output.pipe(Stream.mapError(spillError)))
+      const pull = yield* Stream.toPull(output.pipe(Stream.mapError(spillErrorUnsafe)))
       const readerState = yield* Ref.make<{
         readonly waiting:
           | Fiber.Fiber<
@@ -247,15 +257,29 @@ export const make = Effect.fnUntraced(function* (input: {
         readonly idleClosed: boolean
         readonly lastAt: DateTime.Utc
       }>({ waiting: undefined, idleClosed: false, lastAt: yield* DateTime.now })
+      const pendingPull = yield* FiberHandle.make<
+        Option.Option<
+          ReadonlyArray<{ readonly bytes: Uint8Array; readonly stream: 'stdout' | 'stderr' }>
+        >,
+        ExecutionError
+      >()
       const reading = yield* Effect.gen(function* () {
         while (!(yield* Ref.get(readerState)).idleClosed) {
           const lastAt = yield* DateTime.now
-          const waiting = yield* pull.pipe(
-            Effect.asSome,
-            Pull.catchDone(() => Effect.succeedNone),
-            Effect.forkChild,
+          const waiting = yield* FiberHandle.run(
+            pendingPull,
+            pull.pipe(
+              Effect.asSome,
+              Pull.catchDone(() => Effect.succeedNone),
+            ),
           )
-          yield* Ref.update(readerState, (value) => ({ ...value, waiting, lastAt }))
+          const admitted = yield* Ref.modify(readerState, (value) =>
+            value.idleClosed ? [false, value] : [true, { ...value, waiting, lastAt }],
+          )
+          if (!admitted) {
+            yield* Fiber.interrupt(waiting)
+            return
+          }
           const batch = yield* Fiber.join(waiting)
           yield* Ref.update(readerState, (value) => ({ ...value, waiting: undefined }))
           if (Option.isNone(batch)) return
@@ -271,21 +295,22 @@ export const make = Effect.fnUntraced(function* (input: {
         Effect.forkScoped,
       )
       const status = yield* handle.exitCode.pipe(
-        Effect.mapError(spillError),
+        Effect.mapError(spillErrorUnsafe),
         Effect.raceFirst(Deferred.await(failed)),
       )
       while (true) {
         const joined = yield* Fiber.join(reading).pipe(Effect.timeoutOption('100 millis'))
         if (Option.isSome(joined)) break
         const now = yield* DateTime.now
-        const current = yield* Ref.get(readerState)
-        if (
+        const claimed = yield* Ref.modify(readerState, (current) =>
           current.waiting !== undefined &&
           Duration.toMillis(DateTime.distance(current.lastAt, now)) >= 100
-        ) {
-          yield* Ref.update(readerState, (value) => ({ ...value, idleClosed: true }))
+            ? [Option.some(current.waiting), { ...current, idleClosed: true }]
+            : [Option.none(), current],
+        )
+        if (Option.isSome(claimed)) {
           // Interrupt only the pending pull, never the admitted consumer.
-          yield* Fiber.interrupt(current.waiting)
+          yield* Fiber.interrupt(claimed.value)
           yield* Fiber.join(reading)
           break
         }
@@ -309,7 +334,7 @@ export const make = Effect.fnUntraced(function* (input: {
               orElse: () =>
                 Effect.fail(
                   new ExecutionError({
-                    reason: new ExecutionTimeout({
+                    reason: new ExecutionTimeoutError({
                       message: `Command timed out after ${Duration.toSeconds(timeout)} seconds`,
                       ...(Ref.getUnsafe(spillPath) === undefined
                         ? {}

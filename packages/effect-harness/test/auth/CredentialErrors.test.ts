@@ -9,18 +9,26 @@ import * as Layer from 'effect/Layer'
 import * as Inspectable from 'effect/Inspectable'
 import * as PlatformError from 'effect/PlatformError'
 import * as Schema from 'effect/Schema'
+import * as TestSchema from 'effect/testing/TestSchema'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientError from 'effect/http/HttpClientError'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import {
   AuthError,
-  AuthErrorCode,
-  AuthNetworkError,
-  AuthPermissionError,
   AuthStorageError,
+  AuthBusyError,
+  AuthConfigurationError,
+  AuthMissingError,
+  AuthCallbackError,
+  AuthDeniedError,
   AuthTokenError,
-} from 'effect-harness/auth/Credential'
+  AuthNetworkError,
+  AuthIdentityError,
+  AuthPermissionError,
+  AuthExpiredError,
+  AuthProtocolError,
+} from 'effect-harness/auth/AuthError'
 import * as CredentialStore from 'effect-harness/auth/CredentialStore'
 import * as Token from 'effect-harness/auth/Token'
 
@@ -33,34 +41,41 @@ const grant = {
 
 describe('CredentialErrors', () => {
   describe('AuthError structured reasons and provenance', () => {
-    it.effect(
-      'all legacy input codes construct tagged reasons with delegated messages and statuses',
-      () =>
-        Effect.gen(function* () {
-          for (const code of AuthErrorCode.literals) {
-            const error = AuthError.fromLegacy({
-              reason: code,
-              message: `exact ${code}`,
-              status: 401,
-            })
-            assert.strictEqual(
-              error.reason._tag,
-              `Auth${code[0]?.toUpperCase()}${code.slice(1)}Error`,
-            )
-            assert.strictEqual(error.code, code)
-            assert.strictEqual(error.message, `exact ${code}`)
-            assert.strictEqual(error.status, 401)
-            assert.strictEqual(error.cause, undefined)
-            const wire = Schema.fromJsonString(Schema.toCodecJson(AuthError))
-            const decoded = yield* Schema.decodeEffect(wire)(
-              yield* Schema.encodeEffect(wire)(error),
-            )
-            assert.strictEqual(decoded.reason._tag, error.reason._tag)
-            assert.strictEqual(decoded.code, code)
-            assert.strictEqual(decoded.message, error.message)
-            assert.strictEqual(decoded.status, 401)
-          }
-        }),
+    it.effect('all tagged reasons delegate their exact messages and statuses', () =>
+      Effect.gen(function* () {
+        for (const Reason of [
+          AuthStorageError,
+          AuthBusyError,
+          AuthConfigurationError,
+          AuthMissingError,
+          AuthCallbackError,
+          AuthDeniedError,
+          AuthTokenError,
+          AuthNetworkError,
+          AuthIdentityError,
+          AuthPermissionError,
+          AuthExpiredError,
+          AuthProtocolError,
+        ]) {
+          const error = new AuthError({
+            reason: new Reason({ message: `exact ${Reason.name}`, status: 401 }),
+          })
+          assert.strictEqual(error.reason._tag, Reason.name)
+          assert.strictEqual(error.message, `exact ${Reason.name}`)
+          assert.strictEqual(error.status, 401)
+          assert.strictEqual(error.cause, undefined)
+          const wire = Schema.fromJsonString(Schema.toCodecJson(AuthError))
+          const expectedWire = `{"_tag":"AuthError","reason":{"_tag":"${Reason.name}","message":"exact ${Reason.name}","status":401}}`
+          const checks = new TestSchema.Asserts(wire)
+          yield* checks.encoding().succeedEffect(error, expectedWire)
+          yield* checks.decoding().succeedEffect(
+            expectedWire,
+            new AuthError({
+              reason: new Reason({ message: `exact ${Reason.name}`, status: 401 }),
+            }),
+          )
+        }
+      }),
     )
 
     it.effect(
@@ -82,9 +97,23 @@ describe('CredentialErrors', () => {
           assert.isFalse(Inspectable.toStringUnknown(error).includes('private-'))
           assert.isFalse(Inspectable.toStringUnknown(reason).includes('private-'))
           const wire = Schema.fromJsonString(Schema.toCodecJson(AuthError))
-          const encoded = yield* Schema.encodeEffect(wire)(error)
-          assert.include(encoded, 'private-outer-diagnostic')
-          assert.isFalse(encoded.includes('stack'))
+          const encoded =
+            '{"_tag":"AuthError","reason":{"_tag":"AuthNetworkError","message":"Sanitized network failure","cause":{"name":"TypeError","message":"private-outer-diagnostic","cause":{"name":"Error","message":"private-inner-diagnostic"}}}}'
+          yield* new TestSchema.Asserts(wire).encoding().succeedEffect(error, encoded)
+          const decodedCause = new Error('private-outer-diagnostic', {
+            cause: new Error('private-inner-diagnostic'),
+          })
+          decodedCause.name = 'TypeError'
+          yield* new TestSchema.Asserts(wire).decoding().succeedEffect(
+            encoded,
+            AuthError.make({
+              reason: AuthNetworkError.make({
+                message: 'Sanitized network failure',
+                cause: decodedCause,
+              }),
+            }),
+          )
+          // effect-nit-allow P8-testschema-asserts: inspect the native defect codec's documented Error name/message/cause projection and lost identity; stack and TypeError subclass fidelity are intentionally excluded.
           const decoded = yield* Schema.decodeEffect(wire)(encoded)
           assert.strictEqual(decoded.reason._tag, 'AuthNetworkError')
           assert.strictEqual(decoded.message, error.message)
@@ -132,16 +161,36 @@ describe('CredentialErrors', () => {
       'foreign non-Error causes retain runtime identity and use the explicit defect codec',
       () =>
         Effect.gen(function* () {
-          for (const caught of ['foreign failure', { detail: 'foreign detail' }, null]) {
+          for (const [caught, expectedWire] of [
+            [
+              'foreign failure',
+              '{"_tag":"AuthError","reason":{"_tag":"AuthNetworkError","message":"Sanitized network failure","cause":"foreign failure"}}',
+            ],
+            [
+              { detail: 'foreign detail' },
+              '{"_tag":"AuthError","reason":{"_tag":"AuthNetworkError","message":"Sanitized network failure","cause":{"detail":"foreign detail"}}}',
+            ],
+            [
+              null,
+              '{"_tag":"AuthError","reason":{"_tag":"AuthNetworkError","message":"Sanitized network failure","cause":null}}',
+            ],
+          ] as const) {
             const error = new AuthError({
               reason: new AuthNetworkError({ message: 'Sanitized network failure', cause: caught }),
             })
             assert.strictEqual(error.cause, caught)
             const wire = Schema.fromJsonString(Schema.toCodecJson(AuthError))
-            const decoded = yield* Schema.decodeEffect(wire)(
-              yield* Schema.encodeEffect(wire)(error),
+            const checks = new TestSchema.Asserts(wire)
+            yield* checks.encoding().succeedEffect(error, expectedWire)
+            yield* checks.decoding().succeedEffect(
+              expectedWire,
+              AuthError.make({
+                reason: AuthNetworkError.make({
+                  message: 'Sanitized network failure',
+                  cause: caught,
+                }),
+              }),
             )
-            assert.deepStrictEqual(decoded.cause, caught)
           }
         }),
     )

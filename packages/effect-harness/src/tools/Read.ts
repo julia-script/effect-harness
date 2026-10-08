@@ -7,16 +7,15 @@ import * as DateTime from 'effect/DateTime'
 import * as SchemaField from '../SchemaField.ts'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as AiTool from 'effect/ai/Tool'
-// effect-review-allow P9-namespace-alias-equals-module: effect/ai/Tool and ../Tool.ts both bind Tool; AiTool preserves the checked imported-name collision.
+import * as Tool from 'effect/ai/Tool'
 import * as Prompt from 'effect/ai/Prompt'
-import { Env, type BinaryReader, type FileInfo } from '../Env.ts'
-import { ToolError, ToolExecution } from '../ToolError.ts'
-import { Invocation, Result, type ToolResult, type Diagnostic } from '../Invocation.ts'
-import * as Metadata from '../Tool.ts'
-// effect-review-allow P9-namespace-alias-equals-module: ../Tool.ts and effect/ai/Tool both bind Tool; Metadata preserves the checked imported-name collision.
+import { Env } from 'effect-harness/Env'
+import { type BinaryReader, type FileInfo } from 'effect-harness/NativeFiles'
+import { ToolError, ToolExecutionError } from '../ToolError.ts'
+import { Invocation, Result, type Diagnostic } from '../Invocation.ts'
+import * as ToolRegistration from '../ToolRegistration.ts'
 import { characterEnd } from '../Output.ts'
-import { rangeDecoder, hasBom } from '../env/Decode.ts'
+import { makeRangeDecoder, hasBom } from '../env/Decode.ts'
 import * as Image from './Image.ts'
 import * as path from './internal/path.ts'
 import * as Truncate from './Truncate.ts'
@@ -31,12 +30,6 @@ export const Parameters = Schema.Struct({
   limit: SchemaField.optional(Schema.Finite),
 })
 /**
- * Decoded parameters passed to the coding-tool handler.
- *
- * @category models
- */
-export type Input = Parameters
-/**
  * Native read tool for bounded text line windows.
  *
  * **Details**
@@ -50,7 +43,7 @@ export type Input = Parameters
  *
  * @category constants
  */
-export const tool = AiTool.make('read', {
+export const tool = Tool.make('read', {
   description:
     'Read text files; first 2000 lines or 50KB. Continue large files with offset/limit. Recognized images are unsupported.',
   parameters: Parameters,
@@ -59,9 +52,9 @@ export const tool = AiTool.make('read', {
 })
   .addDependency(Env)
   .addDependency(Invocation)
-  .annotate(Metadata.Metadata, {
+  .annotate(ToolRegistration.Metadata, {
     replay: 'unsafe',
-    project: (result) => Metadata.decodeResult('read', result),
+    project: (result) => ToolRegistration.decodeResult('read', result),
   })
 const sliceIndex = (value: number): number => (Number.isNaN(value) ? 0 : Math.trunc(value))
 const readHead = Effect.fnUntraced(function* (
@@ -70,7 +63,7 @@ const readHead = Effect.fnUntraced(function* (
   end: number,
   bom: boolean,
 ) {
-  const decoder = rangeDecoder()
+  const decoder = makeRangeDecoder()
   let text = ''
   let newlines = 0
   for (let position = bom && start === 0 ? 3 : start; position < end;) {
@@ -91,8 +84,8 @@ const readHead = Effect.fnUntraced(function* (
 const readText = Effect.fnUntraced(function* (
   reader: BinaryReader,
   info: FileInfo,
-  input: Input,
-): Effect.fn.Return<ToolResult, import('../Env.ts').FileError | ToolError> {
+  input: Parameters,
+): Effect.fn.Return<Result, import('../FileError.ts').FileError | ToolError> {
   const { path, offset, limit } = input
   const mime = yield* Image.detectSupportedImageMimeTypeOf({ size: info.size, read: reader.read })
   if (Option.isSome(mime))
@@ -102,7 +95,7 @@ const readText = Effect.fnUntraced(function* (
       diagnostics: [
         {
           kind: 'unsupported_image',
-          detail: { severity: 'error' },
+          severity: 'error',
           message: `${path} is an image (${mime.value}); reading images is not supported`,
         },
       ],
@@ -121,7 +114,7 @@ const readText = Effect.fnUntraced(function* (
   const total = scan.newlines + 1
   if (startLine >= total)
     return yield* new ToolError({
-      reason: new ToolExecution({
+      reason: new ToolExecutionError({
         name: 'read',
         message: `Offset ${offset} is beyond end of file (${total} lines total)`,
       }),
@@ -157,7 +150,7 @@ const readText = Effect.fnUntraced(function* (
     text = new TextDecoder().decode(bytes.subarray(0, end))
     diagnostics.push({
       kind: 'truncated',
-      detail: { severity: 'warn' },
+      severity: 'warning',
       message: `Line ${display} is ${Truncate.formatSize(size)}, exceeds the ${Truncate.formatSize(Truncate.DEFAULT_MAX_BYTES)} limit; showing its first ${Truncate.formatSize(end)}. Use bash: sed -n '${display}p' ${path} | tail -c +${end + 1}`,
     })
     details = { truncation: { ...truncation, outputBytes: end, outputLines: 1 } }
@@ -169,14 +162,14 @@ const readText = Effect.fnUntraced(function* (
         : ` (${Truncate.formatSize(Truncate.DEFAULT_MAX_BYTES)} limit)`
     diagnostics.push({
       kind: 'truncated',
-      detail: { severity: 'info' },
+      severity: 'info',
       message: `Showing lines ${display}-${last} of ${total}${limitText}. Use offset=${last + 1} to continue.`,
     })
     details = { truncation }
   } else if (userLimited !== undefined && startLine + userLimited < total)
     diagnostics.push({
       kind: 'continuation',
-      detail: { severity: 'info' },
+      severity: 'info',
       message: `${total - (startLine + userLimited)} more lines in file. Use offset=${startLine + userLimited + 1} to continue.`,
     })
   return {
@@ -185,66 +178,65 @@ const readText = Effect.fnUntraced(function* (
     diagnostics,
   }
 })
-class FileChanged extends Schema.TaggedError<FileChanged>(
-  '@effect-harness/harness/tools/Read/FileChanged',
-)('FileChanged', {}) {}
+class FileChangedError extends Schema.TaggedError<FileChangedError>(
+  '@effect-harness/harness/tools/Read/FileChangedError',
+)('FileChangedError', {}) {}
 /**
  * Reads bounded text or image data and retries a changed inode once within the same reader scope.
  *
  * @category combinators
  */
-export const handler = Effect.fnUntraced(function* (
-  input: Input,
-): Effect.fn.Return<ToolResult, ToolError, Env | Invocation> {
-  const env = yield* Env
-  const absolute = yield* path.resolveRead(input.path).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ToolError({
-          reason: new ToolExecution({ name: 'read', message: cause.message, cause: cause }),
-        }),
-    ),
-  )
-  return yield* Effect.scoped(
-    Effect.gen(function* () {
-      const reader = yield* env.openBinaryReader(absolute)
-      const attempt = Effect.gen(function* () {
-        const before = yield* reader.info
-        const result = yield* readText(reader, before, input)
-        const after = yield* reader.info
-        if (
-          after.size > before.size ||
-          (after.size === before.size && DateTime.Equivalence(after.mtimeMs, before.mtimeMs))
-        )
-          return result
-        return yield* new FileChanged({})
-      })
-      return yield* attempt.pipe(
-        Effect.retry({ times: 1, while: (error) => error instanceof FileChanged }),
-        Effect.catchIf(
-          (error) => error instanceof FileChanged,
-          () =>
+export const handler = Effect.fnUntraced(
+  function* (
+    input: Parameters,
+  ): Effect.fn.Return<Result, ToolError | import('../FileError.ts').FileError, Env | Invocation> {
+    const env = yield* Env
+    const absolute = yield* path.resolveRead(input.path).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ToolError({
+            reason: new ToolExecutionError({ name: 'read', message: cause.message, cause: cause }),
+          }),
+      ),
+    )
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const reader = yield* env.openBinaryReader(absolute)
+        const attempt = Effect.gen(function* () {
+          const before = yield* reader.info
+          const result = yield* readText(reader, before, input)
+          const after = yield* reader.info
+          if (
+            after.size > before.size ||
+            (after.size === before.size && DateTime.Equivalence(after.mtimeMs, before.mtimeMs))
+          )
+            return result
+          return yield* new FileChangedError({})
+        })
+        return yield* attempt.pipe(
+          Effect.retry({ times: 1, while: (error) => error._tag === 'FileChangedError' }),
+          Effect.catchTag('FileChangedError', () =>
             Effect.fail(
               new ToolError({
-                reason: new ToolExecution({
+                reason: new ToolExecutionError({
                   name: 'read',
                   message: `${input.path} changed while it was read`,
                 }),
               }),
             ),
-        ),
-      )
-    }),
-  ).pipe(
-    Effect.mapError((cause) =>
-      cause instanceof ToolError
-        ? cause
-        : new ToolError({
-            reason: new ToolExecution({ name: 'read', message: cause.message, cause: cause }),
-          }),
-    ),
-  )
-})
+          ),
+        )
+      }),
+    )
+  },
+  Effect.mapError((cause) =>
+    cause instanceof ToolError
+      ? cause
+      : new ToolError({
+          reason: new ToolExecutionError({ name: 'read', message: cause.message, cause: cause }),
+        }),
+  ),
+)
 
 /**
  * Checks whether a value satisfies the decoded `Parameters` schema.
@@ -256,7 +248,7 @@ export const handler = Effect.fnUntraced(function* (
  *
  * @category guards
  */
-export const isInput: (u: unknown) => u is Parameters = Schema.is(Parameters)
+export const isParameters: (u: unknown) => u is Parameters = Schema.is(Parameters)
 
 /**
  * File path and optional one-based text window.

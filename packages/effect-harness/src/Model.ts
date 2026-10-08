@@ -1,8 +1,11 @@
 /**
  * Native model catalogs, deferred capabilities and semantic provider failures.
  */
+import * as Record from 'effect/Record'
+
 import * as Option from 'effect/Option'
 import * as DateTime from 'effect/DateTime'
+import { dual } from 'effect/Function'
 import * as Duration from 'effect/Duration'
 import * as Time from './Time.ts'
 import * as SchemaField from './SchemaField.ts'
@@ -13,7 +16,7 @@ import * as Schema from 'effect/Schema'
 import type * as LanguageModel from 'effect/ai/LanguageModel'
 import type * as Prompt from 'effect/ai/Prompt'
 import type * as Agent from './Agent.ts'
-import { ModelError, ModelNoModel, ModelUnsupported } from './ModelError.ts'
+import { ModelError, ModelNoModelError, ModelUnsupportedError } from './ModelError.ts'
 import type * as Usage from './Usage.ts'
 import * as AiError from 'effect/ai/AiError'
 import type * as Response from 'effect/ai/Response'
@@ -100,7 +103,7 @@ export class Catalog extends Context.Service<
      */
     readonly resolve: (ref: Agent.ModelRef) => Effect.Effect<Descriptor, ModelError>
   }
->()('@effect-harness/harness/Model/Catalog') {}
+>()('effect-harness/Model/Catalog') {}
 /**
  * Provides a catalogue from already constructed model descriptors.
  *
@@ -111,6 +114,7 @@ export class Catalog extends Context.Service<
  *
  * @category layers
  */
+// effect-nit-allow B-no-layer-arguments: Explicit registration-contract exception: descriptors contain heterogeneous already-owned LanguageModel instances keyed by provider/model, plus their configure/deferred capabilities. DemoModel and TranscriptPrompt/Executor consumers retain caller-owned provider scopes and exact instances; replacing this array with one ambient LanguageModel would collapse provider identities. This is an additional policy exception, not one of the catalogue's layer-transform/runtime-edge/test-harness exceptions.
 export function layer(descriptors: ReadonlyArray<Descriptor>): Layer.Layer<Catalog> {
   const entries = new Map(descriptors.map((descriptor) => [key(descriptor.ref), descriptor]))
   return Layer.succeed(
@@ -122,7 +126,7 @@ export function layer(descriptors: ReadonlyArray<Descriptor>): Layer.Layer<Catal
           Effect.mapError(
             () =>
               new ModelError({
-                reason: new ModelNoModel({
+                reason: new ModelNoModelError({
                   message: `Model ${ref.provider}/${ref.modelId} is not available`,
                 }),
               }),
@@ -134,7 +138,7 @@ export function layer(descriptors: ReadonlyArray<Descriptor>): Layer.Layer<Catal
 }
 const key = (ref: Agent.ModelRef): string => JSON.stringify([ref.provider, ref.modelId])
 /**
- * Default capability translator for models with no provider-specific options.
+ * Validates request options for models with no provider-specific configuration.
  *
  * **Details**
  *
@@ -146,13 +150,13 @@ export const noOptions = (
   options: RequestOptions,
 ): Effect.Effect<Context.Context<never>, ModelError> =>
   options.thinking !== 'off' ||
-  Object.keys(options.options).length > 0 ||
+  !Record.isEmptyReadonlyRecord(options.options) ||
   options.sessionId !== undefined ||
   options.maxTokens !== undefined ||
   options.cache !== undefined
     ? Effect.fail(
         new ModelError({
-          reason: new ModelUnsupported({
+          reason: new ModelUnsupportedError({
             message: 'This model adapter does not support request options',
           }),
         }),
@@ -166,7 +170,7 @@ export const noOptions = (
  */
 export const DeferredDecision = Schema.Struct({
   handle: Schema.Json,
-  pollAfterMs: SchemaField.optional(Time.DurationMillis),
+  pollAfterMs: SchemaField.optional(Time.DurationFromMillis),
 })
 /**
  * Persistable deferred request handle and optional delay before its next poll.
@@ -194,20 +198,42 @@ export interface DeferredCapability {
   ) => Effect.Effect<void, ModelError | import('effect/ai/AiError').AiError>
 }
 /**
- * Root persists this absolute deadline; the harness does not create a timer or poll loop.
+ * Optional previous deadline and delay for absolute polling-time calculation.
+ *
+ * **Details**
+ *
+ * The root persists the returned deadline; the harness does not create a timer or poll loop.
  *
  * @category combinators
  */
-export const pollAt = (
-  now: DateTime.Utc,
-  previous?: DateTime.Utc,
-  delay: Duration.Duration = importDefaultPollDelay,
+export interface PollOptions {
+  readonly previous?: DateTime.Utc | undefined
+  readonly delay?: Duration.Input | undefined
+}
+const pollAtImpl = (
+  self: DateTime.Utc,
+  thatOrOptions?: DateTime.Utc | PollOptions,
+  delay: Duration.Input = importDefaultPollDelay,
 ): DateTime.Utc => {
-  const next = DateTime.addDuration(now, delay)
+  const options =
+    thatOrOptions !== undefined && !DateTime.isDateTime(thatOrOptions) ? thatOrOptions : undefined
+  let previous: DateTime.Utc | undefined
+  if (thatOrOptions !== undefined) {
+    previous = DateTime.isDateTime(thatOrOptions) ? thatOrOptions : thatOrOptions.previous
+  }
+  const next = DateTime.addDuration(self, options?.delay ?? delay)
   return previous === undefined
     ? next
     : DateTime.max(next, DateTime.addDuration(previous, '1 millis'))
 }
+/** Calculates an absolute polling deadline, preserving the prior deadline floor.
+ * @category combinators
+ */
+export const pollAt: {
+  (options: PollOptions): (self: DateTime.Utc) => DateTime.Utc
+  (self: DateTime.Utc, that?: DateTime.Utc, delay?: Duration.Input): DateTime.Utc
+} = dual((args) => DateTime.isDateTime(args[0]), pollAtImpl)
+
 const importDefaultPollDelay = Duration.millis(5000)
 
 // Error patterns adapted from pi-ai (MIT), pinned 636703a0; see the package NOTICE.
@@ -355,32 +381,32 @@ const foreignTransient = new RegExp(
  *
  * @category combinators
  */
-export function errorText(error: unknown): string {
-  return Serialization.errorText(error)
+export function errorText(self: unknown): string {
+  return Serialization.errorText(self)
 }
 /**
  * Converts SDK invalid-request diagnostics and otherwise unclassified foreign sentinels once at the model boundary.
  *
  * @category combinators
  */
-export function providerError(error: unknown, provider?: string): AiError.AiError {
-  if (error instanceof ModelError)
+export function providerError(self: unknown, provider?: string): AiError.AiError {
+  if (self instanceof ModelError)
     return new AiError.AiError({
       module: 'Harness',
       method: 'model',
       reason: new AiError.InvalidRequestError({
-        description: error.message,
-        metadata: { harness: { reason: error.reason._tag } },
+        description: self.message,
+        metadata: { harness: { reason: self.reason._tag } },
       }),
     })
-  const native = AiError.isAiError(error) ? error : undefined
+  const native = AiError.isAiError(self) ? self : undefined
   if (
     native !== undefined &&
     native.reason._tag !== 'UnknownError' &&
     native.reason._tag !== 'InvalidRequestError'
   )
     return native
-  let text = errorText(error)
+  let text = errorText(self)
   if (native !== undefined && 'description' in native.reason)
     text = native.reason.description ?? native.message
   const metadata =
@@ -421,10 +447,10 @@ export function providerError(error: unknown, provider?: string): AiError.AiErro
  * @category combinators
  */
 export function classify(
-  error: unknown,
+  self: unknown,
   provider?: string,
 ): { readonly retryable: boolean; readonly overflow: boolean } {
-  const typed = providerError(error, provider)
+  const typed = providerError(self, provider)
   return {
     overflow:
       typed.reason._tag === 'InvalidRequestError' && typed.reason.parameter === 'context_window',

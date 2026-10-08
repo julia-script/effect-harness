@@ -6,4 +6,4 @@
  *
  * @category re-exports
  */
-export { fileError, layerNative } from './internal/nodeNativeFiles.ts'
+export { fileError, layerNative as layer } from './internal/nodeNativeFiles.ts'

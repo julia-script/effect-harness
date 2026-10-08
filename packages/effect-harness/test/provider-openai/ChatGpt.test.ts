@@ -1,21 +1,24 @@
+// effect-nit-allow P8-tests-import-public-specifiers: same-package ownership regressions replace the null-exported pending table factory; consumer export denials remain unchanged.
+// effect-nit-allow P9-no-internal-cross-import: same-package ownership regressions replace the null-exported pending table factory; consumer export denials remain unchanged.
+import * as PendingAuthorization from '../../src/internal/PendingAuthorization.ts'
 import { assertSome } from '@effect/vitest/utils'
-import { vi } from 'vitest'
-vi.mock('effect/Ref', { spy: true })
-import * as Ref from 'effect/Ref'
 import * as HashMap from 'effect/HashMap'
 import * as Deferred from 'effect/Deferred'
-import * as Duration from 'effect/Duration'
+import type * as Duration from 'effect/Duration'
 import * as Time from 'effect-harness/auth/Time'
 import * as DateTime from 'effect/DateTime'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
 import {
-  AuthIdentityError,
-  AuthNetworkError,
-  makeAuthErrorReason,
   AuthError,
-  accountKey,
-} from 'effect-harness/auth/Credential'
+  AuthNetworkError,
+  AuthTokenError,
+  AuthBusyError,
+  AuthIdentityError,
+  AuthPermissionError,
+  AuthStorageError,
+} from 'effect-harness/auth/AuthError'
+import { accountKey } from 'effect-harness/auth/Credential'
 import * as CredentialStore from 'effect-harness/auth/CredentialStore'
 import { Jwt } from 'effect-harness/auth/Jwt'
 import { assert, describe, it } from '@effect/vitest'
@@ -25,14 +28,15 @@ import * as Option from 'effect/Option'
 import * as Redacted from 'effect/Redacted'
 import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
+import * as Prompt from 'effect/ai/Prompt'
+import * as ResponseIdTracker from 'effect/ai/ResponseIdTracker'
+import * as OpenAiLanguageModel from '@effect/ai-openai/OpenAiLanguageModel'
 import * as AiError from 'effect/ai/AiError'
 import * as HttpClient from 'effect/http/HttpClient'
-import * as HttpClientRequest from 'effect/http/HttpClientRequest'
+import type * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import * as TestClock from 'effect/testing/TestClock'
 import * as ChatGpt from 'effect-harness/provider-openai/ChatGpt'
-// effect-review-allow P9-namespace-alias-equals-module: effect-harness/provider-openai/LanguageModel and packages/effect-harness/test/provider-openai/ChatGpt.test.ts both bind LanguageModel; Provider distinguishes the concepts.
-import * as Provider from 'effect-harness/provider-openai/LanguageModel'
 
 const responseBody = {
   id: 'resp-1',
@@ -59,8 +63,8 @@ const sse = (type: string) =>
   `data: ${JSON.stringify({ type, sequence_number: 1, response: responseBody })}\n\n`
 const makeFixture = (
   durationOptions: {
-    readonly authorizationLifetimeMs?: Duration.Input
-    readonly refreshSkewMs?: Duration.Input
+    readonly authorizationLifetime?: Duration.Input
+    readonly refreshSkew?: Duration.Input
   } = {},
 ) => {
   const requests: Array<HttpClientRequest.HttpClientRequest> = []
@@ -156,7 +160,7 @@ const login = Effect.fnUntraced(function* () {
   return yield* auth.complete(callback(authorization, 'issued-1'))
 })
 
-describe('ChatGpt', () => {
+describe('ChatGpt', { concurrent: false }, () => {
   describe('ChatGPT account', () => {
     it.effect('nonfinite and forged Duration options fail with typed configuration errors', () =>
       Effect.gen(function* () {
@@ -169,7 +173,7 @@ describe('ChatGpt', () => {
           { '~effect/Duration': '~effect/Duration', value: { _tag: 'Unknown' } },
           { '~effect/Duration': '~effect/Duration', value: { _tag: 'Millis', millis: NaN } },
         ] as unknown as ReadonlyArray<Duration.Input>
-        for (const field of ['authorizationLifetimeMs', 'refreshSkewMs'] as const) {
+        for (const field of ['authorizationLifetime', 'refreshSkew'] as const) {
           for (const input of invalidValues) {
             const options = { [field]: input }
             const f = makeFixture(options)
@@ -183,7 +187,7 @@ describe('ChatGpt', () => {
 
     it.effect('throwing Duration getters preserve actual causes at both option boundaries', () =>
       Effect.gen(function* () {
-        for (const field of ['authorizationLifetimeMs', 'refreshSkewMs'] as const) {
+        for (const field of ['authorizationLifetime', 'refreshSkew'] as const) {
           const cause = { diagnostic: 'original duration getter failure' }
           let reads = 0
           const input = {
@@ -206,31 +210,33 @@ describe('ChatGpt', () => {
     it.effect('concurrent callbacks reading the same attempt have one atomic exchange owner', () =>
       Effect.gen(function* () {
         const f = makeFixture()
+        const together = yield* Deferred.make<void>()
+        let observed = 0
+        const pendingLayer = Layer.succeed(
+          PendingAuthorization.PendingAuthorization,
+          PendingAuthorization.PendingAuthorization.of({
+            make: <K, V>() =>
+              Effect.map(PendingAuthorization.native.make<K, V>(), (table) => ({
+                ...table,
+                read: table.read.pipe(
+                  Effect.tap((attempts) => {
+                    if (HashMap.size(attempts) === 0 || observed >= 2) return Effect.void
+                    observed++
+                    return observed === 2
+                      ? Deferred.succeed(together, undefined)
+                      : Deferred.await(together)
+                  }),
+                ),
+              })),
+          }),
+        )
         return yield* Effect.gen(function* () {
           const auth = yield* ChatGpt.ChatGpt
           const attempt = yield* auth.begin({ redirectUri: 'http://127.0.0.1:12345/auth/callback' })
-          const together = yield* Deferred.make<void>()
-          const original = (yield* Effect.promise(() => vi.importActual<typeof Ref>('effect/Ref')))
-            .get
-          let observed = 0
-          vi.mocked(Ref.get).mockImplementation(<A>(ref: Ref.Ref<A>) =>
-            original(ref).pipe(
-              Effect.tap((value) => {
-                if (!HashMap.isHashMap(value) || HashMap.size(value) === 0 || observed >= 2)
-                  return Effect.void
-                observed++
-                return observed === 2
-                  ? Deferred.succeed(together, undefined)
-                  : Deferred.await(together)
-              }),
-            ),
-          )
           const results = yield* Effect.forEach(
             [0, 1],
             () => auth.complete(callback(attempt, 'issued-1')).pipe(Effect.result),
             { concurrency: 2 },
-          ).pipe(
-            Effect.ensuring(Effect.sync(() => vi.mocked(Ref.get).mockImplementation(original))),
           )
           assert.strictEqual(observed, 2)
           assert.strictEqual(results.filter((result) => result._tag === 'Success').length, 1)
@@ -238,7 +244,7 @@ describe('ChatGpt', () => {
             f.requests.filter((request) => request.url.endsWith('/oauth/token')).length,
             1,
           )
-        }).pipe(Effect.provide(f.layer))
+        }).pipe(Effect.provide(f.layer.pipe(Layer.provide(pendingLayer))))
       }),
     )
 
@@ -247,8 +253,8 @@ describe('ChatGpt', () => {
       () =>
         Effect.gen(function* () {
           const f = makeFixture({
-            authorizationLifetimeMs: { milliseconds: 10000.25 },
-            refreshSkewMs: '0 seconds',
+            authorizationLifetime: { milliseconds: 10000.25 },
+            refreshSkew: '0 seconds',
           })
           yield* Effect.gen(function* () {
             const auth = yield* ChatGpt.ChatGpt
@@ -263,7 +269,7 @@ describe('ChatGpt', () => {
             yield* auth.cancel(attempt.state)
           }).pipe(Effect.provide(f.layer))
           for (const input of [0, -1, Infinity, NaN, 'invalid' as Duration.Input]) {
-            const invalid = makeFixture({ authorizationLifetimeMs: input })
+            const invalid = makeFixture({ authorizationLifetime: input })
             const error = yield* ChatGpt.ChatGpt.pipe(Effect.provide(invalid.layer), Effect.flip)
             assert.strictEqual(error.reason._tag, 'AuthConfigurationError')
             assert.strictEqual(invalid.requests.length, 0)
@@ -301,7 +307,7 @@ describe('ChatGpt', () => {
           return yield* Effect.gen(function* () {
             const credential = yield* login()
             const client = yield* OpenAiClient.OpenAiClient.pipe(
-              Effect.provide(Provider.layerChatGptClient({ account: accountKey(credential) })),
+              Effect.provide(ChatGptClient.layer({ account: accountKey(credential) })),
             )
             yield* TestClock.adjust('61 minutes')
             yield* client.client.get('/models')
@@ -326,12 +332,15 @@ describe('ChatGpt', () => {
             const auth = yield* ChatGpt.ChatGpt
             const client = yield* OpenAiClient.OpenAiClient.pipe(
               Effect.provide(
-                Provider.layerChatGptClient({ account: 'selected-account' }).pipe(
+                ChatGptClient.layer({ account: 'selected-account' }).pipe(
                   Layer.provide(
-                    Layer.succeed(ChatGpt.ChatGpt, {
-                      ...auth,
-                      accessToken: () => Effect.fail(original),
-                    }),
+                    Layer.succeed(
+                      ChatGpt.ChatGpt,
+                      ChatGpt.ChatGpt.of({
+                        ...auth,
+                        accessToken: () => Effect.fail(original),
+                      }),
+                    ),
                   ),
                 ),
               ),
@@ -380,8 +389,9 @@ describe('ChatGpt', () => {
             )
             assert.strictEqual(f.tokenRequests(), 1)
             assert.strictEqual(
-              (yield* auth.complete(callback(authorization, 'issued-1')).pipe(Effect.flip)).code,
-              'callback',
+              (yield* auth.complete(callback(authorization, 'issued-1')).pipe(Effect.flip)).reason
+                ._tag,
+              'AuthCallbackError',
             )
           }).pipe(Effect.provide(f.layer))
         }),
@@ -399,8 +409,8 @@ describe('ChatGpt', () => {
                 .complete(
                   'http://127.0.0.1:12345/auth/callback?state=invalid&code=x&client_id=issued-1',
                 )
-                .pipe(Effect.flip)).code,
-              'callback',
+                .pipe(Effect.flip)).reason._tag,
+              'AuthCallbackError',
             )
             const a = yield* auth.begin({ redirectUri: 'http://127.0.0.1:12345/auth/callback' })
             for (const invalid of [
@@ -408,7 +418,10 @@ describe('ChatGpt', () => {
               `${callback(a, 'issued-1')}&state=duplicate`,
               callback(a, 'dynamic_agent_client'),
             ])
-              assert.strictEqual((yield* auth.complete(invalid).pipe(Effect.flip)).code, 'callback')
+              assert.strictEqual(
+                (yield* auth.complete(invalid).pipe(Effect.flip)).reason._tag,
+                'AuthCallbackError',
+              )
             assert.strictEqual(f.tokenRequests(), 0)
           }).pipe(Effect.provide(f.layer))
         }),
@@ -423,14 +436,14 @@ describe('ChatGpt', () => {
           assert.strictEqual(
             (yield* auth
               .complete(`${denied.redirectUri}?state=${denied.state}&error=access_denied`)
-              .pipe(Effect.flip)).code,
-            'denied',
+              .pipe(Effect.flip)).reason._tag,
+            'AuthDeniedError',
           )
           const expired = yield* auth.begin({ redirectUri: 'http://127.0.0.1:12345/auth/callback' })
           yield* TestClock.adjust('11 minutes')
           assert.strictEqual(
-            (yield* auth.complete(callback(expired, 'issued-1')).pipe(Effect.flip)).code,
-            'expired',
+            (yield* auth.complete(callback(expired, 'issued-1')).pipe(Effect.flip)).reason._tag,
+            'AuthExpiredError',
           )
           assert.strictEqual(f.tokenRequests(), 0)
         }).pipe(Effect.provide(f.layer))
@@ -449,13 +462,13 @@ describe('ChatGpt', () => {
             'http://127.0.0.1/auth/callback?q=x',
           ])
             assert.strictEqual(
-              (yield* auth.begin({ redirectUri }).pipe(Effect.flip)).code,
-              'configuration',
+              (yield* auth.begin({ redirectUri }).pipe(Effect.flip)).reason._tag,
+              'AuthConfigurationError',
             )
           const missing = yield* auth.begin({ redirectUri: 'http://127.0.0.1:12345/auth/callback' })
           assert.strictEqual(
-            (yield* auth.complete(callback(missing)).pipe(Effect.flip)).code,
-            'callback',
+            (yield* auth.complete(callback(missing)).pipe(Effect.flip)).reason._tag,
+            'AuthCallbackError',
           )
           assert.strictEqual(f.tokenRequests(), 0)
         }).pipe(Effect.provide(f.layer))
@@ -470,8 +483,8 @@ describe('ChatGpt', () => {
           const auth = yield* ChatGpt.ChatGpt
           const a = yield* auth.begin({ redirectUri: 'http://127.0.0.1:12345/auth/callback' })
           assert.strictEqual(
-            (yield* auth.complete(callback(a, 'issued-1')).pipe(Effect.flip)).code,
-            'permission',
+            (yield* auth.complete(callback(a, 'issued-1')).pipe(Effect.flip)).reason._tag,
+            'AuthPermissionError',
           )
           assert.deepStrictEqual(yield* (yield* CredentialStore.CredentialStore).list, [])
         }).pipe(Effect.provide(f.layer))
@@ -498,8 +511,9 @@ describe('ChatGpt', () => {
             assert.strictEqual(query.get('ext_agent_host_id'), credential.hostId)
             assert.isFalse(JSON.stringify(returning).includes('id-token'))
             assert.strictEqual(
-              (yield* auth.complete(callback(returning, 'different')).pipe(Effect.flip)).code,
-              'identity',
+              (yield* auth.complete(callback(returning, 'different')).pipe(Effect.flip)).reason
+                ._tag,
+              'AuthIdentityError',
             )
             const second = yield* auth.begin({
               account: key,
@@ -507,8 +521,8 @@ describe('ChatGpt', () => {
             })
             f.options.subject = 'other-account'
             assert.strictEqual(
-              (yield* auth.complete(callback(second)).pipe(Effect.flip)).code,
-              'identity',
+              (yield* auth.complete(callback(second)).pipe(Effect.flip)).reason._tag,
+              'AuthIdentityError',
             )
             assert.deepStrictEqual(
               yield* (yield* CredentialStore.CredentialStore).get(key),
@@ -543,15 +557,15 @@ describe('ChatGpt', () => {
             const previous = yield* store.get(key)
             f.options.tokenStatus = 500
             assert.strictEqual(
-              (yield* auth.refresh(key, { force: true }).pipe(Effect.flip)).code,
-              'token',
+              (yield* auth.refresh(key, { force: true }).pipe(Effect.flip)).reason._tag,
+              'AuthTokenError',
             )
             assert.deepStrictEqual(yield* store.get(key), previous)
             f.options.tokenStatus = 200
             f.options.subject = 'other-account'
             assert.strictEqual(
-              (yield* auth.refresh(key, { force: true }).pipe(Effect.flip)).code,
-              'identity',
+              (yield* auth.refresh(key, { force: true }).pipe(Effect.flip)).reason._tag,
+              'AuthIdentityError',
             )
             assert.deepStrictEqual(yield* store.get(key), previous)
             f.options.subject = 'account-1'
@@ -596,7 +610,10 @@ describe('ChatGpt', () => {
             )
             if (Option.isSome(registration))
               assert.strictEqual(registration.value._tag, 'registration')
-            assert.strictEqual((yield* auth.accessToken(key).pipe(Effect.flip)).code, 'missing')
+            assert.strictEqual(
+              (yield* auth.accessToken(key).pipe(Effect.flip)).reason._tag,
+              'AuthMissingError',
+            )
             const a = yield* auth.begin({
               account: key,
               redirectUri: 'http://127.0.0.1:12346/auth/callback',
@@ -610,6 +627,64 @@ describe('ChatGpt', () => {
     )
 
     it.effect(
+      'account requests retain full history with trackers and request-local store overrides',
+      () =>
+        Effect.gen(function* () {
+          const f = makeFixture()
+          yield* Effect.gen(function* () {
+            const credential = yield* login()
+            for (const streaming of [false, true]) {
+              const first = Prompt.userMessage({
+                content: [Prompt.textPart({ text: 'first question' })],
+              })
+              const previous = Prompt.assistantMessage({
+                content: [
+                  Prompt.textPart({
+                    text: 'first answer',
+                    options: { openai: { itemId: 'old-item' } },
+                  }),
+                ],
+              })
+              const prompt = Prompt.fromMessages([
+                first,
+                previous,
+                Prompt.userMessage({ content: [Prompt.textPart({ text: 'next question' })] }),
+              ])
+              const tracker = yield* ResponseIdTracker.make
+              tracker.markParts([first], 'previous-response')
+              assert.isTrue(Option.isSome(tracker.prepareUnsafe(prompt)))
+              const request = streaming
+                ? LanguageModel.streamText({ prompt }).pipe(Stream.runCollect, Effect.asVoid)
+                : LanguageModel.generateText({ prompt }).pipe(Effect.asVoid)
+              yield* request.pipe(
+                Effect.provide(
+                  ChatGptLanguageModel.layer({
+                    account: accountKey(credential),
+                    model: 'account-model',
+                  }),
+                ),
+                Effect.provideService(ResponseIdTracker.ResponseIdTracker, tracker),
+                Effect.provideService(
+                  OpenAiLanguageModel.Config,
+                  OpenAiLanguageModel.Config.of({ store: true, useItemReferences: true }),
+                ),
+              )
+              const response = f.requests.filter((value) => value.url.endsWith('/responses')).at(-1)
+              if (response?.body._tag !== 'Uint8Array')
+                return yield* Effect.die('Missing account request')
+              const body: unknown = JSON.parse(new TextDecoder().decode(response.body.body))
+              assert.propertyVal(body, 'store', false)
+              const serialized = JSON.stringify(body)
+              assert.include(serialized, 'first question')
+              assert.include(serialized, 'first answer')
+              assert.include(serialized, 'next question')
+              assert.notInclude(serialized, 'item_reference')
+              assert.notInclude(serialized, 'previous_response_id')
+            }
+          }).pipe(Effect.provide(f.layer))
+        }),
+    )
+    it.effect(
       'native generated text uses refreshed public streaming Responses with store false',
       () =>
         Effect.gen(function* () {
@@ -619,15 +694,18 @@ describe('ChatGpt', () => {
             yield* TestClock.adjust('61 minutes')
             const response = yield* LanguageModel.generateText({ prompt: 'Hello' }).pipe(
               Effect.provide(
-                Provider.layerChatGpt({
+                ChatGptLanguageModel.layer({
                   account: accountKey(credential),
                   model: 'account-model',
                   config: { store: true },
                 }),
               ),
-              Effect.provideService(OpenAiClient.OpenAiSocket, {
-                createResponseStream: () => Effect.die('Account layer must use HTTP Responses'),
-              }),
+              Effect.provideService(
+                OpenAiClient.OpenAiSocket,
+                OpenAiClient.OpenAiSocket.of({
+                  createResponseStream: () => Effect.die('Account layer must use HTTP Responses'),
+                }),
+              ),
             )
             assert.strictEqual(response.text, 'Hello')
             assert.strictEqual(response.usage.inputTokens.total, 7)
@@ -670,7 +748,10 @@ describe('ChatGpt', () => {
           const parts = yield* LanguageModel.streamText({ prompt: 'Hello' }).pipe(
             Stream.runCollect,
             Effect.provide(
-              Provider.layerChatGpt({ account: accountKey(credential), model: 'account-model' }),
+              ChatGptLanguageModel.layer({
+                account: accountKey(credential),
+                model: 'account-model',
+              }),
             ),
           )
           assert.strictEqual(
@@ -698,7 +779,10 @@ describe('ChatGpt', () => {
             const failure = yield* LanguageModel.streamText({ prompt: 'Hello' }).pipe(
               Stream.runCollect,
               Effect.provide(
-                Provider.layerChatGpt({ account: accountKey(credential), model: 'account-model' }),
+                ChatGptLanguageModel.layer({
+                  account: accountKey(credential),
+                  model: 'account-model',
+                }),
               ),
               Effect.flip,
             )
@@ -718,7 +802,7 @@ describe('ChatGpt', () => {
               const store = yield* CredentialStore.CredentialStore
               f.options[field] = Number.MAX_VALUE
               const invalid = yield* login().pipe(Effect.flip)
-              assert.strictEqual(invalid.code, 'protocol')
+              assert.strictEqual(invalid.reason._tag, 'AuthProtocolError')
               assert.isFalse(JSON.stringify(invalid).includes('access-'))
               assert.deepStrictEqual(yield* store.list, [])
               f.options.expiresIn = 3600
@@ -728,8 +812,8 @@ describe('ChatGpt', () => {
               const previous = yield* store.get(key)
               f.options[field] = Number.MAX_VALUE
               assert.strictEqual(
-                (yield* auth.refresh(key, { force: true }).pipe(Effect.flip)).code,
-                'protocol',
+                (yield* auth.refresh(key, { force: true }).pipe(Effect.flip)).reason._tag,
+                'AuthProtocolError',
               )
               assert.deepStrictEqual(yield* store.get(key), previous)
             }).pipe(Effect.provide(f.layer))
@@ -750,47 +834,71 @@ describe('ChatGpt', () => {
               : DateTime.toEpochMillis(credential.earliestRefreshAt),
             0.25,
           )
-          assert.strictEqual(
-            (yield* (yield* CredentialStore.CredentialStore).get(accountKey(credential)))._tag,
-            'Some',
-          )
+          const store = yield* CredentialStore.CredentialStore
+          // The provider-owned host identity comes from the fixture store; all grant fields below are independent wire/JWT expectations.
+          const hostId = yield* store.hostId('openai')
+          assertSome(yield* store.get(accountKey(credential)), {
+            _tag: 'oauth',
+            provider: 'openai',
+            issuer: 'https://auth.openai.com',
+            subject: 'account-1',
+            clientId: 'issued-1',
+            hostId,
+            redirectUri: 'http://127.0.0.1:12345/auth/callback',
+            email: 'same@email.test',
+            accessToken: Redacted.make('access-1'),
+            refreshToken: Redacted.make('refresh-1'),
+            idToken: Redacted.make('id-token'),
+            scopes: [
+              'openid',
+              'profile',
+              'email',
+              'offline_access',
+              'resource.invoke',
+              'chatgpt.tokens.use.direct',
+            ],
+            expiresAt: Time.fromEpochMillis(0.25),
+            earliestRefreshAt: Time.fromEpochMillis(0.25),
+          })
         }).pipe(Effect.provide(f.layer))
       }),
     )
 
-    for (const [reason, status, expected, retryable] of [
-      ['network', undefined, 'NetworkError', true],
-      ['token', 429, 'RateLimitError', true],
-      ['token', 503, 'InternalProviderError', true],
-      ['busy', undefined, 'InternalProviderError', true],
-      ['identity', undefined, 'AuthenticationError', false],
-      ['permission', 403, 'AuthenticationError', false],
-      ['permission', 503, 'AuthenticationError', false],
-      ['storage', 503, 'AuthenticationError', false],
-      ['token', 401, 'AuthenticationError', false],
-      ['token', 600, 'AuthenticationError', false],
+    for (const [Reason, status, expected, retryable] of [
+      [AuthNetworkError, undefined, 'NetworkError', true],
+      [AuthTokenError, 429, 'RateLimitError', true],
+      [AuthTokenError, 503, 'InternalProviderError', true],
+      [AuthBusyError, undefined, 'InternalProviderError', true],
+      [AuthIdentityError, undefined, 'AuthenticationError', false],
+      [AuthPermissionError, 403, 'AuthenticationError', false],
+      [AuthPermissionError, 503, 'AuthenticationError', false],
+      [AuthStorageError, 503, 'AuthenticationError', false],
+      [AuthTokenError, 401, 'AuthenticationError', false],
+      [AuthTokenError, 600, 'AuthenticationError', false],
     ] as const) {
       it.effect(
-        `preserves ${reason}/${status ?? 'none'} inference refresh semantics in generation and streaming`,
+        `preserves ${Reason.name}/${status ?? 'none'} inference refresh semantics in generation and streaming`,
         () =>
           Effect.gen(function* () {
             const f = makeFixture()
             return yield* Effect.gen(function* () {
               const auth = yield* ChatGpt.ChatGpt
-              const failing = Layer.succeed(ChatGpt.ChatGpt, {
-                ...auth,
-                accessToken: () =>
-                  Effect.fail(
-                    new AuthError({
-                      reason: makeAuthErrorReason({
-                        reason,
-                        status,
-                        message: 'Sanitized credential failure',
+              const failing = Layer.succeed(
+                ChatGpt.ChatGpt,
+                ChatGpt.ChatGpt.of({
+                  ...auth,
+                  accessToken: () =>
+                    Effect.fail(
+                      new AuthError({
+                        reason: new Reason({
+                          status,
+                          message: 'Sanitized credential failure',
+                        }),
                       }),
-                    }),
-                  ),
-              })
-              const layer = Provider.layerChatGpt({
+                    ),
+                }),
+              )
+              const layer = ChatGptLanguageModel.layer({
                 account: 'selected',
                 model: 'account-model',
               }).pipe(Layer.provide(failing))
@@ -903,7 +1011,7 @@ describe('ChatGpt', () => {
             f.options.stream = `data: ${JSON.stringify(event)}\n\n`
             return yield* Effect.gen(function* () {
               const credential = yield* login()
-              const layer = Provider.layerChatGpt({
+              const layer = ChatGptLanguageModel.layer({
                 account: accountKey(credential),
                 model: 'account-model',
               })
@@ -944,12 +1052,17 @@ describe('ChatGpt', () => {
           assert.strictEqual(requests[0]?.headers['authorization'], 'Bearer api-key')
         }).pipe(
           Effect.provide(
-            Provider.layerApiKey({ apiKey: Redacted.make('api-key'), model: 'account-model' }).pipe(
-              Layer.provide(Layer.succeed(HttpClient.HttpClient, client)),
-            ),
+            HarnessOpenAiLanguageModel.layerApiKey({
+              apiKey: Redacted.make('api-key'),
+              model: 'account-model',
+            }).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, client))),
           ),
         )
       }),
     )
   })
 })
+
+import * as ChatGptClient from 'effect-harness/provider-openai/ChatGptClient'
+import * as ChatGptLanguageModel from 'effect-harness/provider-openai/ChatGptLanguageModel'
+import * as HarnessOpenAiLanguageModel from 'effect-harness/provider-openai/OpenAiLanguageModel'

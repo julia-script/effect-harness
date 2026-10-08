@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config'
 
-// Vitest requires a default export for its configuration.
+// effect-nit-allow PX-no-default-export: Vitest/Vite loads this configuration from the module default export.
 export default defineConfig({
   // No source aliases: the example exercises built packages and app output.
   test: {

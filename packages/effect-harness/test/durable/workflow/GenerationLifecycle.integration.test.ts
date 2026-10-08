@@ -1,27 +1,28 @@
+import * as DirectoryFixture from '../DirectoryFixture.ts'
+import { assertExitFailure } from '@effect/vitest/utils'
 import { awaitTransition } from './ModeledWorkflow.ts'
 import { assertFailure } from '@effect/vitest/utils'
-// effect-review-allow P8-tests-import-public-specifiers: these adversarial tests exercise private storage validation seams that intentionally have no public package export; all public behavior uses package specifiers.
 import * as Identity from 'effect-harness/durable/Identity'
 import { assert, describe, it } from '@effect/vitest'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
-import * as FileSystem from 'effect/FileSystem'
 import * as Path from 'effect/Path'
 import * as SqlClient from 'effect/sql/SqlClient'
 import * as ClusterWorkflowEngine from 'effect/cluster/ClusterWorkflowEngine'
 import * as SingleRunner from 'effect/cluster/SingleRunner'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/Executor and effect-harness/durable/Executor both own Executor; Harness keeps their distinct native/harness APIs available together for these constructor, service and declaration assertions.
 import * as Harness from 'effect-harness/Executor'
 import * as Model from 'effect-harness/Model'
 import * as Registry from 'effect-harness/Registry'
-import * as Tool from 'effect-harness/Tool'
+import * as ToolRegistration from 'effect-harness/ToolRegistration'
 import * as Invocation from 'effect-harness/Invocation'
-import { ToolError, ToolExecution } from 'effect-harness/ToolError'
-import * as NativeModel from 'effect/ai/LanguageModel'
+import { ToolError, ToolExecutionError } from 'effect-harness/ToolError'
+import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Prompt from 'effect/ai/Prompt'
-import * as Response from 'effect/ai/Response'
-import * as AiTool from 'effect/ai/Tool'
+import type * as Response from 'effect/ai/Response'
+import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
 import * as Stream from 'effect/Stream'
 import * as Deferred from 'effect/Deferred'
@@ -36,9 +37,10 @@ import * as Scope from 'effect/Scope'
 import * as Activity from 'effect/workflow/Activity'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
-import * as Directory from 'effect-harness/durable/SessionDirectory'
+import * as SessionDirectory from 'effect-harness/durable/SessionDirectory'
 import * as Conversation from 'effect-harness/durable/Conversation'
 import * as Inbox from 'effect-harness/durable/Inbox'
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/durable/Executor and effect-harness/Executor both own Executor; Executors keeps their distinct native/harness APIs available together for these constructor, service and declaration assertions.
 import * as Executors from 'effect-harness/durable/Executor'
 import { Submission } from 'effect-harness/durable/workflow/Submission'
 import { Generation } from 'effect-harness/durable/workflow/Generation'
@@ -49,15 +51,21 @@ import * as Ownership from 'effect-harness/durable/Ownership'
 import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
 import * as Store from 'effect-harness/durable/Store'
-import * as Backend from '../../../src/durable/storage/internal/backend.ts'
-import * as SqlStore from '../storage/TestStore.ts'
+// effect-nit-allow P8-tests-import-public-specifiers: these adversarial tests exercise private storage validation seams that intentionally have no public package export; all public behavior uses package specifiers.
+// effect-nit-allow P9-no-internal-cross-import: these adversarial tests exercise private storage validation seams that intentionally have no public package export; all public behavior uses package specifiers.
+import * as backend from '../../../src/durable/storage/internal/backend.ts'
+import * as TestStore from '../storage/TestStore.ts'
 import * as SnapshotStore from 'effect-harness/durable/storage/SnapshotStore'
 import * as KeyValueStore from 'effect/persistence/KeyValueStore'
 import * as Document from 'effect-harness/durable/Document'
-import { rejected, NotFound, Closed } from 'effect-harness/durable/StorageError'
+import { rejected, NotFoundError, ClosedError } from 'effect-harness/durable/StorageError'
 import * as Cancellation from 'effect-harness/durable/workflow/Cancellation'
 import * as Structured from 'effect-harness/durable/workflow/Structured'
-import { ExecutionError, Storage, Aborted } from 'effect-harness/durable/workflow/ExecutionError'
+import {
+  ExecutionError,
+  StorageError,
+  AbortedError,
+} from 'effect-harness/durable/workflow/ExecutionError'
 
 const User = Workflow.make('test/session-lifecycle/v1', {
   payload: {
@@ -70,9 +78,9 @@ const User = Workflow.make('test/session-lifecycle/v1', {
   idempotencyKey: ({ taskId }) => String(taskId),
 })
 const persisted = Effect.sync(() => {
-  let snapshot: Backend.Snapshot = { state: Record.emptyState(), frames: [] }
+  let snapshot: backend.Backend.Snapshot = { state: Record.emptyState(), frames: [] }
   let closes = 0
-  const backend: Backend.Backend = {
+  const adapter: backend.Backend = {
     load: Effect.sync(() => snapshot),
     committed: Effect.sync(() => snapshot),
     save: (next) =>
@@ -82,8 +90,8 @@ const persisted = Effect.sync(() => {
     atomic: (effect) => effect,
   }
   const open = Effect.gen(function* () {
-    const store = yield* Backend.make(
-      backend,
+    const store = yield* backend.make(
+      adapter,
       Effect.sync(() => {
         closes++
       }),
@@ -94,7 +102,7 @@ const persisted = Effect.sync(() => {
 })
 const pending = <A, E>(fiber: Fiber.Fiber<A, E>) =>
   Effect.sync(() => fiber.pollUnsafe() === undefined)
-const reserve = (session: Session.Service) =>
+const reserve = (session: Session.Session.Service) =>
   session.transaction(
     Effect.fnUntraced(function* (tx) {
       const projection = {
@@ -136,32 +144,35 @@ describe('GenerationLifecycle', () => {
           initial: (): { identity?: string } => ({}),
         })
         const storage = yield* persisted
-        const legacyScope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
+        const initialScope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
           Scope.close(owned, exit),
         )
-        const legacy = yield* Scope.provide(storage.open, legacyScope)
-        const conversation = yield* legacy.root()
+        const initialSession = yield* Scope.provide(storage.open, initialScope)
+        const conversation = yield* initialSession.root()
         const initial = yield* storage.state
-        yield* legacy.initialize(conversation.id)
+        yield* initialSession.initialize(conversation.id)
         assert.deepStrictEqual(yield* storage.state, initial)
-        yield* awaitTransition(Scope.close(legacyScope, Exit.void))
+        yield* awaitTransition(Scope.close(initialScope, Exit.void))
         let created = 0
         const restoredScope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
           Scope.close(owned, exit),
         )
         const restored = yield* Scope.provide(
           storage.open.pipe(
-            Effect.provideService(Session.CreationHook, {
-              run: () =>
-                Effect.sync(() => {
-                  created++
-                }),
-              recover: (tx, owner) =>
-                Effect.gen(function* () {
-                  const doc = yield* tx.doc(token, { owner: owner.id })
-                  doc.identity ??= 'pinned recovery identity'
-                }),
-            }),
+            Effect.provideService(
+              Session.CreationHook,
+              Session.CreationHook.of({
+                run: () =>
+                  Effect.sync(() => {
+                    created++
+                  }),
+                recover: (tx, owner) =>
+                  Effect.gen(function* () {
+                    const doc = yield* tx.doc(token, { owner: owner.id })
+                    doc.identity ??= 'pinned recovery identity'
+                  }),
+              }),
+            ),
           ),
           restoredScope,
         )
@@ -179,19 +190,22 @@ describe('GenerationLifecycle', () => {
         const missing = yield* restored
           .initialize(Record.ConversationId.make(999))
           .pipe(Effect.result)
-        assertFailure(missing, rejected('Conversation is absent', NotFound))
+        assertFailure(missing, rejected('Conversation is absent', NotFoundError))
         assert.deepStrictEqual(yield* storage.state, recovered)
         yield* awaitTransition(Scope.close(restoredScope, Exit.void))
         const failing = yield* storage.open.pipe(
-          Effect.provideService(Session.CreationHook, {
-            run: () => Effect.void,
-            recover: (tx, owner) =>
-              Effect.gen(function* () {
-                const doc = yield* tx.doc(token, { owner: owner.id })
-                doc.identity = 'must roll back'
-                return yield* rejected('recovery rejected')
-              }),
-          }),
+          Effect.provideService(
+            Session.CreationHook,
+            Session.CreationHook.of({
+              run: () => Effect.void,
+              recover: (tx, owner) =>
+                Effect.gen(function* () {
+                  const doc = yield* tx.doc(token, { owner: owner.id })
+                  doc.identity = 'must roll back'
+                  return yield* rejected('recovery rejected')
+                }),
+            }),
+          ),
         )
         assertFailure(
           yield* failing.initialize(conversation.id).pipe(Effect.result),
@@ -236,7 +250,9 @@ describe('GenerationLifecycle', () => {
           let finalized = 0
           const executor = User.toLayer((identity) =>
             Effect.gen(function* () {
-              const session = yield* (yield* Directory.SessionDirectory).resolve(identity.sessionId)
+              const session = yield* (yield* SessionDirectory.SessionDirectory).resolve(
+                identity.sessionId,
+              )
               const work = Effect.gen(function* () {
                 calls++
                 if (calls > 1) return { answer: 'resumed' }
@@ -263,7 +279,7 @@ describe('GenerationLifecycle', () => {
                       Effect.mapError(
                         (error) =>
                           new ExecutionError({
-                            reason: new Storage({ message: error.message, cause: error }),
+                            reason: new StorageError({ message: error.message, cause: error }),
                           }),
                       ),
                     ),
@@ -274,15 +290,18 @@ describe('GenerationLifecycle', () => {
               Effect.mapError((error) =>
                 error._tag === 'StorageError'
                   ? new ExecutionError({
-                      reason: new Storage({ message: error.message, cause: error }),
+                      reason: new StorageError({ message: error.message, cause: error }),
                     })
                   : error,
               ),
             ),
           )
-          const directory = Layer.succeed(Directory.SessionDirectory, {
-            resolve: () => Ref.get(current),
-          })
+          const directory = Layer.succeed(
+            SessionDirectory.SessionDirectory,
+            SessionDirectory.SessionDirectory.of({
+              resolve: () => Ref.get(current),
+            }),
+          )
           const runtime = executor.pipe(
             Layer.provideMerge(WorkflowEngine.layerMemory),
             Layer.provide(directory),
@@ -299,17 +318,17 @@ describe('GenerationLifecycle', () => {
             assert.isTrue(yield* first.isClosed)
             assertFailure(
               yield* first.committed.pipe(Effect.result),
-              rejected('Session is closed', Closed),
+              rejected('Session is closed', ClosedError),
             )
-            assert.strictEqual(
-              (yield* first.onClose(Effect.void).pipe(Effect.result))._tag,
-              'Failure',
+            assertFailure(
+              yield* first.onClose(Effect.void).pipe(Effect.result),
+              rejected('Session is closed', ClosedError),
             )
-            assert.strictEqual(
-              (yield* first
+            assertFailure(
+              yield* first
                 .transaction((tx) => tx.appendEntry(payload.conversationId, { kind: 'late' }))
-                .pipe(Effect.result))._tag,
-              'Failure',
+                .pipe(Effect.result),
+              rejected('Session is closed', ClosedError),
             )
             assert.isTrue(yield* pending(closeWaiter))
             assert.strictEqual(yield* storage.closes, 0)
@@ -335,6 +354,7 @@ describe('GenerationLifecycle', () => {
             yield* Ref.set(current, reopened)
             yield* User.resume(id)
             assert.deepStrictEqual(yield* Fiber.join(client), {
+              _tag: 'Completed',
               status: 'completed',
               result: { answer: 'resumed' },
             })
@@ -367,9 +387,8 @@ describe('GenerationLifecycle', () => {
       // Native SQL worker acquisition and transaction notifications progress outside TestClock.
       it.live(`actual harness public close preserves and resumes ${boundary} (${engineKind})`, () =>
         Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem
           const path = yield* Path.Path
-          const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'harness-lifecycle-' })
+          const directory = yield* DirectoryFixture.make({ prefix: 'harness-lifecycle-' })
           const database = yield* Layer.build(
             SqliteClient.layer({ filename: path.join(directory, 'state.sqlite') }),
           )
@@ -384,7 +403,7 @@ describe('GenerationLifecycle', () => {
           yield* Effect.gen(function* () {
             const sqlStorage = {
               open: Effect.gen(function* () {
-                const store = yield* SqlStore.make
+                const store = yield* TestStore.make
                 return yield* Session.make.pipe(Effect.provideService(Store.Store, store))
               }),
               state: Effect.gen(function* () {
@@ -434,7 +453,7 @@ describe('GenerationLifecycle', () => {
               },
               response: undefined,
             })
-            const native = yield* NativeModel.make({
+            const native = yield* LanguageModel.make({
               generateText: () =>
                 blocked('compact-request', [
                   { type: 'text' as const, text: 'summary' },
@@ -484,7 +503,7 @@ describe('GenerationLifecycle', () => {
                 configure: () => Effect.succeed(Context.empty()),
               },
             ])
-            const declaration = AiTool.make('work', {
+            const declaration = Tool.make('work', {
               parameters: Schema.Struct({}),
               success: Invocation.Result,
               failure: ToolError,
@@ -492,12 +511,12 @@ describe('GenerationLifecycle', () => {
               .addDependency(Invocation.ToolCall)
               .addDependency(Ownership.Current)
             const toolkit = Toolkit.make(declaration)
-            const tools = yield* Tool.bind(
+            const tools = yield* ToolRegistration.bind(
               toolkit,
               {
                 work: {
                   replay: 'safe',
-                  project: (value) => Tool.decodeResult('fixture', value),
+                  project: (value) => ToolRegistration.decodeResult('fixture', value),
                 },
               },
               [Ownership.Current],
@@ -516,7 +535,7 @@ describe('GenerationLifecycle', () => {
                       Effect.mapError(
                         (error) =>
                           new ToolError({
-                            reason: new ToolExecution({
+                            reason: new ToolExecutionError({
                               name: 'work',
                               message: error.message,
                               cause: error,
@@ -548,7 +567,7 @@ describe('GenerationLifecycle', () => {
             ])
             const configuration = Conversation.layerConfiguration({
               settings: {
-                progress: { partialIntervalMs: 0, outputIntervalMs: 0 },
+                progress: { partialInterval: 0, outputInterval: 0 },
                 compaction: { enabled: false, reserveTokens: 100, keepRecentTokens: 0 },
               },
             })
@@ -606,18 +625,20 @@ describe('GenerationLifecycle', () => {
               Layer.provide(catalogue),
               Layer.provide(Harness.layer.pipe(Layer.provide(Layer.mergeAll(registry, catalogue)))),
               Layer.provide(
-                Layer.succeed(Directory.SessionDirectory, { resolve: () => Ref.get(current) }),
+                Layer.succeed(
+                  SessionDirectory.SessionDirectory,
+                  SessionDirectory.SessionDirectory.of({ resolve: () => Ref.get(current) }),
+                ),
               ),
             )
             yield* Effect.gen(function* () {
               const compaction = boundary.startsWith('compact')
                 ? yield* first.transaction((tx) =>
-                    CompactionExecutor.make(
-                      tx,
-                      Identity.SessionId.make('lifecycle'),
-                      Record.ROOT_CONVERSATION_ID,
-                      'manual',
-                    ),
+                    CompactionExecutor.make(tx, {
+                      sessionId: Identity.SessionId.make('lifecycle'),
+                      conversationId: Record.ROOT_CONVERSATION_ID,
+                      reason: 'manual',
+                    }),
                   )
                 : undefined
               const input = {
@@ -626,7 +647,6 @@ describe('GenerationLifecycle', () => {
                 requestId: Identity.RequestId.make(boundary),
                 submission: {
                   _tag: 'input' as const,
-                  type: 'input' as const,
                   message: Prompt.userMessage({
                     content: [Prompt.textPart({ text: 'question' })],
                   }),
@@ -699,9 +719,8 @@ describe('GenerationLifecycle', () => {
       `SQLite native Activity close rolls back and resumes (${transactional ? 'transactional hook' : 'provider body'})`,
       () =>
         Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem
           const path = yield* Path.Path
-          const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'session-lifecycle-' })
+          const directory = yield* DirectoryFixture.make({ prefix: 'session-lifecycle-' })
           const database = SqliteClient.layer({ filename: path.join(directory, 'state.sqlite') })
           yield* Effect.gen(function* () {
             const physical = Effect.gen(function* () {
@@ -713,7 +732,7 @@ describe('GenerationLifecycle', () => {
               return saved.value.state
             }).pipe(Effect.provide(KeyValueStore.layerSql()))
             const open = Effect.gen(function* () {
-              const store = yield* SqlStore.make
+              const store = yield* TestStore.make
               return yield* Session.make.pipe(Effect.provideService(Store.Store, store))
             })
             const firstScope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
@@ -729,7 +748,7 @@ describe('GenerationLifecycle', () => {
             let cleaned = 0
             const executor = User.toLayer((identity) =>
               Effect.gen(function* () {
-                const session = yield* (yield* Directory.SessionDirectory).resolve(
+                const session = yield* (yield* SessionDirectory.SessionDirectory).resolve(
                   identity.sessionId,
                 )
                 const work = Effect.gen(function* () {
@@ -760,7 +779,7 @@ describe('GenerationLifecycle', () => {
                     Effect.mapError(
                       (error) =>
                         new ExecutionError({
-                          reason: new Storage({ message: error.message, cause: error }),
+                          reason: new StorageError({ message: error.message, cause: error }),
                         }),
                     ),
                   ),
@@ -770,7 +789,7 @@ describe('GenerationLifecycle', () => {
                 Effect.mapError((error) =>
                   error._tag === 'StorageError'
                     ? new ExecutionError({
-                        reason: new Storage({ message: error.message, cause: error }),
+                        reason: new StorageError({ message: error.message, cause: error }),
                       })
                     : error,
                 ),
@@ -793,7 +812,10 @@ describe('GenerationLifecycle', () => {
               Layer.provide(Cancellation.layer),
               Layer.provide(Ownership.layerDeclarations([User])),
               Layer.provide(
-                Layer.succeed(Directory.SessionDirectory, { resolve: () => Ref.get(current) }),
+                Layer.succeed(
+                  SessionDirectory.SessionDirectory,
+                  SessionDirectory.SessionDirectory.of({ resolve: () => Ref.get(current) }),
+                ),
               ),
             )
             yield* Effect.gen(function* () {
@@ -814,6 +836,7 @@ describe('GenerationLifecycle', () => {
               yield* Ref.set(current, reopened)
               yield* User.resume(id)
               assert.deepStrictEqual(yield* User.execute(payload), {
+                _tag: 'Completed',
                 status: 'completed',
                 result: { answer: 'resumed SQL' },
               })
@@ -855,8 +878,7 @@ describe('GenerationLifecycle', () => {
       yield* awaitTransition(Scope.close(scope, Exit.succeed(undefined)))
       assert.isTrue(finalized)
       const result = yield* awaitTransition(Fiber.join(running))
-      assert.isTrue(Exit.isFailure(result))
-      if (Exit.isFailure(result)) assert.isTrue(Cause.hasInterruptsOnly(result.cause))
+      assertExitFailure(result, Cause.interrupt(running.id))
       assert.deepStrictEqual(yield* storage.state, before)
     }),
   )
@@ -890,7 +912,6 @@ describe('GenerationLifecycle', () => {
         assert.isTrue(yield* pending(running))
         const marked = yield* Cancellation.mark(session, {
           _tag: 'task' as const,
-          kind: 'task',
           id: payload.taskId,
         })
         const cancelWaiter = yield* Cancellation.cancel(payload.sessionId, marked).pipe(
@@ -903,7 +924,9 @@ describe('GenerationLifecycle', () => {
         const result = yield* awaitTransition(Fiber.join(running))
         assertFailure(
           result,
-          new ExecutionError({ reason: new Aborted({ message: 'Task has a durable abort mark' }) }),
+          new ExecutionError({
+            reason: new AbortedError({ message: 'Task has a durable abort mark' }),
+          }),
         )
         assert.strictEqual(
           (yield* session.task(payload.taskId).pipe(Effect.map(Option.getOrUndefined)))

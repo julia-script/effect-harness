@@ -2,7 +2,7 @@ import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Session from 'effect-harness/durable/Session'
 import { Store } from 'effect-harness/durable/Store'
-import * as Memory from 'effect-harness/durable/storage/Memory'
+import * as StoreModule from 'effect-harness/durable/Store'
 import * as Benchmark from 'effect-harness/durable/testing/Benchmark'
 import { sessionLayer } from 'effect-harness/durable/testing/Storage'
 
@@ -35,7 +35,8 @@ describe('Benchmark', () => {
           (yield* Session.Session.use((session) => session.scanSubmissions({}, 10))).items.length >
             0,
         )
-      }).pipe(Effect.provide(sessionLayer(Memory.layer))),
-    30000,
+      }).pipe(Effect.provide(sessionLayer(StoreModule.layerMemory))),
+    // The original full seeded workload measured about 60 seconds on this host; retain every scenario under a host scheduling budget.
+    120000,
   )
 })

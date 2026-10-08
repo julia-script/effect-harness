@@ -18,7 +18,7 @@ import * as Record from '../Record.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
 import { Abort } from './Abort.ts'
 import * as Cancellation from './Cancellation.ts'
-import { ExecutionError, InvalidState } from './ExecutionError.ts'
+import { ExecutionError, InvalidStateError } from './ExecutionError.ts'
 import { convertPartial } from './GenerationExecutor.ts'
 import { RequestDoc } from './Request.ts'
 import * as SubmissionExecutor from './SubmissionExecutor.ts'
@@ -76,14 +76,14 @@ export const layer: Layer.Layer<
         .transaction(
           Effect.fnUntraced(function* (tx) {
             const graph = yield* Ownership.readGraph(tx)
-            const target: Ownership.Target =
-              payload.target.type === 'conversation'
-                ? { _tag: 'conversation', kind: 'conversation', id: payload.target.id }
-                : { _tag: 'task', kind: 'task', id: payload.target.id }
+            const target: Ownership.reach.Target =
+              payload.target._tag === 'conversation'
+                ? { _tag: 'conversation', id: payload.target.id }
+                : { _tag: 'task', id: payload.target.id }
             const reachedOption = Ownership.reach(graph, target, payload.background)
             if (Option.isNone(reachedOption))
               return yield* new ExecutionError({
-                reason: new InvalidState({ message: 'Abort target is absent' }),
+                reason: new InvalidStateError({ message: 'Abort target is absent' }),
               })
             const reached = reachedOption.value
             const deferred: Array<(typeof Marked.Type.deferred)[number]> = []
@@ -112,7 +112,6 @@ export const layer: Layer.Layer<
               if (!task.abortRequested)
                 yield* tx.write({
                   _tag: 'task',
-                  type: 'task',
                   value: { ...task, abortRequested: true },
                 })
             return { ...reached, deferred, notify }
@@ -155,7 +154,7 @@ export const layer: Layer.Layer<
                 return []
               const task = taskOption.value
               const live = yield* tx.doc(Inbox.LiveDoc, { owner: task.conversationId })
-              let outcome: Record.Json =
+              let outcome: Schema.Json =
                 task.state.status === 'completing'
                   ? (task.state.outcome ?? null)
                   : { status: 'aborted' }
@@ -167,7 +166,10 @@ export const layer: Layer.Layer<
                   Effect.mapError(
                     (cause) =>
                       new ExecutionError({
-                        reason: new InvalidState({ message: 'Aborted tool has no binding', cause }),
+                        reason: new InvalidStateError({
+                          message: 'Aborted tool has no binding',
+                          cause,
+                        }),
                       }),
                   ),
                 )
@@ -177,7 +179,7 @@ export const layer: Layer.Layer<
                   Effect.mapError(
                     (cause) =>
                       new ExecutionError({
-                        reason: new InvalidState({
+                        reason: new InvalidStateError({
                           message: 'Aborted tool input is invalid',
                           cause,
                         }),
@@ -212,7 +214,10 @@ export const layer: Layer.Layer<
                   Effect.mapError(
                     (cause) =>
                       new ExecutionError({
-                        reason: new InvalidState({ message: 'Aborted result is invalid', cause }),
+                        reason: new InvalidStateError({
+                          message: 'Aborted result is invalid',
+                          cause,
+                        }),
                       }),
                   ),
                 )
@@ -232,7 +237,6 @@ export const layer: Layer.Layer<
                 )
               yield* tx.write({
                 _tag: 'task',
-                type: 'task',
                 value: { ...task, abortRequested: true, state: { status: 'terminal', outcome } },
               })
               return ids
@@ -267,7 +271,7 @@ export const layer: Layer.Layer<
       if (Option.isSome(declaration))
         yield* engine.interrupt(declaration.value, binding.success.executionId)
     }
-    if (payload.target.type === 'conversation')
+    if (payload.target._tag === 'conversation')
       yield* Conversation.awaitIdle(session, payload.target.id).pipe(Effect.mapError(domainError))
     return { reached: marked.tasks.map((task) => task.id) }
   }),

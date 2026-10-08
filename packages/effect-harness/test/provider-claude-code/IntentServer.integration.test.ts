@@ -127,6 +127,7 @@ describe('IntentServer', () => {
           assert.strictEqual((yield* client.get(url)).status, 404)
         }).pipe(Effect.provide(layer)),
     )
+    // effect-nit-allow P8-gen-test-body-shape: this single lazy service pipeline owns disabled-server provision and the native typed assertion; no generator-specific setup or live clock is required.
     it.effect('disabled MCP capability is a typed native failure', () =>
       IntentServer.IntentServer.use((server) => server.open([tool])).pipe(
         Effect.provide(IntentServer.layerDisabled),

@@ -8,7 +8,7 @@ import * as Stream from 'effect/Stream'
 import * as Event from 'effect-harness/durable/Event'
 import * as View from 'effect-harness/durable/View'
 import * as Session from 'effect-harness/durable/Session'
-import * as Memory from 'effect-harness/durable/storage/Memory'
+import * as Store from 'effect-harness/durable/Store'
 
 // Advance modeled journal polling only after its wait/consumer fiber has been admitted.
 const awaitObserved = <A, E, R>(
@@ -49,14 +49,14 @@ describe('EventParity', () => {
           Stream.runCollect(watch.changes.pipe(Stream.take(3))),
         ).pipe(Effect.timeout('3 seconds'))
         assert.strictEqual(
-          batches[0]?.some((event) => event.type === 'task_failed'),
+          batches[0]?.some((event) => event._tag === 'task_failed'),
           false,
         )
         assert.deepStrictEqual(
           batches
             .slice(1)
             .flatMap((batch) =>
-              batch.filter((event) => event.type === 'task_failed').map((event) => event.message),
+              batch.filter((event) => event._tag === 'task_failed').map((event) => event.message),
             ),
           ['faulted', 'orphaned'],
         )
@@ -65,7 +65,7 @@ describe('EventParity', () => {
           Event.layer.pipe(
             Layer.provideMerge(View.layer),
             Layer.provideMerge(Session.layer),
-            Layer.provide(Memory.layer),
+            Layer.provide(Store.layerMemory),
           ),
         ),
       ),

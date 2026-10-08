@@ -1,14 +1,15 @@
 /**
  * Native Workflow declaration metadata and pure ownership traversal.
  */
+import * as MutableHashMap from 'effect/MutableHashMap'
 import * as Arr from 'effect/Array'
-import { constFalse, constant } from 'effect/Function'
+import { absurd, constFalse, constant } from 'effect/Function'
 import * as Predicate from 'effect/Predicate'
 import { dual } from 'effect/Function'
 import * as Data from 'effect/Data'
 import type { StorageError } from './StorageError.ts'
-import * as identity from './Identity.ts'
-// effect-review-allow P9-namespace-alias-equals-module: the exported Identity value type collides with the imported identifier namespace.
+import type * as identity from './Identity.ts'
+// effect-nit-allow P9-namespace-alias-equals-module: the exported Identity value type collides with the imported identifier namespace.
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Ref from 'effect/Ref'
@@ -19,7 +20,12 @@ import * as Workflow from 'effect/workflow/Workflow'
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import type * as Record from './Record.ts'
 import * as Session from './Session.ts'
-import { ExecutionError, InvalidState, Closed, Aborted } from './workflow/ExecutionError.ts'
+import {
+  ExecutionError,
+  InvalidStateError,
+  ClosedError,
+  AbortedError,
+} from './workflow/ExecutionError.ts'
 
 /**
  * Durable references identify native Workflow executions; they contain no custom scheduler state.
@@ -47,16 +53,12 @@ export class Declarations extends Context.Service<
   Declarations,
   {
     readonly get: (name: string) => Option.Option<Workflow.Any>
-    /** Schema context captured when the heterogeneous declaration registry is constructed. */
+    /**
+     * Schema context captured when the heterogeneous declaration registry is constructed.
+     */
     readonly schemaContext: Context.Context<never>
   }
->()('@effect-harness/durable/Ownership/Declarations') {}
-/**
- * Type alias for `Declarations.Services`.
- *
- * @category models
- */
-export type DeclarationServices<W extends Workflow.Any> = Declarations.Services<W>
+>()('effect-harness/durable/Ownership/Declarations') {}
 
 /**
  * Provides the native Workflow declarations permitted for owned task bindings.
@@ -75,14 +77,16 @@ export type DeclarationServices<W extends Workflow.Any> = Declarations.Services<
  */
 export const layerDeclarations = <const W extends ReadonlyArray<Workflow.Any>>(
   workflows: W,
-): Layer.Layer<Declarations, never, DeclarationServices<W[number]>> =>
+): Layer.Layer<Declarations, never, Declarations.Services<W[number]>> =>
   Layer.effect(
     Declarations,
     Effect.gen(function* () {
-      const context = yield* Effect.context<DeclarationServices<W[number]>>()
-      const declarations = new Map(workflows.map((workflow) => [workflow._tag, workflow]))
+      const context = yield* Effect.context<Declarations.Services<W[number]>>()
+      const declarations = MutableHashMap.fromIterable(
+        workflows.map((workflow) => [workflow._tag, workflow]),
+      )
       return Declarations.of({
-        get: (name) => Option.fromUndefinedOr(declarations.get(name)),
+        get: (name) => MutableHashMap.get(declarations, name),
         // Never retain a construction-time native execution identity or engine.
         schemaContext: context.pipe(
           Context.omit(WorkflowEngine.WorkflowInstance, WorkflowEngine.WorkflowEngine),
@@ -103,7 +107,7 @@ export const execute = Effect.fnUntraced(function* (
   const declarationOption = declarations.get(binding.workflow)
   if (Option.isNone(declarationOption))
     return yield* new ExecutionError({
-      reason: new InvalidState({ message: `Workflow ${binding.workflow} is not declared` }),
+      reason: new InvalidStateError({ message: `Workflow ${binding.workflow} is not declared` }),
     })
   const declaration = declarationOption.value
   const workflow = Workflow.make(declaration._tag, {
@@ -146,7 +150,7 @@ export const execute = Effect.fnUntraced(function* (
       error instanceof ExecutionError
         ? error
         : new ExecutionError({
-            reason: new InvalidState({
+            reason: new InvalidStateError({
               message: `Native workflow ${binding.workflow} failed`,
               cause: error,
             }),
@@ -154,13 +158,6 @@ export const execute = Effect.fnUntraced(function* (
     ),
   )
 })
-
-/**
- * Session, conversation and task identities for an owned invocation.
- *
- * @category models
- */
-export type Identity = Current.Identity
 /**
  * A scoped domain identity for tools and user-defined native Workflow activities.
  *
@@ -168,11 +165,11 @@ export type Identity = Current.Identity
  */
 export class Current extends Context.Service<
   Current,
-  Identity & {
-    readonly session: Session.Service
+  Current.Identity & {
+    readonly session: Session.Session.Service
     readonly check: Effect.Effect<void, ExecutionError>
   }
->()('@effect-harness/durable/Ownership/Current') {}
+>()('effect-harness/durable/Ownership/Current') {}
 
 /**
  * Provides invocation identity and checks for an owned task in its exact Session.
@@ -184,7 +181,9 @@ export class Current extends Context.Service<
  *
  * @category layers
  */
-export const layerCurrent = (identity: Identity): Layer.Layer<Current, never, Session.Session> =>
+export const layerCurrent = (
+  identity: Current.Identity,
+): Layer.Layer<Current, never, Session.Session> =>
   Layer.effect(Current)(
     Effect.gen(function* () {
       const session = yield* Session.Session
@@ -199,7 +198,7 @@ export const layerCurrent = (identity: Identity): Layer.Layer<Current, never, Se
               ? Effect.void
               : Effect.fail(
                   new ExecutionError({
-                    reason: new Closed({ message: 'Task invocation has ended' }),
+                    reason: new ClosedError({ message: 'Task invocation has ended' }),
                   }),
                 ),
           ),
@@ -211,20 +210,22 @@ export const layerCurrent = (identity: Identity): Layer.Layer<Current, never, Se
 function writable(option: Option.Option<Record.Task>): Effect.Effect<Record.Task, ExecutionError> {
   if (Option.isNone(option))
     return Effect.fail(
-      new ExecutionError({ reason: new InvalidState({ message: 'Task projection is absent' }) }),
+      new ExecutionError({
+        reason: new InvalidStateError({ message: 'Task projection is absent' }),
+      }),
     )
   const task = option.value
   if (task.abortRequested || task.state.status === 'terminal' || task.state.status === 'completing')
     return Effect.fail(
       new ExecutionError({
-        reason: new Aborted({ message: 'Task no longer accepts invocation writes' }),
+        reason: new AbortedError({ message: 'Task no longer accepts invocation writes' }),
       }),
     )
   return Effect.succeed(task)
 }
 
 /**
- * First committed value wins.
+ * Returns the first committed memo value for the selected task and key.
  *
  * **Details**
  *
@@ -246,7 +247,7 @@ export const memo = Effect.fnUntraced(function* <S extends Schema.Constraint, E,
   const taskOption = yield* current.session.task(current.taskId)
   if (Option.isNone(taskOption))
     return yield* new ExecutionError({
-      reason: new InvalidState({ message: 'Task projection is absent' }),
+      reason: new InvalidStateError({ message: 'Task projection is absent' }),
     })
   const task = taskOption.value
   const codec = Schema.toCodecJson(schema)
@@ -268,7 +269,7 @@ export const memo = Effect.fnUntraced(function* <S extends Schema.Constraint, E,
         writable: true,
         configurable: true,
       })
-      yield* tx.write({ _tag: 'task', type: 'task', value: { ...latest, memos } })
+      yield* tx.write({ _tag: 'task', value: { ...latest, memos } })
       return encoded
     }),
   )
@@ -288,36 +289,31 @@ export interface Graph {
 /**
  * Ownership traversal target constructors.
  *
- * @category models
- */
-export type Target = reach.Target
-/**
- * Ownership traversal target constructors.
- *
  * @category combinators
  */
-export const Target = Data.taggedEnum<Target>()
-/**
- * Owned tasks and conversations reachable from a selected root.
- *
- * @category models
- */
-export type Reached = reach.Reached
+export const Target = Data.taggedEnum<reach.Target>()
 
-/** Read-only ownership traversal. Background roots fence their entire subtree unless explicitly selected or included. */
-function reachImpl(self: Graph, target: Target, background = false): Option.Option<Reached> {
-  const tasks = new Map(self.tasks.map((task) => [task.id, task]))
-  const conversations = new Map(
+/**
+ * Read-only ownership traversal. Background roots fence their entire subtree unless explicitly selected or included.
+ */
+function reachImpl(
+  self: Graph,
+  target: reach.Target,
+  background = false,
+): Option.Option<reach.Reached> {
+  const tasks = MutableHashMap.fromIterable(self.tasks.map((task) => [task.id, task]))
+  const conversations = MutableHashMap.fromIterable(
     self.conversations.map((conversation) => [conversation.id, conversation]),
   )
-  if (target._tag === 'task' ? !tasks.has(target.id) : !conversations.has(target.id))
+  if (
+    target._tag === 'task'
+      ? !MutableHashMap.has(tasks, target.id)
+      : !MutableHashMap.has(conversations, target.id)
+  )
     return Option.none()
   if (
     target._tag === 'task' &&
-    Option.exists(
-      Option.fromUndefinedOr(tasks.get(target.id)),
-      (task) => task.state.status === 'terminal',
-    )
+    Option.exists(MutableHashMap.get(tasks, target.id), (task) => task.state.status === 'terminal')
   )
     return Option.some({ tasks: [], conversations: [] })
   const seenTasks = new Set<Record.TaskId>()
@@ -337,44 +333,57 @@ function reachImpl(self: Graph, target: Target, background = false): Option.Opti
   while (Arr.isArrayNonEmpty(work)) {
     const item = work.pop()
     if (item === undefined) break
-    if (item._tag === 'end') {
-      ordered.push(item.task)
-      continue
+    switch (item._tag) {
+      case 'end': {
+        ordered.push(item.task)
+        continue
+      }
+      case 'conversation': {
+        if (seenConversations.has(item.id)) continue
+        const foundConversation = MutableHashMap.get(conversations, item.id)
+        if (Option.isNone(foundConversation)) continue
+        const conversation = foundConversation.value
+        seenConversations.add(item.id)
+        selected.push(conversation)
+        for (const task of self.tasks.toReversed())
+          if (
+            task.conversationId === item.id &&
+            (task.owner === undefined || !MutableHashMap.has(tasks, task.owner))
+          )
+            work.push(Work.task({ id: task.id, direct: false }))
+        continue
+      }
+      case 'task': {
+        if (seenTasks.has(item.id)) continue
+        const foundTask = MutableHashMap.get(tasks, item.id)
+        if (Option.isNone(foundTask)) continue
+        const task = foundTask.value
+        if (
+          (target._tag === 'task' && task.state.status === 'terminal') ||
+          (task.background && !background && !item.direct)
+        )
+          continue
+        seenTasks.add(item.id)
+        if (task.state.status !== 'terminal') work.push(Work.end({ task }))
+        for (const conversation of self.conversations.toReversed())
+          if (conversation.owner?.taskId === task.id)
+            work.push(Work.conversation({ id: conversation.id }))
+        for (const child of self.tasks.toReversed())
+          if (child.owner === task.id) work.push(Work.task({ id: child.id, direct: false }))
+        continue
+      }
     }
-    if (item._tag === 'conversation') {
-      if (seenConversations.has(item.id)) continue
-      const foundConversation = Option.fromUndefinedOr(conversations.get(item.id))
-      if (Option.isNone(foundConversation)) continue
-      const conversation = foundConversation.value
-      seenConversations.add(item.id)
-      selected.push(conversation)
-      for (const task of self.tasks.toReversed())
-        if (task.conversationId === item.id && (task.owner === undefined || !tasks.has(task.owner)))
-          work.push(Work.task({ id: task.id, direct: false }))
-      continue
-    }
-    if (seenTasks.has(item.id)) continue
-    const foundTask = Option.fromUndefinedOr(tasks.get(item.id))
-    if (Option.isNone(foundTask)) continue
-    const task = foundTask.value
-    if (
-      (target._tag === 'task' && task.state.status === 'terminal') ||
-      (task.background && !background && !item.direct)
-    )
-      continue
-    seenTasks.add(item.id)
-    if (task.state.status !== 'terminal') work.push(Work.end({ task }))
-    for (const conversation of self.conversations.toReversed())
-      if (conversation.owner?.taskId === task.id)
-        work.push(Work.conversation({ id: conversation.id }))
-    for (const child of self.tasks.toReversed())
-      if (child.owner === task.id) work.push(Work.task({ id: child.id, direct: false }))
+    return absurd(item)
   }
   return Option.some({ tasks: ordered, conversations: selected })
 }
 
 /**
- * Table reads are collected before any abort marks or inbox withdrawal are written.
+ * Reads the committed conversation, task and submission tables into an ownership graph.
+ *
+ * **Details**
+ *
+ * Collect these reads before writing abort marks or withdrawing inbox entries.
  *
  * @category combinators
  */
@@ -411,14 +420,13 @@ export const readGraph = Effect.fnUntraced(function* (
  * @category combinators
  */
 export const reach: {
-  (target: Target, background?: boolean): (self: Graph) => Option.Option<Reached>
-  (self: Graph, target: Target, background?: boolean): Option.Option<Reached>
+  (target: reach.Target, background?: boolean): (self: Graph) => Option.Option<reach.Reached>
+  (self: Graph, target: reach.Target, background?: boolean): Option.Option<reach.Reached>
 } = dual((args) => Predicate.hasProperty(args[0], 'tasks'), reachImpl)
 
 /**
  * Type-level contracts for `Declarations`.
  *
- * @category utility types
  */
 export declare namespace Declarations {
   /**
@@ -436,7 +444,6 @@ export declare namespace Declarations {
 /**
  * Type-level contracts for `Current`.
  *
- * @category utility types
  */
 export declare namespace Current {
   /**
@@ -454,7 +461,6 @@ export declare namespace Current {
 /**
  * Type-level contracts for `reach`.
  *
- * @category utility types
  */
 export declare namespace reach {
   /**
@@ -463,8 +469,8 @@ export declare namespace reach {
    * @category models
    */
   export type Target = Data.TaggedEnum<{
-    conversation: { readonly kind: 'conversation'; readonly id: Record.ConversationId }
-    task: { readonly kind: 'task'; readonly id: Record.TaskId }
+    conversation: { readonly id: Record.ConversationId }
+    task: { readonly id: Record.TaskId }
   }>
   /**
    * Owned tasks and conversations reachable from a selected root.
@@ -472,8 +478,21 @@ export declare namespace reach {
    * @category models
    */
   export interface Reached {
-    /** Children precede parents so native interrupts and compensation can drain bottom-up. */
+    /**
+     * Reachable tasks ordered with children before parents for bottom-up native interruption and compensation.
+     */
     readonly tasks: ReadonlyArray<Record.Task>
     readonly conversations: ReadonlyArray<Record.Conversation>
   }
 }
+
+/** Checks the decoded Binding contract without decoding or coercing input.
+ * @category guards
+ */
+export const isBinding: (u: unknown) => u is Binding = Schema.is(Schema.toType(Binding))
+
+/** Checks the established Target tag protocol without claiming field validation.
+ * @category guards
+ */
+export const isTarget: (u: unknown) => u is reach.Target = (u) =>
+  Target.$is('conversation')(u) || Target.$is('task')(u)

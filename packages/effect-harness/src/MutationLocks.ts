@@ -24,7 +24,7 @@ import * as Semaphore from 'effect/Semaphore'
 export class MutationLocks extends Context.Service<
   MutationLocks,
   RcMap.RcMap<string, Semaphore.Semaphore>
->()('@effect-harness/harness/MutationLocks') {}
+>()('effect-harness/MutationLocks') {}
 /**
  * Each execution creates one fresh manager; the host must join all consumer runtimes before closing this manager scope.
  *

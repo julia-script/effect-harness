@@ -4,7 +4,7 @@
 import * as Config from 'effect/Config'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
 import * as OpenAiSchema from '@effect/ai-openai/OpenAiSchema'
-import type { AuthError } from 'effect-harness/auth/Credential'
+import type { AuthError } from 'effect-harness/auth/AuthError'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -24,7 +24,6 @@ const authenticationError = (error: AuthError) => {
   const metadata = {
     openai: {
       authReason: error.reason._tag,
-      authCode: error.code,
       message: error.message,
       status: error.status ?? null,
     },
@@ -212,6 +211,15 @@ export const layer = (options: {
       )
       const createResponseStream: OpenAiClient.Service['createResponseStream'] = Effect.fnUntraced(
         function* (payload) {
+          if (payload.previous_response_id !== undefined)
+            return yield* new AiError.AiError({
+              module: 'ChatGpt',
+              method: 'response',
+              reason: new AiError.InvalidRequestError({
+                description: 'Account Responses require the complete prompt history',
+                parameter: 'previous_response_id',
+              }),
+            })
           const client = yield* fresh
           const [response, stream] = yield* client
             .createResponseStream({ ...payload, store: false, previous_response_id: undefined })

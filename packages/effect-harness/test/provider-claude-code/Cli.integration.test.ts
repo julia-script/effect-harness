@@ -1,9 +1,11 @@
+import * as NodeAssert from 'node:assert/strict'
 import * as NodeServices from '@effect/platform-node/NodeServices'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Stream from 'effect/Stream'
 import * as Cli from 'effect-harness/provider-claude-code/Cli'
+import * as DirectoryFixture from '../durable/DirectoryFixture.ts'
 
 // A fake executable exercises the real native process finalizer without login or inference.
 const fake = `#!/usr/bin/env node
@@ -19,10 +21,11 @@ if (process.argv.includes('auth')) {
 
 describe('Cli', () => {
   describe('real native process ownership', () => {
+    // effect-nit-allow P8-it-live-or-withLive-for-real-time: the native process-group finalizer uses host Date.now/setTimeout; TestClock cannot terminate the hanging child.
     it.live('closing a consumer stream terminates a hanging child process', () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
-        const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'effect-harness-fake-cli-' })
+        const directory = yield* DirectoryFixture.make({ prefix: 'effect-harness-fake-cli-' })
         const executable = `${directory}/fake.cjs`
         yield* fs.writeFileString(executable, fake)
         yield* fs.chmod(executable, 0o700)
@@ -38,15 +41,12 @@ describe('Cli', () => {
         ).pipe(Effect.provide(Cli.layer({ executable, policyTrust: 'trusted-installed-cli' })))
         const pid = Number(yield* fs.readFileString(`${directory}/pid`))
         assert.isTrue(Number.isSafeInteger(pid))
-        const running = yield* Effect.sync(() => {
-          try {
-            process.kill(pid, 0)
-            return true
-          } catch {
-            return false
-          }
-        })
-        assert.isFalse(running)
+        yield* Effect.sync(() =>
+          NodeAssert.throws(
+            () => process.kill(pid, 0),
+            (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ESRCH',
+          ),
+        )
       }).pipe(Effect.provide(NodeServices.layer)),
     )
   })

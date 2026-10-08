@@ -6,8 +6,7 @@ import * as Arr from 'effect/Array'
 import { constTrue, constFalse } from 'effect/Function'
 import * as Option from 'effect/Option'
 import * as Deferred from 'effect/Deferred'
-import * as Duration from 'effect/Duration'
-import * as DateTime from 'effect/DateTime'
+import type * as Duration from 'effect/Duration'
 // Environment conformance adapted from pi-durable (MIT), pinned 636703a0; see package NOTICE.
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
@@ -17,9 +16,12 @@ import * as Fiber from 'effect/Fiber'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Ref from 'effect/Ref'
+import * as Queue from 'effect/Queue'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
-import { Env, type FileError, type ExecutionError, WatchChange, type WatchTarget } from '../Env.ts'
+import { Env, WatchChange, type WatchTarget } from '../Env.ts'
+import type { FileError } from '../FileError.ts'
+import type { ExecutionError } from '../ExecutionError.ts'
 
 /**
  * Assertions consumed by shared environment conformance cases.
@@ -32,19 +34,13 @@ export interface Assertions {
   readonly ok: (condition: unknown, message?: string) => void
 }
 /**
- * Fresh environment Layers and assertions used by shared adapter cases.
- *
- * @category models
- */
-export type Options = makeEnvConformance.Options
-/**
  * Named Effect-based environment conformance case.
  *
  * @category models
  */
 export interface Case {
   readonly name: string
-  readonly timeoutMs?: Duration.Input | undefined
+  readonly timeout?: Duration.Input | undefined
   readonly run: Effect.Effect<void, FileError | ExecutionError, Env>
 }
 
@@ -123,10 +119,16 @@ const watching = Effect.fnUntraced(function* <E, R>(
 ): Effect.fn.Return<void, E | FileError, R | Env | Scope.Scope> {
   const env = yield* Env
   const changes = yield* Ref.make<ReadonlyArray<WatchChange>>([])
+  const notifications = yield* Queue.unbounded<void>()
+  yield* Effect.addFinalizer(() => Queue.shutdown(notifications))
   const watcher = yield* env.watch(targets)
   yield* watcher.changes.pipe(
-    Stream.runForEach((change) => Ref.update(changes, (old) => [...old, change])),
-    Effect.forkScoped,
+    Stream.runForEach((change) =>
+      Ref.update(changes, (old) => [...old, change]).pipe(
+        Effect.andThen(Queue.offer(notifications, undefined)),
+      ),
+    ),
+    Effect.forkScoped({ startImmediately: true }),
   )
   const expectChange = Effect.fnUntraced(function* (
     path: string,
@@ -135,23 +137,29 @@ const watching = Effect.fnUntraced(function* <E, R>(
     const absolute = yield* env.absolutePath(path)
     const from = (yield* Ref.get(changes)).length
     yield* change
-    const deadline = DateTime.addDuration(yield* DateTime.now, '3 seconds')
-    while (!(yield* Ref.get(changes)).slice(from).some((value) => covers(value, absolute))) {
-      const error = Arr.findFirst(yield* Ref.get(changes), WatchChange.$is('Error'))
-      yield* Option.match(error, {
-        onNone: () => Effect.void,
-        onSome: (self) => Effect.fail(self.error),
-      })
-      if (DateTime.isGreaterThanOrEqualTo(yield* DateTime.now, deadline))
-        return yield* Effect.die(`No watch change reported ${absolute}`)
-      yield* Effect.sleep('20 millis')
-    }
+    yield* Effect.gen(function* () {
+      while (true) {
+        const history = yield* Ref.get(changes)
+        if (history.slice(from).some((value) => covers(value, absolute))) return
+        const error = Arr.findFirst(history, WatchChange.$is('Error'))
+        yield* Option.match(error, {
+          onNone: () => Effect.void,
+          onSome: (self) => Effect.fail(self.error),
+        })
+        yield* Queue.take(notifications)
+      }
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: '3 seconds',
+        orElse: () => Effect.die(`No watch change reported ${absolute}`),
+      }),
+    )
   })
   yield* run({ changes, expectChange })
 }, Effect.scoped)
 
 /**
- * Runner-independent native Effects.
+ * Creates runner-independent environment conformance cases as native Effects.
  *
  * **Details**
  *
@@ -159,14 +167,14 @@ const watching = Effect.fnUntraced(function* <E, R>(
  *
  * @category constructors
  */
-export const makeEnvConformance = (options: Options): Array<Case> => {
+export const makeEnvConformance = (options: makeEnvConformance.Options): Array<Case> => {
   const assert = options.assertions
   const shell = options.shell ?? ['sh', '-c']
   const test = (
     name: string,
     run: Effect.Effect<void, FileError | ExecutionError, Env | Scope.Scope>,
-    timeoutMs?: Duration.Input,
-  ): Case => ({ name, run: Effect.scoped(run), ...(timeoutMs === undefined ? {} : { timeoutMs }) })
+    timeout?: Duration.Input,
+  ): Case => ({ name, run: Effect.scoped(run), ...(timeout === undefined ? {} : { timeout }) })
   const watch = (
     name: string,
     run: Effect.Effect<void, FileError | ExecutionError, Env | Scope.Scope>,
@@ -535,7 +543,7 @@ export const makeEnvConformance = (options: Options): Array<Case> => {
         const window = {
           maxBytes: 200,
           maxLines: 5,
-          minIntervalMs: 0,
+          minInterval: 0,
           bytesPerSecond: 1_000_000_000,
         }
         const result = yield* env.exec(
@@ -649,7 +657,6 @@ export const makeEnvConformance = (options: Options): Array<Case> => {
 /**
  * Type-level contracts for `makeEnvConformance`.
  *
- * @category utility types
  */
 export declare namespace makeEnvConformance {
   /**

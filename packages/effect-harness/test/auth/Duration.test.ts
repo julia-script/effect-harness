@@ -1,4 +1,4 @@
-// effect-review-allow P9-namespace-alias-equals-module: effect-harness/auth/Duration and effect/Duration both bind Duration; AuthDuration distinguishes the concepts.
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/auth/Duration and effect/Duration both bind Duration; AuthDuration distinguishes the concepts.
 import * as AuthDuration from 'effect-harness/auth/Duration'
 import * as Duration from 'effect/Duration'
 import { assert, describe, it } from '@effect/vitest'

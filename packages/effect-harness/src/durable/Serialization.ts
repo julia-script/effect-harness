@@ -6,7 +6,11 @@ import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
 
 /**
- * Bridge a known domain schema to JSON through its own encoder, retaining JSON's omission of undefined object fields.
+ * Creates a JSON codec through the supplied domain schema encoder.
+ *
+ * **Details**
+ *
+ * Retains JSON omission of undefined object fields.
  *
  * @category schemas
  */
@@ -28,7 +32,11 @@ export const json = <S extends Schema.Constraint>(
     }),
   )
 /**
- * Object-only storage boundary; decoded models need not themselves have a JSON index signature.
+ * Creates an object-only JSON storage codec.
+ *
+ * **Details**
+ *
+ * Decoded domain models need not have a JSON index signature.
  *
  * @category schemas
  */

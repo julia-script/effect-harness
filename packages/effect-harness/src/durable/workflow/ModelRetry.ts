@@ -1,7 +1,7 @@
 /**
  * Native durable retry deadlines, schedules and receipt decisions.
  */
-import * as Data from 'effect/Data'
+import * as Schema from 'effect/Schema'
 import * as DateTime from 'effect/DateTime'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
@@ -13,13 +13,19 @@ import * as DurableClock from 'effect/workflow/DurableClock'
  *
  * @category errors
  */
-export class ModelRetry extends Data.TaggedError('ModelRetry')<{
-  readonly name: string
-  readonly at: DateTime.Utc
-}> {}
+export class ModelRetryError extends Schema.TaggedError<ModelRetryError>(
+  '@effect-harness/durable/workflow/ModelRetry/ModelRetryError',
+)('ModelRetryError', {
+  name: Schema.String,
+  at: Schema.DateTimeUtc,
+}) {}
 
 /**
- * Sample the wall clock once; fractional epoch values remain exact.
+ * Returns the nonnegative duration remaining before the retry deadline.
+ *
+ * **Details**
+ *
+ * Samples the wall clock once and retains fractional epoch precision.
  *
  * @category combinators
  */
@@ -36,10 +42,10 @@ export const remaining = Effect.fnUntraced(function* (
  * @category combinators
  */
 export const policy = Schedule.forever.pipe(
-  Schedule.while(({ input }) => Effect.succeed(input instanceof ModelRetry)),
+  Schedule.while(({ input }) => Effect.succeed(input instanceof ModelRetryError)),
   Schedule.modifyDelay(
     Effect.fnUntraced(function* ({ input }) {
-      if (!(input instanceof ModelRetry)) return Duration.zero
+      if (!(input instanceof ModelRetryError)) return Duration.zero
       yield* DurableClock.sleep({
         name: input.name,
         duration: yield* remaining(input.at),

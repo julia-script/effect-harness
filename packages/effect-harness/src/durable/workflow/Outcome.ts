@@ -1,7 +1,7 @@
 /**
  * Schema-derived task outcomes and classification.
  */
-import * as Tool from 'effect-harness/Tool'
+import * as ToolRegistration from 'effect-harness/ToolRegistration'
 import { Result as GenerationResult } from './Generation.ts'
 import { Result as ToolResult } from './ToolCall.ts'
 import { Result as CompactionResult } from './Compaction.ts'
@@ -14,13 +14,16 @@ import * as Schema from 'effect/Schema'
  *
  * @category schemas
  */
-export const Completed = Schema.Struct({ status: Schema.Literal('completed'), result: Schema.Json })
+export const Completed = Schema.TaggedStruct('Completed', {
+  status: Schema.tag('completed'),
+  result: Schema.Json,
+})
 /**
  * Schema for failed, faulted or aborted owned work with a diagnostic message.
  *
  * @category schemas
  */
-export const Failed = Schema.Struct({
+export const Failed = Schema.TaggedStruct('Failed', {
   status: Schema.Literals(['failed', 'faulted', 'aborted']),
   error: Schema.Struct({ message: Schema.String }),
 })
@@ -29,7 +32,10 @@ export const Failed = Schema.Struct({
  *
  * @category schemas
  */
-export const Orphaned = Schema.Struct({ status: Schema.Literal('orphaned'), reason: Schema.String })
+export const Orphaned = Schema.TaggedStruct('Orphaned', {
+  status: Schema.tag('orphaned'),
+  reason: Schema.String,
+})
 /**
  * Schema for completed, failed or orphaned owned-task outcomes.
  *
@@ -81,16 +87,16 @@ export interface Classification {
  *
  * @category combinators
  */
-export const classify = (input: unknown): Classification | undefined => {
+export const classifyOrUndefined = (input: unknown): Classification | undefined => {
   const decoded = envelope(input)
   if (Option.isNone(decoded)) return undefined
   const value = decoded.value
   const nested = receipt(value.receipt)
-  const status = value.status ?? (Option.isSome(nested) ? nested.value.status : undefined)
+  const status = value.status ?? Option.getOrUndefined(Option.map(nested, (value) => value.status))
   const diagnostic = error(value.error)
   const detail =
     value.detail ??
-    (Option.isSome(diagnostic) ? diagnostic.value.message : undefined) ??
+    Option.getOrUndefined(Option.map(diagnostic, (value) => value.message)) ??
     value.reason
   return {
     rawDirectStatus: value.status,
@@ -104,8 +110,8 @@ export const classify = (input: unknown): Classification | undefined => {
  *
  * @category combinators
  */
-export const failed = (input: unknown): boolean => {
-  const status = classify(input)?.status
+export const isFailed: (input: unknown) => boolean = (input) => {
+  const status = classifyOrUndefined(input)?.status
   return (
     status === 'failed' || status === 'faulted' || status === 'orphaned' || status === 'aborted'
   )
@@ -123,7 +129,7 @@ export const ToolCheckpoint = Schema.Struct({ arguments: Schema.Json })
  * @category schemas
  */
 export const ToolOutcome = Schema.Struct({
-  execution: Schema.toCodecJson(Tool.Execution),
+  execution: Schema.toCodecJson(ToolRegistration.Execution),
   receipt: ToolResult,
 })
 const structured = Schema.decodeUnknownOption(StructuredOutcome)
@@ -131,31 +137,98 @@ const generation = Schema.decodeUnknownOption(GenerationResult)
 const tool = Schema.decodeUnknownOption(ToolOutcome)
 const compaction = Schema.decodeUnknownOption(CompactionResult)
 /**
- * Fully decode built-in outcomes first.
+ * Classifies a built-in task outcome or the explicit extension convention.
  *
  * **Details**
  *
- * Legacy/custom metadata uses the explicit extension convention; no result payload is claimed by that fallback.
+ * Custom metadata uses the explicit extension convention; no result payload is claimed by that fallback.
  *
  * @category combinators
  */
-export const classifyTask = (
+export const classifyTaskOrUndefined = (
   task: Pick<Record.Task, 'kind' | 'state'>,
 ): Classification | undefined => {
   const input = task.state.outcome
-  if (Option.isSome(structured(input))) return classify(input)
+  if (Option.isSome(structured(input))) return classifyOrUndefined(input)
   const kind = task.kind
   let known: Option.Option<unknown> = Option.none()
-  if (
-    kind === 'harness.generation' ||
-    kind === 'pi.generation' ||
-    kind === '@effect-harness/durable/Generation/v1'
-  )
-    known = generation(input)
-  else if (kind === 'harness.tool' || kind === '@effect-harness/durable/ToolCall/v1')
-    known = tool(input)
-  else if (kind === 'harness.compaction' || kind === '@effect-harness/durable/Compaction/v1')
-    known = compaction(input)
+  if (kind === '@effect-harness/durable/Generation/v1') known = generation(input)
+  else if (kind === '@effect-harness/durable/ToolCall/v1') known = tool(input)
+  else if (kind === '@effect-harness/durable/Compaction/v1') known = compaction(input)
   // Invalid/unknown built-in values contribute only safely decoded status metadata.
-  return Option.isSome(known) ? classify(known.value) : classify(input)
+  return Option.match(known, {
+    onSome: classifyOrUndefined,
+    onNone: () => classifyOrUndefined(input),
+  })
 }
+
+/** Decoded value of the ToolCheckpoint schema.
+ * @category models
+ */
+export type ToolCheckpoint = typeof ToolCheckpoint.Type
+
+/** Decoded value of the ToolOutcome schema.
+ * @category models
+ */
+export type ToolOutcome = typeof ToolOutcome.Type
+
+/** Decoded value of the Completed schema.
+ * @category models
+ */
+export type Completed = typeof Completed.Type
+
+/** Decoded value of the ExtensionEnvelope schema.
+ * @category models
+ */
+export type ExtensionEnvelope = typeof ExtensionEnvelope.Type
+
+/** Decoded value of the Failed schema.
+ * @category models
+ */
+export type Failed = typeof Failed.Type
+
+/** Decoded value of the Orphaned schema.
+ * @category models
+ */
+export type Orphaned = typeof Orphaned.Type
+
+/** Checks the decoded StructuredOutcome contract without decoding or coercing input.
+ * @category guards
+ */
+export const isStructuredOutcome: (u: unknown) => u is StructuredOutcome = Schema.is(
+  Schema.toType(StructuredOutcome),
+)
+
+/** Checks the decoded ToolCheckpoint contract without decoding or coercing input.
+ * @category guards
+ */
+export const isToolCheckpoint: (u: unknown) => u is ToolCheckpoint = Schema.is(
+  Schema.toType(ToolCheckpoint),
+)
+
+/** Checks the decoded ToolOutcome contract without decoding or coercing input.
+ * @category guards
+ */
+export const isToolOutcome: (u: unknown) => u is ToolOutcome = Schema.is(Schema.toType(ToolOutcome))
+
+/** Checks the decoded Completed contract without decoding or coercing input.
+ * @category guards
+ */
+export const isCompleted: (u: unknown) => u is Completed = Schema.is(Schema.toType(Completed))
+
+/** Checks the decoded ExtensionEnvelope contract without decoding or coercing input.
+ * @category guards
+ */
+export const isExtensionEnvelope: (u: unknown) => u is ExtensionEnvelope = Schema.is(
+  Schema.toType(ExtensionEnvelope),
+)
+
+/** Checks the decoded Orphaned contract without decoding or coercing input.
+ * @category guards
+ */
+export const isOrphaned: (u: unknown) => u is Orphaned = Schema.is(Schema.toType(Orphaned))
+
+/** Checks a decoded owned failure without classifying arbitrary extension outcomes.
+ * @category guards
+ */
+export const isFailedOutcome: (u: unknown) => u is Failed = Schema.is(Schema.toType(Failed))

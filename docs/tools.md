@@ -14,7 +14,7 @@ Define the schemas, supply the handlers and bind them when constructing the Regi
 
 ```ts
 import * as Registry from 'effect-harness/Registry'
-import * as ToolBinding from 'effect-harness/Tool'
+import * as ToolRegistration from 'effect-harness/ToolRegistration'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
@@ -30,7 +30,7 @@ const toolkit = Toolkit.make(Uppercase)
 const handlers = toolkit.toLayer({ uppercase: ({ text }) => Effect.succeed(text.toUpperCase()) })
 
 export const Tools = Layer.unwrap(
-  ToolBinding.bind(toolkit, { uppercase: { replay: 'safe' } }).pipe(
+  ToolRegistration.bind(toolkit, { uppercase: { replay: 'safe' } }).pipe(
     Effect.map((tools) => Registry.layer([{ name: 'text-tools', tools }])),
   ),
 ).pipe(Layer.provide(handlers))
@@ -38,7 +38,7 @@ export const Tools = Layer.unwrap(
 
 Provide `Tools` to the harness Executor. If conversation settings restrict extensions, include `text-tools` in the selected extension names. If agent settings restrict tools, include `uppercase`. See [selection rules](reference/configuration.md#conversation-overrides).
 
-Provide host service Layers while binding handlers. `Tool.bind` captures them for later calls. Keep per-call `Invocation` and `ToolCall` services dynamic; additional request services belong in the explicit `requestServices` argument.
+Provide host service Layers while binding handlers. `ToolRegistration.bind` captures them for later calls. Keep per-call `Invocation` and `ToolCall` services dynamic; additional request services belong in the explicit `requestServices` argument.
 
 ## Report progress during execution
 

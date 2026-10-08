@@ -69,7 +69,7 @@ export class Cli extends Context.Service<
      */
     readonly run: (request: Request) => Stream.Stream<Protocol.Event, AiError.AiError>
   }
->()('@effect-harness/provider-claude-code/Cli') {}
+>()('effect-harness/provider-claude-code/Cli') {}
 const Status = Schema.Struct({
   loggedIn: Schema.Boolean,
   authMethod: Schema.optionalKey(Schema.String),
@@ -152,11 +152,7 @@ export const layer = (options?: {
             Effect.mapError(() => processError('Claude Code authentication status failed')),
           )
           if (exitCode !== 0) return { loggedIn: false, account: false }
-          const raw = yield* Effect.try({
-            try: () => JSON.parse(text) as unknown,
-            catch: () => protocol('Malformed Claude Code authentication status'),
-          })
-          const value = yield* Schema.decodeUnknownEffect(Status)(raw).pipe(
+          const value = yield* Schema.decodeEffect(Schema.fromJsonString(Status))(text).pipe(
             Effect.mapError(() => protocol('Malformed Claude Code authentication status')),
           )
           return {

@@ -8,13 +8,18 @@ import * as HashSet from 'effect/HashSet'
 import * as SchemaField from '../SchemaField.ts'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as AiTool from 'effect/ai/Tool'
-// effect-review-allow P9-namespace-alias-equals-module: effect/ai/Tool and ../Tool.ts both bind Tool; AiTool preserves the checked imported-name collision.
-import { Env, ExecutionError, ExecutionCallbackError } from '../Env.ts'
-import { ToolError, ToolExecution, ToolInvalidParameters } from '../ToolError.ts'
-import { Invocation, ToolCall, Result as ToolResultSchema, type ToolResult } from '../Invocation.ts'
-import * as Metadata from '../Tool.ts'
-// effect-review-allow P9-namespace-alias-equals-module: ../Tool.ts and effect/ai/Tool both bind Tool; Metadata preserves the checked imported-name collision.
+import * as Tool from 'effect/ai/Tool'
+import { Env } from '../Env.ts'
+import { ExecutionError, ExecutionCallbackError } from '../ExecutionError.ts'
+
+import { ToolError, ToolExecutionError, ToolInvalidParametersError } from '../ToolError.ts'
+import {
+  Invocation,
+  ToolCall,
+  Result as ToolResultSchema,
+  type Result as InvocationResult,
+} from '../Invocation.ts'
+import * as ToolRegistration from '../ToolRegistration.ts'
 import * as Truncate from './Truncate.ts'
 /**
  * Schema for shell command and optional timeout in seconds.
@@ -23,14 +28,8 @@ import * as Truncate from './Truncate.ts'
  */
 export const Parameters = Schema.Struct({
   command: Schema.String,
-  timeout: SchemaField.optional(Time.CommandTimeout),
+  timeout: SchemaField.optional(Time.CommandTimeoutFromSeconds),
 })
-/**
- * Decoded parameters passed to the coding-tool handler.
- *
- * @category models
- */
-export type Input = Parameters
 /**
  * Resolved shell command, cwd and environment passed to the host process.
  *
@@ -42,19 +41,7 @@ export interface Execution {
   env: Record<string, string>
   inheritEnv: boolean
 }
-/**
- * Default shell-tool timeout and output-window reporting policy.
- *
- * @category models
- */
-export type Options = handler.Options
-/**
- * PowerShell executable and shell-tool reporting policy.
- *
- * @category models
- */
-export type PowerShellOptions = powerShellHandler.Options
-const project = (result: unknown) => Metadata.decodeResult('bash', result)
+const project = (result: unknown) => ToolRegistration.decodeResult('bash', result)
 /**
  * Native bash tool running a command through the configured environment shell.
  *
@@ -71,7 +58,7 @@ const project = (result: unknown) => Metadata.decodeResult('bash', result)
  *
  * @category constants
  */
-export const tool = AiTool.make('bash', {
+export const tool = Tool.make('bash', {
   description:
     'Execute a shell command. Combined stdout/stderr streams with a 2000-line/50KB tail; larger complete output spills to a diagnostic temp file.',
   parameters: Parameters,
@@ -81,13 +68,13 @@ export const tool = AiTool.make('bash', {
   .addDependency(Env)
   .addDependency(Invocation)
   .addDependency(ToolCall)
-  .annotate(Metadata.Metadata, { replay: 'unsafe', output: { retain: 'tail' }, project })
+  .annotate(ToolRegistration.Metadata, { replay: 'unsafe', output: { retain: 'tail' }, project })
 /**
  * Native PowerShell tool declaration with bounded output and full-output spill diagnostics.
  *
  * @category constants
  */
-export const powershell = AiTool.make('powershell', {
+export const powershell = Tool.make('powershell', {
   description:
     'Execute PowerShell using pwsh or powershell directly with UTF8 output and the same bounded tail/full-output diagnostics.',
   parameters: Parameters,
@@ -97,24 +84,24 @@ export const powershell = AiTool.make('powershell', {
   .addDependency(Env)
   .addDependency(Invocation)
   .addDependency(ToolCall)
-  .annotate(Metadata.Metadata, {
+  .annotate(ToolRegistration.Metadata, {
     replay: 'unsafe',
     output: { retain: 'tail' },
-    project: (result) => Metadata.decodeResult('powershell', result),
+    project: (result) => ToolRegistration.decodeResult('powershell', result),
   })
-const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
+const execute = (name: 'bash' | 'powershell', options: powerShellHandler.Options) =>
   Effect.fnUntraced(function* (
-    input: Input,
-  ): Effect.fn.Return<ToolResult, ToolError, Env | Invocation | ToolCall> {
+    input: Parameters,
+  ): Effect.fn.Return<InvocationResult, ToolError, Env | Invocation | ToolCall> {
     const env = yield* Env
     const invocation = yield* Invocation
     const api = yield* ToolCall
     if (input.timeout !== undefined)
-      yield* Schema.decodeEffect(Schema.toType(Time.CommandTimeout))(input.timeout).pipe(
+      yield* Schema.decodeEffect(Schema.toType(Time.CommandTimeoutFromSeconds))(input.timeout).pipe(
         Effect.mapError(
           (cause) =>
             new ToolError({
-              reason: new ToolInvalidParameters({ name, message: 'Invalid timeout', cause }),
+              reason: new ToolInvalidParametersError({ name, message: 'Invalid timeout', cause }),
             }),
         ),
       )
@@ -137,33 +124,35 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
             '-Command',
             `try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n${execution.command}`,
           ])
-    let result: import('../Env.ts').ShellExecResult | undefined
+    let result: import('../Env.ts').Env.ShellExecResult | undefined
     let last: ExecutionError | undefined
     const reported = yield* Ref.make(HashSet.empty<string>())
-    const diagnostic = Effect.fnUntraced(function* (
-      path: string,
-    ): Effect.fn.Return<void, ExecutionError> {
-      if (HashSet.has(yield* Ref.get(reported), path)) return
-      return yield* api
-        .diagnostic({
-          kind: 'full_output',
-          message: `Full output: ${path}`,
-          detail: { path, severity: 'info' },
-        })
-        .pipe(
-          Effect.tap(() => Ref.update(reported, HashSet.add(path))),
+    const diagnostic = Effect.fnUntraced(
+      function* (path: string): Effect.fn.Return<void, ToolError> {
+        if (HashSet.has(yield* Ref.get(reported), path)) return
+        return yield* api
+          .diagnostic({
+            kind: 'full_output',
+            severity: 'info',
+            message: `Full output: ${path}`,
+            detail: { path },
+          })
+          .pipe(Effect.tap(() => Ref.update(reported, HashSet.add(path))))
+      },
+      (effect, path) =>
+        effect.pipe(
           Effect.mapError(
             (cause) =>
               new ExecutionError({
                 reason: new ExecutionCallbackError({
                   message: cause.message,
                   spillPath: path,
-                  cause: cause,
+                  cause,
                 }),
               }),
           ),
-        )
-    })
+        ),
+    )
     for (const command of commands) {
       const outcome = yield* env
         .exec(command, {
@@ -194,7 +183,7 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
           Effect.mapError(
             (cause) =>
               new ToolError({
-                reason: new ToolExecution({ name, message: cause.message, cause: cause }),
+                reason: new ToolExecutionError({ name, message: cause.message, cause: cause }),
               }),
           ),
         )
@@ -212,7 +201,7 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
     }
     if (result === undefined)
       return yield* new ToolError({
-        reason: new ToolExecution({
+        reason: new ToolExecutionError({
           name,
           message: last?.message ?? 'No command to run',
           ...(last === undefined ? {} : { cause: last }),
@@ -220,7 +209,10 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
       })
     if (result.exitCode !== 0)
       return yield* new ToolError({
-        reason: new ToolExecution({ name, message: `Command exited with code ${result.exitCode}` }),
+        reason: new ToolExecutionError({
+          name,
+          message: `Command exited with code ${result.exitCode}`,
+        }),
       })
     return {}
   })
@@ -230,8 +222,10 @@ const execute = (name: 'bash' | 'powershell', options: PowerShellOptions) =>
  * @category combinators
  */
 export const handler = (
-  options: Options = {},
-): ((input: Input) => Effect.Effect<ToolResult, ToolError, Env | Invocation | ToolCall>) =>
+  options: handler.Options = {},
+): ((
+  input: Parameters,
+) => Effect.Effect<InvocationResult, ToolError, Env | Invocation | ToolCall>) =>
   execute('bash', options)
 /**
  * Creates the PowerShell handler using supplied shell execution options.
@@ -239,8 +233,10 @@ export const handler = (
  * @category combinators
  */
 export const powerShellHandler = (
-  options: PowerShellOptions = {},
-): ((input: Input) => Effect.Effect<ToolResult, ToolError, Env | Invocation | ToolCall>) =>
+  options: powerShellHandler.Options = {},
+): ((
+  input: Parameters,
+) => Effect.Effect<InvocationResult, ToolError, Env | Invocation | ToolCall>) =>
   execute('powershell', options)
 
 /**
@@ -253,7 +249,7 @@ export const powerShellHandler = (
  *
  * @category guards
  */
-export const isInput: (u: unknown) => u is Parameters = Schema.is(Parameters)
+export const isParameters: (u: unknown) => u is Parameters = Schema.is(Parameters)
 
 /**
  * Shell command and optional timeout in seconds.
@@ -265,7 +261,6 @@ export type Parameters = typeof Parameters.Type
 /**
  * Type-level contracts for `handler`.
  *
- * @category utility types
  */
 export declare namespace handler {
   /**
@@ -284,7 +279,6 @@ export declare namespace handler {
 /**
  * Type-level contracts for `powerShellHandler`.
  *
- * @category utility types
  */
 export declare namespace powerShellHandler {
   /**

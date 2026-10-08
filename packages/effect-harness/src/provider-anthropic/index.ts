@@ -3,19 +3,6 @@
  */
 // @barrel
 /**
- * Compatibility constructors and transport identity for Anthropic account clients and
- * models.
- *
- * @category re-exports
- */
-export * as Account from './Account.ts'
-/**
- * Compatibility constructors for the Anthropic API-key language model.
- *
- * @category re-exports
- */
-export * as Anthropic from './Anthropic.ts'
-/**
  * Authenticated native Anthropic clients with account protocol adaptation.
  *
  * @category re-exports

@@ -17,20 +17,104 @@ import * as diff from 'diff'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
+const EditReasonPayload = Schema.Struct({
+  message: Schema.String,
+  cause: SchemaField.optional(Schema.Defect()),
+})
+
 /**
- * Semantic edit error with its retained cause.
+ * An edit contains no searchable text.
+ *
+ * @category errors
+ */
+export class EditEmptyError extends Schema.TaggedError<EditEmptyError>(
+  '@effect-harness/harness/tools/EditDiff/EditEmptyError',
+)('EditEmptyError', EditReasonPayload.fields) {}
+
+/**
+ * An edit target is absent from the base content.
+ *
+ * @category errors
+ */
+export class EditNotFoundError extends Schema.TaggedError<EditNotFoundError>(
+  '@effect-harness/harness/tools/EditDiff/EditNotFoundError',
+)('EditNotFoundError', EditReasonPayload.fields) {}
+
+/**
+ * An edit target has more than one matching occurrence.
+ *
+ * @category errors
+ */
+export class EditDuplicateError extends Schema.TaggedError<EditDuplicateError>(
+  '@effect-harness/harness/tools/EditDiff/EditDuplicateError',
+)('EditDuplicateError', EditReasonPayload.fields) {}
+
+/**
+ * Edit replacement ranges overlap.
+ *
+ * @category errors
+ */
+export class EditOverlapError extends Schema.TaggedError<EditOverlapError>(
+  '@effect-harness/harness/tools/EditDiff/EditOverlapError',
+)('EditOverlapError', EditReasonPayload.fields) {}
+
+/**
+ * An edit leaves the base content unchanged.
+ *
+ * @category errors
+ */
+export class EditNoChangeError extends Schema.TaggedError<EditNoChangeError>(
+  '@effect-harness/harness/tools/EditDiff/EditNoChangeError',
+)('EditNoChangeError', EditReasonPayload.fields) {}
+
+/**
+ * An edit range or foreign diff operation is invalid.
+ *
+ * @category errors
+ */
+export class EditRangeError extends Schema.TaggedError<EditRangeError>(
+  '@effect-harness/harness/tools/EditDiff/EditRangeError',
+)('EditRangeError', EditReasonPayload.fields) {}
+
+/**
+ * Structured reasons for the six edit failure modes.
+ *
+ * @category models
+ */
+export const EditErrorReason = Schema.Union([
+  EditEmptyError,
+  EditNotFoundError,
+  EditDuplicateError,
+  EditOverlapError,
+  EditNoChangeError,
+  EditRangeError,
+])
+/**
+ * Decoded edit failure reason.
+ *
+ * @category models
+ */
+export type EditErrorReason = typeof EditErrorReason.Type
+
+/**
+ * Wraps a structured edit failure with its exact tagged reason.
  *
  * @category errors
  */
 export class EditError extends Schema.TaggedError<EditError>(
   '@effect-harness/harness/tools/EditDiff/EditError',
-)('EditError', {
-  code: Schema.Literals(['empty', 'not_found', 'duplicate', 'overlap', 'no_change', 'range']),
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-}) {}
-const editError = (self: EditError['code'], message: string): EditError =>
-  new EditError({ code: self, message })
+)('EditError', { reason: EditErrorReason }) {
+  override get message(): string {
+    return this.reason.message
+  }
+  override get cause(): unknown {
+    return this.reason.cause
+  }
+}
+const editError = (
+  Reason: new (fields: { readonly message: string }) => EditErrorReason,
+  message: string,
+): EditError => new EditError({ reason: new Reason({ message }) })
 function atUnsafe<A>(self: ReadonlyArray<A>, index: number): A {
   const value = self[index]
   // Every caller bounds the index to a dense array constructed in this module.
@@ -133,7 +217,7 @@ function getLineSpans(self: string): Array<LineSpan> {
   })
 }
 
-function getReplacementLineRangeImpl(
+function getReplacementLineRangeImplUnsafe(
   self: ReadonlyArray<LineSpan>,
   replacement: TextReplacement,
 ): Result.Result<{ startLine: number; endLine: number }, EditError> {
@@ -143,7 +227,7 @@ function getReplacementLineRangeImpl(
     replacement.matchIndex < 0 ||
     replacement.matchLength <= 0
   )
-    return Result.fail(editError('range', 'Replacement range is outside the base content.'))
+    return Result.fail(editError(EditRangeError, 'Replacement range is outside the base content.'))
   const replacementStart = replacement.matchIndex
   const replacementEnd = replacement.matchIndex + replacement.matchLength
 
@@ -156,7 +240,7 @@ function getReplacementLineRangeImpl(
     }
   }
   if (startLine === -1) {
-    return Result.fail(editError('range', 'Replacement range is outside the base content.'))
+    return Result.fail(editError(EditRangeError, 'Replacement range is outside the base content.'))
   }
 
   let endLine = startLine
@@ -164,13 +248,13 @@ function getReplacementLineRangeImpl(
     endLine++
   }
   if (endLine >= self.length) {
-    return Result.fail(editError('range', 'Replacement range is outside the base content.'))
+    return Result.fail(editError(EditRangeError, 'Replacement range is outside the base content.'))
   }
 
   return Result.succeed({ startLine, endLine: endLine + 1 })
 }
 
-function applyReplacements(
+function applyReplacementsUnsafe(
   self: string,
   replacements: ReadonlyArray<TextReplacement>,
   offset = 0,
@@ -188,27 +272,27 @@ function applyReplacements(
 }
 
 /**
- * Apply replacements matched against `baseContent` to `originalContent` while
+ * Apply replacements matched against `that` to `self` while
  * preserving unchanged line blocks from the original.
  *
- * This is useful when `baseContent` is a normalized view of the original. Each
+ * This is useful when `that` is a normalized view of the original. Each
  * replacement is widened to the lines it actually touches, those touched lines
  * are rewritten from the normalized base, and all other lines are copied back
  * from `originalContent`. The actual replacement ranges drive preservation so
  * duplicate normalized lines cannot be aligned to the wrong occurrence.
  */
-function applyReplacementsPreservingUnchangedLinesImpl(
+function applyReplacementsPreservingUnchangedLinesImplUnsafe(
   self: string,
-  baseContent: string,
+  that: string,
   replacements: ReadonlyArray<TextReplacement>,
 ): Result.Result<string, EditError> {
   return Result.gen(function* () {
     const originalLines = splitLinesWithEndings(self)
-    const baseLines = getLineSpans(baseContent)
+    const baseLines = getLineSpans(that)
     if (originalLines.length !== baseLines.length) {
       return yield* Result.fail(
         editError(
-          'range',
+          EditRangeError,
           'Cannot preserve unchanged lines because the base content has a different line count.',
         ),
       )
@@ -224,7 +308,7 @@ function applyReplacementsPreservingUnchangedLinesImpl(
     for (const replacement of sortedReplacements) {
       const range = yield* getReplacementLineRange(baseLines, replacement)
       if (replacement.matchIndex < previousEnd)
-        return yield* Result.fail(editError('overlap', 'Replacement ranges overlap.'))
+        return yield* Result.fail(editError(EditOverlapError, 'Replacement ranges overlap.'))
       previousEnd = replacement.matchIndex + replacement.matchLength
       const current = groups[groups.length - 1]
       if (current && range.startLine < current.endLine) {
@@ -242,8 +326,8 @@ function applyReplacementsPreservingUnchangedLinesImpl(
 
       const groupStartOffset = atUnsafe(baseLines, group.startLine).start
       const groupEndOffset = atUnsafe(baseLines, group.endLine - 1).end
-      result += applyReplacements(
-        baseContent.slice(groupStartOffset, groupEndOffset),
+      result += applyReplacementsUnsafe(
+        that.slice(groupStartOffset, groupEndOffset),
         group.replacements,
         groupStartOffset,
       )
@@ -261,39 +345,20 @@ function applyReplacementsPreservingUnchangedLinesImpl(
  */
 export const applyReplacementsPreservingUnchangedLines: {
   (
-    baseContent: string,
+    that: string,
     replacements: ReadonlyArray<TextReplacement>,
   ): (self: string) => Result.Result<string, EditError>
   (
     self: string,
-    baseContent: string,
+    that: string,
     replacements: ReadonlyArray<TextReplacement>,
   ): Result.Result<string, EditError>
-} = dual(3, (self: string, baseContent: string, replacements: ReadonlyArray<TextReplacement>) =>
+} = dual(3, (self: string, that: string, replacements: ReadonlyArray<TextReplacement>) =>
   Result.try({
-    try: () => applyReplacementsPreservingUnchangedLinesImpl(self, baseContent, replacements),
+    try: () => applyReplacementsPreservingUnchangedLinesImplUnsafe(self, that, replacements),
     catch: diffFailure,
   }).pipe(Result.flatMap(identity)),
 )
-
-/**
- * Match location and exact or normalized content used for replacement.
- *
- * @category models
- */
-export interface FuzzyMatchResult {
-  /** The index where the match starts (in the content that should be used for replacement) */
-  readonly index: number
-  /** Length of the matched text */
-  readonly matchLength: number
-  /** Whether fuzzy matching was used (false = exact match) */
-  readonly usedFuzzyMatch: boolean
-  /**
-   * The content to use for replacement operations.
-   * When exact match: original content. When fuzzy match: normalized content.
-   */
-  readonly contentForReplacement: string
-}
 
 /**
  * Old/new text replacement requiring a unique match.
@@ -303,16 +368,6 @@ export interface FuzzyMatchResult {
 export interface Edit {
   readonly oldText: string
   readonly newText: string
-}
-
-/**
- * Normalized source and resulting text after validated edits.
- *
- * @category models
- */
-export interface AppliedEditsResult {
-  readonly baseContent: string
-  readonly newContent: string
 }
 
 /**
@@ -326,14 +381,14 @@ export interface AppliedEditsResult {
  *
  * @category combinators
  */
-export function fuzzyFindText(self: string, oldText: string): Option.Option<FuzzyMatchResult> {
-  if (normalizeForFuzzyMatch(oldText).length === 0) return Option.none()
+function fuzzyFindTextImpl(self: string, that: string): Option.Option<fuzzyFindText.Result> {
+  if (normalizeForFuzzyMatch(that).length === 0) return Option.none()
   // Try exact match first
-  const exactIndex = self.indexOf(oldText)
+  const exactIndex = self.indexOf(that)
   if (exactIndex !== -1) {
     return Option.some({
       index: exactIndex,
-      matchLength: oldText.length,
+      matchLength: that.length,
       usedFuzzyMatch: false,
       contentForReplacement: self,
     })
@@ -341,7 +396,7 @@ export function fuzzyFindText(self: string, oldText: string): Option.Option<Fuzz
 
   // Try fuzzy match - work entirely in normalized space
   const fuzzyContent = normalizeForFuzzyMatch(self)
-  const fuzzyOldText = normalizeForFuzzyMatch(oldText)
+  const fuzzyOldText = normalizeForFuzzyMatch(that)
   const fuzzyIndex = fuzzyContent.indexOf(fuzzyOldText)
 
   if (fuzzyIndex === -1) return Option.none()
@@ -358,19 +413,19 @@ export function fuzzyFindText(self: string, oldText: string): Option.Option<Fuzz
 }
 
 /**
- * Strip UTF-8 BOM if present, return both the BOM (if any) and the text without it
+ * Returns an initial UTF-8 BOM and the remaining text separately.
  *
  * @category combinators
  */
-export function stripBom(self: string): StripBomResult {
+export function stripBom(self: string): stripBom.Result {
   return self.startsWith('\uFEFF')
     ? { bom: '\uFEFF', text: self.slice(1) }
     : { bom: '', text: self }
 }
 
-function countOccurrences(self: string, oldText: string): number {
+function countOccurrences(self: string, that: string): number {
   const fuzzyContent = normalizeForFuzzyMatch(self)
-  const fuzzyOldText = normalizeForFuzzyMatch(oldText)
+  const fuzzyOldText = normalizeForFuzzyMatch(that)
   if (fuzzyOldText.length === 0) return 0
   let count = 0
   let offset = 0
@@ -385,12 +440,12 @@ function countOccurrences(self: string, oldText: string): number {
 function getNotFoundError(path: string, editIndex: number, totalEdits: number): EditError {
   if (totalEdits === 1) {
     return editError(
-      'not_found',
+      EditNotFoundError,
       `Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
     )
   }
   return editError(
-    'not_found',
+    EditNotFoundError,
     `Could not find edits[${editIndex}] in ${path}. The oldText must match exactly including all whitespace and newlines.`,
   )
 }
@@ -403,32 +458,32 @@ function getDuplicateError(
 ): EditError {
   if (totalEdits === 1) {
     return editError(
-      'duplicate',
+      EditDuplicateError,
       `Found ${occurrences} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`,
     )
   }
   return editError(
-    'duplicate',
+    EditDuplicateError,
     `Found ${occurrences} occurrences of edits[${editIndex}] in ${path}. Each oldText must be unique. Please provide more context to make it unique.`,
   )
 }
 
 function getEmptyOldTextError(path: string, editIndex: number, totalEdits: number): EditError {
   if (totalEdits === 1) {
-    return editError('empty', `oldText must not be empty in ${path}.`)
+    return editError(EditEmptyError, `oldText must not be empty in ${path}.`)
   }
-  return editError('empty', `edits[${editIndex}].oldText must not be empty in ${path}.`)
+  return editError(EditEmptyError, `edits[${editIndex}].oldText must not be empty in ${path}.`)
 }
 
 function getNoChangeError(path: string, totalEdits: number): EditError {
   if (totalEdits === 1) {
     return editError(
-      'no_change',
+      EditNoChangeError,
       `No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`,
     )
   }
   return editError(
-    'no_change',
+    EditNoChangeError,
     `No changes made to ${path}. The replacements produced identical content.`,
   )
 }
@@ -442,14 +497,16 @@ function getNoChangeError(path: string, totalEdits: number): EditError {
  * overlays those line-level changes onto the original content so unchanged line
  * blocks keep their original bytes.
  */
-function applyEditsToNormalizedContentImpl(
+function applyEditsToNormalizedContentImplUnsafe(
   self: string,
   edits: ReadonlyArray<Edit>,
   path: string,
-): Result.Result<AppliedEditsResult, EditError> {
+): Result.Result<applyEditsToNormalizedContent.Result, EditError> {
   return Result.gen(function* () {
     if (edits.length === 0)
-      return yield* Result.fail(editError('empty', 'edits must contain at least one replacement'))
+      return yield* Result.fail(
+        editError(EditEmptyError, 'edits must contain at least one replacement'),
+      )
     const normalizedEdits = edits.map((edit) => ({
       oldText: normalizeToLF(edit.oldText),
       newText: normalizeToLF(edit.newText),
@@ -462,8 +519,8 @@ function applyEditsToNormalizedContentImpl(
     }
 
     const initialMatches = normalizedEdits.map((edit) => fuzzyFindText(self, edit.oldText))
-    const usedFuzzyMatch = initialMatches.some(
-      (match) => Option.isSome(match) && match.value.usedFuzzyMatch,
+    const usedFuzzyMatch = initialMatches.some((match) =>
+      Option.exists(match, (value) => value.usedFuzzyMatch),
     )
     const replacementBaseContent = usedFuzzyMatch ? normalizeForFuzzyMatch(self) : self
 
@@ -488,7 +545,7 @@ function applyEditsToNormalizedContentImpl(
       })
     }
 
-    // effect-review-allow P1-order-equivalence-params: matchedEdits is a locally owned buffer; in-place sorting retains ascending matchIndex and stable ties.
+    // effect-nit-allow P1-order-equivalence-params: matchedEdits is a locally owned buffer; in-place sorting retains ascending matchIndex and stable ties.
     matchedEdits.sort(replacementOrder)
     for (let i = 1; i < matchedEdits.length; i++) {
       const previous = atUnsafe(matchedEdits, i - 1)
@@ -496,7 +553,7 @@ function applyEditsToNormalizedContentImpl(
       if (previous.matchIndex + previous.matchLength > current.matchIndex) {
         return yield* Result.fail(
           editError(
-            'overlap',
+            EditOverlapError,
             `edits[${previous.editIndex}] and edits[${current.editIndex}] overlap in ${path}. Merge them into one edit or target disjoint regions.`,
           ),
         )
@@ -506,7 +563,7 @@ function applyEditsToNormalizedContentImpl(
     const baseContent = self
     const newContent = usedFuzzyMatch
       ? yield* applyReplacementsPreservingUnchangedLines(self, replacementBaseContent, matchedEdits)
-      : applyReplacements(replacementBaseContent, matchedEdits)
+      : applyReplacementsUnsafe(replacementBaseContent, matchedEdits)
 
     if (baseContent === newContent) {
       return yield* Result.fail(getNoChangeError(path, normalizedEdits.length))
@@ -524,15 +581,15 @@ export const applyEditsToNormalizedContent: {
   (
     edits: ReadonlyArray<Edit>,
     path: string,
-  ): (self: string) => Result.Result<AppliedEditsResult, EditError>
+  ): (self: string) => Result.Result<applyEditsToNormalizedContent.Result, EditError>
   (
     self: string,
     edits: ReadonlyArray<Edit>,
     path: string,
-  ): Result.Result<AppliedEditsResult, EditError>
+  ): Result.Result<applyEditsToNormalizedContent.Result, EditError>
 } = dual(3, (self: string, edits: ReadonlyArray<Edit>, path: string) =>
   Result.try({
-    try: () => applyEditsToNormalizedContentImpl(self, edits, path),
+    try: () => applyEditsToNormalizedContentImplUnsafe(self, edits, path),
     catch: diffFailure,
   }).pipe(Result.flatMap(identity)),
 )
@@ -558,16 +615,16 @@ export function generateUnifiedPatch(
  * Generate a display-oriented diff string with line numbers and context.
  * Returns both the diff string and the first changed line number (in the new file).
  */
-function generateDiffStringImpl(
+function generateDiffStringImplUnsafe(
   self: string,
-  newContent: string,
+  that: string,
   contextLines = 4,
-): DiffStringResult {
-  const parts = diff.diffLines(self, newContent)
+): generateDiffString.Result {
+  const parts = diff.diffLines(self, that)
   const output: Array<string> = []
 
   const oldLines = self.split('\n')
-  const newLines = newContent.split('\n')
+  const newLines = that.split('\n')
   const maxLineNum = Math.max(oldLines.length, newLines.length)
   const lineNumWidth = String(maxLineNum).length
 
@@ -689,9 +746,9 @@ function generateDiffStringImpl(
  * @category combinators
  */
 export const generateDiffString: {
-  (newContent: string, contextLines?: number): (self: string) => DiffStringResult
-  (self: string, newContent: string, contextLines?: number): DiffStringResult
-} = dual((args) => typeof args[1] === 'string', generateDiffStringImpl)
+  (that: string, contextLines?: number): (self: string) => generateDiffString.Result
+  (self: string, that: string, contextLines?: number): generateDiffString.Result
+} = dual((args) => typeof args[1] === 'string', generateDiffStringImplUnsafe)
 
 /**
  * Applies normalized replacements while retaining unchanged original line bytes. This synchronous operation can throw.
@@ -699,12 +756,10 @@ export const generateDiffString: {
  * @category unsafe
  */
 export const applyReplacementsPreservingUnchangedLinesUnsafe: {
-  (baseContent: string, replacements: ReadonlyArray<TextReplacement>): (self: string) => string
-  (self: string, baseContent: string, replacements: ReadonlyArray<TextReplacement>): string
-} = dual(
-  3,
-  (self: string, baseContent: string, replacements: ReadonlyArray<TextReplacement>): string =>
-    Result.getOrThrow(applyReplacementsPreservingUnchangedLines(self, baseContent, replacements)),
+  (that: string, replacements: ReadonlyArray<TextReplacement>): (self: string) => string
+  (self: string, that: string, replacements: ReadonlyArray<TextReplacement>): string
+} = dual(3, (self: string, that: string, replacements: ReadonlyArray<TextReplacement>): string =>
+  Result.getOrThrow(applyReplacementsPreservingUnchangedLines(self, that, replacements)),
 )
 /**
  * Validates disjoint original-content matches and applies replacements in reverse offset order. This synchronous operation can throw.
@@ -712,42 +767,33 @@ export const applyReplacementsPreservingUnchangedLinesUnsafe: {
  * @category unsafe
  */
 export const applyEditsToNormalizedContentUnsafe: {
-  (edits: ReadonlyArray<Edit>, path: string): (self: string) => AppliedEditsResult
-  (self: string, edits: ReadonlyArray<Edit>, path: string): AppliedEditsResult
-} = dual(3, (self: string, edits: ReadonlyArray<Edit>, path: string): AppliedEditsResult =>
-  Result.getOrThrow(applyEditsToNormalizedContent(self, edits, path)),
+  (edits: ReadonlyArray<Edit>, path: string): (self: string) => applyEditsToNormalizedContent.Result
+  (self: string, edits: ReadonlyArray<Edit>, path: string): applyEditsToNormalizedContent.Result
+} = dual(
+  3,
+  (self: string, edits: ReadonlyArray<Edit>, path: string): applyEditsToNormalizedContent.Result =>
+    Result.getOrThrow(applyEditsToNormalizedContent(self, edits, path)),
 )
 
 const replacementOrder = Order.mapInput(Order.Number, (self: TextReplacement) => self.matchIndex)
 
-const diffFailure = (cause: unknown): EditError =>
-  cause instanceof EditError
-    ? cause
-    : new EditError({ code: 'range', message: Serialization.errorText(cause), cause })
+const diffFailure = (u: unknown): EditError =>
+  u instanceof EditError
+    ? u
+    : new EditError({
+        reason: new EditRangeError({ message: Serialization.errorText(u), cause: u }),
+      })
 function getReplacementLineRangeUnsafe(
   self: ReadonlyArray<LineSpan>,
   replacement: TextReplacement,
 ): { readonly startLine: number; readonly endLine: number } {
-  return Result.getOrThrow(getReplacementLineRangeImpl(self, replacement))
+  return Result.getOrThrow(getReplacementLineRangeImplUnsafe(self, replacement))
 }
 const getReplacementLineRange = (
   self: ReadonlyArray<LineSpan>,
   replacement: TextReplacement,
 ): Result.Result<{ readonly startLine: number; readonly endLine: number }, EditError> =>
   Result.try({ try: () => getReplacementLineRangeUnsafe(self, replacement), catch: diffFailure })
-
-/**
- * Initial byte-order mark and remaining text.
- *
- * @category models
- */
-export type StripBomResult = stripBom.Result
-/**
- * Display diff and the first modified source line when present.
- *
- * @category models
- */
-export type DiffStringResult = generateDiffString.Result
 
 /**
  * Restores LF text to the selected newline convention.
@@ -761,8 +807,6 @@ export const restoreLineEndings: {
 
 /**
  * Type-level contracts for `stripBom`.
- *
- * @category utility types
  */
 export declare namespace stripBom {
   /**
@@ -778,8 +822,6 @@ export declare namespace stripBom {
 
 /**
  * Type-level contracts for `generateDiffString`.
- *
- * @category utility types
  */
 export declare namespace generateDiffString {
   /**
@@ -790,5 +832,52 @@ export declare namespace generateDiffString {
   interface Result {
     readonly diff: string
     readonly firstChangedLine: number | undefined
+  }
+}
+
+/** Finds exact or normalized fuzzy text and preserves replacement offsets.
+ * @category combinators
+ */
+export const fuzzyFindText: {
+  (that: string): (self: string) => Option.Option<fuzzyFindText.Result>
+  (self: string, that: string): Option.Option<fuzzyFindText.Result>
+} = dual(2, fuzzyFindTextImpl)
+
+/**
+ * Type-level contracts for `fuzzyFindText`.
+ */
+export declare namespace fuzzyFindText {
+  /**
+   * Match location and exact or normalized content used for replacement.
+   *
+   * @category models
+   */
+  export interface Result {
+    /** The index where the match starts (in the content that should be used for replacement) */
+    readonly index: number
+    /** Length of the matched text */
+    readonly matchLength: number
+    /** Whether fuzzy matching was used (false = exact match) */
+    readonly usedFuzzyMatch: boolean
+    /**
+     * The content to use for replacement operations.
+     * When exact match: original content. When fuzzy match: normalized content.
+     */
+    readonly contentForReplacement: string
+  }
+}
+
+/**
+ * Type-level contracts for `applyEditsToNormalizedContent`.
+ */
+export declare namespace applyEditsToNormalizedContent {
+  /**
+   * Normalized source and resulting text after validated edits.
+   *
+   * @category models
+   */
+  export interface Result {
+    readonly baseContent: string
+    readonly newContent: string
   }
 }

@@ -1,9 +1,11 @@
+import { withLayer } from './StorageFixture.ts'
 import * as TestClock from 'effect/testing/TestClock'
 import * as Option from 'effect/Option'
-import { ResourceScope, withLayer } from 'effect-harness/durable/testing/Storage'
+import { ResourceScope } from 'effect-harness/durable/testing/Storage'
 import * as Exit from 'effect/Exit'
 import * as Scope from 'effect/Scope'
 import { assert, describe, it } from '@effect/vitest'
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/Usage and effect-harness/durable/Usage both own Usage; Totals keeps their distinct native/harness APIs available together for these constructor, service and declaration assertions.
 import * as Totals from 'effect-harness/Usage'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -20,12 +22,12 @@ import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
 import * as Usage from 'effect-harness/durable/Usage'
 import * as View from 'effect-harness/durable/View'
-import * as Memory from 'effect-harness/durable/storage/Memory'
+import * as Store from 'effect-harness/durable/Store'
 
 const layers = Event.layer.pipe(
   Layer.provideMerge(View.layer),
   Layer.provideMerge(Session.layer),
-  Layer.provideMerge(Memory.layer),
+  Layer.provideMerge(Store.layerMemory),
 )
 const encode = Schema.encodeEffect(Schema.toCodecJson(Prompt.Message))
 const assistant = (text: string) =>
@@ -45,7 +47,7 @@ const initialize = Effect.gen(function* () {
   )
   return { session, events, views, root }
 })
-const collect = (watch: Event.Watch, count: number) =>
+const collect = (watch: Event.Event.Watch, count: number) =>
   Effect.gen(function* () {
     const consumer = yield* Stream.runCollect(watch.changes.pipe(Stream.take(count))).pipe(
       Effect.timeout('3 seconds'),
@@ -59,7 +61,7 @@ const task = (
   tx: Session.Transaction,
   id: Record.ConversationId,
   kind = generationKind,
-  input: Record.Json = {},
+  input: Schema.Json = {},
 ) =>
   tx.createTask({
     conversationId: id,
@@ -94,11 +96,11 @@ describe('Event', () => {
         )
       const batch = (yield* collect(watch, 1))[0]
       assert.deepStrictEqual(
-        batch?.map((event) => event.type),
+        batch?.map((event) => event._tag),
         ['message_start'],
       )
       assert.deepStrictEqual(
-        batch?.[0]?.type === 'message_start' && batch[0].message,
+        batch?.[0]?._tag === 'message_start' && batch[0].message,
         assistant('retained'),
       )
       const late = yield* events.watch(root.id)
@@ -128,7 +130,7 @@ describe('Event', () => {
       for (let index = 0; index < 110; index++)
         yield* session.transaction((tx) => task(tx, root.id, 'eventless'))
       assert.deepStrictEqual(
-        (yield* collect(semantic, 1))[0]?.map((event) => event.type),
+        (yield* collect(semantic, 1))[0]?.map((event) => event._tag),
         ['task_failed'],
       )
       yield* session.transaction((tx) => tx.appendEntry(root.id, { kind: 'after-noise' }))
@@ -163,7 +165,7 @@ describe('Event', () => {
           }),
         )
       yield* TestClock.adjust('60 millis')
-      assert.strictEqual((yield* collect(semantic, 1))[0]?.[0]?.type, 'snapshot')
+      assert.strictEqual((yield* collect(semantic, 1))[0]?.[0]?._tag, 'snapshot')
       yield* session.transaction((tx) => tx.appendEntry(root.id, { kind: 'only-structural-frame' }))
       const collected = yield* Stream.runCollect(structural.changes.pipe(Stream.take(2))).pipe(
         Effect.forkScoped,
@@ -200,7 +202,7 @@ describe('Event', () => {
         Effect.fnUntraced(function* (tx) {
           const live = yield* tx.doc(Inbox.LiveDoc, { owner: root.id })
           assert.ok(live.generation)
-          live.generation.usage = { ...Totals.zero(), input: 42, totalTokens: 42 }
+          live.generation.usage = { ...Totals.make(), input: 42, totalTokens: 42 }
         }),
       )
       yield* session.transaction(
@@ -214,15 +216,13 @@ describe('Event', () => {
       assert.deepStrictEqual(batches[0], [
         {
           _tag: 'message_update' as const,
-          type: 'message_update',
-          usage: { ...Totals.zero(), input: 42, totalTokens: 42 },
+          usage: { ...Totals.make(), input: 42, totalTokens: 42 },
           changes: [],
         },
       ])
       assert.deepStrictEqual(batches[1], [
         {
           _tag: 'tool_execution_update' as const,
-          type: 'tool_execution_update',
           toolCallId: 'c',
           toolName: 'tool',
           details: { unchanged: true },
@@ -237,13 +237,12 @@ describe('Event', () => {
       const watch = yield* events.watch(root.id)
       assert.deepStrictEqual(watch.snapshot, {
         _tag: 'snapshot' as const,
-        type: 'snapshot',
         entries: [],
         tools: [],
         compactions: [],
         inbox: [],
         agent: {},
-        usage: Totals.empty(),
+        usage: Totals.makeState(),
       })
       const user = yield* encode(Prompt.userMessage({ content: [Prompt.textPart({ text: 'hi' })] }))
       const partial = yield* Schema.encodeEffect(Schema.toCodecJson(Prompt.AssistantMessage))(
@@ -284,13 +283,12 @@ describe('Event', () => {
           })
           yield* Inbox.endRun(tx, live, ids.taskId, { status: 'done', answer: entry.id })
           yield* Usage.record(tx, root.id, 'models', 'fake/model', {
-            ...Totals.zero(),
+            ...Totals.make(),
             output: 2,
             totalTokens: 2,
           })
           yield* tx.write({
             _tag: 'task' as const,
-            type: 'task',
             value: { ...record, state: { status: 'terminal', outcome: { status: 'done' } } },
           })
           return entry
@@ -298,7 +296,7 @@ describe('Event', () => {
       )
       const batches = yield* collect(watch, 3)
       assert.deepStrictEqual(
-        batches.map((batch) => batch.map((event) => event.type)),
+        batches.map((batch) => batch.map((event) => event._tag)),
         [
           ['message_start', 'message_end', 'submission', 'run_start', 'turn_start'],
           ['message_start'],
@@ -306,7 +304,7 @@ describe('Event', () => {
         ],
       )
       assert.strictEqual(
-        batches[2]?.[0]?.type === 'message_end' && batches[2][0].entry.id,
+        batches[2]?.[0]?._tag === 'message_end' && batches[2][0].entry.id,
         answer.id,
       )
       const late = yield* events.watch(root.id)
@@ -383,7 +381,6 @@ describe('Event', () => {
             })
             yield* tx.write({
               _tag: 'task' as const,
-              type: 'task',
               value: {
                 ...old,
                 state: {
@@ -413,7 +410,7 @@ describe('Event', () => {
         )
         const batch = (yield* collect(watch, 1))[0]
         assert.deepStrictEqual(
-          batch?.map((event) => event.type),
+          batch?.map((event) => event._tag),
           [
             'tool_execution_start',
             'auto_retry_end',
@@ -434,10 +431,9 @@ describe('Event', () => {
           ],
         )
         assert.deepStrictEqual(
-          batch?.find((event) => event.type === 'task_failed'),
+          batch?.find((event) => event._tag === 'task_failed'),
           {
             _tag: 'task_failed' as const,
-            type: 'task_failed',
             taskId: initial.generation,
             kind: generationKind,
             message: 'broken',
@@ -487,7 +483,6 @@ describe('Event', () => {
         assert.deepStrictEqual(batches[0], [
           {
             _tag: 'tool_execution_update' as const,
-            type: 'tool_execution_update',
             toolCallId: 'run',
             toolName: 'tool',
             output: { trimStart: 4, append: 'new\n' },
@@ -496,11 +491,11 @@ describe('Event', () => {
           },
         ])
         assert.deepStrictEqual(
-          batches[1]?.map((event) => event.type),
+          batches[1]?.map((event) => event._tag),
           ['tool_execution_end', 'tool_execution_end', 'tool_execution_end'],
         )
         assert.deepStrictEqual(
-          batches[1]?.map((event) => event.type === 'tool_execution_end' && event.toolCallId),
+          batches[1]?.map((event) => event._tag === 'tool_execution_end' && event.toolCallId),
           ['run', 'pending', 'done-now'],
         )
       }).pipe(Effect.provide(layers)),
@@ -532,14 +527,11 @@ describe('Event', () => {
             assert.ok(record)
             yield* tx.write({
               _tag: 'task' as const,
-              type: 'task',
               value: { ...record, state: { status: 'completing', outcome: { status: 'done' } } },
             })
           }),
         )
-        assert.deepStrictEqual((yield* collect(first, 1))[0], [
-          { _tag: 'turn_end' as const, type: 'turn_end' },
-        ])
+        assert.deepStrictEqual((yield* collect(first, 1))[0], [{ _tag: 'turn_end' as const }])
         const acquiring = yield* events.watch(root.id).pipe(Effect.forkScoped)
         yield* TestClock.adjust('60 millis')
         const late = yield* Fiber.join(acquiring)
@@ -551,15 +543,12 @@ describe('Event', () => {
             const next = yield* task(tx, root.id)
             yield* tx.write({
               _tag: 'task' as const,
-              type: 'task',
               value: { ...record, state: { status: 'terminal', outcome: { status: 'done' } } },
             })
             live.run = { taskId: next, inputs: [ids.input] }
           }),
         )
-        assert.deepStrictEqual((yield* collect(late, 1))[0], [
-          { _tag: 'turn_start' as const, type: 'turn_start' },
-        ])
+        assert.deepStrictEqual((yield* collect(late, 1))[0], [{ _tag: 'turn_start' as const }])
       }).pipe(Effect.provide(layers)),
   )
 
@@ -569,7 +558,7 @@ describe('Event', () => {
       Effect.gen(function* () {
         const { session, events, root } = yield* initialize
         const other = yield* session.transaction((tx) =>
-          tx.createConversation({ ownership: { _tag: 'ownerless' as const, kind: 'ownerless' } }),
+          tx.createConversation({ ownership: { _tag: 'ownerless' as const } }),
         )
         const watch = yield* events.watch(root.id)
         const own = yield* session.transaction((tx) =>
@@ -587,7 +576,7 @@ describe('Event', () => {
         )
         const batches = yield* collect(watch, 2)
         assert.deepStrictEqual(
-          batches.map((batch) => batch.map((event) => event.type)),
+          batches.map((batch) => batch.map((event) => event._tag)),
           [['submission'], ['submission']],
         )
       }).pipe(Effect.provide(layers)),
@@ -604,8 +593,8 @@ describe('Event', () => {
         yield* TestClock.adjust('60 millis')
         const batch = (yield* collect(watch, 1))[0]
         assert.strictEqual(batch?.length, 1)
-        assert.strictEqual(batch?.[0]?.type, 'snapshot')
-        assert.strictEqual(batch?.[0]?.type === 'snapshot' && batch[0].entries.length, 101)
+        assert.strictEqual(batch?.[0]?._tag, 'snapshot')
+        assert.strictEqual(batch?.[0]?._tag === 'snapshot' && batch[0].entries.length, 101)
       }).pipe(Effect.provide(layers)),
   )
 
@@ -638,9 +627,9 @@ describe('Event', () => {
         yield* Deferred.succeed(release, undefined)
         yield* TestClock.adjust('60 millis')
         assert.strictEqual(batches.length, 2)
-        assert.strictEqual(batches[1]?.[0]?.type, 'snapshot')
+        assert.strictEqual(batches[1]?.[0]?._tag, 'snapshot')
         assert.strictEqual(
-          batches[1]?.[0]?.type === 'snapshot' && batches[1][0].entries.length,
+          batches[1]?.[0]?._tag === 'snapshot' && batches[1][0].entries.length,
           102,
         )
         yield* Scope.close(yield* ResourceScope, Exit.void)
@@ -650,7 +639,7 @@ describe('Event', () => {
       }).pipe((effect) =>
         withLayer(
           effect.pipe(Effect.provide(Event.layer.pipe(Layer.provideMerge(View.layer)))),
-          Session.layer.pipe(Layer.provideMerge(Memory.layer)),
+          Session.layer.pipe(Layer.provideMerge(Store.layerMemory)),
         ),
       ),
   )
@@ -695,16 +684,14 @@ describe('Event', () => {
             after,
           ),
           [
-            { _tag: 'text_delta' as const, type: 'text_delta', contentIndex: 0, delta: 'lo' },
+            { _tag: 'text_delta' as const, contentIndex: 0, delta: 'lo' },
             {
               _tag: 'thinking_delta' as const,
-              type: 'thinking_delta',
               contentIndex: 1,
               delta: 'ing',
             },
             {
               _tag: 'toolcall_delta' as const,
-              type: 'toolcall_delta',
               contentIndex: 2,
               path: ['path'],
               delta: 'b',
@@ -717,7 +704,7 @@ describe('Event', () => {
             before,
             after,
           ),
-          [{ _tag: 'message' as const, type: 'message', message: after }],
+          [{ _tag: 'message' as const, message: after }],
         )
         assert.deepStrictEqual(Option.getOrUndefined(Event.outputChange('abc', 'abcXYZ')), {
           append: 'XYZ',

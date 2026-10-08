@@ -3,7 +3,7 @@
  */
 // @barrel
 /**
- * Native abort Workflow declaration and legacy-compatible target payloads.
+ * Native abort Workflow declaration and typed target payloads.
  *
  * @category re-exports
  */
@@ -75,7 +75,7 @@ export * as Request from './Request.ts'
  */
 export * as Structured from './Structured.ts'
 /**
- * Native submission Workflow declaration and legacy-compatible payloads.
+ * Native submission Workflow declaration and typed payloads.
  *
  * @category re-exports
  */

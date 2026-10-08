@@ -9,15 +9,54 @@ import * as Option from 'effect/Option'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
-import * as Semaphore from 'effect/Semaphore'
-import * as Stream from 'effect/Stream'
+import type * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 import * as Agent from './Agent.ts'
-import { RegistryError, RegistryFailure } from './RegistryError.ts'
+import * as Schema from 'effect/Schema'
+import * as SchemaField from './SchemaField.ts'
 import type * as Extension from './Extension.ts'
 import * as Hook from './Hook.ts'
 import { Invocation } from './Invocation.ts'
-import type * as Tool from './Tool.ts'
+import type * as ToolRegistration from './ToolRegistration.ts'
+
+/**
+ * Semantic registry failure with its retained cause.
+ *
+ * @category errors
+ */
+export class RegistryFailureError extends Schema.TaggedError<RegistryFailureError>(
+  'effect-harness/Registry/RegistryFailureError',
+)('RegistryFailureError', {
+  message: Schema.String,
+  cause: SchemaField.optional(Schema.Defect()),
+}) {}
+/**
+ * Schema for registry error reason.
+ *
+ * @category schemas
+ */
+export const RegistryErrorReason = Schema.Union([RegistryFailureError])
+/**
+ * Decoded value validated by the `RegistryErrorReason` schema.
+ *
+ * @category models
+ */
+export type RegistryErrorReason = typeof RegistryErrorReason.Type
+/**
+ * Semantic registry error with its retained cause.
+ *
+ * @category errors
+ */
+export class RegistryError extends Schema.TaggedError<RegistryError>(
+  'effect-harness/Registry/RegistryError',
+)('RegistryError', { reason: RegistryErrorReason }) {
+  override get message(): string {
+    return this.reason.message
+  }
+  override get cause(): unknown {
+    return this.reason.cause
+  }
+}
 
 /**
  * Registered named extensions captured by a Registry.
@@ -38,8 +77,8 @@ export interface Resolved {
   readonly state: Agent.State
   readonly settings: Agent.Settings
   readonly extensions: ReadonlyArray<Extension.Extension>
-  readonly tools: ReadonlyArray<Tool.Registration>
-  readonly sections: ReadonlyArray<Extension.Section>
+  readonly tools: ReadonlyArray<ToolRegistration.Registration>
+  readonly sections: ReadonlyArray<Extension.Extension.Section>
   readonly hooks: ReadonlyArray<Hook.Registration>
 }
 /**
@@ -62,13 +101,13 @@ export class Registry extends Context.Service<
     ) => Effect.Effect<void, RegistryError>
     readonly uninstall: (name: string) => Effect.Effect<void>
   }
->()('@effect-harness/harness/Registry') {}
+>()('effect-harness/Registry') {}
 function validate(self: ReadonlyArray<Extension.Extension>): Effect.Effect<void, RegistryError> {
   for (const extension of self) {
     if (extension.name === '')
       return Effect.fail(
         new RegistryError({
-          reason: new RegistryFailure({ message: 'Extension name must be nonempty' }),
+          reason: new RegistryFailureError({ message: 'Extension name must be nonempty' }),
         }),
       )
     const names = new Set<string>()
@@ -76,7 +115,7 @@ function validate(self: ReadonlyArray<Extension.Extension>): Effect.Effect<void,
       if (names.has(registration.tool.name))
         return Effect.fail(
           new RegistryError({
-            reason: new RegistryFailure({
+            reason: new RegistryFailureError({
               message: `Duplicate tool ${registration.tool.name} in ${extension.name}`,
             }),
           }),
@@ -88,13 +127,15 @@ function validate(self: ReadonlyArray<Extension.Extension>): Effect.Effect<void,
       if (!/^[a-z][a-z0-9_-]*$/.test(section.key) || section.key === 'instructions')
         return Effect.fail(
           new RegistryError({
-            reason: new RegistryFailure({ message: `Invalid or reserved section ${section.key}` }),
+            reason: new RegistryFailureError({
+              message: `Invalid or reserved section ${section.key}`,
+            }),
           }),
         )
       if (keys.has(section.key))
         return Effect.fail(
           new RegistryError({
-            reason: new RegistryFailure({
+            reason: new RegistryFailureError({
               message: `Duplicate section ${section.key} in ${extension.name}`,
             }),
           }),
@@ -118,43 +159,44 @@ export const make = Effect.fnUntraced(function* (
     revision: 0,
     extensions: [...merged.values()],
   })
-  const lock = yield* Semaphore.make(1)
   return Registry.of({
     snapshot: SubscriptionRef.get(ref).pipe(Effect.withSpan('Registry.snapshot')),
     changes: SubscriptionRef.changes(ref),
     install: (extensions) =>
-      lock.withPermit(
-        Effect.gen(function* () {
+      SubscriptionRef.modifySomeEffect(
+        ref,
+        Effect.fnUntraced(function* (before) {
           yield* validate(extensions)
-          const before = yield* SubscriptionRef.get(ref)
           const candidate = new Map(
             before.extensions.map((extension) => [extension.name, extension]),
           )
           for (const extension of extensions) candidate.set(extension.name, extension)
-          yield* validate([...candidate.values()])
+          const next = [...candidate.values()]
+          yield* validate(next)
           if (
             extensions.length === 0 ||
-            ([...candidate.values()].every((extension, index) =>
+            (next.every((extension, index) =>
               Option.contains(Arr.get(before.extensions, index), extension),
             ) &&
               candidate.size === before.extensions.length)
           )
-            return
-          yield* SubscriptionRef.set(ref, {
-            revision: before.revision + 1,
-            extensions: [...candidate.values()],
-          })
+            return [undefined, Option.none<Snapshot>()] as const
+          return [
+            undefined,
+            Option.some({ revision: before.revision + 1, extensions: next }),
+          ] as const
         }),
       ),
     uninstall: (name) =>
-      lock.withPermit(
-        Effect.gen(function* () {
-          const before = yield* SubscriptionRef.get(ref)
-          const extensions = before.extensions.filter((extension) => extension.name !== name)
-          if (extensions.length === before.extensions.length) return
-          yield* SubscriptionRef.set(ref, { revision: before.revision + 1, extensions })
-        }),
-      ),
+      SubscriptionRef.modifySome(ref, (before) => {
+        const extensions = Arr.filter(before.extensions, (extension) => extension.name !== name)
+        return [
+          undefined,
+          extensions.length === before.extensions.length
+            ? Option.none<Snapshot>()
+            : Option.some({ revision: before.revision + 1, extensions }),
+        ] as const
+      }),
   })
 })
 /**
@@ -172,7 +214,11 @@ export const layer = (
   extensions: ReadonlyArray<Extension.Extension> = [],
 ): Layer.Layer<Registry, RegistryError> => Layer.effect(Registry, make(extensions))
 /**
- * The builder captures service implementations at Layer construction, not at request execution.
+ * Provides a Registry built from effectful extensions.
+ *
+ * **Details**
+ *
+ * The builder captures host services when the Layer is constructed; invocation services remain request-local.
  *
  * @category layers
  */
@@ -191,8 +237,8 @@ const resolveImpl = Effect.fnUntraced(function* (
   ).flatMap((name) => {
     return Option.toArray(Option.fromUndefinedOr(installed.get(name)))
   })
-  const tools = new Map<string, Tool.Registration>()
-  const sections = new Map<string, Extension.Section>()
+  const tools = new Map<string, ToolRegistration.Registration>()
+  const sections = new Map<string, Extension.Extension.Section>()
   for (const extension of selected) {
     for (const tool of extension.tools ?? []) tools.set(tool.tool.name, tool)
     for (const section of extension.sections ?? []) sections.set(section.key, section)
@@ -201,54 +247,50 @@ const resolveImpl = Effect.fnUntraced(function* (
     for (const wrapper of extension.toolWraps ?? []) {
       yield* Option.match(Option.fromUndefinedOr(tools.get(wrapper.name)), {
         onNone: () => Effect.void,
-        onSome: (value) =>
-          Effect.gen(function* () {
-            const next = yield* Hook.recover(
-              Effect.suspend(() => wrapper.wrap.call(wrapper, value)),
-            )
-            if (next === undefined) tools.delete(wrapper.name)
-            else if (next.tool.name !== wrapper.name) {
-              tools.delete(wrapper.name)
-              yield* (yield* Invocation).report(
-                new RegistryError({
-                  reason: new RegistryFailure({ message: `Tool wrapper renamed ${wrapper.name}` }),
+        onSome: Effect.fnUntraced(function* (value) {
+          const next = yield* Hook.recover(Effect.suspend(() => wrapper.wrap.call(wrapper, value)))
+          if (next === undefined) tools.delete(wrapper.name)
+          else if (next.tool.name !== wrapper.name) {
+            tools.delete(wrapper.name)
+            yield* (yield* Invocation).report(
+              new RegistryError({
+                reason: new RegistryFailureError({
+                  message: `Tool wrapper renamed ${wrapper.name}`,
                 }),
-              )
-            } else tools.set(wrapper.name, next)
-          }),
+              }),
+            )
+          } else tools.set(wrapper.name, next)
+        }),
       })
     }
     for (const wrapper of extension.sectionWraps ?? []) {
       yield* Option.match(Option.fromUndefinedOr(sections.get(wrapper.key)), {
         onNone: () => Effect.void,
-        onSome: (value) =>
-          Effect.gen(function* () {
-            const next = yield* Hook.recover(
-              Effect.suspend(() => wrapper.wrap.call(wrapper, value)),
-            )
-            if (next === undefined) sections.delete(wrapper.key)
-            else if (next.key !== wrapper.key) {
-              sections.delete(wrapper.key)
-              yield* (yield* Invocation).report(
-                new RegistryError({
-                  reason: new RegistryFailure({
-                    message: `Section wrapper renamed ${wrapper.key}`,
-                  }),
+        onSome: Effect.fnUntraced(function* (value) {
+          const next = yield* Hook.recover(Effect.suspend(() => wrapper.wrap.call(wrapper, value)))
+          if (next === undefined) sections.delete(wrapper.key)
+          else if (next.key !== wrapper.key) {
+            sections.delete(wrapper.key)
+            yield* (yield* Invocation).report(
+              new RegistryError({
+                reason: new RegistryFailureError({
+                  message: `Section wrapper renamed ${wrapper.key}`,
                 }),
-              )
-            } else sections.set(wrapper.key, next)
-          }),
+              }),
+            )
+          } else sections.set(wrapper.key, next)
+        }),
       })
     }
   }
-  let offered: ReadonlyArray<Tool.Registration> = [...tools.values()]
+  let offered: ReadonlyArray<ToolRegistration.Registration> = [...tools.values()]
   if (Array.isArray(state.tools))
     offered = Arr.dedupe(state.tools).flatMap((name) => {
       return Option.toArray(Option.fromUndefinedOr(tools.get(name)))
     })
   else if (state.tools !== undefined) {
     const remove = new Set((state.tools as { readonly remove: ReadonlyArray<string> }).remove)
-    offered = offered.filter((tool) => !remove.has(tool.tool.name))
+    offered = Arr.filter(offered, (tool) => !remove.has(tool.tool.name))
   }
   if (state.instructions !== undefined) {
     const instructions = state.instructions
@@ -283,6 +325,7 @@ export const resolve: {
     settings: Agent.Settings,
   ): Effect.Effect<Resolved, never, Invocation>
 } = dual(3, resolveImpl)
+// effect-nit-allow P1-stdlib-collection-replacements: this public/native array may contain missing indices or inherited numeric accessors; native filter preserves HasProperty/Get and callback order, skips holes, and keeps explicit undefined distinct. Effect Array.filter visits missing slots.
 const handlersImpl = (self: Resolved, operation: Hook.Operation): Array<Hook.Handlers> =>
   self.hooks.filter((hook) => hook.operation === operation).map((hook) => hook.handlers)
 /**
@@ -296,7 +339,7 @@ export const handlers: {
 } = dual(2, handlersImpl)
 const renderImpl = Effect.fnUntraced(function* (
   agent: Resolved,
-  view: import('./Context.ts').View,
+  view: import('./Transcript.ts').View,
   shown: ReadonlyMap<string, string>,
 ): Effect.fn.Return<Map<string, string>, never, Invocation> {
   const invocation = yield* Invocation
@@ -335,12 +378,12 @@ const renderImpl = Effect.fnUntraced(function* (
  */
 export const render: {
   (
-    view: import('./Context.ts').View,
+    view: import('./Transcript.ts').View,
     shown: ReadonlyMap<string, string>,
   ): (self: Resolved) => Effect.Effect<Map<string, string>, never, Invocation>
   (
     self: Resolved,
-    view: import('./Context.ts').View,
+    view: import('./Transcript.ts').View,
     shown: ReadonlyMap<string, string>,
   ): Effect.Effect<Map<string, string>, never, Invocation>
 } = dual(3, renderImpl)

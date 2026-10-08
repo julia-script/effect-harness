@@ -20,11 +20,11 @@ import type * as Record from '../Record.ts'
 import type * as Session from '../Session.ts'
 import * as Cancellation from './Cancellation.ts'
 import type { StorageError } from '../StorageError.ts'
-import { ExecutionError, InvalidState } from './ExecutionError.ts'
+import { ExecutionError, InvalidStateError } from './ExecutionError.ts'
 
 const invalid = (message: string, cause?: unknown) =>
   new ExecutionError({
-    reason: new InvalidState({ message, ...(cause === undefined ? {} : { cause }) }),
+    reason: new InvalidStateError({ message, ...(cause === undefined ? {} : { cause }) }),
   })
 
 /**
@@ -72,16 +72,20 @@ export const bind = Effect.fnUntraced(function* <
   payload: P['Type'],
 ): Effect.fn.Return<Ownership.Binding, StorageError | Schema.SchemaError, P['EncodingServices']> {
   const binding = yield* domainBinding(workflow, payload)
-  yield* tx.write({ _tag: 'task', type: 'task', value: { ...task, input: binding } })
+  yield* tx.write({ _tag: 'task', value: { ...task, input: binding } })
   return binding
 })
 
 /**
- * Outcome classification is shared by holds and fail-fast joins.
+ * Checks whether an owned task outcome represents failure.
+ *
+ * **Details**
+ *
+ * Holds and fail-fast joins share the same outcome classification.
  *
  * @category guards
  */
-export const isFailed = Outcome.failed
+export const isFailed: (input: unknown) => boolean = Outcome.isFailed
 
 const heldFailure = (task: Record.Task | undefined) =>
   task !== undefined &&
@@ -96,15 +100,16 @@ const heldFailure = (task: Record.Task | undefined) =>
 export class DrainConversations extends Context.Service<
   DrainConversations,
   {
+    // effect-nit-allow B-no-service-arguments: This domain callback accepts the exact invocation-selected Session; a shared WorkflowEngine may dispatch multiple independently scoped sessions.
     readonly drain: (
-      session: Session.Service,
+      session: Session.Session.Service,
       owner: Record.Task,
       conversation: Record.Conversation,
       submissions: ReadonlyArray<Record.Submission>,
       sessionId: Identity.SessionId,
     ) => Effect.Effect<void, ExecutionError | import('../StorageError.ts').StorageError>
   }
->()('@effect-harness/durable/workflow/Structured/DrainConversations') {}
+>()('effect-harness/durable/workflow/Structured/DrainConversations') {}
 /**
  * Provides the callback used to drain pending work in owned conversations.
  *
@@ -120,7 +125,10 @@ export const layerDrainConversations = (
 ): Layer.Layer<DrainConversations> =>
   Layer.succeed(DrainConversations, DrainConversations.of({ drain }))
 
-const pendingConversations = (graph: Ownership.Graph, reached: Option.Option<Ownership.Reached>) =>
+const pendingConversations = (
+  graph: Ownership.Graph,
+  reached: Option.Option<Ownership.reach.Reached>,
+) =>
   Arr.flatMap(
     reached.pipe(
       Option.map((value) => value.conversations),
@@ -149,11 +157,11 @@ const pendingConversations = (graph: Ownership.Graph, reached: Option.Option<Own
 export const hold = Effect.fnUntraced(function* (
   tx: Session.Transaction,
   task: Record.Task,
-  outcome: Record.Json,
+  outcome: Schema.Json,
   graph: Ownership.Graph,
 ): Effect.fn.Return<Record.Task, StorageError> {
   if (task.state.status === 'terminal' || task.state.status === 'completing') return task
-  const reached = Ownership.reach(graph, { _tag: 'task', kind: 'task', id: task.id })
+  const reached = Ownership.reach(graph, { _tag: 'task', id: task.id })
   const children = reached.pipe(
     Option.map((value) => Arr.filter(value.tasks, (child) => child.id !== task.id)),
     Option.getOrElse(() => []),
@@ -169,46 +177,8 @@ export const hold = Effect.fnUntraced(function* (
       outcome,
     },
   }
-  yield* tx.write({ _tag: 'task', type: 'task', value })
+  yield* tx.write({ _tag: 'task', value })
   return value
-})
-
-const execute = Effect.fnUntraced(function* (
-  session: Session.Service,
-  task: Record.Task,
-  sessionId?: Identity.SessionId,
-): Effect.fn.Return<
-  void,
-  ExecutionError | StorageError,
-  Ownership.Declarations | Cancellation.Cancellation | WorkflowEngine.WorkflowEngine
-> {
-  if (task.state.status === 'terminal') return
-  const binding = yield* Schema.decodeUnknownEffect(Ownership.Binding)(task.input).pipe(
-    Effect.mapError((cause) => invalid(`Task ${task.id} has no native Workflow binding`, cause)),
-  )
-  const declarations = yield* Ownership.Declarations
-  if (Option.isNone(declarations.get(binding.workflow))) {
-    if (!task.abortRequested) {
-      // Missing code is a recoverable registration boundary. Preserve the work
-      // and let the ordinary native parent resume once its declaration returns.
-      const instance = yield* Effect.serviceOption(WorkflowEngine.WorkflowInstance)
-      if (Option.isSome(instance)) return yield* Workflow.suspend(instance.value)
-      return yield* invalid(
-        `Workflow ${binding.workflow} is not declared; task ${task.id} remains blocked`,
-      )
-    }
-    yield* complete(
-      session,
-      task.id,
-      Outcome.Orphaned.make({
-        status: 'orphaned',
-        reason: `Workflow ${binding.workflow} is not declared`,
-      }),
-      sessionId,
-    )
-    return
-  }
-  yield* Ownership.execute(binding).pipe(Effect.ignore)
 })
 
 /**
@@ -226,16 +196,53 @@ const execute = Effect.fnUntraced(function* (
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: join targets the explicit scoped Session self capability for its facts, journal, closure/abort fencing and domain settlement; Ownership.Current and WorkflowInstance are sampled while running and may refer to a different ambient Session.
 export const join = Effect.fnUntraced(function* (
-  session: Session.Service,
+  session: Session.Session.Service,
   ownerId: Record.TaskId,
   ids: ReadonlyArray<Record.TaskId>,
   policy: 'failFast' | 'allSettled' = 'allSettled',
 ): Effect.fn.Return<
-  Array<Record.Json>,
+  Array<Schema.Json>,
   StorageError | ExecutionError,
   Cancellation.Cancellation | WorkflowEngine.WorkflowEngine | Ownership.Declarations
 > {
+  const execute = Effect.fnUntraced(function* (
+    task: Record.Task,
+    sessionId?: Identity.SessionId,
+  ): Effect.fn.Return<
+    void,
+    ExecutionError | StorageError,
+    Ownership.Declarations | Cancellation.Cancellation | WorkflowEngine.WorkflowEngine
+  > {
+    if (task.state.status === 'terminal') return
+    const binding = yield* Schema.decodeUnknownEffect(Ownership.Binding)(task.input).pipe(
+      Effect.mapError((cause) => invalid(`Task ${task.id} has no native Workflow binding`, cause)),
+    )
+    const declarations = yield* Ownership.Declarations
+    if (Option.isNone(declarations.get(binding.workflow))) {
+      if (!task.abortRequested) {
+        // Missing code is a recoverable registration boundary. Preserve the work
+        // and let the ordinary native parent resume once its declaration returns.
+        const instance = yield* Effect.serviceOption(WorkflowEngine.WorkflowInstance)
+        if (Option.isSome(instance)) return yield* Workflow.suspend(instance.value)
+        return yield* invalid(
+          `Workflow ${binding.workflow} is not declared; task ${task.id} remains blocked`,
+        )
+      }
+      yield* complete(
+        session,
+        task.id,
+        yield* Schema.encodeEffect(Outcome.Orphaned)(
+          Outcome.Orphaned.make({ reason: `Workflow ${binding.workflow} is not declared` }),
+        ).pipe(Effect.mapError((cause) => invalid('Invalid structured outcome', cause))),
+        sessionId,
+      )
+      return
+    }
+    yield* Ownership.execute(binding).pipe(Effect.ignore)
+  })
+
   const state = yield* session.committed
   const owner = Arr.findFirst(state.tasks, (task) => task.id === ownerId)
   if (Option.isNone(owner)) return yield* invalid('Join owner is absent')
@@ -289,7 +296,6 @@ export const join = Effect.fnUntraced(function* (
       const current = currentOption.value
       yield* tx.write({
         _tag: 'task',
-        type: 'task',
         value: {
           ...current,
           state: { ...current.state, status: 'waiting', on: ids, policy },
@@ -317,7 +323,7 @@ export const join = Effect.fnUntraced(function* (
       const task = Arr.findFirst(latest.tasks, (task) => task.id === id)
       if (Option.isNone(task) || task.value.state.status === 'terminal' || heldFailure(task.value))
         continue
-      const reached = yield* Cancellation.mark(session, { _tag: 'task', kind: 'task', id })
+      const reached = yield* Cancellation.mark(session, { _tag: 'task', id })
       yield* Cancellation.cancel(current.value.sessionId, reached)
     }
   })
@@ -330,7 +336,7 @@ export const join = Effect.fnUntraced(function* (
             )
           : undefined
       yield* failFast
-      const awaiting = Effect.forEach(tasks, (task) => execute(session, task), {
+      const awaiting = Effect.forEach(tasks, (task) => execute(task), {
         // P5-explicit-concurrency-option: native frontier members may await a later
         // member; all joins must start together to avoid stranding that dependency.
         concurrency: 'unbounded',
@@ -347,7 +353,6 @@ export const join = Effect.fnUntraced(function* (
           const current = currentOption.value
           yield* tx.write({
             _tag: 'task',
-            type: 'task',
             value: {
               ...current,
               state: {
@@ -381,22 +386,59 @@ export const join = Effect.fnUntraced(function* (
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: drain targets the explicit scoped Session self capability for its facts, journal, closure/abort fencing and domain settlement; Ownership.Current and WorkflowInstance are sampled while running and may refer to a different ambient Session.
 export const drain = Effect.fnUntraced(function* (
-  session: Session.Service,
+  session: Session.Session.Service,
   taskId: Record.TaskId,
   sessionId?: Identity.SessionId,
 ): Effect.fn.Return<
-  Record.Json,
+  Schema.Json,
   ExecutionError | StorageError,
   Ownership.Declarations | Cancellation.Cancellation | WorkflowEngine.WorkflowEngine
 > {
+  const execute = Effect.fnUntraced(function* (
+    task: Record.Task,
+    sessionId?: Identity.SessionId,
+  ): Effect.fn.Return<
+    void,
+    ExecutionError | StorageError,
+    Ownership.Declarations | Cancellation.Cancellation | WorkflowEngine.WorkflowEngine
+  > {
+    if (task.state.status === 'terminal') return
+    const binding = yield* Schema.decodeUnknownEffect(Ownership.Binding)(task.input).pipe(
+      Effect.mapError((cause) => invalid(`Task ${task.id} has no native Workflow binding`, cause)),
+    )
+    const declarations = yield* Ownership.Declarations
+    if (Option.isNone(declarations.get(binding.workflow))) {
+      if (!task.abortRequested) {
+        // Missing code is a recoverable registration boundary. Preserve the work
+        // and let the ordinary native parent resume once its declaration returns.
+        const instance = yield* Effect.serviceOption(WorkflowEngine.WorkflowInstance)
+        if (Option.isSome(instance)) return yield* Workflow.suspend(instance.value)
+        return yield* invalid(
+          `Workflow ${binding.workflow} is not declared; task ${task.id} remains blocked`,
+        )
+      }
+      yield* complete(
+        session,
+        task.id,
+        yield* Schema.encodeEffect(Outcome.Orphaned)(
+          Outcome.Orphaned.make({ reason: `Workflow ${binding.workflow} is not declared` }),
+        ).pipe(Effect.mapError((cause) => invalid('Invalid structured outcome', cause))),
+        sessionId,
+      )
+      return
+    }
+    yield* Ownership.execute(binding).pipe(Effect.ignore)
+  })
+
   while (true) {
     const state = yield* session.committed
     const task = Arr.findFirst(state.tasks, (task) => task.id === taskId)
     if (Option.isNone(task)) return yield* invalid('Completing task is absent')
     if (task.value.state.status === 'terminal') return task.value.state.outcome ?? null
     if (task.value.state.status !== 'completing') return yield* invalid('Task has no held outcome')
-    const reached = Ownership.reach(state, { _tag: 'task', kind: 'task', id: taskId })
+    const reached = Ownership.reach(state, { _tag: 'task', id: taskId })
     const children = reached.pipe(
       Option.map((value) => Arr.filter(value.tasks, (child) => child.id !== taskId)),
       Option.getOrElse(() => []),
@@ -447,7 +489,6 @@ export const drain = Effect.fnUntraced(function* (
         for (const child of children) {
           const marked = yield* Cancellation.mark(session, {
             _tag: 'task',
-            kind: 'task',
             id: child.id,
           })
           yield* Cancellation.cancel(identity, marked)
@@ -456,7 +497,7 @@ export const drain = Effect.fnUntraced(function* (
       yield* Effect.forEach(
         children,
         Effect.fnUntraced(function* (child) {
-          yield* execute(session, child, sessionId)
+          yield* execute(child, sessionId)
           const settled = Arr.findFirst(
             (yield* session.committed).tasks,
             (task) => task.id === child.id,
@@ -482,14 +523,13 @@ export const drain = Effect.fnUntraced(function* (
         if (Option.isNone(current)) return yield* invalid('Completing task is absent')
         if (current.value.state.status === 'terminal')
           return { done: true, outcome: current.value.state.outcome ?? null }
-        const remaining = Ownership.reach(graph, { _tag: 'task', kind: 'task', id: taskId })
+        const remaining = Ownership.reach(graph, { _tag: 'task', id: taskId })
         const pending =
           Option.exists(remaining, (value) => value.tasks.some((item) => item.id !== taskId)) ||
           Arr.isReadonlyArrayNonEmpty(pendingConversations(graph, remaining))
         if (pending) return { done: false, outcome: null }
         yield* tx.write({
           _tag: 'task',
-          type: 'task',
           value: {
             ...current.value,
             state: { status: 'terminal', outcome: current.value.state.outcome ?? null },
@@ -507,13 +547,14 @@ export const drain = Effect.fnUntraced(function* (
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: complete targets the explicit scoped Session self capability for its facts, journal, closure/abort fencing and domain settlement; Ownership.Current and WorkflowInstance are sampled while running and may refer to a different ambient Session.
 export const complete = Effect.fnUntraced(function* (
-  session: Session.Service,
+  session: Session.Session.Service,
   taskId: Record.TaskId,
-  outcome: Record.Json,
+  outcome: Schema.Json,
   sessionId?: Identity.SessionId,
 ): Effect.fn.Return<
-  Record.Json,
+  Schema.Json,
   ExecutionError | StorageError,
   Ownership.Declarations | Cancellation.Cancellation | WorkflowEngine.WorkflowEngine
 > {
@@ -599,12 +640,13 @@ export const child = Effect.fnUntraced(function* <
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: evaluate accepts the selected invocation Session self capability. Cancellation.run registers closure, fences abort and provides Ownership.Current from that supplied instance; completing holds and final domain settlement use the same owner even when an ambient Session differs.
 export const evaluate = Effect.fnUntraced(function* <E, R>(
-  identity: Ownership.Identity,
-  session: Session.Service,
-  body: Effect.Effect<Record.Json, E, R>,
+  identity: Ownership.Current.Identity,
+  session: Session.Session.Service,
+  body: Effect.Effect<Schema.Json, E, R>,
 ): Effect.fn.Return<
-  Record.Json,
+  Schema.Json,
   E | ExecutionError | StorageError,
   | Exclude<R, Ownership.Current>
   | Ownership.Declarations
@@ -623,22 +665,26 @@ export const evaluate = Effect.fnUntraced(function* <E, R>(
     if (!Option.exists(task, (found) => found.abortRequested))
       return yield* Effect.failCause(exit.cause)
   }
-  let outcome: Record.Json
+  let outcome: Schema.Json
   if (Exit.isSuccess(exit))
     outcome = yield* Schema.decodeEffect(Outcome.Completed)({
+      _tag: 'Completed',
       status: 'completed',
       result: exit.value,
-    }).pipe(Effect.mapError((cause) => invalid('Invalid structured outcome', cause)))
+    }).pipe(
+      Effect.flatMap(Schema.encodeEffect(Outcome.Completed)),
+      Effect.mapError((cause) => invalid('Invalid structured outcome', cause)),
+    )
   else {
     const error = Cause.squash(exit.cause)
-    let status: (typeof Outcome.Failed.Type)['status'] = Cause.hasDies(exit.cause)
-      ? 'faulted'
-      : 'failed'
-    if (error instanceof ExecutionError && error.reason._tag === 'Aborted') status = 'aborted'
-    outcome = Outcome.Failed.make({
-      status,
-      error: { message: error instanceof Error ? error.message : String(error) },
-    })
+    let status: Outcome.Failed['status'] = Cause.hasDies(exit.cause) ? 'faulted' : 'failed'
+    if (error instanceof ExecutionError && error.reason._tag === 'AbortedError') status = 'aborted'
+    outcome = yield* Schema.encodeEffect(Outcome.Failed)(
+      Outcome.Failed.make({
+        status,
+        error: { message: error instanceof Error ? error.message : String(error) },
+      }),
+    ).pipe(Effect.mapError((cause) => invalid('Invalid structured outcome', cause)))
   }
   return yield* complete(session, identity.taskId, outcome, identity.sessionId)
 })

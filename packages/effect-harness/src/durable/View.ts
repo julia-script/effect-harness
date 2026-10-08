@@ -1,11 +1,18 @@
 /**
  * Shared committed conversation mounts and bounded subscriber projections.
  */
+import * as MutableHashMap from 'effect/MutableHashMap'
 import * as Order from 'effect/Order'
 import { dual } from 'effect/Function'
 import * as handle from './internal/handle.ts'
-const ProjectionWatchProto = handle.prototype('@effect-harness/durable/View/ProjectionWatch')
-const StateProto = handle.prototype('@effect-harness/durable/View/State')
+const ProjectionWatchProto = handle.prototype({
+  id: '@effect-harness/durable/View/ProjectionWatch',
+  fields: ['value'],
+})
+const StateProto = handle.prototype({
+  id: '@effect-harness/durable/View/State',
+  fields: ['value', 'cursor'],
+})
 import type * as Pipeable from 'effect/Pipeable'
 import type * as Inspectable from 'effect/Inspectable'
 import { identity } from 'effect/Function'
@@ -23,6 +30,7 @@ import * as Queue from 'effect/Queue'
 import * as RcMap from 'effect/RcMap'
 import * as HashMap from 'effect/HashMap'
 import * as Ref from 'effect/Ref'
+import * as ViewTransition from './internal/ViewTransition.ts'
 import * as Agent from 'effect-harness/Agent'
 import * as Usage from 'effect-harness/Usage'
 import * as Context from 'effect/Context'
@@ -40,7 +48,13 @@ import * as Document from './Document.ts'
 import * as Inbox from './Inbox.ts'
 import type * as Observation from './Observation.ts'
 import * as Record from './Record.ts'
-import { rejected, type StorageError, NotFound, Corrupt, Closed } from './StorageError.ts'
+import {
+  rejected,
+  type StorageError,
+  NotFoundError,
+  CorruptError,
+  ClosedError,
+} from './StorageError.ts'
 import * as Store from './Store.ts'
 import { UsageDoc } from './Usage.ts'
 import { findDocument, materialize, visibleEntries } from './storage/internal/state.ts'
@@ -79,7 +93,7 @@ export const Value = Schema.Struct({
  *
  * @category models
  */
-export type Value = View.Value
+export type Value = typeof Value.Type
 /**
  * Schema for address of an entry or document field within a conversation view.
  *
@@ -91,7 +105,7 @@ export const Path = Schema.Array(Schema.Union([Schema.String, Schema.Finite]))
  *
  * @category models
  */
-export type Path = View.Path
+export type Path = typeof Path.Type
 /**
  * Schema for structural mutation applied to a committed conversation view.
  *
@@ -117,7 +131,7 @@ export const Op = Schema.Union([
  *
  * @category models
  */
-export type Op = View.Op
+export type Op = typeof Op.Type
 /**
  * Schema for before/after view values and structural operations for a committed update.
  *
@@ -137,7 +151,7 @@ export const Change = Schema.Struct({
  *
  * @category models
  */
-export type Change = View.Change
+export type Change = typeof Change.Type
 /**
  * Structural set values are opaque decoded field values; the JSON client codec validates their wire representation without changing mounted references.
  *
@@ -145,37 +159,8 @@ export type Change = View.Change
  */
 export const ChangeJson = Schema.toCodecJson(Change)
 const ProjectionWatchTypeId = '~@effect-harness/durable/View/ProjectionWatch'
-/**
- * Scoped initial projection and stream of subsequent committed values.
- *
- * @category models
- */
-export type ProjectionWatch<A> = View.ProjectionWatch<A>
-/**
- * Scoped conversation snapshot and stream of structural changes.
- *
- * @category models
- */
-export type Watch = View.Watch
 const ProjectionTypeId = '~@effect-harness/durable/View/Projection'
-/**
- * Initial, incremental and reset functions for a custom committed view.
- *
- * @category models
- */
-export type Projection<A> = View.Projection<A>
-/**
- * Live committed view with its latest journal cursor and closing result.
- *
- * @category models
- */
-export type State = View.State
-/**
- * Shared conversation mounts and scoped committed projections.
- *
- * @category models
- */
-export type Service = View.Service
+const StateTypeId = '~@effect-harness/durable/View/State'
 /**
  * Service for coherent committed conversation views and scoped projections.
  *
@@ -191,7 +176,7 @@ export type Service = View.Service
  *
  * @category services
  */
-export class View extends Context.Service<View, Service>()('@effect-harness/durable/View') {}
+export class View extends Context.Service<View, View.Service>()('effect-harness/durable/View') {}
 
 interface MountedDocument {
   readonly id: Record.DocumentId
@@ -216,7 +201,7 @@ interface Mount {
 const descriptor = <K extends keyof Documents>(
   kind: K,
   token: Document.Document<NonNullable<Documents[K]>>,
-) => ({ kind, load: (snapshot: Document.Snapshot) => Document.typed(token, snapshot) })
+) => ({ kind, load: (snapshot: Document.Document.Snapshot) => Document.typed(token, snapshot) })
 const mounted = [
   descriptor('harness.agent', Conversation.AgentDoc),
   descriptor('harness.live', Inbox.LiveDoc),
@@ -224,9 +209,8 @@ const mounted = [
   descriptor('harness.provider', Conversation.ProviderDoc),
   descriptor('harness.usage', UsageDoc),
 ]
-const mountedByKind: ReadonlyMap<string, (typeof mounted)[number]> = new Map(
-  mounted.map((item) => [item.kind, item]),
-)
+const mountedByKind: MutableHashMap.MutableHashMap<string, (typeof mounted)[number]> =
+  MutableHashMap.fromIterable(mounted.map((item) => [item.kind, item]))
 const own = (object: object, key: string | number, value: unknown) =>
   Object.defineProperty(object, key, {
     value,
@@ -240,25 +224,25 @@ const own = (object: object, key: string | number, value: unknown) =>
  *
  * @category schemas
  */
-function applyUnsafeImpl(self: Value, ops: ReadonlyArray<Op>): Value {
+function applyImplUnsafe(self: Value, ops: ReadonlyArray<Op>): Value {
   const value = self
   if (!Schema.is(Schema.Array(Op))(ops)) throw new TypeError('Invalid view operation')
   let result: unknown = value
-  const edit = (node: unknown, path: Path, update: (leaf: unknown) => unknown): unknown => {
+  const editUnsafe = (node: unknown, path: Path, update: (leaf: unknown) => unknown): unknown => {
     if (Arr.isReadonlyArrayEmpty(path)) return update(node)
     if (!Predicate.isObjectOrArray(node)) throw new TypeError('Invalid view operation path')
     const key = path[0]
     if (key === undefined) throw new TypeError('Missing view operation path')
     const copy: object = Array.isArray(node) ? [...node] : { ...node }
     const previous = Object.hasOwn(node, key) ? Reflect.get(node, key) : undefined
-    own(copy, key, edit(previous, path.slice(1), update))
+    own(copy, key, editUnsafe(previous, path.slice(1), update))
     return copy
   }
   for (const op of ops) {
     if (op[0] === 'replace') result = op[1]
-    else if (op[0] === 'set') result = edit(result, op[1], () => op[2])
+    else if (op[0] === 'set') result = editUnsafe(result, op[1], () => op[2])
     else if (op[0] === 'splice')
-      result = edit(result, op[1], (leaf) => {
+      result = editUnsafe(result, op[1], (leaf) => {
         if (!Array.isArray(leaf)) throw new TypeError('View splice requires an array')
         const copy = [...leaf]
         copy.splice(op[2], op[3], ...op[4])
@@ -266,7 +250,7 @@ function applyUnsafeImpl(self: Value, ops: ReadonlyArray<Op>): Value {
       })
     else {
       const key = Arr.lastNonEmpty(op[1])
-      result = edit(result, op[1].slice(0, -1), (parent) => {
+      result = editUnsafe(result, op[1].slice(0, -1), (parent) => {
         if (!Predicate.isObjectOrArray(parent)) throw new TypeError('Invalid view deletion')
         const copy: object = Array.isArray(parent) ? [...parent] : { ...parent }
         if (Array.isArray(copy) && Predicate.isNumber(key)) copy.splice(key, 1)
@@ -275,8 +259,8 @@ function applyUnsafeImpl(self: Value, ops: ReadonlyArray<Op>): Value {
       })
     }
   }
-  // Every delta is produced from a validated mount and preserves its structural shape.
-  return result as Value
+  if (!Schema.is(Value)(result)) throw new TypeError('Invalid completed view value')
+  return result
 }
 /**
  * Failure reporting an invalid structural view operation.
@@ -295,7 +279,7 @@ const applyImpl = (self: Value, ops: ReadonlyArray<Op>): Result.Result<Value, Vi
 const hydrate = Effect.fnUntraced(function* (state: Record.State, id: Record.ConversationId) {
   const conversationOption = Arr.findFirst(state.conversations, (item) => item.id === id)
   if (Option.isNone(conversationOption))
-    return yield* rejected('Conversation does not exist', NotFound)
+    return yield* rejected('Conversation does not exist', NotFoundError)
   const conversation = conversationOption.value
   const visible = (yield* visibleEntries(state, id)).toReversed()
   const head = Arr.findLast(visible, (entry) => entry.head !== undefined)
@@ -308,13 +292,13 @@ const hydrate = Effect.fnUntraced(function* (state: Record.State, id: Record.Con
     onSome: (head) => [head, ...Arr.filter(range, (entry) => entry.head === undefined)],
   })
   const docs: Documents = {}
-  const documents = new Map<string, MountedDocument>()
+  let documents = HashMap.empty<string, MountedDocument>()
   for (const item of mounted) {
     const persisted = findDocument(
       state,
       {
         kind: item.kind,
-        scope: { _tag: 'conversation', kind: 'conversation', conversationId: id },
+        scope: { _tag: 'conversation', conversationId: id },
       },
       'current',
     )
@@ -323,11 +307,14 @@ const hydrate = Effect.fnUntraced(function* (state: Record.State, id: Record.Con
     if (Option.isNone(snapshot)) continue
     const converted = yield* item.load(snapshot.value)
     own(docs, item.kind, converted.value)
-    documents.set(item.kind, { id: converted.record.id, version: converted.version })
+    documents = HashMap.set(documents, item.kind, {
+      id: converted.record.id,
+      version: converted.version,
+    })
   }
   return {
     value: { conversation, entries, docs },
-    documents: HashMap.fromIterable(documents),
+    documents,
     tasks: HashMap.fromIterable(
       Arr.filter(state.tasks, (task) => task.conversationId === id).map((task) => [task.id, task]),
     ),
@@ -342,16 +329,16 @@ const endingTask = (task: Record.Task) => {
   if (generation && task.state.status === 'completing') return true
   if (task.state.status !== 'terminal') return false
   if (generation) return true
-  const status = Outcome.classifyTask(task)?.directStatus
+  const status = Outcome.classifyTaskOrUndefined(task)?.directStatus
   return status === 'failed' || status === 'faulted' || status === 'orphaned'
 }
 const structuralTouch = (frame: Record.Frame, id: Record.ConversationId) =>
-  frame.writes.some((write) => write.type === 'entry' && write.value.conversationId === id) ||
+  frame.writes.some((write) => write._tag === 'entry' && write.value.conversationId === id) ||
   frame.documents.some(
     (publication) =>
-      publication.record.scope.kind === 'conversation' &&
+      publication.record.scope._tag === 'conversation' &&
       publication.record.scope.conversationId === id &&
-      mountedByKind.has(publication.record.kind) &&
+      MutableHashMap.has(mountedByKind, publication.record.kind) &&
       publication.record.key === undefined &&
       (Arr.isReadonlyArrayNonEmpty(publication.ops) || publication.value === null),
   )
@@ -359,8 +346,8 @@ const touches = (frame: Record.Frame, id: Record.ConversationId) =>
   structuralTouch(frame, id) ||
   frame.writes.some(
     (write) =>
-      (write.type === 'submission' && write.value.conversationId === id) ||
-      (write.type === 'task' && write.value.conversationId === id && endingTask(write.value)),
+      (write._tag === 'submission' && write.value.conversationId === id) ||
+      (write._tag === 'task' && write.value.conversationId === id && endingTask(write.value)),
   )
 
 const advance = Effect.fnUntraced(function* (
@@ -370,9 +357,12 @@ const advance = Effect.fnUntraced(function* (
 ) {
   const mount = {
     ...previous,
-    documents: new Map(previous.documents),
-    tasks: new Map(previous.tasks),
+    documents: previous.documents,
+    tasks: previous.tasks,
   }
+  // Task delivery starts in the same persistent-map encounter order as before.
+  // New IDs append on first touch; replacements retain their existing position.
+  const taskOrder = [...HashMap.keys(previous.tasks)]
   const id = mount.value.conversation.id
   const docOps: Array<Op> = []
   let rebased = false
@@ -380,22 +370,22 @@ const advance = Effect.fnUntraced(function* (
   let entries = mount.value.entries
   for (const publication of frame.documents) {
     if (
-      publication.record.scope.kind !== 'conversation' ||
+      publication.record.scope._tag !== 'conversation' ||
       publication.record.scope.conversationId !== id ||
       publication.record.key !== undefined
     )
       continue
-    const item = mountedByKind.get(publication.record.kind)
+    const item = Option.getOrUndefined(MutableHashMap.get(mountedByKind, publication.record.kind))
     if (item === undefined) continue
-    const current = mount.documents.get(item.kind)
+    const current = Option.getOrUndefined(HashMap.get(mount.documents, item.kind))
     const path: Arr.NonEmptyReadonlyArray<string | number> = ['docs', item.kind]
     if (publication.value === null) {
       if (current?.id !== publication.record.id) continue
-      mount.documents.delete(item.kind)
+      mount.documents = HashMap.remove(mount.documents, item.kind)
       docOps.push(['delete', path])
     } else {
       if (publication.version === undefined)
-        return yield* rejected('Publication has no document version', Corrupt)
+        return yield* rejected('Publication has no document version', CorruptError)
       const converted = yield* item.load(
         Document.makeSnapshot({
           record: publication.record,
@@ -417,16 +407,19 @@ const advance = Effect.fnUntraced(function* (
           else docOps.push(['delete', Arr.appendAll(path, op[1])])
         }
       } else docOps.push(['set', path, converted.value])
-      mount.documents.set(item.kind, { id: publication.record.id, version: converted.version })
+      mount.documents = HashMap.set(mount.documents, item.kind, {
+        id: publication.record.id,
+        version: converted.version,
+      })
     }
   }
   const writes = Arr.sortWith(
     Arr.filter(
       frame.writes,
-      (write): write is Extract<Record.Write, { type: 'entry' }> =>
-        write.type === 'entry' && write.value.conversationId === id,
+      (write): write is Extract<Record.Write, { _tag: 'entry' }> =>
+        write._tag === 'entry' && write.value.conversationId === id,
     ),
-    (item: Extract<Record.Write, { type: 'entry' }>) => item.value.id,
+    (item: Extract<Record.Write, { _tag: 'entry' }>) => item.value.id,
     Order.Number,
   )
   for (const { value: entry } of writes) {
@@ -444,12 +437,14 @@ const advance = Effect.fnUntraced(function* (
     }
   }
   for (const write of frame.writes)
-    if (write.type === 'task' && write.value.conversationId === id)
-      mount.tasks.set(write.value.id, write.value)
+    if (write._tag === 'task' && write.value.conversationId === id) {
+      if (!HashMap.has(mount.tasks, write.value.id)) taskOrder.push(write.value.id)
+      mount.tasks = HashMap.set(mount.tasks, write.value.id, write.value)
+    }
   const before = mount.value
   const ops = [...docOps, ...entryOps]
   mount.value = yield* Effect.fromResult(apply(before, ops)).pipe(
-    Effect.mapError((error) => rejected(error.message, Corrupt, error.cause)),
+    Effect.mapError((error) => rejected(error.message, CorruptError, error.cause)),
   )
   const change: Change = {
     seq: frame.seq,
@@ -463,33 +458,50 @@ const advance = Effect.fnUntraced(function* (
   return {
     state: {
       ...mount,
-      documents: HashMap.fromIterable(mount.documents),
-      tasks: HashMap.fromIterable(mount.tasks),
+      documents: mount.documents,
+      tasks: mount.tasks,
       seq: frame.seq,
     },
     change,
-    tasks: [...mount.tasks.values()],
+    tasks: Arr.getSomes(Arr.map(taskOrder, (id) => HashMap.get(mount.tasks, id))),
   }
 })
+
+interface RefreshState {
+  readonly authoritative: Record.State
+  readonly after: Record.Seq | 0
+}
+class RefreshSnapshot extends Context.Service<RefreshSnapshot, RefreshState>()(
+  'effect-harness/durable/View/RefreshSnapshot',
+) {}
 
 /**
  * Scoped committed view service acquisition.
  *
  * @category constructors
  */
-export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Effect.gen(
+export const make: Effect.Effect<View.Service, never, Store.Store | Scope.Scope> = Effect.gen(
   function* () {
     const store = yield* Store.Store
-    const semaphore = yield* Semaphore.make(1)
-    const authoritative = yield* Ref.make(Record.emptyState())
-    const after = yield* Ref.make<Record.Seq | 0>(0)
+    const refreshState = yield* ViewTransition.make<RefreshState>({
+      authoritative: Record.emptyState(),
+      after: 0,
+    })
+    const currentSnapshot = Effect.serviceOption(RefreshSnapshot).pipe(
+      Effect.flatMap((snapshot) =>
+        Option.match(snapshot, {
+          onSome: Effect.succeed,
+          onNone: () => refreshState.get,
+        }),
+      ),
+    )
     const closed = yield* Ref.make<Observation.End | undefined>(undefined)
     const mounts = yield* RcMap.make({
       lookup: Effect.fnUntraced(function* (
         id: Record.ConversationId,
       ): Effect.fn.Return<Mount, StorageError, Scope.Scope> {
         // Lookup runs inside serialized acquisition/refresh and uses its exact snapshot.
-        const state = yield* hydrate(yield* Ref.get(authoritative), id)
+        const state = yield* hydrate((yield* currentSnapshot).authoritative, id)
         const events = yield* Effect.acquireRelease(PubSub.unbounded<Envelope>(), PubSub.shutdown)
         const terminal = yield* Deferred.make<Observation.End>()
         yield* Effect.addFinalizer(() =>
@@ -513,12 +525,11 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
         ).pipe(Effect.ignore)
       }
     })
-    const refreshUnlocked = Effect.gen(function* () {
+    const refreshWithinTransition = Effect.fnUntraced(function* (snapshot: RefreshState) {
       if ((yield* Ref.get(closed)) !== undefined)
-        return yield* rejected('View service is closed', Closed)
-      const journal = yield* store.journal(yield* Ref.get(after))
-      yield* Ref.set(authoritative, journal.state)
-      let previousSeq = yield* Ref.get(after)
+        return yield* rejected('View service is closed', ClosedError)
+      const journal = yield* store.journal(snapshot.after)
+      let previousSeq = snapshot.after
       const gapped = journal.frames.some((frame) => {
         const gap = frame.seq > previousSeq + 1
         previousSeq = frame.seq
@@ -528,7 +539,12 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
       for (const id of ids) {
         yield* Effect.scoped(
           Effect.gen(function* () {
-            const mount = yield* RcMap.get(mounts, id)
+            const mount = yield* RcMap.get(mounts, id).pipe(
+              Effect.provideService(RefreshSnapshot, {
+                authoritative: journal.state,
+                after: snapshot.after,
+              }),
+            )
             let current = yield* Ref.get(mount.state)
             const relevant = Arr.filter(
               journal.frames,
@@ -554,11 +570,11 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
                   tasks: next.tasks,
                 })
               } else {
-                const tasks = new Map(current.tasks)
+                let tasks = current.tasks
                 for (const write of frame.writes)
-                  if (write.type === 'task' && write.value.conversationId === id)
-                    tasks.set(write.value.id, write.value)
-                current = { ...current, seq: frame.seq, tasks: HashMap.fromIterable(tasks) }
+                  if (write._tag === 'task' && write.value.conversationId === id)
+                    tasks = HashMap.set(tasks, write.value.id, write.value)
+                current = { ...current, seq: frame.seq, tasks }
               }
             }
             if (rebasing) {
@@ -595,149 +611,171 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
           }),
         )
       }
-      yield* Ref.set(after, yield* journalCursor(journal.state.nextSeq))
+      return { authoritative: journal.state, after: yield* journalCursor(journal.state.nextSeq) }
     })
     yield* Effect.addFinalizer(() => close('cancelled'))
     yield* Effect.forkScoped(
       Effect.forever(
-        semaphore.withPermit(refreshUnlocked).pipe(Effect.andThen(Effect.sleep('20 millis'))),
+        refreshState
+          .modify((snapshot) =>
+            refreshWithinTransition(snapshot).pipe(
+              Effect.map((next) => [undefined, next] as const),
+            ),
+          )
+          .pipe(Effect.andThen(Effect.sleep('20 millis'))),
       ).pipe(
-        Effect.catch((error) =>
-          close(error.reason._tag === 'Closed' ? 'session_closed' : 'listener_error'),
+        Effect.catchReason(
+          'StorageError',
+          'ClosedError',
+          () => close('session_closed'),
+          () => close('listener_error'),
         ),
       ),
     )
-    const observe: Service['observe'] = Effect.fnUntraced(function* (id, projection) {
+    const observe: View.Service['observe'] = Effect.fnUntraced(function* (id, projection) {
       const scope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
         Scope.close(owned, exit),
       )
-      return yield* semaphore
-        .withPermit(
-          Effect.gen(function* () {
-            yield* refreshUnlocked
-            const mount = yield* RcMap.get(mounts, id)
-            const baseline = yield* Ref.get(mount.state)
-            const terminal = yield* Deferred.make<Observation.End>()
-            const queue = yield* Queue.make<
-              {
-                readonly value: Effect.Success<ReturnType<typeof projection.initial>>
-                /**
-                 * Rebuilds the projection after incremental history is unavailable.
-                 */
-                readonly reset: boolean
-              },
-              Cause.Done
-            >({ capacity: 100 })
-            const delivery = yield* Semaphore.make(1)
-            const value = yield* Ref.make(
-              yield* projection.initial(
-                baseline.value,
-                Arr.sortWith([...HashMap.values(baseline.tasks)], (item) => item.id, Order.Number),
-              ),
-            )
-            const ended = yield* Ref.make(false)
-            const started = yield* Ref.make(false)
-            const finish = Effect.fnUntraced(function* (reason: Observation.End) {
-              if (yield* Ref.getAndSet(ended, true)) return
-              // Ending discards history immediately; a stopped consumer cannot drain stale values.
-              yield* Queue.clear(queue)
-              yield* Queue.end(queue)
-              yield* Deferred.succeed(terminal, reason)
-            }, Effect.uninterruptible)
-            const stop = (reason: Observation.End) =>
-              finish(reason).pipe(Effect.andThen(Scope.close(scope, Exit.void)))
-            yield* Effect.addFinalizer(() => finish('cancelled'))
-            const project = Effect.fnUntraced(function* (event: Envelope) {
-              if (yield* Ref.get(ended)) return
-              if (event.type === 'resync') {
-                const pending = yield* Queue.clear(queue)
-                if (pending.some((item) => item.reset)) {
-                  const next = yield* projection.reset(
+      return yield* refreshState
+        .modify(
+          Effect.fnUntraced(function* (snapshot) {
+            const next = yield* refreshWithinTransition(snapshot)
+            const result = yield* Effect.gen(function* () {
+              const mount = yield* RcMap.get(mounts, id)
+              const baseline = yield* Ref.get(mount.state)
+              const terminal = yield* Deferred.make<Observation.End>()
+              const queue = yield* Queue.make<
+                {
+                  readonly value: Effect.Success<ReturnType<typeof projection.initial>>
+                  /**
+                   * Rebuilds the projection after incremental history is unavailable.
+                   */
+                  readonly reset: boolean
+                },
+                Cause.Done
+              >({ capacity: 100 })
+              const delivery = yield* Semaphore.make(1)
+              const value = yield* Ref.make(
+                yield* projection.initial(
+                  baseline.value,
+                  Arr.sortWith(
+                    [...HashMap.values(baseline.tasks)],
+                    (item) => item.id,
+                    Order.Number,
+                  ),
+                ),
+              )
+              const ended = yield* Ref.make(false)
+              const started = yield* Ref.make(false)
+              const finish = Effect.fnUntraced(function* (reason: Observation.End) {
+                if (yield* Ref.getAndSet(ended, true)) return
+                // Ending discards history immediately; a stopped consumer cannot drain stale values.
+                yield* Queue.clear(queue)
+                yield* Queue.end(queue)
+                yield* Deferred.succeed(terminal, reason)
+              }, Effect.uninterruptible)
+              const stop = (reason: Observation.End) =>
+                finish(reason).pipe(Effect.andThen(Scope.close(scope, Exit.void)))
+              yield* Effect.addFinalizer(() => finish('cancelled'))
+              const project = Effect.fnUntraced(function* (event: Envelope) {
+                if (yield* Ref.get(ended)) return
+                if (event.type === 'resync') {
+                  const pending = yield* Queue.clear(queue)
+                  if (pending.some((item) => item.reset)) {
+                    const next = yield* projection.reset(
+                      event.change.value,
+                      event.change.seq,
+                      event.tasks,
+                    )
+                    if (!(yield* Ref.get(ended)))
+                      yield* Queue.offer(queue, { value: next, reset: true })
+                  } else if (!(yield* Ref.get(ended))) yield* Queue.offerAll(queue, pending)
+                  return
+                }
+                const next = yield* projection.project(event.change)
+                if (next === undefined || (yield* Ref.get(ended))) return
+                if ((yield* Queue.size(queue)) >= 100) {
+                  yield* Queue.clear(queue)
+                  const reset = yield* projection.reset(
                     event.change.value,
                     event.change.seq,
                     event.tasks,
                   )
                   if (!(yield* Ref.get(ended)))
-                    yield* Queue.offer(queue, { value: next, reset: true })
-                } else if (!(yield* Ref.get(ended))) yield* Queue.offerAll(queue, pending)
-                return
-              }
-              const next = yield* projection.project(event.change)
-              if (next === undefined || (yield* Ref.get(ended))) return
-              if ((yield* Queue.size(queue)) >= 100) {
-                yield* Queue.clear(queue)
-                const reset = yield* projection.reset(
-                  event.change.value,
-                  event.change.seq,
-                  event.tasks,
-                )
-                if (!(yield* Ref.get(ended)))
-                  yield* Queue.offer(queue, { value: reset, reset: true })
-              } else yield* Queue.offer(queue, { value: next, reset: false })
-            }, Semaphore.withPermit(delivery))
-            // Immediate startup installs the PubSub subscription before releasing acquisition serialization.
-            yield* Stream.runForEach(Stream.fromPubSub(mount.events), project).pipe(
-              Effect.catch(() => stop('listener_error')),
-              Effect.onExit((exit) =>
-                Exit.isFailure(exit)
-                  ? stop(Cause.hasInterruptsOnly(exit.cause) ? 'cancelled' : 'listener_error')
-                  : Effect.void,
-              ),
-              Effect.forkIn(scope, { startImmediately: true }),
-            )
-            // This independent monitor can end a subscriber even while its projection is blocked.
-            yield* Deferred.await(mount.closed).pipe(
-              Effect.flatMap(stop),
-              Effect.forkIn(scope, { startImmediately: true }),
-            )
-            const changes = Stream.unwrap(
-              Effect.gen(function* () {
-                if ((yield* Ref.getAndSet(started, true)) || (yield* Ref.get(ended)))
-                  return yield* rejected('Watch is stopped or already consumed')
-                // Native Stream.fromQueue drains chunks with takeAll, hiding buffered history
-                // from Queue.size. Pull one item so the 100 pending-value policy remains exact.
-                return Stream.fromChannel(
-                  Channel.fromQueue(queue).pipe(Channel.map((next) => [next] as const)),
-                ).pipe(
-                  Stream.takeWhile(() => !Ref.getUnsafe(ended)),
-                  Stream.tap((next) => Ref.set(value, next.value)),
-                  Stream.map((next) => next.value),
-                )
-              }),
-            )
-            return makeProjectionWatch({
-              get value() {
-                return Ref.getUnsafe(value)
-              },
-              changes,
-              closed: Deferred.await(terminal),
-              stop: stop('stopped'),
-              listen: <E, R>(
-                listener: (
-                  value: Effect.Success<ReturnType<typeof projection.initial>>,
-                ) => Effect.Effect<void, E, R>,
-              ) =>
-                Stream.runForEach(changes, listener).pipe(
-                  Effect.catchCause((cause) =>
-                    stop(Cause.hasInterruptsOnly(cause) ? 'cancelled' : 'listener_error').pipe(
-                      Effect.andThen(Effect.failCause(cause)),
-                    ),
-                  ),
-                  Effect.ensuring(stop('cancelled')),
+                    yield* Queue.offer(queue, { value: reset, reset: true })
+                } else yield* Queue.offer(queue, { value: next, reset: false })
+              }, Semaphore.withPermit(delivery))
+              // Immediate startup installs the PubSub subscription before releasing acquisition serialization.
+              yield* Stream.runForEach(Stream.fromPubSub(mount.events), project).pipe(
+                Effect.catch(() => stop('listener_error')),
+                Effect.onExit((exit) =>
+                  Exit.isFailure(exit)
+                    ? stop(Cause.hasInterruptsOnly(exit.cause) ? 'cancelled' : 'listener_error')
+                    : Effect.void,
                 ),
-            })
-          }).pipe(Scope.provide(scope)),
+                Effect.forkIn(scope, { startImmediately: true }),
+              )
+              // This independent monitor can end a subscriber even while its projection is blocked.
+              yield* Deferred.await(mount.closed).pipe(
+                Effect.flatMap(stop),
+                Effect.forkIn(scope, { startImmediately: true }),
+              )
+              const changes = Stream.unwrap(
+                Effect.gen(function* () {
+                  if ((yield* Ref.getAndSet(started, true)) || (yield* Ref.get(ended)))
+                    return yield* rejected('Watch is stopped or already consumed')
+                  // Native Stream.fromQueue drains chunks with takeAll, hiding buffered history
+                  // from Queue.size. Pull one item so the 100 pending-value policy remains exact.
+                  return Stream.fromChannel(
+                    Channel.fromQueue(queue).pipe(Channel.map((next) => [next] as const)),
+                  ).pipe(
+                    Stream.takeWhile(() => !Ref.getUnsafe(ended)),
+                    Stream.tap((next) => Ref.set(value, next.value)),
+                    Stream.map((next) => next.value),
+                  )
+                }),
+              )
+              return makeProjectionWatch({
+                get value() {
+                  return Ref.getUnsafe(value)
+                },
+                changes,
+                closed: Deferred.await(terminal),
+                stop: stop('stopped'),
+                listen: <E, R>(
+                  listener: (
+                    value: Effect.Success<ReturnType<typeof projection.initial>>,
+                  ) => Effect.Effect<void, E, R>,
+                ) =>
+                  Stream.runForEach(changes, listener).pipe(
+                    Effect.catchCause((cause) =>
+                      stop(Cause.hasInterruptsOnly(cause) ? 'cancelled' : 'listener_error').pipe(
+                        Effect.andThen(Effect.failCause(cause)),
+                      ),
+                    ),
+                    Effect.ensuring(stop('cancelled')),
+                  ),
+              })
+            }).pipe(Scope.provide(scope), Effect.provideService(RefreshSnapshot, next))
+            return [result, next] as const
+          }),
         )
         .pipe(
           Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
         )
     })
-    const watch: Service['watch'] = Effect.fnUntraced(function* (id) {
+    const watch: View.Service['watch'] = Effect.fnUntraced(function* (id) {
       const subscription = yield* observe<Change>(
         id,
         makeProjection<Change>({
           initial: Effect.fnUntraced(function* (value) {
-            return { seq: yield* Ref.get(after), before: value, value, ops: [], reset: false }
+            return {
+              seq: (yield* currentSnapshot).after,
+              before: value,
+              value,
+              ops: [],
+              reset: false,
+            }
           }),
           project: (change) =>
             Effect.succeed(Arr.isReadonlyArrayEmpty(change.ops) ? undefined : change),
@@ -764,7 +802,7 @@ export const make: Effect.Effect<Service, never, Store.Store | Scope.Scope> = Ef
         yield* subscription
           .listen(() => Ref.update(cursor, (value) => value + 1))
           .pipe(Effect.ignore, Effect.forkScoped)
-        return handle.make(StateProto, {
+        return makeState({
           get value() {
             return subscription.value
           },
@@ -795,8 +833,8 @@ export const layer: Layer.Layer<View, never, Store.Store> = Layer.effect(View, m
  * @category constructors
  */
 export const makeProjectionWatch = <A>(
-  input: handle.Input<ProjectionWatch<A>, typeof ProjectionWatchTypeId>,
-): ProjectionWatch<A> => {
+  input: handle.Input<View.ProjectionWatch<A>, typeof ProjectionWatchTypeId>,
+): View.ProjectionWatch<A> => {
   const value = handle.make(
     ProjectionWatchProto,
     handle.marked(input, ProjectionWatchTypeId, { _A: identity }),
@@ -813,18 +851,19 @@ export const makeProjectionWatch = <A>(
  *
  * @category guards
  */
-export const isProjectionWatch = (input: unknown): input is ProjectionWatch<unknown> =>
-  Predicate.hasProperty(input, ProjectionWatchTypeId)
+export const isProjectionWatch = (u: unknown): u is View.ProjectionWatch<unknown> =>
+  Predicate.hasProperty(u, ProjectionWatchTypeId)
 
 /**
  * Creates a typed conversation projection.
  *
  * @category constructors
  */
+// effect-nit-allow P1-pipeable-data-types: this shallow carrier contains application-owned values and descriptors; inheriting inspection or JSON hooks can override payload keys and execute those accessors during serialization. Its nonenumerable marker provides identity without exposing or transforming the payload.
 export const makeProjection = <A>(
-  input: Omit<Projection<A>, typeof ProjectionTypeId>,
-): Projection<A> => {
-  const value = Object.assign({}, input, { [ProjectionTypeId]: { _A: identity } })
+  input: Omit<View.Projection<A>, typeof ProjectionTypeId>,
+): View.Projection<A> => {
+  const value = { ...input, [ProjectionTypeId]: { _A: identity } }
   Object.defineProperties(value, Object.getOwnPropertyDescriptors(input))
   Object.defineProperty(value, ProjectionTypeId, { enumerable: false })
   return value
@@ -838,15 +877,17 @@ export const makeProjection = <A>(
  *
  * @category guards
  */
-export const isProjection = (input: unknown): input is Projection<unknown> =>
-  Predicate.hasProperty(input, ProjectionTypeId)
+export const isProjection = (u: unknown): u is View.Projection<unknown> =>
+  Predicate.hasProperty(u, ProjectionTypeId)
 
 /**
  * Creates a watch handle with live getters and shared inspection.
  *
  * @category constructors
  */
-export const makeWatch = (input: handle.Input<Watch, typeof ProjectionWatchTypeId>): Watch => {
+export const makeWatch = (
+  input: handle.Input<View.Watch, typeof ProjectionWatchTypeId>,
+): View.Watch => {
   const value = handle.make(
     ProjectionWatchProto,
     handle.marked(input, ProjectionWatchTypeId, { _A: identity }),
@@ -867,33 +908,8 @@ export const apply: {
 /**
  * Type-level contracts for `View`.
  *
- * @category utility types
  */
 export declare namespace View {
-  /**
-   * Conversation, visible entries and built-in documents from one committed snapshot.
-   *
-   * @category models
-   */
-  export type Value = typeof Value.Type
-  /**
-   * Address of an entry or document field within a conversation view.
-   *
-   * @category models
-   */
-  export type Path = typeof Path.Type
-  /**
-   * Structural mutation applied to a committed conversation view.
-   *
-   * @category models
-   */
-  export type Op = typeof Op.Type
-  /**
-   * Before/after view values and structural operations for a committed update.
-   *
-   * @category models
-   */
-  export type Change = typeof Change.Type
   /**
    * Scoped initial projection and single-consumer stream of committed updates.
    *
@@ -915,7 +931,7 @@ export declare namespace View {
     readonly value: A
     readonly changes: Stream.Stream<A, StorageError>
     readonly closed: Effect.Effect<Observation.End>
-    /** effect-review-allow P3-scope-in-r-not-dispose-method: semantic subscription completion stops future deliveries and resolves closed as stopped; resource release remains owned by Scope. */
+    /** effect-nit-allow P3-scope-in-r-not-dispose-method: semantic subscription completion stops future deliveries and resolves closed as stopped; resource release remains owned by Scope. */
     readonly stop: Effect.Effect<void>
     readonly listen: <E, R>(
       listener: (value: A) => Effect.Effect<void, E, R>,
@@ -968,6 +984,7 @@ export declare namespace View {
    * @category models
    */
   export interface State extends Pipeable.Pipeable, Inspectable.Inspectable {
+    readonly [StateTypeId]: typeof StateTypeId
     readonly value: Value
     readonly cursor: number
     readonly closed: Effect.Effect<Observation.End>
@@ -1005,4 +1022,56 @@ export declare namespace View {
 export const applyUnsafe: {
   (ops: ReadonlyArray<Op>): (self: Value) => Value
   (self: Value, ops: ReadonlyArray<Op>): Value
-} = dual(2, applyUnsafeImpl)
+} = dual(2, applyImplUnsafe)
+
+/** Decoded value of the ChangeJson schema.
+ * @category models
+ */
+export type ChangeJson = typeof ChangeJson.Type
+
+/** Checks the decoded ViewOperationError contract without decoding or coercing input.
+ * @category guards
+ */
+export const isViewOperationError: (u: unknown) => u is ViewOperationError = Schema.is(
+  Schema.toType(ViewOperationError),
+)
+
+/** Checks the decoded Documents contract without decoding or coercing input.
+ * @category guards
+ */
+export const isDocuments: (u: unknown) => u is Documents = Schema.is(Schema.toType(Documents))
+
+/** Checks the decoded ChangeJson contract without decoding or coercing input.
+ * @category guards
+ */
+export const isChangeJson: (u: unknown) => u is ChangeJson = Schema.is(Schema.toType(ChangeJson))
+
+/** Creates a nominal live view state without sampling its getters.
+ * @category constructors
+ */
+export const makeState = (input: handle.Input<View.State, typeof StateTypeId>): View.State =>
+  handle.make(StateProto, handle.marked(input, StateTypeId, StateTypeId))
+
+/** Checks the nominal view-state identity without reading the live value or cursor.
+ * @category guards
+ */
+export const isState = (u: unknown): u is View.State => Predicate.hasProperty(u, StateTypeId)
+/** Checks the decoded Value contract without decoding or coercion.
+ * @category guards
+ */
+export const isValue: (u: unknown) => u is Value = Schema.is(Schema.toType(Value))
+
+/** Checks the decoded Path contract without decoding or coercion.
+ * @category guards
+ */
+export const isPath: (u: unknown) => u is Path = Schema.is(Schema.toType(Path))
+
+/** Checks the decoded Op contract without decoding or coercion.
+ * @category guards
+ */
+export const isOp: (u: unknown) => u is Op = Schema.is(Schema.toType(Op))
+
+/** Checks the decoded structural-change contract without encoding its opaque values.
+ * @category guards
+ */
+export const isChange: (u: unknown) => u is Change = Schema.is(Schema.toType(Change))

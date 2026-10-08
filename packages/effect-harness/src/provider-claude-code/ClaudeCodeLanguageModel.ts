@@ -1,3 +1,4 @@
+import * as NativeLanguageModel from '../internal/NativeLanguageModel.ts'
 /**
  * Claude Code language models with scoped transport and intent-session ownership.
  */
@@ -18,7 +19,6 @@ import { unsupported } from './ClaudeCodeError.ts'
 /**
  * Type-level contracts for `ClaudeCodeLanguageModel`.
  *
- * @category utility types
  */
 export declare namespace ClaudeCodeLanguageModel {
   /**
@@ -33,12 +33,6 @@ export declare namespace ClaudeCodeLanguageModel {
     readonly historyMode?: Prompt.HistoryMode | undefined
   }
 }
-/**
- * Selected CLI model, cwd, effort and canonical-history import policy.
- *
- * @category models
- */
-export type Options = ClaudeCodeLanguageModel.Options
 
 /**
  * Creates a native LanguageModel backed by the installed CLI and intent server.
@@ -57,7 +51,7 @@ export type Options = ClaudeCodeLanguageModel.Options
  * @category constructors
  */
 export const make = Effect.fnUntraced(function* (
-  options: Options,
+  options: ClaudeCodeLanguageModel.Options,
 ): Effect.fn.Return<
   typeof LanguageModel.LanguageModel.Service,
   AiError.AiError,
@@ -94,7 +88,8 @@ export const make = Effect.fnUntraced(function* (
         )
       }),
     )
-  return yield* LanguageModel.make({
+  const native = yield* NativeLanguageModel.factory
+  return yield* native.make({
     generateText: (request) => Turn.collect(stream(request)),
     streamText: stream,
   })
@@ -111,7 +106,7 @@ export const make = Effect.fnUntraced(function* (
  * @category layers
  */
 export const layer = (
-  options: Options,
+  options: ClaudeCodeLanguageModel.Options,
 ): Layer.Layer<
   LanguageModel.LanguageModel | Cli.Cli,
   AiError.AiError,
