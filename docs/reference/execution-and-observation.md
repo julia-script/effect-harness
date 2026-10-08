@@ -8,7 +8,7 @@ This reference covers built-in Workflow identities, settled receipts, ownership,
 
 Native execution owns execution IDs, Activity replay, suspension, timers and results. Domain storage owns conversations, entries, documents, submission receipts and task projections. Native `poll` and a committed View are observations of different state and can become visible at different points.
 
-Domain variants use `_tag` in both decoded values and encoded records. A nominal `is` guard checks library identity; stored data needs its schema decoder before it is trusted.
+Domain variants use `_tag` in both decoded values and encoded records. Schema guards check decoded contracts without decoding or coercing input. Handle guards such as `Record.isEntryToken` check library identity; stored data needs its schema decoder before it is trusted.
 
 ## Submissions
 
@@ -21,7 +21,7 @@ Submission.execute payload fields are:
 | `requestId`      | Stable Identity.RequestId selected before admission |
 | `submission`     | Decoded input or passive-write variant              |
 
-Input fields are `_tag: 'input'`, native Prompt.UserMessage and optional `whenBusy`. Its policies are `steer`, `followUp` and `reject`; omission selects follow-up behavior. Rejection while busy fails with ExecutionError carrying ConversationBusy. Passive writes use `_tag: 'write'` and EntryDraft. They place domain entries without directly requesting a model turn.
+Input fields are `_tag: 'input'`, native Prompt.UserMessage and optional `whenBusy`. Its policies are `steer`, `followUp` and `reject`; omission selects follow-up behavior. Rejection while busy fails with ExecutionError carrying ConversationBusyError. Passive writes use `_tag: 'write'` and EntryDraft. They place domain entries without directly requesting a model turn.
 
 Native execution identity combines session, conversation, request ID and submission kind. Domain admission rejects reusing the same conversation/request identity for a different kind. Same-kind replay returns the original receipt and ignores changed content. A new request needs a new ID.
 

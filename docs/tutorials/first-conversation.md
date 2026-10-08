@@ -218,7 +218,6 @@ const program = Effect.gen(function* () {
     requestId: Identity.RequestId.make('hello-v1'),
     submission: {
       _tag: 'input',
-      type: 'input',
       message: Prompt.userMessage({ content: [Prompt.textPart({ text: 'uppercase hello' })] }),
     },
   }

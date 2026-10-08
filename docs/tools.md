@@ -44,7 +44,7 @@ Provide host service Layers while binding handlers. `ToolRegistration.bind` capt
 
 Add `Invocation.ToolCall` as a dependency to the native Tool declaration and yield that service inside its handler. Its `output`, `details` and `diagnostic` operations report distinct channels of progress. The [tutorial Toolkit](tutorials/first-conversation.md#2-bind-an-ordinary-ai-toolkit) shows the minimal binding; the API comments in `effect-harness/Invocation` describe the reporting operations.
 
-For richer results, provide `Tool.Metadata.project` to map the native result to model-facing content and committed metadata. Keep model content in `content`; private details and control requests remain separate. Provider media translation is described in [the provider guide](providers.md#tool-media-and-native-validation).
+For richer results, supply `project` in the per-name metadata passed to `ToolRegistration.bind`, or annotate the native Tool with `ToolRegistration.Metadata`. The projector maps the native result to model-facing content and committed metadata. Keep model content in `content`; private details and control requests remain separate. Provider media translation is described in [the provider guide](providers.md#tool-media-and-native-validation).
 
 ## Bind the portable coding tools
 

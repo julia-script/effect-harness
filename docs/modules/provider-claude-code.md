@@ -46,12 +46,12 @@ Read [history and media constraints](../reference/packages.md#installed-claude-c
 
 ## Find the right API
 
-| Module                                     | Purpose                                              |
-| ------------------------------------------ | ---------------------------------------------------- |
-| `Cli`                                      | Installed process boundary and explicit trust policy |
-| `ClaudeCodeLanguageModel`, `LanguageModel` | Native model construction                            |
-| `Catalog`                                  | Harness model declarations and configuration         |
-| `IntentServer`                             | Scoped tool intent transport                         |
-| `Prompt`, `RequestOptions`                 | History policy and per-request options               |
+| Module                     | Purpose                                              |
+| -------------------------- | ---------------------------------------------------- |
+| `Cli`                      | Installed process boundary and explicit trust policy |
+| `ClaudeCodeLanguageModel`  | Native model construction                            |
+| `Catalog`                  | Harness model declarations and configuration         |
+| `IntentServer`             | Scoped tool intent transport                         |
+| `Prompt`, `RequestOptions` | History policy and per-request options               |
 
 [Use an installed Claude Code CLI](../how-to/account-sign-in.md#use-an-installed-claude-code-cli) describes the authorization path. [Connect a provider](../providers.md) explains how catalogues fit into the harness.
