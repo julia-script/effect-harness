@@ -49,7 +49,7 @@ export const Infrastructure = Layer.mergeAll(StoreLive, EngineLive)
 
 Provide `StoreLive` when constructing `Session.layer`. Provide `EngineLive` to the executor registration graph in place of `WorkflowEngine.layerMemory`. Supply the Node platform services at the outer application boundary. Build those resources within the application's Scope.
 
-Keep `Conversation.layerCreation` in Session construction. It creates the built-in documents and retains the recovery initializer. Register the same Workflow declarations and handlers before resuming their saved executions.
+Keep `Conversation.layer(options)` in Session construction using `Layer.provideMerge`. It supplies shared host configuration, creates the built-in documents and retains the recovery initializer. Register the same Workflow declarations and handlers before resuming their saved executions.
 
 For independent Sessions in one backend, assign each Store a distinct snapshot key and register the already scoped Sessions in `SessionDirectory`. Keep session IDs and key mapping stable across restarts. Equal keys address equal domain state; a different directory registration does not partition storage.
 

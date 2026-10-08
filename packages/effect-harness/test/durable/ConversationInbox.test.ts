@@ -22,22 +22,51 @@ import * as Memory from 'effect-harness/durable/storage/Memory'
 
 const services = Session.layer.pipe(
   Layer.provideMerge(Memory.layer),
-  Layer.provide(
-    Conversation.layerCreation.pipe(
-      Layer.provide(Conversation.layerConfiguration()),
-      Layer.provide(BunCrypto.layer),
-    ),
-  ),
+  Layer.provideMerge(Conversation.layer().pipe(Layer.provide(BunCrypto.layer))),
 )
 const user = (text: string) => Prompt.userMessage({ content: [Prompt.textPart({ text })] })
 const encode = Schema.encodeEffect(Schema.toCodecJson(Prompt.UserMessage))
 
 describe('ConversationInbox', () => {
+  it.effect('shares host policy with creation hooks and retains live configuration', () =>
+    Effect.gen(function* () {
+      const configured = Conversation.layer({
+        settings: { retry: { enabled: false }, compaction: { enabled: false } },
+        created: Effect.fnUntraced(function* (
+          tx: Session.Transaction,
+          conversation: Record.Conversation,
+        ) {
+          const agent = yield* tx.doc(Conversation.AgentDoc, { owner: conversation.id })
+          agent.instructions = 'created atomically'
+        }),
+      })
+      const context = yield* Layer.build(
+        Session.layer.pipe(
+          Layer.provideMerge(Memory.layer),
+          Layer.provideMerge(configured),
+          Layer.provide(BunCrypto.layer),
+        ),
+      )
+      const session = Context.get(context, Session.Session)
+      const config = Context.get(context, Conversation.Configuration)
+      assert.isFalse(config.settings.retry.enabled)
+      assert.isFalse(config.settings.compaction.enabled)
+      const root = yield* session.root()
+      const agent = yield* session.snapshot(Conversation.AgentDoc, { owner: root.id })
+      assert.strictEqual(Option.getOrThrow(agent).value.instructions, 'created atomically')
+      yield* config.updateSettings({ retry: { enabled: true, maxRetries: 1 } })
+      assert.isTrue(config.settings.retry.enabled)
+      assert.strictEqual(config.settings.retry.maxRetries, 1)
+    }),
+  )
+
   it.effect(
     'configuration results remain detached after subsequent transactions and resets exclude malformed cut history',
     () =>
       Effect.gen(function* () {
-        const context = yield* Layer.build(Conversation.layer.pipe(Layer.provideMerge(services)))
+        const context = yield* Layer.build(
+          Conversation.layerFromSession.pipe(Layer.provideMerge(services)),
+        )
         const session = Context.get(context, Session.Session)
         const conversation = Context.get(context, Conversation.Conversation)
         const root = yield* session.root()

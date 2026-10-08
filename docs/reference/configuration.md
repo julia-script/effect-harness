@@ -4,7 +4,7 @@ This reference covers host conversation policy, persisted agent overrides, tool 
 
 ## Host policy
 
-`Conversation.layerConfiguration(options)` provides Configuration. Its options are:
+`Conversation.layer(options)` provides Configuration and the built-in conversation creation and recovery hooks. Supply it to `Session.layer` with `Layer.provideMerge` to retain Configuration for the durable executor and live policy updates. Its options are:
 
 | Option            | Default              | Contract                                                                |
 | ----------------- | -------------------- | ----------------------------------------------------------------------- |

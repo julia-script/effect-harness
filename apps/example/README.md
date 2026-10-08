@@ -71,7 +71,7 @@ The second process replays request `uppercase-v1` without calling the local mode
 
 A shared native SQLite client supplies both the ClusterWorkflowEngine and Effect's SQL KeyValueStore/EventJournal Layers. SnapshotStore receives the latter services for domain state; Effect owns the SQL tables and coordination. `runnerStorage: 'memory'` controls runner membership, while native messages and Activity results still persist in SQLite. Built-in Activities use domain receipts and ordinary native replay.
 
-Session construction retains `Conversation.layerCreation` for initialization and recovery. Platform Layers supply filesystem, path and crypto services. Scope closure pauses recoverable work, joins finalizers and releases the engine and database. It does not produce an Abort receipt.
+Session construction retains `Conversation.layer(options)` for shared configuration, initialization and recovery. Platform Layers supply filesystem, path and crypto services. Scope closure pauses recoverable work, joins finalizers and releases the engine and database. It does not produce an Abort receipt.
 
 ## Continue
 

@@ -136,6 +136,11 @@ export class Configuration extends Service<
 /**
  * Builds host policy and callbacks for conversation execution.
  *
+ * **When to use**
+ *
+ * Use when supplying Configuration independently, such as when sharing one live policy
+ * across Sessions. For ordinary Session construction, use {@link layer}.
+ *
  * **Details**
  *
  * Validates initial settings and supplies validated live updates. toolConcurrency defaults
@@ -183,6 +188,11 @@ export const layerConfiguration = (
 
 /**
  * Installs atomic built-in document creation and recovery initialization.
+ *
+ * **When to use**
+ *
+ * Use with an independently supplied Configuration. {@link layer} combines both Layers
+ * for ordinary Session construction.
  *
  * **Details**
  *
@@ -253,6 +263,39 @@ export const layerCreation: Layer.Layer<
     })
   }),
 )
+
+/**
+ * Provides host configuration and built-in conversation creation and recovery hooks.
+ *
+ * **When to use**
+ *
+ * Supply this Layer when constructing a Session for durable AI conversations.
+ * Use Layer.provideMerge to retain Configuration for the executor registration Layer
+ * and live policy updates.
+ *
+ * **Details**
+ *
+ * The creation hooks and executor share one validated Configuration instance. Captures
+ * Crypto for provider session UUIDs and an optional Registry for creation callbacks.
+ * Invalid settings fail with SchemaError during Layer construction.
+ *
+ * @example
+ * ```ts
+ * const Creation = Conversation.layer({
+ *   settings: {
+ *     retry: { enabled: false },
+ *     compaction: { enabled: false },
+ *   },
+ * })
+ * const Sessions = Session.layer.pipe(Layer.provideMerge(Creation))
+ * ```
+ *
+ * @category layers
+ */
+export const layer = (
+  options: Options = {},
+): Layer.Layer<Configuration | Session.CreationHook, Schema.SchemaError, Crypto.Crypto> =>
+  layerCreation.pipe(Layer.provideMerge(layerConfiguration(options)))
 
 /**
  * Managed prompt sections and tool declarations recorded in conversation history.
@@ -456,7 +499,9 @@ export class Conversation extends Service<
  *
  * @category layers
  */
-export const layer: Layer.Layer<Conversation, never, Session.Session> = Layer.effect(Conversation)(
+export const layerFromSession: Layer.Layer<Conversation, never, Session.Session> = Layer.effect(
+  Conversation,
+)(
   Effect.gen(function* () {
     const session = yield* Session.Session
     return Conversation.of({

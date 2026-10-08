@@ -367,7 +367,8 @@ export const layer: Layer.Layer<
                   if (Option.isNone(providerOption) || providerOption.value.value.sessionId === '')
                     return yield* new ExecutionError({
                       reason: new InvalidState({
-                        message: 'Provider identity requires Conversation.layerCreation',
+                        message:
+                          'Provider identity requires Conversation.layer(options) during Session construction',
                       }),
                     })
                   const provider = providerOption.value

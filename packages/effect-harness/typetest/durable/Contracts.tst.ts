@@ -39,6 +39,7 @@ import type * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
+import type * as Crypto from 'effect/Crypto'
 
 class Caller extends Context.Service<Caller, { readonly value: string }>()(
   'typetest/durable/Caller',
@@ -147,6 +148,16 @@ test('native ownership helpers retain supplied schema and caller requirements', 
 })
 
 test('all native storage and executor layers expose full inputs and acquisition errors', () => {
+  expect(Conversation.layer()).type.toBe<
+    Layer.Layer<
+      Conversation.Configuration | Session.CreationHook,
+      Schema.SchemaError,
+      Crypto.Crypto
+    >
+  >()
+  expect(Conversation.layerFromSession).type.toBe<
+    Layer.Layer<Conversation.Conversation, never, Session.Session>
+  >()
   expect(Memory.layer).type.toBe<Layer.Layer<Store.Store>>()
   expect(Session.layer).type.toBe<Layer.Layer<Session.Session, never, Store.Store>>()
   expect(View.layer).type.toBe<Layer.Layer<View.View, never, Store.Store>>()

@@ -73,7 +73,6 @@ const Catalogue = Layer.unwrap(
 const Tools = Uppercase.layerRegistry.pipe(Layer.provide(Uppercase.layerHandlers))
 const Runtime = Application.layerNoDeps.pipe(
   Layer.provide(Layer.mergeAll(Catalogue, Tools)),
-  Layer.provideMerge(Application.Configuration),
   Layer.provide(BunServices.layer),
 )
 

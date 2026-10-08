@@ -17,7 +17,7 @@ import * as Uppercase from './Uppercase.ts'
 
 export const sessionId = Identity.SessionId.make('example')
 
-export const Configuration = Conversation.layerConfiguration({
+export const Creation = Conversation.layer({
   settings: {
     retry: { enabled: false },
     compaction: { enabled: false },
@@ -38,11 +38,9 @@ const Cluster = SingleRunner.layer({
 
 const Engine = ClusterWorkflowEngine.layer.pipe(Layer.provideMerge(Cluster))
 
-const Creation = Conversation.layerCreation.pipe(Layer.provide(Configuration))
-
 const Persistence = Layer.mergeAll(KeyValueStore.layerSql(), SqlEventJournal.layer())
 const Storage = SnapshotStore.layer.pipe(Layer.provide(Persistence))
-const SessionLive = Session.layer.pipe(Layer.provideMerge(Storage), Layer.provide(Creation))
+const SessionLive = Session.layer.pipe(Layer.provideMerge(Storage), Layer.provideMerge(Creation))
 
 const Directory = SessionDirectory.layerSingle(sessionId).pipe(Layer.provideMerge(SessionLive))
 
@@ -50,7 +48,6 @@ const Directory = SessionDirectory.layerSingle(sessionId).pipe(Layer.provideMerg
 export const layerNoDeps = Layer.mergeAll(DurableExecutor.layer, Greeting.layer).pipe(
   Layer.provide(HarnessExecutor.layer),
   Layer.provideMerge(Directory),
-  Layer.provide(Configuration),
   Layer.provideMerge(Engine),
 )
 

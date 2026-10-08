@@ -55,7 +55,7 @@ Both calls print `1`. The second reads the saved receipt. This example uses memo
 
 ## Add durable conversations
 
-Compose a Session with `Conversation.layerCreation`, register it in `SessionDirectory`, and provide conversation Configuration, the generic harness Executor, Model.Catalog and WorkflowEngine to `durable/Executor.layer`. That Layer registers the built-in Workflows. Submit input with `workflow/Submission` and use native execution APIs to poll or resume it.
+Compose a Session with `Conversation.layer(options)` using `Layer.provideMerge` to retain its Configuration, register it in `SessionDirectory`, and provide the generic harness Executor, Model.Catalog and WorkflowEngine to `durable/Executor.layer`. That Layer registers the built-in Workflows. Submit input with `workflow/Submission` and use native execution APIs to poll or resume it.
 
 Persistence has two parts: the domain Store retains conversation facts, and the engine retains Workflow execution history. Supply persistent Layers for both to recover after a process restart.
 

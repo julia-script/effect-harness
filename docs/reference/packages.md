@@ -35,9 +35,10 @@ Install `effect-harness` for the generic harness, durable state, authorization a
 | `storage/JsonlStore.layer(options)`        | Store                                                    | FileSystem, Path                                                           | StorageError      |
 | `storage/SnapshotStore.layerWith(options)` | Store                                                    | KeyValueStore, EventJournal                                                | StorageError      |
 | `Session.layer`                            | Session                                                  | Store; optional captured CreationHook                                      | None              |
+| `Conversation.layer(options)`              | Configuration, CreationHook                              | Crypto; optional captured Registry                                         | SchemaError       |
+| `Conversation.layerFromSession`            | Conversation                                             | Session                                                                    | None              |
 | `Conversation.layerConfiguration(options)` | Configuration                                            | None                                                                       | SchemaError       |
 | `Conversation.layerCreation`               | CreationHook                                             | Configuration, Crypto; optional captured Registry                          | None              |
-| `Conversation.layer`                       | Conversation                                             | Session                                                                    | None              |
 | `SessionDirectory.layerSingle(id)`         | SessionDirectory                                         | Session                                                                    | None              |
 | `View.layer`                               | View                                                     | Store                                                                      | None              |
 | `Event.layer`                              | Event                                                    | View                                                                       | None              |

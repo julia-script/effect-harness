@@ -164,23 +164,21 @@ import * as Tools from './Tools.ts'
 
 export const sessionId = Identity.SessionId.make('first-conversation')
 
-const Configuration = Conversation.layerConfiguration({
+const Creation = Conversation.layer({
   settings: {
     retry: { enabled: false },
     compaction: { enabled: false },
   },
 })
-const Creation = Conversation.layerCreation.pipe(Layer.provide(Configuration))
 const SessionLive = Session.layer.pipe(
   Layer.provideMerge(Store.layerMemory),
-  Layer.provide(Creation),
+  Layer.provideMerge(Creation),
 )
 const Directory = SessionDirectory.layerSingle(sessionId).pipe(Layer.provideMerge(SessionLive))
 
 export const layer = DurableExecutor.layer.pipe(
   Layer.provide(HarnessExecutor.layer),
   Layer.provideMerge(Directory),
-  Layer.provide(Configuration),
   Layer.provideMerge(WorkflowEngine.layerMemory),
   Layer.provide(Layer.mergeAll(Model.layer, Tools.layer)),
   Layer.provide(NodeServices.layer),

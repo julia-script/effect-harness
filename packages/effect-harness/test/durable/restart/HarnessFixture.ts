@@ -330,7 +330,7 @@ const main = Effect.gen(function* () {
         ],
       },
     ])
-    const configuration = Conversation.layerConfiguration({
+    const creation = Conversation.layer({
       cwd: first ? '/before' : '/after',
       settings: {
         stream: { timeoutMs: first ? 1234 : 999 },
@@ -380,12 +380,7 @@ const main = Effect.gen(function* () {
     )
     const sessionLayer = Session.layer.pipe(
       Layer.provideMerge(storage),
-      Layer.provide(
-        Conversation.layerCreation.pipe(
-          Layer.provide(configuration),
-          Layer.provide(BunCrypto.layer),
-        ),
-      ),
+      Layer.provideMerge(creation.pipe(Layer.provide(BunCrypto.layer))),
     )
     const directory = Directory.layerSingle(Identity.SessionId.make('restart')).pipe(
       Layer.provideMerge(sessionLayer),
@@ -461,7 +456,6 @@ const main = Effect.gen(function* () {
     ).pipe(
       Layer.provideMerge(engine),
       Layer.provideMerge(Layer.succeedContext(directoryContext)),
-      Layer.provide(configuration),
       Layer.provideMerge(catalogue),
       Layer.provide(Harness.layer.pipe(Layer.provide(Layer.mergeAll(registry, catalogue)))),
       Layer.provideMerge(Cancellation.layer),
