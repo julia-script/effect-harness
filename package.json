@@ -21,9 +21,14 @@
     "check": "oxfmt --check . && oxlint --disable-nested-config . && bun run typecheck && bun run typetest",
     "check:write": "oxfmt --write . && oxlint --disable-nested-config --fix .",
     "prepare": "effect-tsgo patch --oxlint",
-    "test": "turbo run test --concurrency=1"
+    "test": "turbo run test --concurrency=1",
+    "changeset": "changeset",
+    "check:changesets": "changeset status --since=origin/main",
+    "version:packages": "changeset version && bun install --lockfile-only --ignore-scripts && bun run format",
+    "release": "bun run build && changeset publish"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.0",
     "@effect/platform-bun": "4.0.1",
     "@effect/platform-node": "4.0.1",
     "@effect/sql-sqlite-bun": "4.0.1",

@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Build libraries and example
+        run: bun run build
+      - name: Format, strict lint and type checks
+        run: bun run check
+      - name: Require changesets for package changes
+        if: >-
+          github.event_name == 'pull_request' &&
+          !(github.head_ref == 'changeset-release/main' &&
+            github.event.pull_request.head.repo.full_name == github.repository)
+        run: bun run check:changesets
+      - name: Unit, integration and process recovery tests
+        run: bun run test
+      - name: Verify npm package preparation
+        run: npm pack --dry-run --workspace packages/effect-harness

@@ -76,6 +76,8 @@ bun run test
 
 `check` verifies formatting, strict lint, source and test types, and public type assertions. The [repository example](apps/example/README.md) exercises an offline model, a Toolkit, a custom Workflow and a real SQLite-backed engine. Consumer tutorials use Node.js; runtime services are supplied through Layers.
 
+For package changes, add a Changeset with `bun run changeset`. The [release guide](.changeset/README.md) explains version PRs and npm trusted publishing.
+
 ## Thanks
 
 Thanks to [Pi](https://github.com/earendil-works/pi) and the Earendil team for their work on durable agents, which helped shape this project.
