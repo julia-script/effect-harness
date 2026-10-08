@@ -58,7 +58,7 @@ export const Models = Catalog.layerApiKeyConfig({
 }).pipe(Layer.provide(FetchHttpClient.layer))
 ```
 
-Declare thinking, caching and request-option capabilities in the catalogue entry when enabling those features. The adapter validates requested options against that declaration; [configuration reference](reference/configuration.md#model-configuration) describes the boundary.
+Declare thinking, caching and request-option capabilities in the catalogue entry when enabling those features. The adapter validates requested options against that declaration; [configuration reference](reference/configuration.md#agent-configuration) describes the boundary.
 
 ## Select the model for a conversation
 

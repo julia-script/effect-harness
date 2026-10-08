@@ -4,6 +4,8 @@ A conversation submission has a persisted identity. A stable request ID deduplic
 
 `Conversation.reset` adds a new context head while preserving the historical entries.
 
+Schema guards check decoded contracts without decoding or coercing input. Handle guards such as `Record.isEntryToken` check library identity. Decode stored data through its schema before treating it as a trusted record.
+
 Tasks store definition name/version, input, checkpoint, ownership, replay information and outcome. Their states are pending, running, waiting, completing and terminal. Phase handlers run outside transactions; reservation and state transitions happen on the serialized mutation line.
 
 Opening restores interrupted running tasks to a recoverable boundary. `Harness.resume` starts saved work. Missing definitions and unsupported versions keep tasks inspectable until compatible definitions are installed.

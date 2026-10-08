@@ -12,4 +12,6 @@ Treat snapshots and resets as replacement state. Apply commit operations only af
 
 `Conversation.snapshot` reads current committed state without opening a subscription. Closing the harness or the consuming Scope ends the watch.
 
+A missing conversation fails with `StorageError` carrying `NotFoundError`. `Conversation.document` returns `Option.none` when the requested document is absent; check it before accessing the document value.
+
 The application can send schema-encoded observations over a socket or SSE connection. It owns transport, authentication and routing. Remote clients reconnect to the owning harness and acquire a new snapshot.
