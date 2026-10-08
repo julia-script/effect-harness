@@ -14,7 +14,6 @@ import type * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 
 import * as Catalog from 'effect-harness/provider-anthropic/Catalog'
-import * as OAuth from 'effect-harness/provider-anthropic/OAuth'
 
 const response = {
   id: 'response',
@@ -66,7 +65,7 @@ const bodyUnsafe = (request: HttpClientRequest.HttpClientRequest) => {
     }>
   }
 }
-const fixture = (flow: 'apiKey' | 'account', streaming = false) => {
+const fixture = (streaming = false) => {
   const requests: HttpClientRequest.HttpClientRequest[] = []
   const http = HttpClient.make((request) => {
     requests.push(request)
@@ -84,28 +83,16 @@ const fixture = (flow: 'apiKey' | 'account', streaming = false) => {
       ),
     )
   })
-  const auth = Layer.succeed(
-    OAuth.OAuth,
-    OAuth.OAuth.of({
-      begin: () => Effect.die('No live consent'),
-      complete: () => Effect.die('No live consent'),
-      refresh: () => Effect.die('No live refresh'),
-      signOut: () => Effect.void,
-      cancel: () => Effect.void,
-      accessToken: () => Effect.succeed(Redacted.make('account-token')),
-    }),
-  )
-  const dependencies = Layer.merge(Layer.succeed(HttpClient.HttpClient, http), auth)
+  const dependencies = Layer.succeed(HttpClient.HttpClient, http)
   const options = {
     model: 'fixture',
     apiUrl: 'https://fixture.invalid',
     config: { max_tokens: 1234 },
   }
-  const layer = (
-    flow === 'apiKey'
-      ? AnthropicLanguageModel.layerApiKey({ ...options, apiKey: Redacted.make('api-key') })
-      : AnthropicAccountLanguageModel.layer({ ...options, account: 'account' })
-  ).pipe(Layer.provide(dependencies))
+  const layer = AnthropicLanguageModel.layerApiKey({
+    ...options,
+    apiKey: Redacted.make('api-key'),
+  }).pipe(Layer.provide(dependencies))
   return { requests, layer }
 }
 const history = (result: Schema.Json) =>
@@ -171,10 +158,10 @@ const toolResultUnsafe = (request: HttpClientRequest.HttpClientRequest) => {
 
 describe('ToolResult', () => {
   describe('Anthropic canonical tool media', () => {
-    for (const flow of ['apiKey', 'account'] as const) {
-      it.effect(`${flow} preserves URL and data-URI image/PDF sources`, () =>
+    {
+      it.effect(`API-key preserves URL and data-URI image/PDF sources`, () =>
         Effect.gen(function* () {
-          const f = fixture(flow)
+          const f = fixture()
           return yield* Effect.gen(function* () {
             const result = yield* ToolResult.encode({
               content: [
@@ -224,9 +211,9 @@ describe('ToolResult', () => {
         }),
       )
       for (const mode of ['text', 'stream', 'object'] as const) {
-        it.effect(`${flow} ${mode} preserves mixed media/options inside native tool_result`, () =>
+        it.effect(`API-key ${mode} preserves mixed media/options inside native tool_result`, () =>
           Effect.gen(function* () {
-            const f = fixture(flow, mode === 'stream')
+            const f = fixture(mode === 'stream')
             return yield* Effect.gen(function* () {
               const prompt = history(yield* mixed())
               const model = yield* LanguageModel.LanguageModel
@@ -283,17 +270,14 @@ describe('ToolResult', () => {
               assert.notInclude(encoded, '987654321')
               assert.notInclude(encoded, '@effect-harness/ToolContent')
               assert.include(request.headers['anthropic-beta'] ?? '', 'pdfs-2024-09-25')
-              if (flow === 'account') {
-                assert.strictEqual(request.headers['authorization'], 'Bearer account-token')
-                assert.include(request.headers['anthropic-beta'] ?? '', 'oauth-2025-04-20')
-              } else assert.strictEqual(request.headers['x-api-key'], 'api-key')
+              assert.strictEqual(request.headers['x-api-key'], 'api-key')
             }).pipe(Effect.provide(f.layer))
           }),
         )
       }
-      it.effect(`${flow} leaves ordinary JSON and invalid lookalike markers native`, () =>
+      it.effect(`API-key leaves ordinary JSON and invalid lookalike markers native`, () =>
         Effect.gen(function* () {
-          const f = fixture(flow)
+          const f = fixture()
           return yield* Effect.gen(function* () {
             const model = yield* LanguageModel.LanguageModel
             for (const result of [
@@ -308,9 +292,9 @@ describe('ToolResult', () => {
           }).pipe(Effect.provide(f.layer))
         }),
       )
-      it.effect(`${flow} rejects unsupported media before HTTP`, () =>
+      it.effect(`API-key rejects unsupported media before HTTP`, () =>
         Effect.gen(function* () {
-          const f = fixture(flow)
+          const f = fixture()
           return yield* Effect.gen(function* () {
             const result = yield* ToolResult.encode({
               content: [Prompt.filePart({ mediaType: 'audio/wav', data: new Uint8Array([1]) })],
@@ -322,9 +306,9 @@ describe('ToolResult', () => {
           }).pipe(Effect.provide(f.layer))
         }),
       )
-      it.effect(`${flow} rejects invalid native provider options before HTTP`, () =>
+      it.effect(`API-key rejects invalid native provider options before HTTP`, () =>
         Effect.gen(function* () {
-          const f = fixture(flow)
+          const f = fixture()
           return yield* Effect.gen(function* () {
             const malformed: Schema.Json = {
               _tag: '@effect-harness/ToolContent',
@@ -347,7 +331,7 @@ describe('ToolResult', () => {
     }
     it.effect('catalogue captures the same canonical media client adapter', () =>
       Effect.gen(function* () {
-        const f = fixture('apiKey')
+        const f = fixture()
         return yield* Effect.gen(function* () {
           const descriptor = yield* (yield* Model.Catalog).resolve({
             provider: 'anthropic',
@@ -370,4 +354,3 @@ describe('ToolResult', () => {
 })
 
 import * as AnthropicLanguageModel from 'effect-harness/provider-anthropic/AnthropicLanguageModel'
-import * as AnthropicAccountLanguageModel from 'effect-harness/provider-anthropic/AnthropicAccountLanguageModel'

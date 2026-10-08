@@ -1,51 +1,62 @@
-import { Conversation, Identity, Record, Session } from 'effect-harness/durable'
-import { Submission } from 'effect-harness/durable/workflow'
-import { ConfigProvider, Console, Effect, Layer, Schema } from 'effect'
+import * as Harness from 'effect-harness/Harness'
+import * as Conversation from 'effect-harness/Conversation'
+import * as Submission from 'effect-harness/Submission'
+import * as Identity from 'effect-harness/Identity'
+import * as Record from 'effect-harness/Record'
+import { ConfigProvider, Console, Effect, Layer, Option, Schema } from 'effect'
 import { Prompt } from 'effect/ai'
 import { BunRuntime, BunServices } from '@effect/platform-bun'
-
 import * as Application from './Application.ts'
-import * as DemoModel from './DemoModel.ts'
 import * as Greeting from './Greeting.ts'
 
 class UnansweredSubmissionError extends Schema.TaggedError<UnansweredSubmissionError>()(
   'UnansweredSubmission',
-  { result: Submission.Submission.successSchema },
+  { result: Record.Submission },
 ) {}
 
-// A stable request identity reuses its persisted receipt across process runs.
-export const input: typeof Submission.Submission.payloadSchema.Type = {
-  sessionId: Application.sessionId,
-  conversationId: Record.ROOT_CONVERSATION_ID,
-  requestId: Identity.RequestId.make('uppercase-v1'),
-  submission: {
-    _tag: 'input',
-    message: Prompt.userMessage({ content: [Prompt.textPart({ text: 'uppercase hello' })] }),
-  },
-}
+export const requestId = Identity.RequestId.make('uppercase-v1')
 
 export const program = Effect.gen(function* () {
-  const session = yield* Session.Session
-  const root = yield* session.root()
-
-  yield* session.transaction(
-    Effect.fn('example.configureAgent')(function* (tx) {
-      const agent = yield* tx.doc(Conversation.AgentDoc, { owner: root.id })
-      agent.model = DemoModel.ref
+  const harness = yield* Harness.Harness
+  const root = yield* harness.root
+  const definition = yield* Greeting.make
+  const greetingId = yield* harness.transaction(
+    Effect.fn('example.admitGreeting')(function* (tx) {
+      const run = yield* tx.doc(Greeting.RunDoc, { owner: root.id })
+      if (run.taskId !== undefined) return run.taskId
+      const prepared = yield* definition.prepare({ name: 'Effect' })
+      const id = yield* tx.createTask({
+        conversationId: root.id,
+        kind: definition.name,
+        version: definition.version,
+        input: prepared.input,
+        background: false,
+        abortRequested: false,
+        state: { status: 'pending', checkpoint: prepared.checkpoint },
+      })
+      run.taskId = id
+      return id
     }),
   )
+  // Opening does not start saved work until the host explicitly resumes it.
+  yield* harness.resume
+  const greetingTask = yield* harness.awaitTask(greetingId)
+  const greetingOutcome = yield* Schema.decodeUnknownEffect(Greeting.Outcome)(
+    greetingTask.state.outcome,
+  )
+  if (greetingOutcome.status !== 'completed')
+    return yield* Effect.die(`Greeting ended with ${greetingOutcome.status}`)
 
-  // Custom and built-in Workflows both use the ordinary native execution API.
-  const greeting = yield* Greeting.Greeting.execute({ name: 'Effect' })
-  const result = yield* Submission.Submission.execute(input)
-  yield* Conversation.awaitIdle(session, root.id)
-
+  const submission = yield* Conversation.submit(root, 'uppercase hello', { requestId })
+  const result = yield* Submission.wait(submission)
+  yield* Conversation.awaitIdle(root)
   if (result._tag !== 'InputDone') return yield* new UnansweredSubmissionError({ result })
-  const answer = yield* session
-    .entry(result.answer, root.id)
-    .pipe(Effect.flatMap(Effect.fromOption))
+  const snapshot = yield* Conversation.snapshot(root)
+  const answer = yield* Effect.fromOption(
+    Option.fromUndefinedOr(snapshot.entries.find((entry) => entry.id === result.answer)),
+  )
   const messages = yield* Schema.decodeEffect(Schema.toCodecJson(Schema.Array(Prompt.Message)))(
-    answer.entry.model ?? [],
+    answer.model ?? [],
   )
   const text = messages
     .flatMap((message) =>
@@ -54,24 +65,21 @@ export const program = Effect.gen(function* () {
         : [],
     )
     .join('')
-
-  yield* Console.log(greeting)
+  yield* Console.log(greetingOutcome.result)
   yield* Console.log(text)
-  return { greeting, result, text }
+  return { greeting: greetingOutcome.result, result, text, greetingId }
 })
 
-const Platform = Layer.merge(
+const platform = Layer.merge(
   ConfigProvider.layer(ConfigProvider.fromEnv({ preserveEmptyStrings: true })),
   BunServices.layer,
 )
-// effect-nit-allow P3-layer-naming-layer-prefix: MainLayer composes the example Application with its selected config provider and platform services; it is application wiring rather than one module's implementation layer.
-const MainLayer = Application.layer.pipe(Layer.provide(Platform))
+const runtime = Application.layer.pipe(Layer.provide(platform))
 
-if (import.meta.main) {
+if (import.meta.main)
   BunRuntime.runMain(
     program.pipe(
-      Effect.provide(MainLayer),
-      Effect.tap(() => Console.log('native-workflow-example-ok')),
+      Effect.provide(runtime),
+      Effect.tap(() => Console.log('embedded-harness-example-ok')),
     ),
   )
-}

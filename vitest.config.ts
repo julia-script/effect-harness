@@ -5,11 +5,11 @@ export default defineConfig({
   resolve: {
     alias: [
       {
-        find: /^effect-harness\/(durable\/(?:testing|storage|workflow)|testing|tools|env)$/,
+        find: /^effect-harness\/(storage|testing|tools|env)$/,
         replacement: `${new URL('./packages/effect-harness/src/', import.meta.url).pathname}$1/index.ts`,
       },
       {
-        find: /^effect-harness\/(durable|auth|provider-openai|provider-anthropic|provider-claude-code)$/,
+        find: /^effect-harness\/(provider-openai|provider-anthropic)$/,
         replacement: `${new URL('./packages/effect-harness/src/', import.meta.url).pathname}$1/index.ts`,
       },
       {

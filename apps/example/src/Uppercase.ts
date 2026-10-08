@@ -30,7 +30,7 @@ export const layerRegistry: Layer.Layer<
   Tool.Handler<'uppercase'>
 > = Layer.unwrap(
   Effect.gen(function* () {
-    // Pure uppercasing is safe to repeat if recovery occurs before its receipt.
+    // Pure uppercasing is safe to repeat if recovery occurs before its result is committed.
     const tools = yield* ToolRegistration.bind(toolkit, { uppercase: { replay: 'safe' } })
     return Registry.layer([{ name: 'example', tools }])
   }),

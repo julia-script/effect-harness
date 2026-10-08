@@ -189,9 +189,13 @@ export class Executor extends Context.Service<
     readonly prepare: (
       input: Executor.PrepareInput,
     ) => Effect.Effect<Executor.Preparation, ModelError | Schema.SchemaError, Invocation>
+    readonly compactionThreshold: (
+      input: Executor.PrepareInput & { readonly request?: Request },
+    ) => Effect.Effect<Option.Option<'blocking' | 'background'>, ModelError>
     readonly generate: (
       request: Request,
       agent: Registry.Resolved,
+      options?: { readonly skipBeforeRequest?: boolean },
     ) => Stream.Stream<Part, ModelError | AiError.AiError, Invocation>
     readonly fetchDeferred: (
       request: Request,
@@ -320,15 +324,16 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
     const generate = (
       request: Request,
       agent: Registry.Resolved,
+      options?: { readonly skipBeforeRequest?: boolean },
     ): Stream.Stream<Part, ModelError | AiError.AiError, Invocation> =>
       Stream.unwrap(
         Effect.gen(function* () {
           const descriptor = yield* catalog.resolve(request.model)
           const context = yield* descriptor.configure(request.options)
-          const prompt = yield* Hook.beforeRequest(
-            Registry.handlers(agent, 'generation'),
-            request.prompt,
-          )
+          const prompt =
+            options?.skipBeforeRequest === true
+              ? request.prompt
+              : yield* Hook.beforeRequest(Registry.handlers(agent, 'generation'), request.prompt)
           const toolkit = definitions(request.tools)
           return descriptor.model
             .streamText({
@@ -516,6 +521,11 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
           ? yield* resolve(snapshot.state, options.settings ?? snapshot.settings)
           : snapshot
       const found = Array.findFirst(agent.tools, (value) => value.tool.name === intent.name)
+      if (Option.isNone(found))
+        return {
+          outcome: 'unavailable' as const,
+          result: ToolRegistration.unavailable(intent.name),
+        }
       if (
         options.recovering === true &&
         (intent.replay !== 'safe' ||
@@ -533,12 +543,7 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
             details: { reason: 'interrupted', previous: options.previous?.details ?? null },
           },
         }
-      const registration = Option.getOrElse(found, constUndefined)
-      if (registration === undefined)
-        return {
-          outcome: 'unavailable' as const,
-          result: ToolRegistration.unavailable(intent.name),
-        }
+      const registration = found.value
       if (options.recovering === true)
         yield* invocation.progress({ clear: true, output: '', details: null, diagnostics: [] })
       const limits = ToolRegistration.outputLimits(registration.metadata)
@@ -981,6 +986,26 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
     return Executor.of({
       resolve,
       prepare,
+      compactionThreshold: Effect.fnUntraced(function* (input) {
+        const descriptor = yield* catalog.resolve(yield* requireModel(input.state))
+        const estimate = descriptor.estimate ?? Transcript.estimateMessage
+        const saved = Transcript.estimate(input.view, [], estimate)
+        const requested =
+          input.request === undefined
+            ? saved
+            : input.request.prompt.content.reduce((sum, message) => sum + estimate(message), 0)
+        const tools =
+          input.request === undefined || input.request.tools.length === 0
+            ? 0
+            : estimate(
+                Prompt.systemMessage({ content: Serialization.display(input.request.tools) }),
+              )
+        return Compaction.threshold(
+          Math.max(saved, requested) + tools,
+          descriptor.contextWindow,
+          input.settings.compaction,
+        )
+      }),
       generate,
       fetchDeferred,
       cancelDeferred,

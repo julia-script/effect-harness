@@ -1,8 +1,6 @@
 Prompt/context planning, compaction selection, coding tools, output handling and associated conformance fixtures include adaptations of Pi at commit 636703a0a4f2f4d8558d08f2308cb41109585bf5.
 
-Inbox rules, committed context/structural/semantic projections and associated conformance fixtures include adaptations of Pi at commit 636703a0a4f2f4d8558d08f2308cb41109585bf5.
-
-Anthropic account OAuth and transport identity/tool-name mappings include adaptations of Pi at commit 636703a0a4f2f4d8558d08f2308cb41109585bf5.
+Embedded task scheduling, persistence transactions, conversation turns and recovery follow Pi Durable at commit 75a99721d102d1948dcdd08ba200fb7caef81c1d.
 
 Source: https://github.com/earendil-works/pi
 

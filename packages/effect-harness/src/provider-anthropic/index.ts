@@ -3,18 +3,6 @@
  */
 // @barrel
 /**
- * Authenticated native Anthropic clients with account protocol adaptation.
- *
- * @category re-exports
- */
-export * as AnthropicAccountClient from './AnthropicAccountClient.ts'
-/**
- * Anthropic account model construction sharing its captured native client.
- *
- * @category re-exports
- */
-export * as AnthropicAccountLanguageModel from './AnthropicAccountLanguageModel.ts'
-/**
  * Native Effect AI Anthropic client service and protocol facade.
  *
  * @category re-exports
@@ -38,12 +26,6 @@ export * as AnthropicTool from './AnthropicTool.ts'
  * @category re-exports
  */
 export * as Catalog from './Catalog.ts'
-/**
- * Single-use Anthropic OAuth consent, refresh and scoped browser callbacks.
- *
- * @category re-exports
- */
-export * as OAuth from './OAuth.ts'
 /**
  * Provider prompt projections that retain native message roles and opaque protocol data.
  *

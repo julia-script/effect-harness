@@ -1,7 +1,7 @@
 {
   "name": "effect-harness",
   "version": "0.1.0",
-  "description": "Durable AI conversations built with native Effect AI and Workflow services.",
+  "description": "Embedded durable AI conversations with Effect, atomic persistence and phase tasks.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/julia-script/effect-harness.git",
@@ -39,42 +39,6 @@
     "./internal": null,
     "./env/internal": null,
     "./tools/internal": null,
-    "./durable": {
-      "types": "./dist/durable/index.d.ts",
-      "default": "./dist/durable/index.js"
-    },
-    "./durable/internal": null,
-    "./durable/internal/*": null,
-    "./durable/storage/internal": null,
-    "./durable/storage/internal/*": null,
-    "./durable/workflow/internal": null,
-    "./durable/workflow/internal/*": null,
-    "./durable/testing/internal": null,
-    "./durable/testing/internal/*": null,
-    "./durable/storage": {
-      "types": "./dist/durable/storage/index.d.ts",
-      "default": "./dist/durable/storage/index.js"
-    },
-    "./durable/workflow": {
-      "types": "./dist/durable/workflow/index.d.ts",
-      "default": "./dist/durable/workflow/index.js"
-    },
-    "./durable/testing": {
-      "types": "./dist/durable/testing/index.d.ts",
-      "default": "./dist/durable/testing/index.js"
-    },
-    "./durable/*": {
-      "types": "./dist/durable/*.d.ts",
-      "default": "./dist/durable/*.js"
-    },
-    "./auth": {
-      "types": "./dist/auth/index.d.ts",
-      "default": "./dist/auth/index.js"
-    },
-    "./auth/*": {
-      "types": "./dist/auth/*.d.ts",
-      "default": "./dist/auth/*.js"
-    },
     "./provider-openai": {
       "types": "./dist/provider-openai/index.d.ts",
       "default": "./dist/provider-openai/index.js"
@@ -91,14 +55,12 @@
       "types": "./dist/provider-anthropic/*.d.ts",
       "default": "./dist/provider-anthropic/*.js"
     },
-    "./provider-claude-code": {
-      "types": "./dist/provider-claude-code/index.d.ts",
-      "default": "./dist/provider-claude-code/index.js"
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "default": "./dist/storage/index.js"
     },
-    "./provider-claude-code/*": {
-      "types": "./dist/provider-claude-code/*.d.ts",
-      "default": "./dist/provider-claude-code/*.js"
-    }
+    "./storage/internal": null,
+    "./storage/internal/*": null
   },
   "publishConfig": {
     "access": "public",
@@ -115,8 +77,7 @@
   "dependencies": {
     "@effect/ai-anthropic": "4.0.1",
     "@effect/ai-openai": "4.0.1",
-    "diff": "^8.0.2",
-    "jose": "6.2.12"
+    "diff": "^8.0.2"
   },
   "devDependencies": {
     "@effect/platform-node": "4.0.1",
@@ -126,10 +87,18 @@
   },
   "peerDependencies": {
     "@effect/platform-node": "4.0.1",
+    "@effect/sql-sqlite-bun": "4.0.1",
+    "@effect/sql-sqlite-node": "4.0.1",
     "effect": "^4.0.1"
   },
   "peerDependenciesMeta": {
     "@effect/platform-node": {
+      "optional": true
+    },
+    "@effect/sql-sqlite-bun": {
+      "optional": true
+    },
+    "@effect/sql-sqlite-node": {
       "optional": true
     }
   }

@@ -20,7 +20,6 @@ import * as HttpClient from 'effect/http/HttpClient'
 import type * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import * as Catalog from 'effect-harness/provider-openai/Catalog'
-import { ChatGpt } from 'effect-harness/provider-openai/ChatGpt'
 
 const sessionId = '019a08e0-7c00-7000-8000-000000000001'
 const entry: Catalog.Entry = {
@@ -269,75 +268,6 @@ describe('Catalog', { concurrent: false }, () => {
             'ModelUnsupportedError',
           )
         }).pipe(Effect.provide(fixtureLayer())),
-    )
-    it.effect(
-      'official account catalogue uses fresh native bearer credentials and public streaming store:false Responses',
-      () =>
-        Effect.gen(function* () {
-          let fresh = 0
-          const requests: Array<HttpClientRequest.HttpClientRequest> = []
-          const auth = Layer.succeed(
-            ChatGpt,
-            ChatGpt.of({
-              begin: () => Effect.die('unexpected login'),
-              complete: () => Effect.die('unexpected callback'),
-              refresh: () => Effect.die('unexpected refresh'),
-              accessToken: () => Effect.sync(() => Redacted.make(`fake-token-${++fresh}`)),
-              models: () => Effect.succeed([]),
-              signOut: () => Effect.void,
-              cancel: () => Effect.void,
-            }),
-          )
-          const client = HttpClient.make((request) => {
-            requests.push(request)
-            return Effect.succeed(
-              HttpClientResponse.fromWeb(
-                request,
-                new globalThis.Response(
-                  `data: ${JSON.stringify({ type: 'response.completed', sequence_number: 1, response })}\n\n`,
-                  { headers: { 'content-type': 'text/event-stream' } },
-                ),
-              ),
-            )
-          })
-          const layer = Catalog.layerChatGpt({ account: 'test-account', models: [entry] }).pipe(
-            Layer.provide(Layer.merge(auth, Layer.succeed(HttpClient.HttpClient, client))),
-          )
-          yield* Effect.gen(function* () {
-            const descriptor = yield* Model.Catalog.use((catalog) =>
-              catalog.resolve({ provider: 'openai-chatgpt', modelId: entry.modelId }),
-            )
-            const context = yield* descriptor.configure({
-              thinking: 'low',
-              options: {},
-              sessionId,
-              maxTokens: 500,
-            })
-            yield* descriptor.model
-              .generateText({ prompt: 'Hi' })
-              .pipe(Effect.provideContext(context))
-            yield* descriptor.model
-              .generateText({ prompt: 'Hi again' })
-              .pipe(Effect.provideContext(context))
-            assert.strictEqual(
-              (yield* descriptor
-                .configure({ thinking: 'off', options: { store: true }, sessionId })
-                .pipe(Effect.flip)).reason._tag,
-              'ModelUnsupportedError',
-            )
-            assert.isDefined(yield* OpenAiClient.OpenAiClient)
-          }).pipe(Effect.provide(layer))
-          assert.strictEqual(fresh, 2)
-          for (const [index, request] of requests.entries()) {
-            assert.strictEqual(request.url, 'https://api.openai.com/v1/responses')
-            assert.strictEqual(request.headers.authorization, `Bearer fake-token-${index + 1}`)
-            const sent = bodyUnsafe(request)
-            assert.strictEqual(sent.store, false)
-            assert.strictEqual(sent.stream, true)
-            assert.strictEqual(sent.max_output_tokens, 500)
-            assert.strictEqual(sent.prompt_cache_key, sessionId)
-          }
-        }),
     )
   })
   function fixtureLayer() {

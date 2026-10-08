@@ -40,7 +40,6 @@
         "@effect/ai-anthropic": "4.0.1",
         "@effect/ai-openai": "4.0.1",
         "diff": "^8.0.2",
-        "jose": "6.2.12",
       },
       "devDependencies": {
         "@effect/platform-node": "4.0.1",
@@ -50,10 +49,14 @@
       },
       "peerDependencies": {
         "@effect/platform-node": "4.0.1",
+        "@effect/sql-sqlite-bun": "4.0.1",
+        "@effect/sql-sqlite-node": "4.0.1",
         "effect": "^4.0.1",
       },
       "optionalPeers": [
         "@effect/platform-node",
+        "@effect/sql-sqlite-bun",
+        "@effect/sql-sqlite-node",
       ],
     },
   },
@@ -438,8 +441,6 @@
     "is-windows": ["is-windows@1.0.2", "", {}, "sha512-eXK1UInq2bPmjyX6e3VHIzMLobc4J94i4AWn+Hpq3OU5KkrRC96OAcR3PRJ/pGu6m8TRnBHP9dkXQVsT/COVIA=="],
 
     "isexe": ["isexe@2.0.0", "", {}, "sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw=="],
-
-    "jose": ["jose@6.2.12", "", {}, "sha512-9NiFmJEex0sy2Dk58j2UGBSHgUs2ypF9eZSu4L6vjOX3Dp96Sw1F3uL+H+D1sx02jZZdzUT0HgvCy59CuvXcWw=="],
 
     "js-yaml": ["js-yaml@4.3.2", "", { "dependencies": { "argparse": "^2.0.1" }, "bin": { "js-yaml": "bin/js-yaml.js" } }, "sha512-SFNOvSJ+Dgf/9An904Yx+CgSlIPCkIpao4qo51lpee25TIRejdH3rhR4EZMGoNx3/TP3O+wzWuiTFl4sqbltzA=="],
 

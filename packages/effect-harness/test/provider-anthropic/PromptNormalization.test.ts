@@ -20,7 +20,6 @@ import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 
 import * as Catalog from 'effect-harness/provider-anthropic/Catalog'
-import * as OAuth from 'effect-harness/provider-anthropic/OAuth'
 import * as Prompt from 'effect-harness/provider-anthropic/Prompt'
 
 const base = NativePrompt.systemMessage({
@@ -157,7 +156,7 @@ const options = {
   transformClient: (client: HttpClient.HttpClient) =>
     client.pipe(HttpClient.mapRequest(HttpClientRequest.setHeader('x-transform', 'retained'))),
 } as const
-const fixture = (flow: 'apiKey' | 'account', stream = false) => {
+const fixture = (stream = false) => {
   const requests: HttpClientRequest.HttpClientRequest[] = []
   const http = HttpClient.make((request) => {
     requests.push(request)
@@ -175,31 +174,15 @@ const fixture = (flow: 'apiKey' | 'account', stream = false) => {
       ),
     )
   })
-  const auth = Layer.succeed(
-    OAuth.OAuth,
-    OAuth.OAuth.of({
-      begin: () => Effect.die('No actual login'),
-      complete: () => Effect.die('No actual consent'),
-      refresh: () => Effect.die('No actual refresh'),
-      signOut: () => Effect.void,
-      cancel: () => Effect.void,
-      accessToken: () => Effect.succeed(Redacted.make('fixture-bearer')),
-    }),
-  )
-  const dependencies = Layer.merge(Layer.succeed(HttpClient.HttpClient, http), auth)
-  const client = (
-    flow === 'apiKey'
-      ? AnthropicClient.layer({ ...options, apiKey: Redacted.make('fixture-key') })
-      : AnthropicAccountClient.layer({ ...options, account: 'fixture-account' })
-  ).pipe(Layer.provide(dependencies))
-  const layer = (
-    flow === 'apiKey'
-      ? HarnessAnthropicLanguageModel.layerApiKey({
-          ...options,
-          apiKey: Redacted.make('fixture-key'),
-        })
-      : AnthropicAccountLanguageModel.layer({ ...options, account: 'fixture-account' })
-  ).pipe(Layer.provide(dependencies))
+  const dependencies = Layer.succeed(HttpClient.HttpClient, http)
+  const client = AnthropicClient.layer({
+    ...options,
+    apiKey: Redacted.make('fixture-key'),
+  }).pipe(Layer.provide(dependencies))
+  const layer = HarnessAnthropicLanguageModel.layerApiKey({
+    ...options,
+    apiKey: Redacted.make('fixture-key'),
+  }).pipe(Layer.provide(dependencies))
   return { requests, dependencies, client, layer }
 }
 const requestAtUnsafe = (
@@ -212,17 +195,14 @@ const requestAtUnsafe = (
   return request
 }
 const systems = (
-  flow: 'apiKey' | 'account',
   texts = ['base instructions', 'later plain instructions', 'hook-added instructions'],
-) => [
-  ...(flow === 'account' ? [{ type: 'text', text: AnthropicAccountClient.identity }] : []),
-  ...texts.map((text) => ({
+) =>
+  texts.map((text) => ({
     type: 'text',
     text,
     cache_control: text === 'base instructions' ? { type: 'ephemeral', ttl: '1h' } : null,
-  })),
-]
-const expectedMessages = (flow: 'apiKey' | 'account') => [
+  }))
+const expectedMessages = () => [
   {
     role: 'user',
     content: [
@@ -251,7 +231,7 @@ const expectedMessages = (flow: 'apiKey' | 'account') => [
       {
         type: 'tool_use',
         id: 'old-call',
-        name: flow === 'account' ? 'Read' : 'read',
+        name: 'read',
         input: { path: 'original' },
       },
     ],
@@ -371,13 +351,10 @@ describe('PromptNormalization', () => {
       'stable native converter preserves every system group without a normalization facade',
       () =>
         Effect.gen(function* () {
-          const f = fixture('apiKey')
+          const f = fixture()
           return yield* Effect.gen(function* () {
             yield* LanguageModel.generateText({ prompt: history })
-            assert.deepStrictEqual(
-              bodyUnsafe(requestAtUnsafe(f.requests)).system,
-              systems('apiKey'),
-            )
+            assert.deepStrictEqual(bodyUnsafe(requestAtUnsafe(f.requests)).system, systems())
           }).pipe(
             Effect.provide(
               AnthropicLanguageModel.layer({
@@ -391,7 +368,7 @@ describe('PromptNormalization', () => {
 
     it.effect('native system history capability follows scoped configuration', () =>
       Effect.gen(function* () {
-        const f = fixture('apiKey')
+        const f = fixture()
         const inlineHistory = NativePrompt.fromMessages([base, user, later, assistant])
         return yield* Effect.gen(function* () {
           const model = yield* LanguageModel.LanguageModel
@@ -412,7 +389,7 @@ describe('PromptNormalization', () => {
             }),
           )
           const sent = bodyUnsafe(requestAtUnsafe(f.requests))
-          assert.deepStrictEqual(sent.system, systems('apiKey', ['base instructions']))
+          assert.deepStrictEqual(sent.system, systems(['base instructions']))
           const messages = yield* Schema.decodeUnknownEffect(
             Schema.Array(Schema.Struct({ role: Schema.String })),
           )(sent.messages)
@@ -429,7 +406,7 @@ describe('PromptNormalization', () => {
       'native encoded message and string input overloads still decode without changing user roles',
       () =>
         Effect.gen(function* () {
-          const f = fixture('apiKey')
+          const f = fixture()
           return yield* Effect.gen(function* () {
             yield* LanguageModel.generateText({
               prompt: [
@@ -459,7 +436,7 @@ describe('PromptNormalization', () => {
       'unsupported native attachment retains its typed input failure before transport',
       () =>
         Effect.gen(function* () {
-          const f = fixture('apiKey')
+          const f = fixture()
           return yield* Effect.gen(function* () {
             const error = yield* LanguageModel.generateText({
               prompt: NativePrompt.fromMessages([
@@ -478,12 +455,12 @@ describe('PromptNormalization', () => {
         }),
     )
 
-    for (const flow of ['apiKey', 'account'] as const) {
+    {
       it.effect(
-        `${flow} exported native Layer sends all system blocks and structured history with original options`,
+        `API-key exported native Layer sends all system blocks and structured history with original options`,
         () =>
           Effect.gen(function* () {
-            const f = fixture(flow)
+            const f = fixture()
             return yield* Effect.gen(function* () {
               const output = yield* LanguageModel.generateText({
                 prompt: history,
@@ -494,29 +471,23 @@ describe('PromptNormalization', () => {
               assert.strictEqual(output.usage.inputTokens.total, 17)
               const request = requestAtUnsafe(f.requests)
               const sent = bodyUnsafe(request)
-              assert.deepStrictEqual(sent.system, systems(flow))
-              assert.deepStrictEqual(sent.messages, expectedMessages(flow))
+              assert.deepStrictEqual(sent.system, systems())
+              assert.deepStrictEqual(sent.messages, expectedMessages())
               assert.strictEqual(sent.model, 'declared-model')
               assert.strictEqual(sent.max_tokens, 4321)
               assert.strictEqual(sent.temperature, 0.2)
               assert.strictEqual(request.url, 'https://fixture.example/v1/messages?beta=true')
               assert.strictEqual(request.headers['anthropic-version'], 'fixture-version')
               assert.strictEqual(request.headers['x-transform'], 'retained')
-              assert.strictEqual(
-                request.headers.authorization,
-                flow === 'account' ? 'Bearer fixture-bearer' : undefined,
-              )
-              assert.strictEqual(
-                request.headers['x-api-key'],
-                flow === 'apiKey' ? 'fixture-key' : undefined,
-              )
+              assert.strictEqual(request.headers.authorization, undefined)
+              assert.strictEqual(request.headers['x-api-key'], 'fixture-key')
             }).pipe(Effect.provide(f.layer))
           }),
       )
 
-      it.effect(`${flow} native streaming preserves late hook systems and finish usage`, () =>
+      it.effect(`API-key native streaming preserves late hook systems and finish usage`, () =>
         Effect.gen(function* () {
-          const f = fixture(flow, true)
+          const f = fixture(true)
           return yield* Effect.gen(function* () {
             const parts = yield* LanguageModel.streamText({
               prompt: history,
@@ -527,10 +498,10 @@ describe('PromptNormalization', () => {
               parts.find((part) => part.type === 'finish')?.usage.outputTokens.total,
               6,
             )
-            assert.deepStrictEqual(bodyUnsafe(requestAtUnsafe(f.requests)).system, systems(flow))
+            assert.deepStrictEqual(bodyUnsafe(requestAtUnsafe(f.requests)).system, systems())
             assert.deepStrictEqual(
               bodyUnsafe(requestAtUnsafe(f.requests)).messages,
-              expectedMessages(flow),
+              expectedMessages(),
             )
             assert.strictEqual(bodyUnsafe(requestAtUnsafe(f.requests)).stream, true)
           }).pipe(Effect.provide(f.layer))
@@ -538,10 +509,10 @@ describe('PromptNormalization', () => {
       )
 
       it.effect(
-        `${flow} native catalogue applies hook normalization, managed section removal/order and request pinning`,
+        `API-key native catalogue applies hook normalization, managed section removal/order and request pinning`,
         () =>
           Effect.gen(function* () {
-            const f = fixture(flow)
+            const f = fixture()
             const layer = Catalog.layer({
               models: [
                 {
@@ -590,20 +561,13 @@ describe('PromptNormalization', () => {
                   }),
                 )
               const sent = bodyUnsafe(requestAtUnsafe(f.requests))
-              // Account's identity receives request cache settings; each saved block keeps its original options.
-              const expectedSystem = systems(flow, [
+              const expectedSystem = systems([
                 'base instructions',
                 'second\n\ncurrent first',
                 'hook-added instructions',
               ])
-              if (flow === 'account')
-                expectedSystem.splice(0, 1, {
-                  type: 'text',
-                  text: AnthropicAccountClient.identity,
-                  cache_control: { type: 'ephemeral', ttl: '1h' },
-                })
               assert.deepStrictEqual(sent.system, expectedSystem)
-              assert.deepStrictEqual(sent.messages, expectedMessages(flow))
+              assert.deepStrictEqual(sent.messages, expectedMessages())
               assert.strictEqual(sent.model, 'declared-model')
               assert.strictEqual(sent.max_tokens, 6000)
               assert.strictEqual(sent.temperature, 0.4)
@@ -615,20 +579,20 @@ describe('PromptNormalization', () => {
       )
 
       it.effect(
-        `${flow} native structured object generation retains schema validation and system history`,
+        `API-key native structured object generation retains schema validation and system history`,
         () =>
           Effect.gen(function* () {
-            const f = fixture(flow)
+            const f = fixture()
             return yield* Effect.gen(function* () {
               const output = yield* LanguageModel.generateObject({
                 prompt: history,
                 schema: Schema.Struct({ answer: Schema.String }),
               })
               assert.deepStrictEqual(output.value, { answer: 'ok' })
-              assert.deepStrictEqual(bodyUnsafe(requestAtUnsafe(f.requests)).system, systems(flow))
+              assert.deepStrictEqual(bodyUnsafe(requestAtUnsafe(f.requests)).system, systems())
               assert.deepStrictEqual(
                 bodyUnsafe(requestAtUnsafe(f.requests)).messages,
-                expectedMessages(flow),
+                expectedMessages(),
               )
               assert.isDefined(bodyUnsafe(requestAtUnsafe(f.requests)).output_config)
             }).pipe(Effect.provide(f.layer))
@@ -640,7 +604,7 @@ describe('PromptNormalization', () => {
       'API-key Config Layer and native per-request override remain available after normalization',
       () =>
         Effect.gen(function* () {
-          const f = fixture('apiKey')
+          const f = fixture()
           const layer = HarnessAnthropicLanguageModel.layerApiKeyConfig({
             model: Config.succeed(options.model),
             config: Config.succeed(options.config),
@@ -659,7 +623,7 @@ describe('PromptNormalization', () => {
             )
             const request = requestAtUnsafe(f.requests)
             const sent = bodyUnsafe(request)
-            assert.deepStrictEqual(sent.system, systems('apiKey'))
+            assert.deepStrictEqual(sent.system, systems())
             assert.strictEqual(sent.model, 'native-override')
             assert.strictEqual(sent.max_tokens, 7654)
             assert.strictEqual(sent.temperature, 0.5)
@@ -672,6 +636,4 @@ describe('PromptNormalization', () => {
   })
 })
 
-import * as AnthropicAccountClient from 'effect-harness/provider-anthropic/AnthropicAccountClient'
 import * as HarnessAnthropicLanguageModel from 'effect-harness/provider-anthropic/AnthropicLanguageModel'
-import * as AnthropicAccountLanguageModel from 'effect-harness/provider-anthropic/AnthropicAccountLanguageModel'

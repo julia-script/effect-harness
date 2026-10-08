@@ -1,4 +1,4 @@
-import { SqliteClient } from '@effect/sql-sqlite-bun'
+import * as SqliteBun from 'effect-harness/storage/SqliteBun'
 import {
   Config,
   Effect,
@@ -10,7 +10,6 @@ import {
   type PlatformError,
   type Scope,
 } from 'effect'
-import type { SqlClient, SqlError } from 'effect/sql'
 
 /** Invalid example configuration prevents database acquisition. */
 export class ConfigurationError extends Schema.TaggedError<ConfigurationError>(
@@ -41,8 +40,4 @@ export const filename: Effect.Effect<
 })
 
 /** Acquire SQLite and its optional temporary directory in the same Layer scope. */
-export const layer: Layer.Layer<
-  SqlClient.SqlClient | SqliteClient.SqliteClient,
-  ConfigurationError | PlatformError.PlatformError | SqlError.SqlError,
-  FileSystem.FileSystem | Path.Path
-> = Layer.unwrap(Effect.map(filename, (filename) => SqliteClient.layer({ filename })))
+export const layer = Layer.unwrap(Effect.map(filename, (filename) => SqliteBun.layer({ filename })))

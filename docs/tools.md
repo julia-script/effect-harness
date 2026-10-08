@@ -75,7 +75,7 @@ The environment is a capability boundary, not a filesystem sandbox. The host cho
 
 Replay is `unsafe` by default. Mark a tool `safe` only when repeating its body after a crash is acceptable. Pure transformations are a straightforward case; a payment, shell command or file mutation needs an application-specific decision. Built-in coding tools retain unsafe replay.
 
-Use [replay and recovery](explanation/recovery.md#external-actions) to reason about an external action that completes before its receipt commits. The [tool policy reference](reference/configuration.md#tool-policy) lists execution and output defaults.
+Use [replay and recovery](explanation/recovery.md#external-actions) to reason about an external action that completes before its result commits. The [tool policy reference](reference/configuration.md#tool-policy) lists execution and output defaults.
 
 ## Verify registration
 

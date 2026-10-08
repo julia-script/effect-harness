@@ -8,20 +8,11 @@
       "effect-harness/tools": ["./packages/effect-harness/src/tools/index.ts"],
       "effect-harness/testing": ["./packages/effect-harness/src/testing/index.ts"],
       "effect-harness/env": ["./packages/effect-harness/src/env/index.ts"],
-      "effect-harness/durable": ["./packages/effect-harness/src/durable/index.ts"],
-      "effect-harness/durable/storage": ["./packages/effect-harness/src/durable/storage/index.ts"],
-      "effect-harness/durable/workflow": [
-        "./packages/effect-harness/src/durable/workflow/index.ts"
-      ],
-      "effect-harness/durable/testing": ["./packages/effect-harness/src/durable/testing/index.ts"],
-      "effect-harness/auth": ["./packages/effect-harness/src/auth/index.ts"],
       "effect-harness/provider-openai": ["./packages/effect-harness/src/provider-openai/index.ts"],
       "effect-harness/provider-anthropic": [
         "./packages/effect-harness/src/provider-anthropic/index.ts"
       ],
-      "effect-harness/provider-claude-code": [
-        "./packages/effect-harness/src/provider-claude-code/index.ts"
-      ]
+      "effect-harness/storage": ["./packages/effect-harness/src/storage/index.ts"]
     }
   },
   "include": ["packages/effect-harness/test/**/*.ts", "apps/*/test/**/*.ts", "vitest.config.ts"]

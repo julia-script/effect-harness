@@ -167,7 +167,7 @@ describe('Anthropic', { concurrent: false }, () => {
       }),
     )
 
-    it.effect('provides the native client for account model discovery', () =>
+    it.effect('provides the native client for model discovery', () =>
       Effect.gen(function* () {
         const client = HttpClient.make((request) =>
           Effect.succeed(
