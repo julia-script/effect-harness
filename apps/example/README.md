@@ -37,3 +37,25 @@ bun run --cwd apps/example reproduce:unknown-tool
 ```
 
 The model asks for `upper_case`, while the registry offers `uppercase`. Native validation rejects that response, and the harness settles the failed attempt. The `--retry` option exercises the configured retry policy.
+
+## Portable runtime example
+
+[Portable.ts](src/Portable.ts) combines the eight in-memory tour scenarios. It imports the portable package namespaces, declares a result schema, and uses no platform Layer or host runtime globals. [PortableMain.ts](src/PortableMain.ts) runs that effect using the same entrypoint in each runtime.
+
+From the repository root, after `bun run build`:
+
+```sh
+node apps/example/dist/PortableMain.js
+bun apps/example/dist/PortableMain.js
+```
+
+For Deno, bundle the workspace imports first. This avoids requiring Deno to resolve Bun's workspace catalog aliases:
+
+```sh
+bun build --target=browser --outfile=apps/example/dist/portable.browser.js apps/example/dist/PortableMain.js
+deno run --no-config --no-prompt apps/example/dist/portable.browser.js
+```
+
+The same bundle is a browser ES module; load it from a module script or worker. All eight scenarios use memory persistence, local models and simulated external actions. Their close/reopen demonstrations retain the same memory service inside one process.
+
+CI runs the compiled package with Node, builds a browser bundle and checks it without Node/Bun globals, and runs the bundle with Deno. Runtime-specific persistent adapters remain separate leaf imports, and require host capabilities suitable for that adapter.

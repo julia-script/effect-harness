@@ -40,3 +40,10 @@ jobs:
         run: bun run test
       - name: Verify npm package preparation
         run: npm pack --dry-run --workspace packages/effect-harness
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Verify portable example under Deno
+        run: |
+          bun build --target=browser --outfile=/tmp/harness-portable.js apps/example/dist/PortableMain.js
+          deno run --no-config --no-prompt /tmp/harness-portable.js

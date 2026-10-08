@@ -72,7 +72,7 @@
     "typecheck": "tsc --noEmit",
     "test": "cd ../.. && vitest run packages/effect-harness/test",
     "typetest": "cd ../.. && tstyche packages/effect-harness/typetest",
-    "prepack": "bun run build"
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@effect/ai-anthropic": "4.0.1",
@@ -80,18 +80,23 @@
     "diff": "^8.0.2"
   },
   "devDependencies": {
+    "@effect/platform-bun": "4.0.1",
     "@effect/platform-node": "4.0.1",
     "@effect/sql-sqlite-bun": "4.0.1",
     "@effect/sql-sqlite-node": "4.0.1",
     "effect": "catalog:"
   },
   "peerDependencies": {
+    "@effect/platform-bun": "4.0.1",
     "@effect/platform-node": "4.0.1",
     "@effect/sql-sqlite-bun": "4.0.1",
     "@effect/sql-sqlite-node": "4.0.1",
     "effect": "^4.0.1"
   },
   "peerDependenciesMeta": {
+    "@effect/platform-bun": {
+      "optional": true
+    },
     "@effect/platform-node": {
       "optional": true
     },
