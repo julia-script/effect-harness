@@ -44,14 +44,14 @@ Provide `Tools` and a `Model.Catalog` Layer to `Executor.layer`. Bind host servi
 
 ## Find the right API
 
-| Modules                                    | Purpose                                               |
-| ------------------------------------------ | ----------------------------------------------------- |
-| `Model`, `Agent`, `Executor`               | Model references, request configuration and execution |
-| `Registry`, `Extension`, `Hook`            | Selectable capabilities and lifecycle hooks           |
-| `Tool`, `Invocation`, `ToolResult`         | Toolkit binding, progress and model-facing results    |
-| `Context`                                  | Prompt preparation and context handling               |
-| `Env`, `NodeEnv`, `MutationLocks`, `tools` | Environment capabilities and portable coding tools    |
-| `testing`                                  | Adapter conformance helpers                           |
+| Modules                                                                      | Purpose                                                      |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `Model`, `Agent`, `Executor`                                                 | Model references, request configuration and execution        |
+| `Registry`, `Extension`, `Hook`                                              | Selectable capabilities and lifecycle hooks                  |
+| `ToolRegistration`, `Invocation`, `ToolResult`                               | Toolkit binding, progress and model-facing results           |
+| `Transcript`, `PromptPreparation`, `ResponseAccumulator`                     | Transcript projection, prompt preparation and response state |
+| `Env`, `NativeFiles`, `NodeEnv`, `NodeNativeFiles`, `MutationLocks`, `tools` | Environment capabilities and portable coding tools           |
+| `testing`                                                                    | Adapter conformance helpers                                  |
 
 Import concept modules through public subpaths, as above. Root imports also expose concept namespaces.
 

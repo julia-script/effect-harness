@@ -60,7 +60,6 @@ export const submit = (
     requestId,
     submission: {
       _tag: 'input',
-      type: 'input',
       message: Prompt.userMessage({ content: [Prompt.textPart({ text })] }),
       whenBusy: 'followUp',
     },

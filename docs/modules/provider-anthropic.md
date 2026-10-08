@@ -44,9 +44,9 @@ For an installed Claude Code CLI with its own login, use [effect-harness/provide
 
 | Modules                                                   | Purpose                                             |
 | --------------------------------------------------------- | --------------------------------------------------- |
-| `AnthropicLanguageModel`, `Anthropic`                     | Native API-key model construction and composition   |
+| `AnthropicLanguageModel`                                  | Native API-key model construction and composition   |
 | `Catalog`                                                 | Harness model declarations, limits and capabilities |
-| `OAuth`, `Account`                                        | Account authorization and convenience composition   |
+| `OAuth`                                                   | Account authorization and scoped callback handling  |
 | `AnthropicAccountClient`, `AnthropicAccountLanguageModel` | Authorized transport and native model               |
 | `Prompt`                                                  | Provider prompt handling                            |
 

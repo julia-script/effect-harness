@@ -2,7 +2,7 @@
 
 This reference covers module boundaries, public module entry points and service construction. Individual function signatures and schema fields are documented in the TypeScript API comments.
 
-Install `effect-harness` for the generic harness, durable state, authorization and provider modules. Platform adapters are supplied by the application. Root and directory imports expose concept namespaces; public subpath imports allow direct module access. Internal and retired storage subpaths are excluded from package exports.
+Install `effect-harness` for the generic harness, durable state, authorization and provider modules. Platform adapters are supplied by the application. Root and directory imports expose concept namespaces; public subpath imports allow direct module access. Internal subpaths are excluded from package exports. NodeEnv and NodeNativeFiles are available through explicit leaf imports.
 
 ## Generic harness
 
@@ -23,7 +23,7 @@ Install `effect-harness` for the generic harness, durable state, authorization a
 
 `Executor.layer` requires Registry and Model.Catalog. `Registry.layer(extensions)` validates extension names, duplicate tools within an extension and section keys; construction can fail with RegistryError. Later selected extensions can replace tools/sections of the same name. Binding captures handlers and host services at Layer construction.
 
-`Model.layer(descriptors)` provides Catalog with no acquisition error. Repeated provider/model references retain the last descriptor. Unknown references fail with ModelError carrying ModelNoModel. Provider catalogue constructors add their own entry validation.
+`Model.layer(descriptors)` provides Catalog with no acquisition error. Repeated provider/model references retain the last descriptor. Unknown references fail with ModelError carrying ModelNoModelError. Provider catalogue constructors add their own entry validation.
 
 ## Durable state and execution
 
@@ -47,7 +47,7 @@ Install `effect-harness` for the generic harness, durable state, authorization a
 
 "None" in the error column means no typed acquisition error; operations can still fail through their documented channels. Scoped resources are acquired and released in the Layer's lifetime.
 
-`SessionDirectory.layer` requires explicit `SessionDirectory.Registrations`, a map of identities to already scoped Session services. It snapshots registrations when built and does not acquire or extend their lifetimes. Unregistered identities fail with NotFound.
+`SessionDirectory.layer` requires explicit `SessionDirectory.Registrations`, a map of identities to already scoped Session services. It snapshots registrations when built and does not acquire or extend their lifetimes. Unregistered identities fail with StorageError carrying NotFoundError.
 
 Public domain modules include `Record`, `Identity`, `Entry`, `Document`, `Conversation`, `Inbox`, `Usage`, `Ownership`, `Inspection`, `View` and `Event`. Storage constructors live under `storage`; native declarations and handler helpers live under `workflow`. `testing` exposes Store conformance helpers.
 

@@ -6,7 +6,7 @@ Effect Harness separates model/tool execution, committed application facts and d
 
 The generic harness resolves a model and extensions, prepares a prompt and executes the resulting model/tool request. Its inputs are a Model.Catalog and Registry. Those describe the application capabilities available to a request.
 
-The durable modules records conversations, entries, documents, submissions and owned task state. A Session is the domain boundary over a Store. Its transactions turn candidate mutations into coherent committed facts. A conversation's agent document selects the model and tools for future preparation.
+The durable modules record conversations, entries, documents, submissions and owned task state. A Session is the domain boundary over a Store. Its transactions turn candidate mutations into coherent committed facts. A conversation's agent document selects the model and tools for future preparation.
 
 The native WorkflowEngine manages execution identity, Activities, suspension, timers and results. The durable executor Layer registers the built-in handlers with that service. Application Workflows use the same native declarations and handler registration.
 

@@ -46,7 +46,6 @@ The host owns the consent UI and callback delivery. Authorization and inference 
 | `Catalog`                               | Harness model declarations, limits and capabilities  |
 | `ChatGpt`, `Callback`                   | Account authorization and loopback callback handling |
 | `ChatGptClient`, `ChatGptLanguageModel` | Authorized account transport and native model        |
-| `LanguageModel`                         | Forwarding exports for model construction            |
 
 ## Continue
 

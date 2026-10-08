@@ -38,7 +38,7 @@ export const watchConversation = Effect.fn('watchConversation')(function* (
 
 Use the initial snapshot to populate the UI before consuming updates. `listen` joins the listener lifetime, so run it in the connection's scoped fiber when the rest of your application must continue. Close that Scope when the client disconnects.
 
-A missing conversation fails with `StorageError` carrying `NotFound`. For document `snapshot` and `watchDoc` operations, absence instead returns `Option.none`; handle that before accessing a document value.
+A missing conversation fails with `StorageError` carrying `NotFoundError`. For document `snapshot` and `watchDoc` operations, absence instead returns `Option.none`; handle that before accessing a document value.
 
 ## Replace state on a reset
 

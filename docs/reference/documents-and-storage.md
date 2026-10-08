@@ -69,7 +69,7 @@ All writers of a key need compatible coordination. Memory writers share both nat
 
 Store operations are independent of native Workflow reply persistence and must not be wrapped in an external database transaction. Saved domain receipts restore complete Activity results after a commit-to-reply gap. The [persistence guide](../persistence.md) gives the application Layer graph.
 
-JSONL fsync is enabled only when explicitly true; without it, successful writes do not establish crash durability. Directory writer ownership is external to the adapter. Journals retain bounded observation history and are not unlimited audit logs.
+JSONL fsync is enabled only when explicitly true; without it, successful writes do not establish crash durability. With fsync enabled, the FileSystem must support directory synchronization as well as file synchronization. Unsupported synchronization fails acquisition or leaves a commit uncertain and poisons the open Store. Directory writer ownership is external to the adapter. Journals retain bounded observation history and are not unlimited audit logs.
 
 ## Storage errors
 
@@ -77,12 +77,12 @@ StorageError carries a structured reason, message/cause projections and `certain
 
 | Reason              | Meaning                                                         |
 | ------------------- | --------------------------------------------------------------- |
-| InvalidError        | InvalidError domain data or rejected operation                  |
+| InvalidError        | Invalid domain data or rejected operation                       |
 | ConflictError       | Incompatible update or receipt fingerprint reuse                |
 | NotFoundError       | Required record absent                                          |
 | ClosedError         | Admission after sealing                                         |
 | PoisonedError       | Open Store has an unresolved persistence outcome                |
-| CorruptError        | InvalidError persisted state, receipt or frame                  |
+| CorruptError        | Invalid persisted state, receipt or frame                       |
 | IoError             | Backend failure; certainty states rejected or uncertain outcome |
 | ReadAfterWriteError | Table query after table mutations in one transaction            |
 | RevokedError        | Transaction/draft used after its callback ended                 |
