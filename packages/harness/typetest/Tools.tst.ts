@@ -29,13 +29,7 @@ const known = AiTool.make('known', {
 })
 const toolkit = Toolkit.make(known)
 
-test('native unknown tool calls cannot be opted into for a literal toolkit', () => {
-  expect(model.generateText).type.not.toBeCallableWith({
-    prompt: 'request',
-    toolkit,
-    disableToolCallResolution: true,
-    allowUnknownToolCalls: true,
-  })
+test('native definition-only requests retain toolkit and binding types', () => {
   expect(model.generateText).type.toBeCallableWith({
     prompt: 'request',
     toolkit,

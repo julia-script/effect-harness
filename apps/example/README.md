@@ -25,7 +25,25 @@ HELLO
 native-workflow-example-ok
 ```
 
-No account, remote inference or model download is needed. Typecheck and build compile the library dependencies first, checking their public declarations. Tests import the compiled application through package exports, then run its compiled entrypoint. Repository installation applies the [Effect compatibility patch](../../docs/reference/compatibility.md).
+No account, remote inference or model download is needed. Typecheck and build compile the library dependencies first, checking their public declarations. Tests import the compiled application through package exports, then run its compiled entrypoint. Effect dependencies are unmodified; see [Effect compatibility](../../docs/reference/compatibility.md) for validation and recovery behavior.
+
+## Reproduce an unknown tool response
+
+[src/reproduceUnknownTool.ts](src/reproduceUnknownTool.ts) submits a conversation through the public API with a local model that calls `upper_case`, while only `uppercase` is registered. Run it from the repository root:
+
+```sh
+bun run --cwd apps/example reproduce:unknown-tool
+```
+
+Native validation rejects the undeclared name. The program prints `InputUnanswered`, reason `model_error`, and confirms that `InvalidOutputError` was saved on the failed generation entry. Retries are disabled so it finishes after one attempt. No credentials are required.
+
+To let the model recover using generic validation feedback:
+
+```sh
+bun run --cwd apps/example reproduce:unknown-tool --retry
+```
+
+This run allows one retry. The model sees that its previous response could not be validated, returns a valid answer, and the program prints `InputDone`. The original error remains saved; the rejected call is unavailable and no tool result is fabricated. Each run uses a temporary SQLite database by default; leave `EXAMPLE_DB` unset to avoid replaying an earlier submission.
 
 ## Follow the composition
 

@@ -22,6 +22,7 @@ import * as HashMap from 'effect/HashMap'
 import * as HashSet from 'effect/HashSet'
 import * as Option from 'effect/Option'
 import * as Prompt from 'effect/ai/Prompt'
+import * as AiError from 'effect/ai/AiError'
 import * as Schema from 'effect/Schema'
 import * as Document from './Document.ts'
 import * as Inbox from './Inbox.ts'
@@ -268,6 +269,10 @@ export type SystemPatch = typeof SystemPatch.Type
 /**
  * Schema for entry metadata for conversation context projection.
  *
+ * Failed generations retain their native AI error. Invalid output contributes
+ * generic corrective feedback when projected into the next model request;
+ * the rejected response itself is unavailable.
+ *
  * @category schemas
  */
 export const Metadata = Schema.Struct({
@@ -275,6 +280,7 @@ export const Metadata = Schema.Struct({
     Schema.Literals(['stop', 'length', 'tool-calls', 'aborted', 'error', 'deferred']),
   ),
   usage: Schema.optionalKey(Usage.Usage),
+  error: Schema.optionalKey(AiError.AiError),
   system: Schema.optionalKey(SystemPatch),
 })
 /**

@@ -17,7 +17,7 @@ import * as Layer from 'effect/Layer'
 import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
-import type * as AiError from 'effect/ai/AiError'
+import * as AiError from 'effect/ai/AiError'
 import * as AiPrompt from 'effect/ai/Prompt'
 // effect-review-allow P9-namespace-alias-equals-module: effect/ai/Prompt and ./Prompt.ts both bind Prompt; AiPrompt preserves the checked imported-name collision.
 import * as Response from 'effect/ai/Response'
@@ -166,6 +166,7 @@ const DispositionWire = Schema.Union([
     prompt: AiPrompt.Prompt,
     usage: Usage.Usage,
     message: Schema.String,
+    error: Schema.optionalKey(AiError.AiError),
     retryable: Schema.Boolean,
     overflow: Schema.Boolean,
   }),
@@ -183,6 +184,7 @@ const DispositionDomain = Schema.Union([
     prompt: AiPrompt.Prompt,
     usage: Usage.Usage,
     message: Schema.String,
+    error: Schema.optionalKey(AiError.AiError),
     retryable: Schema.Boolean,
     overflow: Schema.Boolean,
   }),
@@ -214,6 +216,7 @@ export const Disposition = DispositionWire.pipe(
               prompt: value.prompt,
               usage: value.usage,
               message: value.message,
+              ...(value.error === undefined ? {} : { error: value.error }),
               retryable: value.retryable,
               overflow: value.overflow,
             }
@@ -237,6 +240,7 @@ export const Disposition = DispositionWire.pipe(
               prompt: value.prompt,
               usage: value.usage,
               message: value.message,
+              ...(value.error === undefined ? {} : { error: value.error }),
               retryable: value.retryable,
               overflow: value.overflow,
             }
@@ -424,7 +428,6 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
               prompt: descriptor.normalizePrompt?.(prompt) ?? prompt,
               toolkit,
               disableToolCallResolution: true,
-              allowUnknownToolCalls: true,
             })
             .pipe(Stream.provideContext(context))
         }),
@@ -498,7 +501,14 @@ export const layer: Layer.Layer<Executor, never, Registry.Registry | Model.Catal
                 overflow: policies.some((value) => value.overflow),
                 retryable: policies.length > 0 && policies.every((value) => value.retryable),
               }
-              return { _tag: 'failure', prompt, usage, message, ...policy }
+              return {
+                _tag: 'failure',
+                prompt,
+                usage,
+                message,
+                error: Model.providerError(errors[0] ?? message, request.model.provider),
+                ...policy,
+              }
             }
             return Option.match(finish, {
               onNone: failure,

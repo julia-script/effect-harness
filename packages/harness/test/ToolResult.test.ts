@@ -83,7 +83,7 @@ describe('ToolResult', () => {
     )
   })
 
-  describe('native AI caller-owned unavailable tools', () => {
+  describe('native AI tool validation', () => {
     type BroadTool = AiTool.Tool<
       string,
       {
@@ -99,7 +99,7 @@ describe('ToolResult', () => {
       success: Schema.String,
     })
     for (const mode of ['text', 'stream'] as const) {
-      for (const scenario of ['default', 'automatic', 'unavailable', 'invalid-offered'] as const) {
+      for (const scenario of ['valid', 'unknown', 'invalid-offered'] as const) {
         it.effect(
           `${mode} ${scenario} preserves native validation and never invokes a handler`,
           () =>
@@ -115,8 +115,8 @@ describe('ToolResult', () => {
               const part = {
                 type: 'tool-call' as const,
                 id: 'call',
-                name: scenario === 'invalid-offered' ? 'known' : 'unoffered',
-                params: { value: 'bad' },
+                name: scenario === 'unknown' ? 'unoffered' : 'known',
+                params: { value: scenario === 'invalid-offered' ? 'bad' : 1 },
                 providerExecuted: false,
               }
               const model = yield* NativeModel.make({
@@ -128,8 +128,7 @@ describe('ToolResult', () => {
               } = {
                 prompt: 'request',
                 toolkit,
-                disableToolCallResolution: scenario !== 'automatic',
-                ...(scenario === 'default' ? {} : { allowUnknownToolCalls: true }),
+                disableToolCallResolution: true,
               }
               const result = yield* Effect.result(
                 mode === 'text'
@@ -143,8 +142,9 @@ describe('ToolResult', () => {
                       ),
                     ),
               )
-              assert.strictEqual(result._tag, scenario === 'unavailable' ? 'Success' : 'Failure')
-              if (result._tag === 'Success') assert.deepStrictEqual(result.success, ['unoffered'])
+              assert.strictEqual(result._tag, scenario === 'valid' ? 'Success' : 'Failure')
+              if (result._tag === 'Success') assert.deepStrictEqual(result.success, ['known'])
+              else assert.strictEqual(result.failure.reason._tag, 'InvalidOutputError')
               assert.strictEqual(handled, 0)
               assert.deepStrictEqual(Object.keys(toolkit.tools), ['known'])
             }),

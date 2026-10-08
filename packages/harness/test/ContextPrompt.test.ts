@@ -12,6 +12,7 @@ import * as Invocation from '@effect-harness/harness/Invocation'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as AiPrompt from 'effect/ai/Prompt'
+import * as AiError from 'effect/ai/AiError'
 import * as Context from '@effect-harness/harness/Context'
 import * as Prompt from '@effect-harness/harness/Prompt'
 import * as Compaction from '@effect-harness/harness/Compaction'
@@ -39,6 +40,54 @@ describe('ContextPrompt', () => {
     })
 
   describe('canonical context, prompt protocol and cuts', () => {
+    it('invalid output contributes generic feedback while edits and other failures retain their semantics', () => {
+      const failed = {
+        id: entryId(1),
+        messages: [assistant('incomplete response')],
+        status: 'error' as const,
+        error: new AiError.AiError({
+          module: 'LanguageModel',
+          method: 'streamText',
+          reason: new AiError.InvalidOutputError({ description: 'Unavailable rejected response' }),
+        }),
+      }
+      const view = Context.derive([failed])
+      assert.strictEqual(view.entries[0], failed)
+      assert.strictEqual(view.messages.length, 1)
+      const feedback = view.messages[0]
+      assert.ok(feedback?.role === 'user')
+      const text = feedback.content[0]
+      assert.ok(text?.type === 'text')
+      assert.include(text.text, 'The rejected output is unavailable')
+      assert.deepStrictEqual(
+        Context.derive([failed, { id: entryId(2), edits: [{ target: entryId(1), _tag: 'omit' }] }])
+          .messages,
+        [],
+      )
+      assert.deepStrictEqual(
+        Context.derive([
+          failed,
+          {
+            id: entryId(2),
+            edits: [{ target: entryId(1), _tag: 'replace', messages: [user('replacement')] }],
+          },
+        ]).messages,
+        [user('replacement')],
+      )
+      assert.deepStrictEqual(
+        Context.derive([
+          {
+            ...failed,
+            error: new AiError.AiError({
+              module: 'provider',
+              method: 'request',
+              reason: new AiError.InvalidRequestError({ description: 'Invalid request' }),
+            }),
+          },
+        ]).messages,
+        [],
+      )
+    })
     it.effect(
       'actual preparation respects omitted/deleted managed patches and plain edited replacements',
       () =>

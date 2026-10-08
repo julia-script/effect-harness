@@ -8,6 +8,7 @@ import * as Arr from 'effect/Array'
 // Context projection adapted from pi-durable (MIT), pinned 636703a0.
 import * as Schema from 'effect/Schema'
 import * as Prompt from 'effect/ai/Prompt'
+import type * as AiError from 'effect/ai/AiError'
 import * as Usage from './Usage.ts'
 import * as ToolResult from './ToolResult.ts'
 import * as Option from 'effect/Option'
@@ -72,6 +73,8 @@ export interface Entry {
   readonly messages?: ReadonlyArray<Prompt.Message> | undefined
   readonly edits?: ReadonlyArray<Edit> | undefined
   readonly status?: 'stop' | 'length' | 'tool-calls' | 'aborted' | 'error' | 'deferred' | undefined
+  /** Saved request failure; invalid output contributes generic corrective feedback. */
+  readonly error?: AiError.AiError | undefined
   readonly usage?: Usage.Usage | undefined
   readonly system?: SystemPatch | undefined
 }
@@ -113,13 +116,27 @@ function deriveImpl(self: ReadonlyArray<Entry>, at?: EntryId): View {
   const contributions = entries.map((entry) => {
     const messages = Option.match(Option.fromUndefinedOr(edits.get(entry.id)), {
       onSome: (edit) => (edit._tag === 'omit' ? [] : edit.messages),
-      onNone: () =>
-        entry.system === undefined
-          ? (entry.messages ?? [])
-          : [
-              ...systemMessages(entry.system),
-              ...(entry.messages ?? []).filter((message) => message.role !== 'system'),
+      onNone: () => {
+        const messages =
+          entry.system === undefined
+            ? (entry.messages ?? [])
+            : [
+                ...systemMessages(entry.system),
+                ...(entry.messages ?? []).filter((message) => message.role !== 'system'),
+              ]
+        if (entry.status !== 'error' || entry.error?.reason._tag !== 'InvalidOutputError')
+          return messages
+        return [
+          ...messages,
+          Prompt.userMessage({
+            content: [
+              Prompt.textPart({
+                text: 'Your previous response could not be validated. The rejected output is unavailable. Try again using only the tools offered in this request and arguments matching their schemas.',
+              }),
             ],
+          }),
+        ]
+      },
     })
     return messages.filter(
       (message) =>

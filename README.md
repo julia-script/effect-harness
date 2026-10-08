@@ -51,7 +51,7 @@ The generic harness handles model and tool execution. The durable package adds d
 | Show conversation progress in a UI      | [Observe committed changes](docs/observations.md)     |
 | Let users authorize their accounts      | [Add account sign-in](docs/how-to/account-sign-in.md) |
 
-Read [replay and recovery](docs/explanation/recovery.md) before enabling tools with external side effects. Saved receipts protect committed domain changes; recovery of an external action depends on that tool's policy. [Effect compatibility](docs/reference/compatibility.md) describes the current patch requirements and how consumers apply them.
+Read [replay and recovery](docs/explanation/recovery.md) before enabling tools with external side effects. Saved receipts protect committed domain changes; recovery of an external action depends on that tool's policy. [Effect compatibility](docs/reference/compatibility.md) describes native response validation and recovery behavior.
 
 ## Work on the repository
 

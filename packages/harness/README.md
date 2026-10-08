@@ -63,4 +63,4 @@ Import concept modules through public subpaths, as above. Root imports also expo
 - [Configuration reference](../../docs/reference/configuration.md): selection and execution policies.
 - [Service reference](../../docs/reference/packages.md#generic-harness): Layer dependencies.
 
-Unknown-tool settlement has an [Effect compatibility requirement](../../docs/reference/compatibility.md). License attribution is retained in [NOTICE](NOTICE).
+Model responses use native Effect AI validation. See [Effect compatibility](../../docs/reference/compatibility.md) for failed-response recording and retry behavior. License attribution is retained in [NOTICE](NOTICE).

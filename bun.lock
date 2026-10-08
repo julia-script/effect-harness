@@ -123,9 +123,6 @@
       },
     },
   },
-  "patchedDependencies": {
-    "effect@4.0.1": "patches/effect@4.0.1.patch",
-  },
   "overrides": {
     "@effect/platform-node-shared": "4.0.1",
     "effect": "4.0.1",

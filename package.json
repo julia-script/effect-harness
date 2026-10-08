@@ -45,8 +45,5 @@
     "@effect/platform-node-shared": "4.0.1",
     "effect": "4.0.1"
   },
-  "packageManager": "bun@1.4.2",
-  "patchedDependencies": {
-    "effect@4.0.1": "patches/effect@4.0.1.patch"
-  }
+  "packageManager": "bun@1.4.2"
 }

@@ -17,7 +17,7 @@ import * as Uppercase from './Uppercase.ts'
 
 export const sessionId = Identity.SessionId.make('example')
 
-const Configuration = Conversation.layerConfiguration({
+export const Configuration = Conversation.layerConfiguration({
   settings: {
     retry: { enabled: false },
     compaction: { enabled: false },

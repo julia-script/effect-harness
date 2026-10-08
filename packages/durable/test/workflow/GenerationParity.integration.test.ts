@@ -119,6 +119,133 @@ const descriptor = (model: NativeModel.LanguageModel): Model.Descriptor => ({
 })
 
 describe('GenerationParity', () => {
+  for (const outcome of ['recover', 'exhaust', 'later-input'] as const) {
+    it.effect(
+      `records rejected tool responses and handles ${outcome} without inventing calls`,
+      () =>
+        Effect.gen(function* () {
+          const requests: Prompt.Prompt[] = []
+          let executions = 0
+          const toolkit = Toolkit.make(
+            AiTool.make('known', {
+              parameters: Schema.Struct({ text: Schema.String }),
+              success: Schema.String,
+            }),
+          )
+          const tools = yield* Tool.bind(toolkit, { known: { replay: 'safe' } }).pipe(
+            Effect.provide(
+              toolkit.toLayer({
+                known: ({ text }) =>
+                  Effect.sync(() => {
+                    executions++
+                    return text
+                  }),
+              }),
+            ),
+          )
+          const native = yield* NativeModel.make({
+            generateText: () => Effect.succeed([]),
+            streamText: ({ prompt }) => {
+              requests.push(prompt)
+              const corrected = prompt.content.some(
+                (message) =>
+                  message.role === 'user' &&
+                  message.content.some(
+                    (part) =>
+                      part.type === 'text' &&
+                      part.text.includes('Your previous response could not be validated'),
+                  ),
+              )
+              return Stream.fromIterable<Response.StreamPartEncoded>(
+                corrected && outcome !== 'exhaust'
+                  ? answer
+                  : [
+                      { type: 'text-start', id: 'partial' },
+                      { type: 'text-delta', id: 'partial', delta: 'incomplete response' },
+                      {
+                        type: 'tool-call',
+                        id: 'rejected-call',
+                        name: 'unoffered',
+                        params: { text: 'hello' },
+                        providerExecuted: false,
+                      },
+                      finish('tool-calls'),
+                    ],
+              ).pipe(Stream.rechunk(1))
+            },
+          })
+          yield* Effect.gen(function* () {
+            const session = yield* Session.Session
+            yield* session.root()
+            yield* selectModel(session)
+            const payload = input(`invalid-tool-${outcome}`)
+            const receipt = yield* awaitTransition(Submission.execute(payload))
+            assert.strictEqual(receipt.status, outcome === 'recover' ? 'done' : 'unanswered')
+            if (receipt._tag === 'InputUnanswered')
+              assert.strictEqual(receipt.reason, 'model_error')
+            assert.strictEqual(requests.length, outcome === 'later-input' ? 1 : 2)
+            assert.strictEqual(executions, 0)
+            const view = yield* Conversation.context(session, Record.ROOT_CONVERSATION_ID)
+            const failures = view.entries.filter((entry) => entry.status === 'error')
+            assert.strictEqual(failures.length, outcome === 'exhaust' ? 2 : 1)
+            for (const entry of failures) {
+              assert.ok(AiError.isAiError(entry.error))
+              assert.strictEqual(entry.error.reason._tag, 'InvalidOutputError')
+              assert.strictEqual(entry.error.module, 'LanguageModel')
+              assert.strictEqual(entry.error.method, 'streamText')
+              assert.ok(
+                entry.messages?.some(
+                  (message) =>
+                    message.role === 'assistant' &&
+                    message.content.some(
+                      (part) => part.type === 'text' && part.text === 'incomplete response',
+                    ),
+                ),
+              )
+            }
+            assert.isFalse(
+              view.messages.some(
+                (message) =>
+                  message.role === 'assistant' &&
+                  message.content.some(
+                    (part) => part.type === 'text' && part.text === 'incomplete response',
+                  ),
+              ),
+            )
+            assert.isFalse(view.messages.some((message) => message.role === 'tool'))
+            assert.isFalse(
+              view.messages.some(
+                (message) =>
+                  message.role === 'assistant' &&
+                  message.content.some((part) => part.type === 'tool-call'),
+              ),
+            )
+            const beforeReplay = requests.length
+            assert.deepStrictEqual(yield* awaitTransition(Submission.execute(payload)), receipt)
+            assert.strictEqual(requests.length, beforeReplay)
+            if (outcome === 'later-input') {
+              const next = yield* awaitTransition(Submission.execute(input('after-invalid-tool')))
+              assert.strictEqual(next.status, 'done')
+              assert.strictEqual(requests.length, 2)
+              assert.strictEqual(executions, 0)
+            }
+          }).pipe(
+            Effect.provide(
+              runtime(
+                descriptor(native),
+                Registry.layer([{ name: 'tools', tools }]),
+                Conversation.layerConfiguration({
+                  settings: {
+                    compaction: { enabled: false },
+                    retry: { enabled: outcome !== 'later-input', maxRetries: 1, baseDelayMs: 0 },
+                  },
+                }),
+              ),
+            ),
+          )
+        }),
+    )
+  }
   it.effect(
     'replays a committed preparation before changed model/section planning when the native cache is lost',
     () =>
@@ -536,7 +663,7 @@ describe('GenerationParity', () => {
                 Effect.map((call) =>
                   call === 1
                     ? Stream.fromIterable<Response.StreamPartEncoded>([
-                        ...['slow', 'fast', 'broken', 'unoffered'].map((name) => ({
+                        ...['slow', 'fast', 'broken'].map((name) => ({
                           type: 'tool-call' as const,
                           id: name,
                           name,
@@ -583,7 +710,7 @@ describe('GenerationParity', () => {
           assert.deepStrictEqual(finished, ['fast', 'slow'])
           assert.deepStrictEqual(
             seen.map((item) => item.id),
-            ['slow', 'fast', 'broken', 'unoffered'],
+            ['slow', 'fast', 'broken'],
           )
           assert.ok(seen[0]!.entryId > seen[1]!.entryId)
           assert.strictEqual(

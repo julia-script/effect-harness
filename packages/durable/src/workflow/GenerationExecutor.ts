@@ -178,7 +178,13 @@ const appendAssistant = Effect.fnUntraced(function* (
     model: messages,
     data: yield* Schema.encodeEffect(Serialization.json(Entry.AssistantData))({
       timestamp: yield* DateTime.now,
-      harness: { status, usage: disposition.usage },
+      harness: {
+        status,
+        usage: disposition.usage,
+        ...(disposition._tag === 'failure' && disposition.error !== undefined
+          ? { error: disposition.error }
+          : {}),
+      },
     }).pipe(Effect.mapError(codecError)),
   })
 })
@@ -705,6 +711,10 @@ export const layer: Layer.Layer<
                             : (descriptor.usage?.(finish.value.usage, finish.value.metadata) ??
                               Usage.fromResponse(finish.value.usage)),
                           message: text,
+                          error: Model.providerError(
+                            streamed._tag === 'Failure' ? streamed.failure : text,
+                            pinned.request.model.provider,
+                          ),
                           ...(descriptor.classify?.(
                             streamed._tag === 'Failure' ? streamed.failure : text,
                           ) ??
