@@ -1,6 +1,6 @@
 {
   "name": "effect-harness",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Embedded durable AI conversations with Effect, atomic persistence and phase tasks.",
   "repository": {
     "type": "git",
