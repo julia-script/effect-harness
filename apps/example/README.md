@@ -1,5 +1,7 @@
 # Embedded harness example
 
+The [conversation and task tour](TOUR.md) adds ten runnable examples: recovery, forks, extensions, subagents, checkout, reminders, context, documents and shared observations. Build once, then run `bun run --cwd apps/example tour -- all` from the repository root.
+
 This offline application composes a native Effect AI model, an uppercase Toolkit, checkpoint tasks and SQLite persistence. Its integration test opens the same database twice and verifies that saved model, tool and greeting results are reused.
 
 From the repository root:
