@@ -7,8 +7,8 @@ Use this guide to drive a UI, terminal or integration from saved conversation st
 Provide `View.layer` with the same Store as the Session. Provide `Event.layer` with that View:
 
 ```ts
-import * as Event from '@effect-harness/durable/Event'
-import * as View from '@effect-harness/durable/View'
+import * as Event from 'effect-harness/durable/Event'
+import * as View from 'effect-harness/durable/View'
 import * as Layer from 'effect/Layer'
 
 export const Observations = Event.layer.pipe(Layer.provideMerge(View.layer))
@@ -21,8 +21,8 @@ This Layer exposes both services and requires Store. Choose View for structural 
 This listener logs an initial entry count and ordered semantic batches. Provide `Observations` from your application's Store before running it:
 
 ```ts
-import * as Event from '@effect-harness/durable/Event'
-import type * as Record from '@effect-harness/durable/Record'
+import * as Event from 'effect-harness/durable/Event'
+import type * as Record from 'effect-harness/durable/Record'
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
 

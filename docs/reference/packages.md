@@ -1,12 +1,12 @@
-# Packages and services
+# Modules and services
 
-This reference covers package boundaries, public module entry points and service construction. Individual function signatures and schema fields are documented in the TypeScript API comments.
+This reference covers module boundaries, public module entry points and service construction. Individual function signatures and schema fields are documented in the TypeScript API comments.
 
-All packages use Effect v4. Platform adapters are supplied by the application. Package-root imports expose concept namespaces; public subpath imports allow direct module access. Internal and retired storage subpaths are excluded from package exports.
+Install `effect-harness` for the generic harness, durable state, authorization and provider modules. Platform adapters are supplied by the application. Root and directory imports expose concept namespaces; public subpath imports allow direct module access. Internal and retired storage subpaths are excluded from package exports.
 
 ## Generic harness
 
-`@effect-harness/harness` contains model selection, prompt preparation, extension resolution and model/tool execution. It has no dependency on durable storage or WorkflowEngine.
+`effect-harness` contains model selection, prompt preparation, extension resolution and model/tool execution. It has no dependency on durable storage or WorkflowEngine.
 
 | Public module                                      | Contract                                                           |
 | -------------------------------------------------- | ------------------------------------------------------------------ |
@@ -27,7 +27,7 @@ All packages use Effect v4. Platform adapters are supplied by the application. P
 
 ## Durable state and execution
 
-`@effect-harness/durable` adds committed state and executor registration for ordinary Effect Workflows.
+`effect-harness/durable` adds committed state and executor registration for ordinary Effect Workflows.
 
 | Layer                                      | Outputs                                                  | Required inputs                                                            | Acquisition error |
 | ------------------------------------------ | -------------------------------------------------------- | -------------------------------------------------------------------------- | ----------------- |
@@ -54,7 +54,7 @@ Public domain modules include `Record`, `Identity`, `Entry`, `Document`, `Conver
 
 Provider catalogue Layers output harness Model.Catalog and, where documented, the exact captured native client. They describe caller-declared models; construction does not establish remote entitlement.
 
-| Package / constructor                                    | Required inputs        | Outputs                                 |
+| Module / constructor                                     | Required inputs        | Outputs                                 |
 | -------------------------------------------------------- | ---------------------- | --------------------------------------- |
 | `provider-openai/OpenAiLanguageModel.layer`              | Native OpenAiClient    | LanguageModel, captured OpenAiClient    |
 | `provider-openai/OpenAiLanguageModel.layerApiKey`        | HttpClient             | LanguageModel, OpenAiClient             |
@@ -68,11 +68,11 @@ Provider catalogue Layers output harness Model.Catalog and, where documented, th
 | `provider-anthropic/AnthropicAccountLanguageModel.layer` | OAuth, HttpClient      | LanguageModel, AnthropicClient          |
 | `provider-anthropic/Catalog.layer`                       | Native AnthropicClient | Catalog                                 |
 
-These package names have the prefix `@effect-harness/`. API-key constructors accept Redacted keys. Config variants resolve Config.Wrap options at Layer construction and add ConfigError to their error channels. OpenAI uses Responses; Anthropic uses Messages. Direct transports preserve structured Prompt history and perform tool-media conversion at the captured client boundary.
+These module paths have the prefix `effect-harness/`. API-key constructors accept Redacted keys. Config variants resolve Config.Wrap options at Layer construction and add ConfigError to their error channels. OpenAI uses Responses; Anthropic uses Messages. Direct transports preserve structured Prompt history and perform tool-media conversion at the captured client boundary.
 
 ## Authorization
 
-`@effect-harness/auth` supplies Credential, CredentialStore, Pkce, Token and Jwt modules. `CredentialStore.layerMemory` requires Crypto. `layerProtectedFile({ path, lockRetries? })` requires FileSystem, Path and Crypto and can fail with AuthError. It stores plaintext secrets behind owner-only permissions, atomic replacement and cross-process locks; it provides no encryption.
+`effect-harness/auth` supplies Credential, CredentialStore, Pkce, Token and Jwt modules. `CredentialStore.layerMemory` requires Crypto. `layerProtectedFile({ path, lockRetries? })` requires FileSystem, Path and Crypto and can fail with AuthError. It stores plaintext secrets behind owner-only permissions, atomic replacement and cross-process locks; it provides no encryption.
 
 `JoseJwt.layer` requires HttpClient and provides Jwt verification. It validates signatures, issuer, audience, required claims, expiry and a supplied nonce before constructing identity.
 
@@ -82,7 +82,7 @@ These package names have the prefix `@effect-harness/`. API-key constructors acc
 
 ## Installed Claude Code
 
-`@effect-harness/provider-claude-code` exports Cli, ClaudeCodeLanguageModel, LanguageModel, Catalog, IntentServer, Prompt and RequestOptions. `Cli.layer` requires ChildProcessSpawner. Its defaults are executable `claude` and maximum output of 16 MiB. Requests require `policyTrust: 'trusted-installed-cli'`; without it they fail. Authentication belongs to the installed CLI.
+`effect-harness/provider-claude-code` exports Cli, ClaudeCodeLanguageModel, LanguageModel, Catalog, IntentServer, Prompt and RequestOptions. `Cli.layer` requires ChildProcessSpawner. Its defaults are executable `claude` and maximum output of 16 MiB. Requests require `policyTrust: 'trusted-installed-cli'`; without it they fail. Authentication belongs to the installed CLI.
 
 `ClaudeCodeLanguageModel.layer({ model, cwd?, effort?, historyMode? })` requires Cli and IntentServer, and exposes LanguageModel plus the captured Cli. IntentServer uses a scoped loopback HttpServer; `layerDisabled` supports requests without tools. Native AiError describes unsupported, authentication, subprocess and protocol failures.
 

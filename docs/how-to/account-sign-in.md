@@ -2,10 +2,10 @@
 
 Use this guide when your application lets a user authorize an account for inference. The host owns the sign-in UI, browser navigation and callback delivery. The provider services own protocol validation, application-owned credentials and token refresh.
 
-## Install the authorization packages
+## Install the library and platform adapter
 
 ```sh
-npm install @effect-harness/auth @effect-harness/provider-openai @effect-harness/provider-anthropic effect @effect/platform-node
+npm install effect-harness effect @effect/platform-node
 ```
 
 Choose the transport the application actually needs: direct ChatGPT authorization, direct Anthropic authorization, or the separately installed Claude Code CLI. A successful protocol exchange still depends on the provider granting the required inference permissions.
@@ -16,7 +16,7 @@ Use a dedicated credential directory. Provide native FileSystem, Path and Crypto
 
 ```ts
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import * as CredentialStore from '@effect-harness/auth/CredentialStore'
+import * as CredentialStore from 'effect-harness/auth/CredentialStore'
 import * as Layer from 'effect/Layer'
 
 export const Credentials = CredentialStore.layerProtectedFile({
@@ -32,9 +32,9 @@ Build `ChatGpt.layer({ appName })` with Credentials, Jwt, HttpClient and Crypto.
 
 ```ts
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import * as CredentialStore from '@effect-harness/auth/CredentialStore'
-import * as JoseJwt from '@effect-harness/auth/JoseJwt'
-import * as ChatGpt from '@effect-harness/provider-openai/ChatGpt'
+import * as CredentialStore from 'effect-harness/auth/CredentialStore'
+import * as JoseJwt from 'effect-harness/auth/JoseJwt'
+import * as ChatGpt from 'effect-harness/provider-openai/ChatGpt'
 import * as Layer from 'effect/Layer'
 import * as FetchHttpClient from 'effect/http/FetchHttpClient'
 
@@ -52,7 +52,7 @@ export const Accounts = ChatGpt.layer({ appName: 'my-application' }).pipe(
 Set `appName` to your actual application's name. After the user starts sign-in, call `begin` and open the returned URL through the UI. Return the full callback URL to `complete` on the **same scoped authorization service**:
 
 ```ts
-import { ChatGpt } from '@effect-harness/provider-openai/ChatGpt'
+import { ChatGpt } from 'effect-harness/provider-openai/ChatGpt'
 import * as Effect from 'effect/Effect'
 import * as Redacted from 'effect/Redacted'
 
@@ -79,7 +79,7 @@ Completion checks state, PKCE, redirect, OIDC identity and direct-inference scop
 Provide Credentials, HttpClient and Crypto to `provider-anthropic/OAuth.layer`. Copy-code mode needs no local server:
 
 ```ts
-import { OAuth } from '@effect-harness/provider-anthropic/OAuth'
+import { OAuth } from 'effect-harness/provider-anthropic/OAuth'
 import * as Effect from 'effect/Effect'
 import * as Redacted from 'effect/Redacted'
 
@@ -103,7 +103,7 @@ For browser mode, supply the scoped HttpServer required by `OAuth.layerCallback(
 
 ## Use an installed Claude Code CLI
 
-For this path, install and sign in to the CLI independently, then install `@effect-harness/provider-claude-code` and `@effect/platform-node` in the application.
+For this path, install and sign in to the CLI independently, then install `effect-harness` and `@effect/platform-node` in the application.
 
 Build `Cli.layer({ policyTrust: 'trusted-installed-cli' })` with ChildProcessSpawner after auditing the installed executable and its managed policy. Supply `IntentServer.layer` with a scoped loopback HttpServer when exposing harness tools, or `IntentServer.layerDisabled` without tools. Provide those services to `ClaudeCodeLanguageModel.layer` or the provider catalogue.
 

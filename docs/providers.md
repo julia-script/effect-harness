@@ -2,18 +2,12 @@
 
 Use this guide to replace a local model with OpenAI or Anthropic while keeping the harness Executor, Registry and durable Workflow composition. You need an API key, a model ID available to that account and that model's context/output limits.
 
-## Install the provider adapter
+## Install Effect Harness
 
-For OpenAI:
-
-```sh
-npm install @effect-harness/provider-openai effect
-```
-
-For Anthropic:
+OpenAI and Anthropic adapters are included in the same package:
 
 ```sh
-npm install @effect-harness/provider-anthropic effect
+npm install effect-harness effect
 ```
 
 Each adapter builds native Effect AI LanguageModels. A harness application uses its `Catalog` Layer to select those models by provider/model reference. An application making direct native LanguageModel calls can use the LanguageModel Layer instead; see [provider services](reference/packages.md#providers).
@@ -23,7 +17,7 @@ Each adapter builds native Effect AI LanguageModels. A harness application uses 
 Supply the API key and the limits through your ConfigProvider. This example declares one model and uses the native fetch HTTP client:
 
 ```ts
-import * as Catalog from '@effect-harness/provider-openai/Catalog'
+import * as Catalog from 'effect-harness/provider-openai/Catalog'
 import * as Config from 'effect/Config'
 import * as Layer from 'effect/Layer'
 import * as FetchHttpClient from 'effect/http/FetchHttpClient'
@@ -41,14 +35,14 @@ export const Models = Catalog.layerApiKeyConfig({
 
 Set all four variables through your application's ConfigProvider. Context and output limits must be positive, and the output limit cannot exceed the context window. Use values for the selected model rather than copying another model's advertised limits.
 
-Provide `Models` to `harness/Executor.layer` and to the durable executor registration graph. Reuse the same Layer value so descriptors and requests share the captured client.
+Provide `Models` to `effect-harness/Executor.layer` and to the durable executor registration graph. Reuse the same Layer value so descriptors and requests share the captured client.
 
 ## Build an Anthropic catalogue
 
 The equivalent Anthropic Layer is:
 
 ```ts
-import * as Catalog from '@effect-harness/provider-anthropic/Catalog'
+import * as Catalog from 'effect-harness/provider-anthropic/Catalog'
 import * as Config from 'effect/Config'
 import * as Layer from 'effect/Layer'
 import * as FetchHttpClient from 'effect/http/FetchHttpClient'
@@ -71,9 +65,9 @@ Declare thinking, caching and request-option capabilities in the catalogue entry
 Commit the matching provider/model reference to the conversation's agent document. This helper updates the root conversation:
 
 ```ts
-import * as Conversation from '@effect-harness/durable/Conversation'
-import * as Session from '@effect-harness/durable/Session'
-import type * as Agent from '@effect-harness/harness/Agent'
+import * as Conversation from 'effect-harness/durable/Conversation'
+import * as Session from 'effect-harness/durable/Session'
+import type * as Agent from 'effect-harness/Agent'
 import * as Effect from 'effect/Effect'
 
 export const selectModel = Effect.fn('selectModel')(function* (model: Agent.ModelRef) {
@@ -96,4 +90,4 @@ You can now submit messages through `Submission.execute`. If the caller should a
 
 For mixed text/media results, bind a tool projector that returns native Prompt parts in ToolResult.content. Keep private details and controls in their separate fields. Select a provider/model that accepts those parts and handle typed AI failures for unsupported content. The [tool-media reference](reference/packages.md#tool-media-and-native-validation) lists the translation and validation boundaries.
 
-Unknown tool-call settlement has an additional [Effect compatibility requirement](reference/compatibility.md). The installed Claude Code adapter has different [history and media constraints](reference/packages.md#installed-claude-code).
+See [native response validation](reference/compatibility.md#model-response-validation) for failed-response recording and retry behavior. The installed Claude Code adapter has different [history and media constraints](reference/packages.md#installed-claude-code).

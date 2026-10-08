@@ -26,49 +26,25 @@
     "apps/example": {
       "name": "@effect-harness/example",
       "dependencies": {
-        "@effect-harness/durable": "workspace:*",
-        "@effect-harness/harness": "workspace:*",
         "@effect/platform-bun": "4.0.1",
         "@effect/sql-sqlite-bun": "4.0.1",
         "effect": "catalog:",
+        "effect-harness": "workspace:*",
       },
     },
-    "packages/auth": {
-      "name": "@effect-harness/auth",
+    "packages/effect-harness": {
+      "name": "effect-harness",
       "version": "0.0.0",
       "dependencies": {
+        "@effect/ai-anthropic": "4.0.1",
+        "@effect/ai-openai": "4.0.1",
+        "diff": "^8.0.2",
         "jose": "6.2.12",
       },
       "devDependencies": {
-        "effect": "catalog:",
-      },
-      "peerDependencies": {
-        "effect": "^4.0.1",
-      },
-    },
-    "packages/durable": {
-      "name": "@effect-harness/durable",
-      "version": "0.0.0",
-      "dependencies": {
-        "@effect-harness/harness": "workspace:^",
-      },
-      "devDependencies": {
+        "@effect/platform-node": "4.0.1",
         "@effect/sql-sqlite-bun": "4.0.1",
         "@effect/sql-sqlite-node": "4.0.1",
-        "effect": "catalog:",
-      },
-      "peerDependencies": {
-        "effect": "^4.0.1",
-      },
-    },
-    "packages/harness": {
-      "name": "@effect-harness/harness",
-      "version": "0.0.0",
-      "dependencies": {
-        "diff": "^8.0.2",
-      },
-      "devDependencies": {
-        "@effect/platform-node": "4.0.1",
         "effect": "catalog:",
       },
       "peerDependencies": {
@@ -79,49 +55,6 @@
         "@effect/platform-node",
       ],
     },
-    "packages/provider-anthropic": {
-      "name": "@effect-harness/provider-anthropic",
-      "version": "0.0.0",
-      "dependencies": {
-        "@effect-harness/auth": "workspace:^",
-        "@effect-harness/harness": "workspace:^",
-        "@effect/ai-anthropic": "4.0.1",
-      },
-      "devDependencies": {
-        "effect": "catalog:",
-      },
-      "peerDependencies": {
-        "effect": "^4.0.1",
-      },
-    },
-    "packages/provider-claude-code": {
-      "name": "@effect-harness/provider-claude-code",
-      "version": "0.0.0",
-      "dependencies": {
-        "@effect-harness/harness": "workspace:^",
-      },
-      "devDependencies": {
-        "effect": "catalog:",
-      },
-      "peerDependencies": {
-        "effect": "^4.0.1",
-      },
-    },
-    "packages/provider-openai": {
-      "name": "@effect-harness/provider-openai",
-      "version": "0.0.0",
-      "dependencies": {
-        "@effect-harness/auth": "workspace:^",
-        "@effect-harness/harness": "workspace:^",
-        "@effect/ai-openai": "4.0.1",
-      },
-      "devDependencies": {
-        "effect": "catalog:",
-      },
-      "peerDependencies": {
-        "effect": "^4.0.1",
-      },
-    },
   },
   "overrides": {
     "@effect/platform-node-shared": "4.0.1",
@@ -131,19 +64,7 @@
     "effect": "4.0.1",
   },
   "packages": {
-    "@effect-harness/auth": ["@effect-harness/auth@workspace:packages/auth"],
-
-    "@effect-harness/durable": ["@effect-harness/durable@workspace:packages/durable"],
-
     "@effect-harness/example": ["@effect-harness/example@workspace:apps/example"],
-
-    "@effect-harness/harness": ["@effect-harness/harness@workspace:packages/harness"],
-
-    "@effect-harness/provider-anthropic": ["@effect-harness/provider-anthropic@workspace:packages/provider-anthropic"],
-
-    "@effect-harness/provider-claude-code": ["@effect-harness/provider-claude-code@workspace:packages/provider-claude-code"],
-
-    "@effect-harness/provider-openai": ["@effect-harness/provider-openai@workspace:packages/provider-openai"],
 
     "@effect/ai-anthropic": ["@effect/ai-anthropic@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-hJ3Es38q8C43CLiRInv0QLyjqayHIlrtOx7wCcT1x8LjYC1Ev/An6EhkUFstQfvWkI7ydo1tUe6oMWSS7NNW2g=="],
 
@@ -396,6 +317,8 @@
     "diff": ["diff@8.0.4", "", {}, "sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw=="],
 
     "effect": ["effect@4.0.1", "", {}, "sha512-b1VlQG9g8fwxE5QnIZuPoOP/0MsqHJSRKxUijjoM80E5q95FXrX5yWtY5XI8G+GJsBQAVSDbLS458z9a++uVvw=="],
+
+    "effect-harness": ["effect-harness@workspace:packages/effect-harness"],
 
     "es-module-lexer": ["es-module-lexer@2.3.2", "", {}, "sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw=="],
 

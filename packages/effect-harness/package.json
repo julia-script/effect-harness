@@ -1,0 +1,149 @@
+{
+  "name": "effect-harness",
+  "version": "0.0.0",
+  "description": "Durable AI conversations built with native Effect AI and Workflow services.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/julia-script/effect-harness.git",
+    "directory": "packages/effect-harness"
+  },
+  "files": [
+    "dist",
+    "NOTICE"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "default": "./dist/tools/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./env": {
+      "types": "./dist/env/index.d.ts",
+      "default": "./dist/env/index.js"
+    },
+    "./Error": null,
+    "./env/Exec": null,
+    "./env/Watch": null,
+    "./tools/Mutation": null,
+    "./tools/Path": null,
+    "./env/internal/*": null,
+    "./tools/internal/*": null,
+    "./internal/*": null,
+    "./internal": null,
+    "./env/internal": null,
+    "./tools/internal": null,
+    "./env/Error": null,
+    "./durable": {
+      "types": "./dist/durable/index.d.ts",
+      "default": "./dist/durable/index.js"
+    },
+    "./durable/storage/State": null,
+    "./durable/storage/Backend": null,
+    "./durable/storage/State/*": null,
+    "./durable/storage/Backend/*": null,
+    "./durable/internal": null,
+    "./durable/internal/*": null,
+    "./durable/storage/internal": null,
+    "./durable/storage/internal/*": null,
+    "./durable/workflow/internal": null,
+    "./durable/workflow/internal/*": null,
+    "./durable/testing/internal": null,
+    "./durable/testing/internal/*": null,
+    "./durable/storage": {
+      "types": "./dist/durable/storage/index.d.ts",
+      "default": "./dist/durable/storage/index.js"
+    },
+    "./durable/workflow": {
+      "types": "./dist/durable/workflow/index.d.ts",
+      "default": "./dist/durable/workflow/index.js"
+    },
+    "./durable/testing": {
+      "types": "./dist/durable/testing/index.d.ts",
+      "default": "./dist/durable/testing/index.js"
+    },
+    "./durable/storage/SqlStore": null,
+    "./durable/storage/SqliteStore": null,
+    "./durable/storage/BunSqliteStore": null,
+    "./durable/storage/NodeSqliteStore": null,
+    "./durable/storage/Sqlite": null,
+    "./durable/storage/Bun": null,
+    "./durable/storage/Node": null,
+    "./durable/*": {
+      "types": "./dist/durable/*.d.ts",
+      "default": "./dist/durable/*.js"
+    },
+    "./auth": {
+      "types": "./dist/auth/index.d.ts",
+      "default": "./dist/auth/index.js"
+    },
+    "./auth/*": {
+      "types": "./dist/auth/*.d.ts",
+      "default": "./dist/auth/*.js"
+    },
+    "./provider-openai": {
+      "types": "./dist/provider-openai/index.d.ts",
+      "default": "./dist/provider-openai/index.js"
+    },
+    "./provider-openai/*": {
+      "types": "./dist/provider-openai/*.d.ts",
+      "default": "./dist/provider-openai/*.js"
+    },
+    "./provider-anthropic": {
+      "types": "./dist/provider-anthropic/index.d.ts",
+      "default": "./dist/provider-anthropic/index.js"
+    },
+    "./provider-anthropic/*": {
+      "types": "./dist/provider-anthropic/*.d.ts",
+      "default": "./dist/provider-anthropic/*.js"
+    },
+    "./provider-claude-code": {
+      "types": "./dist/provider-claude-code/index.d.ts",
+      "default": "./dist/provider-claude-code/index.js"
+    },
+    "./provider-claude-code/*": {
+      "types": "./dist/provider-claude-code/*.d.ts",
+      "default": "./dist/provider-claude-code/*.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch --preserveWatchOutput",
+    "typecheck": "tsc --noEmit",
+    "test": "cd ../.. && vitest run packages/effect-harness/test",
+    "typetest": "cd ../.. && tstyche packages/effect-harness/typetest",
+    "prepack": "bun run build"
+  },
+  "dependencies": {
+    "@effect/ai-anthropic": "4.0.1",
+    "@effect/ai-openai": "4.0.1",
+    "diff": "^8.0.2",
+    "jose": "6.2.12"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "4.0.1",
+    "@effect/sql-sqlite-bun": "4.0.1",
+    "@effect/sql-sqlite-node": "4.0.1",
+    "effect": "catalog:"
+  },
+  "peerDependencies": {
+    "@effect/platform-node": "4.0.1",
+    "effect": "^4.0.1"
+  },
+  "peerDependenciesMeta": {
+    "@effect/platform-node": {
+      "optional": true
+    }
+  }
+}

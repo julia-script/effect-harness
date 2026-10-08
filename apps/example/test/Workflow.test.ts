@@ -1,6 +1,6 @@
 import { BunServices } from '@effect/platform-bun'
 import { assert, it } from '@effect/vitest'
-import { Submission } from '@effect-harness/durable/workflow/Submission'
+import { Submission } from 'effect-harness/durable/workflow/Submission'
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'

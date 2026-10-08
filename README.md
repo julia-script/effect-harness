@@ -16,29 +16,40 @@ Compose native Effect AI models and Toolkits, keep conversation state in typed d
 
 [Run your first durable conversation](docs/tutorials/first-conversation.md): build a local model, bind a tool, submit a message and replay its receipt. No API key or account is needed.
 
-Install the core packages with your preferred package manager:
+Install `effect-harness` and Effect with your preferred package manager:
 
 ```sh
-npm install @effect-harness/harness @effect-harness/durable effect
-pnpm add @effect-harness/harness @effect-harness/durable effect
-yarn add @effect-harness/harness @effect-harness/durable effect
-bun add @effect-harness/harness @effect-harness/durable effect
+npm install effect-harness effect
+pnpm add effect-harness effect
+yarn add effect-harness effect
+bun add effect-harness effect
 ```
 
-Run one of these commands. Add a provider adapter when you are ready to use a remote model. The docs assume you already know Effect; the [documentation index](docs/README.md) offers tutorials, task guides, reference and design explanations.
+Run one of these commands. The package includes the harness, durable state, authorization and provider adapters. The docs assume you already know Effect; the [documentation index](docs/README.md) offers tutorials, task guides, reference and design explanations.
 
-## Choose your packages
+## Choose your imports
 
-| Package                                                                         | Use it for                                                                                               |
-| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| [@effect-harness/harness](packages/harness/README.md)                           | Model selection, prompt preparation, extensions, hooks and native Toolkit execution                      |
-| [@effect-harness/durable](packages/durable/README.md)                           | Sessions, typed documents, conversation state, committed observations and Workflow executor registration |
-| [@effect-harness/auth](packages/auth/README.md)                                 | Credential storage, PKCE, token handling and JWT verification for application-owned account flows        |
-| [@effect-harness/provider-openai](packages/provider-openai/README.md)           | OpenAI API keys and explicit ChatGPT account authorization                                               |
-| [@effect-harness/provider-anthropic](packages/provider-anthropic/README.md)     | Anthropic API keys and explicit account authorization                                                    |
-| [@effect-harness/provider-claude-code](packages/provider-claude-code/README.md) | An installed Claude Code CLI using its own login                                                         |
+Root and subpath imports expose concept namespaces. Leaf imports select individual modules:
 
-The generic harness handles model and tool execution. The durable package adds domain state and native Workflow registration. Provider and authorization packages are separate so you can compose only the services your application needs.
+```ts
+import * as Harness from 'effect-harness'
+import * as Durable from 'effect-harness/durable'
+import * as OpenAI from 'effect-harness/provider-openai'
+
+import * as Model from 'effect-harness/Model'
+import * as Session from 'effect-harness/durable/Session'
+```
+
+| Import                                                                      | Use it for                                                                                               |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| [effect-harness](docs/modules/harness.md)                                   | Model selection, prompt preparation, extensions, hooks and native Toolkit execution                      |
+| [effect-harness/durable](docs/modules/durable.md)                           | Sessions, typed documents, conversation state, committed observations and Workflow executor registration |
+| [effect-harness/auth](docs/modules/auth.md)                                 | Credential storage, PKCE, token handling and JWT verification for application-owned account flows        |
+| [effect-harness/provider-openai](docs/modules/provider-openai.md)           | OpenAI API keys and explicit ChatGPT account authorization                                               |
+| [effect-harness/provider-anthropic](docs/modules/provider-anthropic.md)     | Anthropic API keys and explicit account authorization                                                    |
+| [effect-harness/provider-claude-code](docs/modules/provider-claude-code.md) | An installed Claude Code CLI using its own login                                                         |
+
+The generic harness handles model and tool execution. The `durable` modules add domain state and native Workflow registration. Provider and authorization modules have their own entry points so you can compose the services your application needs. Platform and storage adapters remain application dependencies.
 
 ## Build your application
 

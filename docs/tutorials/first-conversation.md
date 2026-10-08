@@ -13,7 +13,7 @@ mkdir first-conversation
 cd first-conversation
 npm init -y
 npm pkg set type=module
-npm install effect @effect/platform-node @effect-harness/harness @effect-harness/durable
+npm install effect @effect/platform-node effect-harness
 npm install --save-dev typescript tsx @types/node
 ```
 
@@ -40,8 +40,8 @@ Create `tsconfig.json`:
 Create `Tools.ts`:
 
 ```ts
-import * as Registry from '@effect-harness/harness/Registry'
-import * as ToolBinding from '@effect-harness/harness/Tool'
+import * as Registry from 'effect-harness/Registry'
+import * as ToolBinding from 'effect-harness/Tool'
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -74,7 +74,7 @@ This handler only transforms text and logs the result. We permit it to run again
 Create `Model.ts`:
 
 ```ts
-import * as Model from '@effect-harness/harness/Model'
+import * as Model from 'effect-harness/Model'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -150,13 +150,13 @@ Create `Runtime.ts`:
 
 ```ts
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import * as Conversation from '@effect-harness/durable/Conversation'
-import * as DurableExecutor from '@effect-harness/durable/Executor'
-import * as Identity from '@effect-harness/durable/Identity'
-import * as Session from '@effect-harness/durable/Session'
-import * as SessionDirectory from '@effect-harness/durable/SessionDirectory'
-import * as Store from '@effect-harness/durable/Store'
-import * as HarnessExecutor from '@effect-harness/harness/Executor'
+import * as Conversation from 'effect-harness/durable/Conversation'
+import * as DurableExecutor from 'effect-harness/durable/Executor'
+import * as Identity from 'effect-harness/durable/Identity'
+import * as Session from 'effect-harness/durable/Session'
+import * as SessionDirectory from 'effect-harness/durable/SessionDirectory'
+import * as Store from 'effect-harness/durable/Store'
+import * as HarnessExecutor from 'effect-harness/Executor'
 import * as Layer from 'effect/Layer'
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import * as Model from './Model.ts'
@@ -194,10 +194,10 @@ The application supplies one Session and a native WorkflowEngine. `DurableExecut
 Create `main.ts`:
 
 ```ts
-import * as Conversation from '@effect-harness/durable/Conversation'
-import * as Identity from '@effect-harness/durable/Identity'
-import * as Session from '@effect-harness/durable/Session'
-import { Submission } from '@effect-harness/durable/workflow/Submission'
+import * as Conversation from 'effect-harness/durable/Conversation'
+import * as Identity from 'effect-harness/durable/Identity'
+import * as Session from 'effect-harness/durable/Session'
+import { Submission } from 'effect-harness/durable/workflow/Submission'
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
 import * as Prompt from 'effect/ai/Prompt'

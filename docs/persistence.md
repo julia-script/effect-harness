@@ -7,7 +7,7 @@ A recoverable application needs persistent storage for **both** the domain Store
 ## 1. Install the SQLite adapter
 
 ```sh
-npm install @effect-harness/durable effect @effect/platform-node @effect/sql-sqlite-node
+npm install effect-harness effect @effect/platform-node @effect/sql-sqlite-node
 mkdir -p data
 ```
 
@@ -21,7 +21,7 @@ Create a module with one database Layer value shared by the domain primitives an
 
 ```ts
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
-import * as SnapshotStore from '@effect-harness/durable/storage/SnapshotStore'
+import * as SnapshotStore from 'effect-harness/durable/storage/SnapshotStore'
 import * as Layer from 'effect/Layer'
 import * as KeyValueStore from 'effect/persistence/KeyValueStore'
 import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'

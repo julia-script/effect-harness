@@ -43,9 +43,9 @@ The result is `Hello, Effect`. In your application, merge `GreetingLive` with `d
 Use the built-in `Submission` declaration after registering `durable/Executor.layer`. This helper accepts identities decoded at your application's boundary:
 
 ```ts
-import type * as Identity from '@effect-harness/durable/Identity'
-import type * as Record from '@effect-harness/durable/Record'
-import { Submission } from '@effect-harness/durable/workflow/Submission'
+import type * as Identity from 'effect-harness/durable/Identity'
+import type * as Record from 'effect-harness/durable/Record'
+import { Submission } from 'effect-harness/durable/workflow/Submission'
 import * as Prompt from 'effect/ai/Prompt'
 
 export const submit = (

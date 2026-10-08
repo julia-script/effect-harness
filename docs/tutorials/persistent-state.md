@@ -13,7 +13,7 @@ mkdir persistent-state
 cd persistent-state
 npm init -y
 npm pkg set type=module
-npm install effect @effect/platform-node @effect-harness/durable
+npm install effect @effect/platform-node effect-harness
 npm install --save-dev typescript tsx @types/node
 ```
 
@@ -41,9 +41,9 @@ Create `counter.ts`:
 
 ```ts
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import * as Document from '@effect-harness/durable/Document'
-import * as Session from '@effect-harness/durable/Session'
-import * as JsonlStore from '@effect-harness/durable/storage/JsonlStore'
+import * as Document from 'effect-harness/durable/Document'
+import * as Session from 'effect-harness/durable/Session'
+import * as JsonlStore from 'effect-harness/durable/storage/JsonlStore'
 import * as Config from 'effect/Config'
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'

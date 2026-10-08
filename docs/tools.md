@@ -7,14 +7,14 @@ Use this guide to expose application functions to a harness conversation. Tools 
 Install the generic harness:
 
 ```sh
-npm install @effect-harness/harness effect
+npm install effect-harness effect
 ```
 
 Define the schemas, supply the handlers and bind them when constructing the Registry:
 
 ```ts
-import * as Registry from '@effect-harness/harness/Registry'
-import * as ToolBinding from '@effect-harness/harness/Tool'
+import * as Registry from 'effect-harness/Registry'
+import * as ToolBinding from 'effect-harness/Tool'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
@@ -42,7 +42,7 @@ Provide host service Layers while binding handlers. `Tool.bind` captures them fo
 
 ## Report progress during execution
 
-Add `Invocation.ToolCall` as a dependency to the native Tool declaration and yield that service inside its handler. Its `output`, `details` and `diagnostic` operations report distinct channels of progress. The [tutorial Toolkit](tutorials/first-conversation.md#2-bind-an-ordinary-ai-toolkit) shows the minimal binding; the API comments in `harness/Invocation` describe the reporting operations.
+Add `Invocation.ToolCall` as a dependency to the native Tool declaration and yield that service inside its handler. Its `output`, `details` and `diagnostic` operations report distinct channels of progress. The [tutorial Toolkit](tutorials/first-conversation.md#2-bind-an-ordinary-ai-toolkit) shows the minimal binding; the API comments in `effect-harness/Invocation` describe the reporting operations.
 
 For richer results, provide `Tool.Metadata.project` to map the native result to model-facing content and committed metadata. Keep model content in `content`; private details and control requests remain separate. Provider media translation is described in [the provider guide](providers.md#tool-media-and-native-validation).
 
@@ -52,10 +52,10 @@ The Node environment adapter supplies narrow filesystem capabilities in addition
 
 ```ts
 import * as NodeServices from '@effect/platform-node/NodeServices'
-import * as MutationLocks from '@effect-harness/harness/MutationLocks'
-import * as NodeEnv from '@effect-harness/harness/NodeEnv'
-import * as Registry from '@effect-harness/harness/Registry'
-import * as CodingTools from '@effect-harness/harness/tools/CodingTools'
+import * as MutationLocks from 'effect-harness/MutationLocks'
+import * as NodeEnv from 'effect-harness/NodeEnv'
+import * as Registry from 'effect-harness/Registry'
+import * as CodingTools from 'effect-harness/tools/CodingTools'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 
@@ -81,4 +81,4 @@ Use [replay and recovery](explanation/recovery.md#external-actions) to reason ab
 
 Build the Registry and inspect Registry.snapshot. The bound tools should appear under the coding-tools extension. Check the [coding tool behavior reference](reference/configuration.md#coding-tool-behavior) when selecting read windows, shell timeouts and output limits.
 
-For custom environment adapters, run the public harness/testing conformance helpers. Check scoped reader/watcher lifetimes and process cancellation before offering those tools to a conversation.
+For custom environment adapters, run the public `effect-harness/testing` conformance helpers. Check scoped reader/watcher lifetimes and process cancellation before offering those tools to a conversation.

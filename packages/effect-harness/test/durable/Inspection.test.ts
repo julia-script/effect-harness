@@ -1,0 +1,264 @@
+import * as TestClock from 'effect/testing/TestClock'
+import * as Cause from 'effect/Cause'
+import * as Option from 'effect/Option'
+import { ResourceScope, withLayer } from 'effect-harness/durable/testing/Storage'
+import * as Exit from 'effect/Exit'
+import * as Scope from 'effect/Scope'
+import { assert, describe, it } from '@effect/vitest'
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
+import * as Layer from 'effect/Layer'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
+import * as Workflow from 'effect/workflow/Workflow'
+import * as Inspection from 'effect-harness/durable/Inspection'
+import * as Ownership from 'effect-harness/durable/Ownership'
+import * as Record from 'effect-harness/durable/Record'
+import * as Session from 'effect-harness/durable/Session'
+import * as Store from 'effect-harness/durable/Store'
+import * as Memory from 'effect-harness/durable/storage/Memory'
+
+const Work = Workflow.make('inspection/ordinary', {
+  payload: { value: Schema.String },
+  success: Schema.Void,
+  idempotencyKey: ({ value }) => value,
+})
+const layers = Layer.mergeAll(Session.layer, Ownership.layerDeclarations([Work])).pipe(
+  Layer.provideMerge(Memory.layer),
+)
+const reserve = (
+  session: Session.Service,
+  input: Record.Json = {
+    workflow: Work._tag,
+    executionId: 'never-executed',
+    payload: { deliberately: 'invalid-native-payload' },
+  },
+) =>
+  session.transaction((tx) =>
+    tx.createTask({
+      conversationId: Record.ROOT_CONVERSATION_ID,
+      kind: Work._tag,
+      version: 1,
+      input,
+      background: false,
+      abortRequested: false,
+      state: { status: 'pending' },
+    }),
+  )
+const update = (session: Session.Service, id: Record.TaskId, state: Record.Task['state']) =>
+  session.transaction(
+    Effect.fnUntraced(function* (tx) {
+      const task = yield* tx.task(id).pipe(Effect.map(Option.getOrUndefined))
+      if (task === undefined) return yield* Effect.die('Fixture task missing')
+      yield* tx.write({ _tag: 'task' as const, type: 'task', value: { ...task, state } })
+    }),
+  )
+const replay = (
+  before: Inspection.Graph,
+  ops: ReadonlyArray<Inspection.GraphOp>,
+): Inspection.Graph => {
+  let value = before
+  for (const op of ops) {
+    if (op[0] === 'replace') value = op[1]
+    else {
+      const tasks = { ...value.tasks }
+      if (op[0] === 'delete') delete tasks[op[1][1]]
+      else tasks[op[1][1]] = op[2]
+      value = { tasks }
+    }
+  }
+  return value
+}
+
+// Polling is modeled time: the caller first admits a stream/read or scope-close fiber.
+const joinObserved = <A, E>(fiber: Fiber.Fiber<A, E>): Effect.Effect<A, E> =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (fiber.pollUnsafe() !== undefined) return yield* Fiber.join(fiber)
+      yield* TestClock.adjust('20 millis')
+    }
+    return yield* Effect.die('Admitted fixture fiber did not settle')
+  })
+describe('Inspection', () => {
+  it.effect(
+    'inspects unavailable bindings and waits without executing or validating user payloads',
+    () =>
+      Effect.gen(function* () {
+        const session = yield* Session.Session
+        yield* session.root()
+        const ready = yield* reserve(session)
+        const missing = yield* reserve(session, {
+          workflow: 'absent',
+          executionId: 'absent',
+          payload: {},
+        })
+        const invalid = yield* reserve(session, null)
+        const owner = yield* reserve(session)
+        yield* update(session, owner, {
+          status: 'waiting',
+          on: [ready, missing],
+          policy: 'allSettled',
+          checkpoint: { secret: 'never-in-graph' },
+        })
+        const before = yield* session.committed
+        const inspected = yield* Inspection.get(session)
+        assert.deepStrictEqual(
+          inspected.tasks.map((task) => [task.record.id, task.state]),
+          [
+            [ready, { _tag: 'ready' as const, kind: 'ready' }],
+            [missing, { _tag: 'blocked' as const, kind: 'blocked', reason: 'missing_workflow' }],
+            [invalid, { _tag: 'blocked' as const, kind: 'blocked', reason: 'invalid_binding' }],
+            [owner, { _tag: 'waiting' as const, kind: 'waiting', on: [ready, missing] }],
+          ],
+        )
+        assert.deepStrictEqual(yield* session.committed, before)
+        yield* update(session, ready, { status: 'terminal', outcome: { status: 'completed' } })
+        assert.deepStrictEqual(
+          (yield* Inspection.get(session)).tasks.find((task) => task.record.id === owner)?.state,
+          { _tag: 'waiting' as const, kind: 'waiting', on: [missing] },
+        )
+        assert.ok(!JSON.stringify(Inspection.graph(before)).includes('never-in-graph'))
+      }).pipe(Effect.provide(layers)),
+  )
+
+  it.effect(
+    'reconstructs exact atomic graph commits, reuses unchanged branches and removes terminal nodes',
+    () =>
+      Effect.gen(function* () {
+        const session = yield* Session.Session
+        const store = yield* Store.Store
+        yield* session.root()
+        const first = yield* reserve(session)
+        const second = yield* reserve(session)
+        const baseline = yield* Deferred.make<void>()
+        const collected = yield* Inspection.changes(store).pipe(
+          Stream.tap((frame) =>
+            frame.reset ? Deferred.succeed(baseline, undefined) : Effect.void,
+          ),
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.forkScoped,
+        )
+        yield* Deferred.await(baseline)
+        yield* update(session, first, { status: 'running', checkpoint: { hidden: 'payload' } })
+        yield* update(session, first, {
+          status: 'terminal',
+          outcome: { status: 'completed', secret: 'result' },
+        })
+        const frames = yield* joinObserved(collected)
+        assert.strictEqual(frames.length, 3)
+        const [initial, running, terminal] = frames
+        assert.ok(initial && running && terminal)
+        assert.strictEqual(running.before, initial.value)
+        assert.strictEqual(terminal.before, running.value)
+        assert.strictEqual(running.value.tasks[String(second)], initial.value.tasks[String(second)])
+        assert.strictEqual(running.value.tasks[String(first)]?.state.status, 'running')
+        assert.deepStrictEqual(terminal.ops, [['delete', ['tasks', String(first)]]])
+        for (const frame of frames)
+          assert.deepStrictEqual(replay(frame.before, frame.ops), frame.value)
+        assert.ok(!JSON.stringify(frames.map((frame) => frame.value)).includes('payload'))
+      }).pipe(Effect.provide(layers)),
+  )
+
+  it.effect(
+    'publishes an owned conversation edge atomically and ignores checkpoint-only commits',
+    () =>
+      Effect.gen(function* () {
+        const session = yield* Session.Session
+        const store = yield* Store.Store
+        yield* session.root()
+        const task = yield* reserve(session)
+        const entered = yield* Deferred.make<void>()
+        const collected = yield* Inspection.changes(store).pipe(
+          Stream.tap(() => Deferred.succeed(entered, undefined)),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkScoped,
+        )
+        yield* Deferred.await(entered)
+        yield* update(session, task, { status: 'pending', checkpoint: { changed: 1 } })
+        const conversation = yield* session.transaction((tx) =>
+          tx.createConversation({
+            ownership: { _tag: 'task' as const, kind: 'task', taskId: task },
+          }),
+        )
+        const frames = yield* joinObserved(collected)
+        assert.strictEqual(frames[1]?.reset, false)
+        assert.deepStrictEqual(frames[1]?.value.tasks[String(task)]?.conversations, [
+          conversation.id,
+        ])
+        assert.strictEqual(frames[1]?.ops.length, 1)
+      }).pipe(Effect.provide(layers)),
+  )
+
+  it.effect(
+    'bounds a stalled consumer at100 frames with a latest snapshot and resumes exact deltas',
+    () =>
+      Effect.gen(function* () {
+        const session = yield* Session.Session
+        const store = yield* Store.Store
+        yield* session.root()
+        const task = yield* reserve(session)
+        const entered = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const replacement = yield* Deferred.make<void>()
+        const frames: Inspection.GraphChange[] = []
+        const observing = yield* Inspection.changes(store).pipe(
+          Stream.take(3),
+          Stream.runForEach((frame) =>
+            Effect.gen(function* () {
+              frames.push(frame)
+              if (frames.length === 1) {
+                yield* Deferred.succeed(entered, undefined)
+                yield* Deferred.await(release)
+              }
+              if (frames.length === 2) yield* Deferred.succeed(replacement, undefined)
+            }),
+          ),
+          Effect.forkScoped,
+        )
+        yield* Deferred.await(entered)
+        for (let i = 0; i < 101; i++)
+          yield* update(session, task, { status: i % 2 === 0 ? 'running' : 'pending' })
+        yield* Deferred.succeed(release, undefined)
+        yield* TestClock.adjust('20 millis')
+        yield* Deferred.await(replacement)
+        yield* update(session, task, { status: 'terminal', outcome: null })
+        yield* joinObserved(observing)
+        assert.strictEqual(frames[1]?.reset, true)
+        assert.strictEqual(frames[1]?.before, frames[0]?.value)
+        assert.strictEqual(frames[1]?.value.tasks[String(task)]?.state.status, 'running')
+        assert.strictEqual(frames[2]?.reset, false)
+        for (const frame of frames)
+          assert.deepStrictEqual(replay(frame.before, frame.ops), frame.value)
+      }).pipe(Effect.provide(layers)),
+  )
+
+  it.effect('ends on storage close and joins cancellation without leaving a polling fiber', () =>
+    Effect.gen(function* () {
+      const session = yield* Session.Session
+      const store = yield* Store.Store
+      yield* session.root()
+      const entered = yield* Deferred.make<void>()
+      const first = yield* Inspection.changes(store).pipe(
+        Stream.tap(() => Deferred.succeed(entered, undefined)),
+        Stream.runDrain,
+        Effect.forkScoped,
+      )
+      yield* Deferred.await(entered)
+      yield* Fiber.interrupt(first)
+      const interrupted = yield* Fiber.await(first)
+      assert.isTrue(Exit.isFailure(interrupted))
+      if (Exit.isFailure(interrupted)) {
+        // Native fiber IDs vary; assert the complete cause consists only of controlled interruption.
+        assert.isTrue(Cause.hasInterruptsOnly(interrupted.cause))
+      }
+      const collected = yield* Inspection.changes(store).pipe(
+        Stream.tap(() => Effect.flatMap(ResourceScope, (scope) => Scope.close(scope, Exit.void))),
+        Stream.runCollect,
+      )
+      assert.strictEqual(collected.length, 1)
+    }).pipe((effect) => withLayer(effect, layers)),
+  )
+})

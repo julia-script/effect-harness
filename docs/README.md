@@ -2,11 +2,11 @@
 
 Build AI applications with ordinary Effect services, native AI models and tools, and native Workflows. These docs assume you know TypeScript and Effect's Effect, Service, Layer and Scope APIs.
 
-The generic harness prepares prompts and executes models and tools. The durable package adds committed conversation state and executor Layers. Your application supplies the provider, persistence services and WorkflowEngine.
+The `effect-harness` package prepares prompts and executes models and tools. Its `durable` subpath adds committed conversation state and executor Layers. Your application supplies the provider, persistence services and WorkflowEngine.
 
 ## Install and run examples
 
-Use your preferred package manager. Shell recipes below use npm syntax; the equivalent `pnpm add`, `yarn add` and `bun add` commands install the same packages. Choose only the adapters you need.
+Install `effect-harness` and `effect` with your preferred package manager. Shell recipes below use npm syntax; the equivalent `pnpm add`, `yarn add` and `bun add` commands install the same dependencies. Add platform and storage adapters as needed.
 
 The tutorials run TypeScript with Node.js and `tsx`. Platform services are explicit Layers; use your runtime's adapter when integrating the library into an existing application. Installation commands leave dependency versions to your package manager. The [compatibility reference](reference/compatibility.md) records the specific dependency behavior required by the library.
 
@@ -27,7 +27,7 @@ The tutorials run TypeScript with Node.js and `tsx`. Platform services are expli
 
 ## Look up a contract
 
-[Packages and services](reference/packages.md) maps the public modules and their Layer dependencies. [Configuration](reference/configuration.md) records defaults and policy precedence. [Documents and storage](reference/documents-and-storage.md) describes addresses, migrations, transactions and failure certainty. [Execution and observations](reference/execution-and-observation.md) covers submission identity, receipts, watches and lifetime rules. [Effect compatibility](reference/compatibility.md) records dependency requirements.
+[Modules and services](reference/packages.md) maps the public modules and their Layer dependencies. [Configuration](reference/configuration.md) records defaults and policy precedence. [Documents and storage](reference/documents-and-storage.md) describes addresses, migrations, transactions and failure certainty. [Execution and observations](reference/execution-and-observation.md) covers submission identity, receipts, watches and lifetime rules. [Effect compatibility](reference/compatibility.md) records dependency requirements.
 
 Individual exports are documented in their TypeScript API comments. The reference pages describe the contracts that span those exports.
 
