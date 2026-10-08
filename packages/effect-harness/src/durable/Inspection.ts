@@ -1,11 +1,10 @@
 /**
  * Committed task inspection and structurally shared ownership graph projections.
  */
-import * as records from 'effect/Record'
-// effect-review-allow P9-namespace-alias-equals-module: durable/Record supplies domain schemas; effect/Record supplies safe dictionary operations.
+import * as MutableHashMap from 'effect/MutableHashMap'
+import * as Rec from 'effect/Record'
 import * as Order from 'effect/Order'
-import * as Arr from 'effect/Array'
-import { tagged } from './internal/legacyTag.ts'
+import * as Array from 'effect/Array'
 import type { StorageError } from './StorageError.ts'
 import { cursor as journalCursor } from './storage/internal/state.ts'
 import * as Outcome from './workflow/Outcome.ts'
@@ -24,12 +23,11 @@ import type * as Store from './Store.ts'
  * @category schemas
  */
 export const TaskState = Schema.Union([
-  tagged('ready', { kind: Schema.tag('ready') }),
-  tagged('running', { kind: Schema.tag('running') }),
-  tagged('waiting', { kind: Schema.tag('waiting'), on: Schema.Array(Record.TaskId) }),
-  tagged('completing', { kind: Schema.tag('completing'), outcome: Schema.Json }),
-  tagged('blocked', {
-    kind: Schema.tag('blocked'),
+  Schema.TaggedStruct('ready', {}),
+  Schema.TaggedStruct('running', {}),
+  Schema.TaggedStruct('waiting', { on: Schema.Array(Record.TaskId) }),
+  Schema.TaggedStruct('completing', { outcome: Schema.Json }),
+  Schema.TaggedStruct('blocked', {
     reason: Schema.Literals(['missing_workflow', 'invalid_binding']),
   }),
 ])
@@ -72,42 +70,45 @@ export type Value = typeof Value.Type
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: get is a public combinator over the supplied Session self capability; its facts, journal and owning lifetime must remain those of the selected instance even when ambient services differ.
 export const get = Effect.fnUntraced(function* (
-  session: Session.Service,
+  session: Session.Session.Service,
 ): Effect.fn.Return<Value, StorageError, Ownership.Declarations> {
   const state = yield* session.committed
   const declarations = yield* Ownership.Declarations
-  const tasks = Arr.sortWith(
-    Arr.filter(state.tasks, (task) => task.state.status !== 'terminal'),
+  const tasks = Array.sortWith(
+    Array.filter(state.tasks, (task) => task.state.status !== 'terminal'),
     (item: Record.Task) => item.id,
     Order.Number,
   )
   const inspect = (task: Record.Task): TaskState => {
     if (task.state.status === 'completing')
-      return { _tag: 'completing', kind: 'completing', outcome: task.state.outcome ?? null }
+      return { _tag: 'completing', outcome: task.state.outcome ?? null }
     const binding = Schema.decodeUnknownOption(Ownership.Binding)(task.input)
-    if (Option.isNone(binding))
-      return { _tag: 'blocked', kind: 'blocked', reason: 'invalid_binding' }
+    if (Option.isNone(binding)) return { _tag: 'blocked', reason: 'invalid_binding' }
     if (Option.isNone(declarations.get(binding.value.workflow)))
-      return { _tag: 'blocked', kind: 'blocked', reason: 'missing_workflow' }
-    if (task.state.status === 'running') return { _tag: 'running', kind: 'running' }
+      return { _tag: 'blocked', reason: 'missing_workflow' }
+    if (task.state.status === 'running') return { _tag: 'running' }
     if (task.state.status === 'waiting') {
-      const on = Arr.filter(
+      const on = Array.filter(
         task.state.on ?? [],
         (id) =>
           !Option.exists(
-            Arr.findFirst(state.tasks, (child) => child.id === id),
+            Array.findFirst(state.tasks, (child) => child.id === id),
             (child) => child.state.status === 'terminal',
           ),
       )
-      if (Arr.isReadonlyArrayNonEmpty(on)) return { _tag: 'waiting', kind: 'waiting', on }
+      if (Array.isReadonlyArrayNonEmpty(on)) return { _tag: 'waiting', on }
     }
-    return { _tag: 'ready', kind: 'ready' }
+    return { _tag: 'ready' }
   }
   return {
     tasks: tasks.map((record) => ({ record, state: inspect(record) })),
-    submissions: Arr.sortWith(
-      Arr.filter(state.submissions, (item) => item.status === 'queued' || item.status === 'placed'),
+    submissions: Array.sortWith(
+      Array.filter(
+        state.submissions,
+        (item) => item.status === 'queued' || item.status === 'placed',
+      ),
       (item: Record.Submission) => item.id,
       Order.Number,
     ),
@@ -120,16 +121,16 @@ export const get = Effect.fnUntraced(function* (
  * @category schemas
  */
 export const GraphNode = Schema.Struct({
-  id: Record.TaskId,
-  kind: Schema.String,
-  conversationId: Record.ConversationId,
-  owner: Schema.optionalKey(Record.TaskId),
-  background: Schema.Boolean,
-  abortRequested: Schema.Boolean,
+  id: Record.Task.fields.id,
+  kind: Record.Task.fields.kind,
+  conversationId: Record.Task.fields.conversationId,
+  owner: Record.Task.fields.owner,
+  background: Record.Task.fields.background,
+  abortRequested: Record.Task.fields.abortRequested,
   state: Schema.Struct({
     status: Schema.Literals(['pending', 'running', 'waiting', 'completing']),
-    on: Schema.optionalKey(Schema.Array(Record.TaskId)),
-    policy: Schema.optionalKey(Schema.Literals(['failFast', 'allSettled'])),
+    on: Record.Task.fields.state.fields.on,
+    policy: Record.Task.fields.state.fields.policy,
     outcome: Schema.optionalKey(Schema.String),
   }),
   conversations: Schema.Array(Record.ConversationId),
@@ -153,15 +154,15 @@ export const Graph = Schema.Struct({ tasks: Schema.Record(Schema.String, GraphNo
  */
 export type Graph = typeof Graph.Type
 /**
- * Live-only ownership graph deliberately excludes arbitrary checkpoint/result payloads.
+ * Returns a live ownership graph without checkpoint or result payloads.
  *
  * @category combinators
  */
 export function graph(state: Ownership.Graph): Graph {
   const tasks: Record<string, GraphNode> = Object.create(null)
-  for (const task of Arr.sortWith(state.tasks, (item: Record.Task) => item.id, Order.Number)) {
+  for (const task of Array.sortWith(state.tasks, (item: Record.Task) => item.id, Order.Number)) {
     if (task.state.status === 'terminal') continue
-    const status = Outcome.classifyTask(task)?.status
+    const status = Outcome.classifyTaskOrUndefined(task)?.status
     tasks[String(task.id)] = {
       id: task.id,
       kind: task.kind,
@@ -176,8 +177,8 @@ export function graph(state: Ownership.Graph): Graph {
           : {}),
         ...(task.state.status === 'completing' && status !== undefined ? { outcome: status } : {}),
       },
-      conversations: Arr.sort(
-        Arr.filter(
+      conversations: Array.sort(
+        Array.filter(
           state.conversations,
           (conversation) => conversation.owner?.taskId === task.id,
         ).map((conversation) => conversation.id),
@@ -232,34 +233,39 @@ const changed = (
 ): { readonly value: Graph; readonly ops: ReadonlyArray<GraphOp> } => {
   const tasks = { ...before.tasks }
   const ops: Array<GraphOp> = []
-  for (const id of records.keys(before.tasks))
+  for (const id of Rec.keys(before.tasks))
     if (!Object.hasOwn(candidate.tasks, id)) {
       delete tasks[id]
       ops.push(['delete', ['tasks', id]])
     }
-  for (const [id, node] of records.toEntries(candidate.tasks))
+  for (const [id, node] of Rec.toEntries(candidate.tasks))
     if (
       !Object.hasOwn(before.tasks, id) ||
       !Schema.toEquivalence(GraphNode)(before.tasks[id]!, node)
     ) {
-      records.assignProperty(tasks, id, node)
+      Rec.assignProperty(tasks, id, node)
       ops.push(['set', ['tasks', id], node])
     }
-  return { value: Arr.isReadonlyArrayEmpty(ops) ? before : { tasks }, ops }
+  return { value: Array.isReadonlyArrayEmpty(ops) ? before : { tasks }, ops }
 }
 /**
- * Exact committed graph frames and structural branch sharing, replaced only on bounded journal overflow.
+ * Streams exact committed ownership-graph changes.
+ *
+ * **Details**
+ *
+ * Preserves unchanged branches and emits a replacement when bounded journal retention overflows.
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: changes is a public combinator over the supplied Store self capability; its facts, journal and owning lifetime must remain those of the selected instance even when ambient services differ.
 export const changes = (
-  store: Store.Service,
+  store: Store.Store.Service,
 ): Stream.Stream<GraphChange, import('./StorageError.ts').StorageError> =>
   Stream.unwrap(
     Effect.gen(function* () {
       const initial = yield* store.committed
-      let tasks = new Map(initial.tasks.map((task) => [task.id, task]))
-      let conversations = new Map(
+      let tasks = MutableHashMap.fromIterable(initial.tasks.map((task) => [task.id, task]))
+      let conversations = MutableHashMap.fromIterable(
         initial.conversations.map((conversation) => [conversation.id, conversation]),
       )
       let value = graph(initial)
@@ -276,16 +282,15 @@ export const changes = (
           let after = cursor.after
           const pending = [...cursor.pending]
           while (true) {
-            const journal = yield* store.journal(after).pipe(
-              Effect.catchIf(
-                (error) => error.reason._tag === 'Closed',
-                () => Effect.void,
-              ),
-            )
+            const journal = yield* store
+              .journal(after)
+              .pipe(Effect.catchReason('StorageError', 'ClosedError', () => Effect.void))
             if (journal === undefined) return undefined
             if (journal.reset) {
-              tasks = new Map(journal.state.tasks.map((task) => [task.id, task]))
-              conversations = new Map(
+              tasks = MutableHashMap.fromIterable(
+                journal.state.tasks.map((task) => [task.id, task]),
+              )
+              conversations = MutableHashMap.fromIterable(
                 journal.state.conversations.map((conversation) => [conversation.id, conversation]),
               )
               const before = cursor.delivered
@@ -301,11 +306,11 @@ export const changes = (
               for (const frame of journal.frames) {
                 let relevant = false
                 for (const write of frame.writes) {
-                  if (write.type === 'task') {
-                    tasks.set(write.value.id, write.value)
+                  if (write._tag === 'task') {
+                    MutableHashMap.set(tasks, write.value.id, write.value)
                     relevant = true
-                  } else if (write.type === 'conversation') {
-                    conversations.set(write.value.id, write.value)
+                  } else if (write._tag === 'conversation') {
+                    MutableHashMap.set(conversations, write.value.id, write.value)
                     relevant = true
                   }
                 }
@@ -313,10 +318,13 @@ export const changes = (
                 const before = value
                 const delta = changed(
                   before,
-                  graph({ tasks: [...tasks.values()], conversations: [...conversations.values()] }),
+                  graph({
+                    tasks: [...MutableHashMap.values(tasks)],
+                    conversations: [...MutableHashMap.values(conversations)],
+                  }),
                 )
                 value = delta.value
-                if (Arr.isReadonlyArrayNonEmpty(delta.ops))
+                if (Array.isReadonlyArrayNonEmpty(delta.ops))
                   pending.push({ seq: frame.seq, before, value, ops: delta.ops, reset: false })
               }
             after = yield* journalCursor(journal.state.nextSeq)
@@ -340,42 +348,39 @@ export const changes = (
     }),
   )
 
-/**
- * Type-level contracts for `Graph`.
- *
- * @category utility types
+/** Checks the decoded TaskState contract without decoding or coercing input.
+ * @category guards
  */
-export declare namespace Graph {
-  /**
-   * Task or conversation node in the committed ownership graph.
-   *
-   * @category models
-   */
-  export type Node = GraphNode
-  /**
-   * Type alias for `GraphOp`.
-   *
-   * @category models
-   */
-  export type Op = GraphOp
-  /**
-   * Type alias for `GraphChange`.
-   *
-   * @category models
-   */
-  export type Change = GraphChange
-}
+export const isTaskState: (u: unknown) => u is TaskState = Schema.is(Schema.toType(TaskState))
 
-/**
- * Type-level contracts for `TaskInspection`.
- *
- * @category utility types
+/** Checks the decoded TaskInspection contract without decoding or coercing input.
+ * @category guards
  */
-export declare namespace TaskInspection {
-  /**
-   * Persisted lifecycle classification of a domain task.
-   *
-   * @category models
-   */
-  export type State = TaskState
-}
+export const isTaskInspection: (u: unknown) => u is TaskInspection = Schema.is(
+  Schema.toType(TaskInspection),
+)
+
+/** Checks the decoded Value contract without decoding or coercing input.
+ * @category guards
+ */
+export const isValue: (u: unknown) => u is Value = Schema.is(Schema.toType(Value))
+
+/** Checks the decoded GraphNode contract without decoding or coercing input.
+ * @category guards
+ */
+export const isGraphNode: (u: unknown) => u is GraphNode = Schema.is(Schema.toType(GraphNode))
+
+/** Checks the decoded Graph contract without decoding or coercing input.
+ * @category guards
+ */
+export const isGraph: (u: unknown) => u is Graph = Schema.is(Schema.toType(Graph))
+
+/** Checks the decoded GraphOp contract without decoding or coercing input.
+ * @category guards
+ */
+export const isGraphOp: (u: unknown) => u is GraphOp = Schema.is(Schema.toType(GraphOp))
+
+/** Checks the decoded GraphChange contract without decoding or coercing input.
+ * @category guards
+ */
+export const isGraphChange: (u: unknown) => u is GraphChange = Schema.is(Schema.toType(GraphChange))

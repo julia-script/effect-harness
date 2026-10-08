@@ -1,10 +1,10 @@
+import * as Serialization from './Serialization.ts'
 /**
  * Persisted inbox documents and atomic message admission.
  */
 import * as Result from 'effect/Result'
 import * as Order from 'effect/Order'
 import * as Arr from 'effect/Array'
-import { tagged } from './internal/legacyTag.ts'
 import type { StorageError } from './StorageError.ts'
 import * as Option from 'effect/Option'
 import * as Time from 'effect-harness/Time'
@@ -27,12 +27,12 @@ import { EntryDraft } from './workflow/Submission.ts'
  * @category schemas
  */
 export const Item = Schema.Union([
-  tagged('input', {
+  Schema.TaggedStruct('input', {
     id: Record.SubmissionId,
     mode: Schema.Literals(['steer', 'followUp']),
     message: Schema.toEncoded(Schema.toCodecJson(Prompt.UserMessage)),
   }),
-  tagged('write', { id: Record.SubmissionId, mode: Schema.tag('write'), entry: EntryDraft }),
+  Schema.TaggedStruct('write', { id: Record.SubmissionId, entry: EntryDraft }),
 ])
 /**
  * Queued input or passive write with its admission policy.
@@ -64,7 +64,7 @@ export const InboxDoc = Document.defineUnsafe({
   scope: 'conversation',
   history: 'latest',
   fork: 'initial',
-  schema: Document.jsonObjectCodec(State),
+  schema: Serialization.object(State),
   initial: (): State => ({ items: [] }),
   checkpointWhen: (value) => Arr.isReadonlyArrayEmpty(value.items),
 })
@@ -135,15 +135,19 @@ export const LiveDomain = LiveState.mapFields((fields) => ({
   generation: Schema.optionalKey(
     Schema.Struct({
       ...fields.generation.schema.fields,
-      retry: Schema.optionalKey(Schema.Struct({ at: Time.EpochMillis, error: Schema.String })),
-      deferred: Schema.optionalKey(Schema.Struct({ pollAt: Time.EpochMillis })),
+      retry: Schema.optionalKey(
+        Schema.Struct({ at: Time.DateTimeUtcFromEpochMillis, error: Schema.String }),
+      ),
+      deferred: Schema.optionalKey(Schema.Struct({ pollAt: Time.DateTimeUtcFromEpochMillis })),
     }),
   ),
   compactions: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({
         ...fields.compactions.schema.value.fields,
-        retry: Schema.optionalKey(Schema.Struct({ at: Time.EpochMillis, error: Schema.String })),
+        retry: Schema.optionalKey(
+          Schema.Struct({ at: Time.DateTimeUtcFromEpochMillis, error: Schema.String }),
+        ),
       }),
     ),
   ),
@@ -153,7 +157,7 @@ export const LiveDomain = LiveState.mapFields((fields) => ({
  *
  * @category combinators
  */
-export const domain = (value: LiveState): typeof LiveDomain.Type => {
+export const domain = (value: LiveState): LiveDomain => {
   const { generation, compactions, ...rest } = value
   const generationDomain =
     generation === undefined
@@ -205,7 +209,7 @@ export const LiveDoc = Document.defineUnsafe({
   scope: 'conversation',
   history: 'latest',
   fork: 'initial',
-  schema: Document.jsonObjectCodec(LiveState),
+  schema: Serialization.object(LiveState),
   initial: (): LiveState => ({}),
   checkpointWhen: (value) =>
     value.generation === undefined &&
@@ -219,7 +223,7 @@ export const LiveDoc = Document.defineUnsafe({
  */
 export interface Boundary {
   readonly conversationId: Record.ConversationId
-  readonly inbox: Document.Draft<State>
+  readonly inbox: Document.Document.Draft<State>
   readonly modes: Pick<Agent.Settings, 'steeringMode' | 'followUpMode'>
   head: Record.EntryId | undefined
 }
@@ -262,16 +266,16 @@ export const apply = Effect.fnUntraced(function* (
   StorageError
 > {
   const items = boundary.inbox.items
-  const reset = items.some((item) => item.mode === 'write' && item.entry.head === 'self')
+  const reset = items.some((item) => item._tag === 'write' && item.entry.head === 'self')
   const final = at === 'final' || reset
   const pick = (mode: 'steer' | 'followUp', queueMode: 'one-at-a-time' | 'all') => {
     const indexes = Arr.filterMap(items, (item, index) =>
-      item.mode === mode ? Result.succeed(index) : Result.failVoid,
+      item._tag === 'input' && item.mode === mode ? Result.succeed(index) : Result.failVoid,
     )
     return queueMode === 'all' ? indexes : indexes.slice(0, 1)
   }
   const writes = Arr.filterMap(items, (item, index) =>
-    item.mode === 'write' ? Result.succeed(index) : Result.failVoid,
+    item._tag === 'write' ? Result.succeed(index) : Result.failVoid,
   )
   const users = Arr.sort(
     [
@@ -283,7 +287,7 @@ export const apply = Effect.fnUntraced(function* (
   const settled: Array<Record.SubmissionId> = []
   for (const index of writes) {
     const item = items[index]
-    if (item?.mode !== 'write') continue
+    if (item?._tag !== 'write') continue
     const entry = item.entry
     if (
       typeof entry.head === 'number' &&
@@ -301,7 +305,7 @@ export const apply = Effect.fnUntraced(function* (
   const placed: Array<Record.SubmissionId> = []
   for (const index of users) {
     const item = items[index]
-    if (item === undefined || item.mode === 'write') continue
+    if (item === undefined || item._tag === 'write') continue
     const entry = yield* tx.appendEntry(boundary.conversationId, {
       kind: 'harness.user',
       model: [item.message],
@@ -328,7 +332,7 @@ export const withdraw = Effect.fnUntraced(function* (
   const settled: Array<Record.SubmissionId> = []
   for (let index = inbox.items.length - 1; index >= 0; index--) {
     const item = inbox.items[index]
-    if (item === undefined || item.mode === 'write') continue
+    if (item === undefined || item._tag === 'write') continue
     yield* tx.settleSubmission(item.id, { status: 'unanswered', reason: 'aborted' })
     settled.push(item.id)
     inbox.items.splice(index, 1)
@@ -343,7 +347,7 @@ export const withdraw = Effect.fnUntraced(function* (
  */
 export const endRun = Effect.fnUntraced(function* (
   tx: Session.Transaction,
-  live: Document.Draft<LiveState>,
+  live: Document.Document.Draft<LiveState>,
   taskId: Record.TaskId,
   settlement: Parameters<Session.Transaction['settleSubmission']>[1],
 ): Effect.fn.Return<Array<Record.SubmissionId>, StorageError> {
@@ -359,3 +363,33 @@ export const endRun = Effect.fnUntraced(function* (
   }
   return settled
 })
+
+/** Decoded value of the LiveDomain schema.
+ * @category models
+ */
+export type LiveDomain = typeof LiveDomain.Type
+
+/** Checks the decoded Item contract without decoding or coercing input.
+ * @category guards
+ */
+export const isItem: (u: unknown) => u is Item = Schema.is(Schema.toType(Item))
+
+/** Checks the decoded State contract without decoding or coercing input.
+ * @category guards
+ */
+export const isState: (u: unknown) => u is State = Schema.is(Schema.toType(State))
+
+/** Checks the decoded ToolSlot contract without decoding or coercing input.
+ * @category guards
+ */
+export const isToolSlot: (u: unknown) => u is ToolSlot = Schema.is(Schema.toType(ToolSlot))
+
+/** Checks the decoded LiveState contract without decoding or coercing input.
+ * @category guards
+ */
+export const isLiveState: (u: unknown) => u is LiveState = Schema.is(Schema.toType(LiveState))
+
+/** Checks the decoded LiveDomain contract without decoding or coercing input.
+ * @category guards
+ */
+export const isLiveDomain: (u: unknown) => u is LiveDomain = Schema.is(Schema.toType(LiveDomain))

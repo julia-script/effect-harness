@@ -18,7 +18,7 @@ Declare tools with Effect AI and supply their handlers through a Layer. The harn
 
 ```ts
 import * as Registry from 'effect-harness/Registry'
-import * as ToolBinding from 'effect-harness/Tool'
+import * as ToolRegistration from 'effect-harness/ToolRegistration'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
@@ -34,7 +34,7 @@ const toolkit = Toolkit.make(Uppercase)
 const handlers = toolkit.toLayer({ uppercase: ({ text }) => Effect.succeed(text.toUpperCase()) })
 
 export const Tools = Layer.unwrap(
-  ToolBinding.bind(toolkit, { uppercase: { replay: 'safe' } }).pipe(
+  ToolRegistration.bind(toolkit, { uppercase: { replay: 'safe' } }).pipe(
     Effect.map((tools) => Registry.layer([{ name: 'text-tools', tools }])),
   ),
 ).pipe(Layer.provide(handlers))

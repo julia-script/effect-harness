@@ -38,7 +38,7 @@ Config-based constructors are a further Layer selection step. Their options are 
 
 Host services are stable for the binding's lifetime: a filesystem environment, application client or credential store. Invocation services identify one request or tool call and carry its scoped reporting callbacks. Capturing the former makes handlers reusable; supplying the latter per call gives each execution its own identity and progress lifetime.
 
-Tool.bind and Hook.bind capture host dependencies and explicitly declare extra request services. For example, an owned durable invocation can supply Ownership.Current, while conversation creation has no running task identity. Treating those contexts as interchangeable would attach work to the wrong lifetime.
+ToolRegistration.bind and Hook.bind capture host dependencies and explicitly declare extra request services. For example, an owned durable invocation can supply Ownership.Current, while conversation creation has no running task identity. Treating those contexts as interchangeable would attach work to the wrong lifetime.
 
 ## Ownership connects facts to execution
 

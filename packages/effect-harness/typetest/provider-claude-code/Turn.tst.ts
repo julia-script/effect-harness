@@ -1,9 +1,8 @@
 import { expect, test } from 'tstyche'
 import * as Catalog from 'effect-harness/provider-claude-code/Catalog'
-import * as Cli from 'effect-harness/provider-claude-code/Cli'
-import * as IntentServer from 'effect-harness/provider-claude-code/IntentServer'
-// effect-review-allow P9-namespace-alias-equals-module: effect-harness/provider-claude-code/LanguageModel and effect/ai/LanguageModel both bind LanguageModel; Model distinguishes the concepts.
-import * as Model from 'effect-harness/provider-claude-code/LanguageModel'
+import type * as Cli from 'effect-harness/provider-claude-code/Cli'
+import type * as IntentServer from 'effect-harness/provider-claude-code/IntentServer'
+import * as ClaudeCodeLanguageModel from 'effect-harness/provider-claude-code/ClaudeCodeLanguageModel'
 import * as Protocol from 'effect-harness/provider-claude-code/Protocol'
 import * as Turn from 'effect-harness/provider-claude-code/Turn'
 import * as Context from 'effect/Context'
@@ -36,14 +35,14 @@ test('translation and collection preserve generic foreign errors and requirement
 })
 
 test('model and catalogue expose the captured CLI and exact construction channels', () => {
-  expect(Model.make({ model: 'declared' })).type.toBe<
+  expect(ClaudeCodeLanguageModel.make({ model: 'declared' })).type.toBe<
     Effect.Effect<
       typeof LanguageModel.LanguageModel.Service,
       AiError.AiError,
       Cli.Cli | IntentServer.IntentServer
     >
   >()
-  expect(Model.layer({ model: 'declared' })).type.toBe<
+  expect(ClaudeCodeLanguageModel.layer({ model: 'declared' })).type.toBe<
     Layer.Layer<
       LanguageModel.LanguageModel | Cli.Cli,
       AiError.AiError,
@@ -59,7 +58,7 @@ test('model and catalogue expose the captured CLI and exact construction channel
       Cli.Cli | IntentServer.IntentServer
     >
   >()
-  expect(Model.make).type.not.toBeCallableWith({ model: 1 })
+  expect(ClaudeCodeLanguageModel.make).type.not.toBeCallableWith({ model: 1 })
   expect(Protocol.decode('{}')).type.toBe<Effect.Effect<Protocol.Event, AiError.AiError>>()
 })
 
@@ -86,10 +85,12 @@ test('curried CLI transformations preserve generic caller channels and reject am
 })
 
 import * as ProviderClaudeCode from 'effect-harness/provider-claude-code'
-import * as ClaudeCodeError from 'effect-harness/provider-claude-code/ClaudeCodeError'
+import type * as ClaudeCodeError from 'effect-harness/provider-claude-code/ClaudeCodeError'
 
 test('root namespaces retain canonical model and semantic error constructors', () => {
-  expect(ProviderClaudeCode.ClaudeCodeLanguageModel.layer).type.toBe<typeof Model.layer>()
+  expect(ProviderClaudeCode.ClaudeCodeLanguageModel.layer).type.toBe<
+    typeof ClaudeCodeLanguageModel.layer
+  >()
   expect(ProviderClaudeCode.ClaudeCodeError.authentication).type.toBe<
     typeof ClaudeCodeError.authentication
   >()

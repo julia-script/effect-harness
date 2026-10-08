@@ -3,24 +3,16 @@
  */
 import { dual } from 'effect/Function'
 import * as Data from 'effect/Data'
+import * as Predicate from 'effect/Predicate'
 import * as Option from 'effect/Option'
-import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import type * as Prompt from 'effect/ai/Prompt'
 import type * as Response from 'effect/ai/Response'
-import type * as Context from './Context.ts'
-import * as Services from 'effect/Context'
-// effect-review-allow P9-namespace-alias-equals-module: effect/Context and ./Context.ts both bind Context; Services preserves the checked imported-name collision.
-import { HookError, HookFailure } from './HookError.ts'
-import { Invocation, type ToolResult } from './Invocation.ts'
+import type * as Transcript from './Transcript.ts'
+import * as Context from 'effect/Context'
+import { HookError, HookFailureError } from './HookError.ts'
+import { Invocation, type Result } from './Invocation.ts'
 import type { ConversationId, EntryId } from './Identity.ts'
-
-/**
- * Tool identity and decoded arguments passed to a before-tool hook.
- *
- * @category models
- */
-export type ToolInput = Handlers.ToolInput
 /**
  * Decision to continue with arguments or block a tool.
  *
@@ -36,12 +28,6 @@ export type ToolDecision = Data.TaggedEnum<{
  * @category constants
  */
 export const ToolDecision = Data.taggedEnum<ToolDecision>()
-/**
- * History and policy supplied to a compaction hook.
- *
- * @category models
- */
-export type CompactInput = Handlers.CompactInput
 /**
  * Decision to request, decline or supply a compaction summary.
  *
@@ -72,7 +58,7 @@ export interface SettledTool {
   readonly name: string
   readonly entryId: EntryId
   readonly outcome: 'completed' | 'failed' | 'interrupted' | 'unavailable'
-  readonly result: ToolResult
+  readonly result: Result
 }
 /**
  * Optional callbacks around request, response, tool and compaction boundaries.
@@ -95,19 +81,19 @@ export interface Handlers<out R = Invocation> {
       ) => Effect.Effect<Prompt.UserMessage | undefined, HookError, R>)
     | undefined
   readonly beforeTool?:
-    | ((input: ToolInput) => Effect.Effect<ToolDecision | undefined, HookError, R>)
+    | ((input: Handlers.ToolInput) => Effect.Effect<ToolDecision | undefined, HookError, R>)
     | undefined
   readonly afterTool?:
     | ((
-        input: ToolInput,
-        result: ToolResult,
-      ) => Effect.Effect<ToolResult | undefined, HookError, R>)
+        input: Handlers.ToolInput,
+        result: Result,
+      ) => Effect.Effect<Result | undefined, HookError, R>)
     | undefined
   readonly afterTools?:
     | ((results: ReadonlyArray<SettledTool>) => Effect.Effect<void, HookError, R>)
     | undefined
   readonly beforeCompact?:
-    | ((input: CompactInput) => Effect.Effect<CompactDecision | undefined, HookError, R>)
+    | ((input: Handlers.CompactInput) => Effect.Effect<CompactDecision | undefined, HookError, R>)
     | undefined
 }
 /**
@@ -126,19 +112,15 @@ export interface Registration {
   readonly handlers: Handlers
 }
 /**
- * Report callback faults, but propagate cancellation rather than converting it to an omitted hook result.
+ * Reports typed callback failures while propagating defects and cancellation.
  *
  * @category combinators
  */
 export const recover = <A, E, R>(
   self: Effect.Effect<A, E, R>,
 ): Effect.Effect<A | undefined, never, R | Invocation> =>
-  Effect.catchCause(self, (cause) =>
-    Cause.hasInterrupts(cause)
-      ? Effect.failCause(Cause.fromReasons(cause.reasons.filter(Cause.isInterruptReason)))
-      : Effect.flatMap(Invocation, (invocation) =>
-          Effect.as(invocation.report(Cause.squash(cause)), undefined),
-        ),
+  Effect.catch(self, (error) =>
+    Effect.flatMap(Invocation, (invocation) => Effect.as(invocation.report(error), undefined)),
   )
 const beforeRequestImpl = Effect.fnUntraced(function* (
   handlers: ReadonlyArray<Handlers>,
@@ -169,9 +151,9 @@ export const beforeRequest: {
 } = dual(2, beforeRequestImpl)
 const afterToolImpl = Effect.fnUntraced(function* (
   handlers: ReadonlyArray<Handlers>,
-  input: ToolInput,
-  initial: ToolResult,
-): Effect.fn.Return<ToolResult, never, Invocation> {
+  input: Handlers.ToolInput,
+  initial: Result,
+): Effect.fn.Return<Result, never, Invocation> {
   let result = initial
   for (const handler of handlers) {
     const callback = handler.afterTool
@@ -188,18 +170,18 @@ const afterToolImpl = Effect.fnUntraced(function* (
  */
 export const afterTool: {
   (
-    input: ToolInput,
-    initial: ToolResult,
-  ): (self: ReadonlyArray<Handlers>) => Effect.Effect<ToolResult, never, Invocation>
+    input: Handlers.ToolInput,
+    initial: Result,
+  ): (self: ReadonlyArray<Handlers>) => Effect.Effect<Result, never, Invocation>
   (
     self: ReadonlyArray<Handlers>,
-    input: ToolInput,
-    initial: ToolResult,
-  ): Effect.Effect<ToolResult, never, Invocation>
+    input: Handlers.ToolInput,
+    initial: Result,
+  ): Effect.Effect<Result, never, Invocation>
 } = dual(3, afterToolImpl)
 const beforeCompactImpl = Effect.fnUntraced(function* (
   handlers: ReadonlyArray<Handlers>,
-  input: CompactInput,
+  input: Handlers.CompactInput,
 ): Effect.fn.Return<Option.Option<CompactDecision>, never, Invocation> {
   for (const handler of handlers) {
     const callback = handler.beforeCompact
@@ -216,13 +198,13 @@ const beforeCompactImpl = Effect.fnUntraced(function* (
  */
 export const beforeCompact: {
   (
-    input: CompactInput,
+    input: Handlers.CompactInput,
   ): (
     self: ReadonlyArray<Handlers>,
   ) => Effect.Effect<Option.Option<CompactDecision>, never, Invocation>
   (
     self: ReadonlyArray<Handlers>,
-    input: CompactInput,
+    input: Handlers.CompactInput,
   ): Effect.Effect<Option.Option<CompactDecision>, never, Invocation>
 } = dual(2, beforeCompactImpl)
 const onYieldImpl = Effect.fnUntraced(function* (
@@ -329,11 +311,11 @@ export const conversationCreated: {
 } = dual(2, conversationCreatedImpl)
 
 /** Capture host dependencies and declare services supplied for each durable/native invocation. */
-const bindImpl = Effect.fnUntraced(function* <R, RequestServices = never>(
+const bindImpl = Effect.fnUntraced(function* <R, RRequestServices = never>(
   handlers: Handlers<R>,
-  requestServices: ReadonlyArray<Services.Key<RequestServices, unknown>> = [],
-): Effect.fn.Return<Handlers, never, Exclude<R, Invocation | RequestServices>> {
-  const captured = yield* Effect.context<Exclude<R, Invocation | RequestServices>>()
+  requestServices: ReadonlyArray<Context.Key<RRequestServices, unknown>> = [],
+): Effect.fn.Return<Handlers, never, Exclude<R, Invocation | RRequestServices>> {
+  const captured = yield* Effect.context<Exclude<R, Invocation | RRequestServices>>()
   const wrap = <Args extends Array<unknown>, A>(
     self: ((...args: Args) => Effect.Effect<A, HookError, R>) | undefined,
   ): ((...args: Args) => Effect.Effect<A, HookError, Invocation>) | undefined =>
@@ -345,7 +327,7 @@ const bindImpl = Effect.fnUntraced(function* <R, RequestServices = never>(
               if (!current.mapUnsafe.has(service.key))
                 return Effect.fail(
                   new HookError({
-                    reason: new HookFailure({
+                    reason: new HookFailureError({
                       message: `Request service ${service.key} is absent`,
                     }),
                   }),
@@ -354,7 +336,10 @@ const bindImpl = Effect.fnUntraced(function* <R, RequestServices = never>(
             // Captured host services and validated invocation services satisfy R.
             return Effect.provideContext(
               Effect.suspend(() => self.apply(handlers, args)),
-              Services.makeUnsafe<R>(Services.merge(captured, current).mapUnsafe),
+              Context.makeUnsafe<R>(
+                Context.merge(captured, Context.pick(Invocation, ...requestServices)(current))
+                  .mapUnsafe,
+              ),
             )
           })
   return {
@@ -384,21 +369,26 @@ const bindImpl = Effect.fnUntraced(function* <R, RequestServices = never>(
  * @category combinators
  */
 export const bind: {
-  <RequestServices = never>(
-    requestServices?: ReadonlyArray<Services.Key<RequestServices, unknown>>,
+  <RRequestServices = never>(
+    requestServices?: ReadonlyArray<Context.Key<RRequestServices, unknown>>,
   ): <R>(
     self: Handlers<R>,
-  ) => Effect.Effect<Handlers, never, Exclude<R, Invocation | RequestServices>>
-  <R, RequestServices = never>(
+  ) => Effect.Effect<Handlers, never, Exclude<R, Invocation | RRequestServices>>
+  <R, RRequestServices = never>(
     self: Handlers<R>,
-    requestServices?: ReadonlyArray<Services.Key<RequestServices, unknown>>,
-  ): Effect.Effect<Handlers, never, Exclude<R, Invocation | RequestServices>>
-} = dual((args) => typeof args[0] === 'object' && !Array.isArray(args[0]), bindImpl)
+    requestServices?: ReadonlyArray<Context.Key<RRequestServices, unknown>>,
+  ): Effect.Effect<Handlers, never, Exclude<R, Invocation | RRequestServices>>
+} = dual(
+  Predicate.mapInput(
+    Predicate.or(Predicate.isNull, Predicate.isObject),
+    (args: IArguments) => args[0],
+  ),
+  bindImpl,
+)
 
 /**
  * Type-level contracts for `Handlers`.
  *
- * @category utility types
  */
 export declare namespace Handlers {
   /**
@@ -418,7 +408,7 @@ export declare namespace Handlers {
    */
   interface CompactInput {
     readonly reason: 'manual' | 'threshold' | 'overflow'
-    readonly view: Context.View
+    readonly view: Transcript.View
     readonly firstKept: EntryId
     readonly instructions?: string | undefined
   }

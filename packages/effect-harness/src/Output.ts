@@ -1,6 +1,9 @@
 /**
  * Incremental output retention with exact UTF-8 limits and UTF-16 deltas.
  */
+import * as Array from 'effect/Array'
+
+import * as Result from 'effect/Result'
 import * as Pipeable from 'effect/Pipeable'
 import * as Inspectable from 'effect/Inspectable'
 import { dual } from 'effect/Function'
@@ -10,7 +13,7 @@ import * as Predicate from 'effect/Predicate'
 import * as SynchronizedRef from 'effect/SynchronizedRef'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import { OutputError, OutputFailure } from './OutputError.ts'
+import { OutputError, OutputFailureError } from './OutputError.ts'
 
 /**
  * Retention limits of one tool's output.
@@ -29,17 +32,11 @@ export const Limits = Schema.Struct({
  */
 export type Limits = typeof Limits.Type
 /**
- * Normalized output policy with explicit byte and line bounds.
- *
- * @category models
- */
-export type OutputLimits = Limits
-/**
  * Default head-retention limits of 50 KiB and 2000 lines.
  *
  * @category constants
  */
-export const defaults: OutputLimits = { maxBytes: 50 * 1024, maxLines: 2000, retain: 'head' }
+export const defaults: Limits = { maxBytes: 50 * 1024, maxLines: 2000, retain: 'head' }
 
 /**
  * Retained output and what the limits dropped.
@@ -48,18 +45,6 @@ export const defaults: OutputLimits = { maxBytes: 50 * 1024, maxLines: 2000, ret
  */
 export interface BoundedOutput {
   readonly text: string
-  readonly droppedBytes: number
-  readonly droppedLines: number
-}
-
-/**
- * An exact slice of the input within the limits, and what it left out.
- *
- * @category models
- */
-export interface OutputSlice {
-  readonly text: string
-  readonly bytes: number
   readonly droppedBytes: number
   readonly droppedLines: number
 }
@@ -76,12 +61,10 @@ const decoder = new TextDecoder('utf-8', { ignoreBOM: true })
  * @category combinators
  */
 export function sanitizeOutput(self: string): string {
-  return Array.from(self)
-    .filter((character) => {
-      const code = character.codePointAt(0) ?? 0
-      return !(code <= 8 || (code >= 11 && code <= 31) || (code >= 0xfff9 && code <= 0xfffb))
-    })
-    .join('')
+  return Array.filter(globalThis.Array.from(self), (character) => {
+    const code = character.codePointAt(0) ?? 0
+    return !(code <= 8 || (code >= 11 && code <= 31) || (code >= 0xfff9 && code <= 0xfffb))
+  }).join('')
 }
 
 /**
@@ -89,7 +72,7 @@ export function sanitizeOutput(self: string): string {
  * exact slice, trailing newline included. A single line longer than `maxBytes` is cut at the byte limit on a character
  * boundary.
  */
-function boundOutputImpl(self: string, limits: OutputLimits): OutputSlice {
+function boundOutputImpl(self: string, limits: Limits): boundOutput.Slice {
   const bytes = encoder.encode(self)
   const [from, to] = limits.retain === 'head' ? headRange(bytes, limits) : tailRange(bytes, limits)
   const kept = bytes.subarray(from, to)
@@ -106,11 +89,11 @@ function boundOutputImpl(self: string, limits: OutputLimits): OutputSlice {
  * @category combinators
  */
 export const boundOutput: {
-  (limits: OutputLimits): (self: string) => OutputSlice
-  (self: string, limits: OutputLimits): OutputSlice
+  (limits: Limits): (self: string) => boundOutput.Slice
+  (self: string, limits: Limits): boundOutput.Slice
 } = dual(2, boundOutputImpl)
 
-function headRange(bytes: Uint8Array, limits: OutputLimits): [number, number] {
+function headRange(bytes: Uint8Array, limits: Limits): [number, number] {
   if (limits.maxLines === 0 || limits.maxBytes === 0) return [0, 0]
   let end = bytes.length
   let lines = 0
@@ -131,7 +114,7 @@ function headRange(bytes: Uint8Array, limits: OutputLimits): [number, number] {
   return [0, end]
 }
 
-function tailRange(bytes: Uint8Array, limits: OutputLimits): [number, number] {
+function tailRange(bytes: Uint8Array, limits: Limits): [number, number] {
   if (limits.maxLines === 0 || limits.maxBytes === 0) return [bytes.length, bytes.length]
   // A trailing newline ends the last line rather than starting another.
   const last = bytes[bytes.length - 1] === NEWLINE ? bytes.length - 2 : bytes.length - 1
@@ -186,7 +169,7 @@ function lineCount(bytes: Uint8Array): number {
 }
 
 /** Data owned by one invocation; sibling functions manage its incremental decoder and retention window. */
-const TypeId = '~@effect-harness/harness/Output'
+const TypeId = '~effect-harness/Output'
 /**
  * Incremental bounded output buffer.
  *
@@ -194,7 +177,7 @@ const TypeId = '~@effect-harness/harness/Output'
  */
 export interface Buffer extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [TypeId]: typeof TypeId
-  readonly limits: OutputLimits
+  readonly limits: Limits
   readonly decoder: TextDecoder
   started: boolean
   chunks: Array<{ readonly text: string; readonly bytes: number; readonly newlines: number }>
@@ -263,7 +246,7 @@ export const makeBuffer = (
  *
  * @category constructors
  */
-export function make(limits: OutputLimits = defaults): Buffer {
+export function make(limits: Limits = defaults): Buffer {
   return makeBuffer({
     limits,
     decoder: new TextDecoder('utf-8', { ignoreBOM: true }),
@@ -278,11 +261,11 @@ export function make(limits: OutputLimits = defaults): Buffer {
   })
 }
 /**
- * String/skip boundaries flush incomplete byte sequences.
+ * Appends output chunks through the typed decoder and retention boundary.
  *
  * **Details**
  *
- * Only a BOM at the stream's very start is removed.
+ * String and skip boundaries flush incomplete byte sequences. Only a BOM at the stream's very start is removed.
  *
  * @category combinators
  */
@@ -297,7 +280,7 @@ export const push = (
       cause instanceof OutputError
         ? cause
         : new OutputError({
-            reason: new OutputFailure({ message: 'Unable to retain output', cause }),
+            reason: new OutputFailureError({ message: 'Unable to retain output', cause }),
           }),
   })
 
@@ -305,15 +288,15 @@ export const push = (
 const pushUnsafe = (self: Buffer, chunk: string | Uint8Array, skipped?: Skip): boolean => {
   if (skipped !== undefined && self.limits.retain !== 'tail')
     throw new OutputError({
-      reason: new OutputFailure({ message: 'Skipped output requires tail retention' }),
+      reason: new OutputFailureError({ message: 'Skipped output requires tail retention' }),
     })
   const pending = typeof chunk === 'string' || skipped !== undefined ? self.decoder.decode() : ''
   let text = typeof chunk === 'string' ? chunk : self.decoder.decode(chunk, { stream: true })
   const first = !self.started && pending === '' && skipped === undefined
   if (pending !== '' || text !== '' || skipped !== undefined) self.started = true
   if (first && typeof chunk !== 'string' && text.startsWith('\ufeff')) text = text.slice(1)
-  if (skipped === undefined) return accept(self, pending + text)
-  accept(self, pending)
+  if (skipped === undefined) return acceptUnsafe(self, pending + text)
+  acceptUnsafe(self, pending)
   if (skipped.bytes > 0) {
     self.totalBytes += skipped.bytes
     self.totalNewlines += skipped.newlines
@@ -322,7 +305,7 @@ const pushUnsafe = (self: Buffer, chunk: string | Uint8Array, skipped?: Skip): b
     self.storedBytes = 0
     self.storedNewlines = 0
   }
-  accept(self, text)
+  acceptUnsafe(self, text)
   return true
 }
 /**
@@ -331,39 +314,54 @@ const pushUnsafe = (self: Buffer, chunk: string | Uint8Array, skipped?: Skip): b
  * @category unsafe
  */
 export function endUnsafe(self: Buffer): void {
-  accept(self, self.decoder.decode())
+  acceptUnsafe(self, self.decoder.decode())
 }
 const byteLength = (self: string): number => encoder.encode(self).length
-function accept(self: Buffer, text: string): boolean {
-  if (text.length === 0) return false
-  const bytes = byteLength(text)
-  const newlines = countNewlines(text)
-  self.totalBytes += bytes
-  self.totalNewlines += newlines
-  self.endsWithNewline = text.endsWith('\n')
-  if (self.full) return true
-  self.chunks.push({ text, bytes, newlines })
-  self.storedBytes += bytes
-  self.storedNewlines += newlines
-  if (self.limits.retain === 'head') {
-    self.full =
-      self.storedBytes > self.limits.maxBytes || self.storedNewlines >= self.limits.maxLines
-    return true
-  }
-  while (self.chunks.length > 1) {
-    const first = self.chunks[0]
-    if (first === undefined) break
-    const bytesAfter = self.storedBytes - first.bytes
-    const newlinesAfter = self.storedNewlines - first.newlines
-    if (bytesAfter <= self.limits.maxBytes + 1 && newlinesAfter <= self.limits.maxLines + 1) break
-    self.chunks.shift()
-    self.storedBytes = bytesAfter
-    self.storedNewlines = newlinesAfter
-  }
-  return true
+function accept(self: Buffer, text: string): Result.Result<boolean, MutationFailure> {
+  return Result.try({
+    try: () => {
+      if (text.length === 0) return false
+      const bytes = byteLength(text)
+      const newlines = countNewlines(text)
+      self.totalBytes += bytes
+      self.totalNewlines += newlines
+      self.endsWithNewline = text.endsWith('\n')
+      if (self.full) return true
+      self.chunks.push({ text, bytes, newlines })
+      self.storedBytes += bytes
+      self.storedNewlines += newlines
+      if (self.limits.retain === 'head') {
+        self.full =
+          self.storedBytes > self.limits.maxBytes || self.storedNewlines >= self.limits.maxLines
+        return true
+      }
+      while (self.chunks.length > 1) {
+        const first = self.chunks[0]
+        if (first === undefined) break
+        const bytesAfter = self.storedBytes - first.bytes
+        const newlinesAfter = self.storedNewlines - first.newlines
+        if (bytesAfter <= self.limits.maxBytes + 1 && newlinesAfter <= self.limits.maxLines + 1)
+          break
+        self.chunks.shift()
+        self.storedBytes = bytesAfter
+        self.storedNewlines = newlinesAfter
+      }
+      return true
+    },
+    catch: (cause) => ({ cause }),
+  })
+}
+
+// The public Effect.try/Result boundary retains its original cause and owned mutation timing.
+function acceptUnsafe(self: Buffer, text: string): boolean {
+  return Result.getOrThrowWith(accept(self, text), (failure) => failure.cause)
 }
 /**
- * Snapshot cadence never changes the retained tail; raw byte counts include later-sanitized controls.
+ * Returns retained output and dropped counts while compacting its owned buffer.
+ *
+ * **Details**
+ *
+ * Snapshot cadence never changes the retained tail. Raw byte counts include controls removed during display sanitization; native/accessor faults can throw.
  *
  * @category unsafe
  */
@@ -389,7 +387,7 @@ export function snapshotUnsafe(self: Buffer): BoundedOutput {
  * The shortest suffix of `text` with more than `maxBytes` bytes or more than `maxLines` newlines, or all of it. The
  * tail window of any text that ends with this suffix, followed by anything, is the same as of `text` followed by it.
  */
-function tailMargin(self: string, limits: OutputLimits): string {
+function tailMargin(self: string, limits: Limits): string {
   const bytes = encoder.encode(self)
   const byteStart =
     bytes.length > limits.maxBytes ? characterEnd(bytes, bytes.length - limits.maxBytes - 1) : 0
@@ -456,38 +454,74 @@ export const delta: {
 } = dual((args) => typeof args[1] === 'string', deltaImpl)
 
 /** Shared invocation retention state is immutable; TextDecoder is private native streaming state. */
-type WindowState = Readonly<Omit<Buffer, 'decoder' | 'chunks' | typeof TypeId>> & {
+type WindowState = Readonly<
+  Omit<
+    Buffer,
+    'decoder' | 'chunks' | typeof TypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
+  >
+> & {
   readonly chunks: ReadonlyArray<{
     readonly text: string
     readonly bytes: number
     readonly newlines: number
   }>
 }
+const WindowTypeId = '~effect-harness/Output/Window'
+
 /**
  * Incremental bounded window that tracks output changes.
  *
+ * **Details**
+ *
+ * This owned handle supports piping and bounded inspection. `toJSON` is a diagnostic
+ * projection; use the original fields for protocol values and resource references.
+ *
  * @category models
  */
-export interface Window {
+export interface Window extends Pipeable.Pipeable, Inspectable.Inspectable {
+  readonly [WindowTypeId]: typeof WindowTypeId
   readonly push: (chunk: string | Uint8Array, skipped?: Skip) => Effect.Effect<boolean, OutputError>
   readonly reset: Effect.Effect<void>
   readonly end: Effect.Effect<void, OutputError>
   readonly snapshot: Effect.Effect<BoundedOutput, OutputError>
 }
 /**
+ * Checks the established nominal Window marker without running any command.
+ *
+ * @category guards
+ */
+export const isWindow = (u: unknown): u is Window =>
+  Predicate.hasProperty(u, WindowTypeId) && u[WindowTypeId] === WindowTypeId
+
+const WindowProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  toJSON(): unknown {
+    return { _id: 'effect-harness/Output/Window', commands: '<serialized effects>' }
+  },
+}
+
+/**
  * Creates a serialized output window whose commands share one decoder and retention state.
  *
  * @category constructors
  */
 export const makeWindow = Effect.fnUntraced(function* (
-  limits: OutputLimits = defaults,
+  limits: Limits = defaults,
 ): Effect.fn.Return<Window> {
   const nativeDecoder = new TextDecoder('utf-8', { ignoreBOM: true })
-  const initial = (): WindowState => {
-    const { decoder: _decoder, [TypeId]: _brand, ...state } = make(limits)
-    return state
-  }
-  const state = yield* SynchronizedRef.make(initial())
+  const makeWindowState = (): WindowState => ({
+    limits,
+    started: false,
+    chunks: [],
+    storedBytes: 0,
+    storedNewlines: 0,
+    full: false,
+    totalBytes: 0,
+    totalNewlines: 0,
+    endsWithNewline: true,
+  })
+  const state = yield* SynchronizedRef.make(makeWindowState())
   const local = (self: WindowState): Buffer =>
     makeBuffer({
       ...self,
@@ -498,20 +532,19 @@ export const makeWindow = Effect.fnUntraced(function* (
     const { decoder: _decoder, [TypeId]: _brand, ...next } = self
     return next
   }
-  return {
-    push: Effect.fnUntraced(function* (chunk: string | Uint8Array, skipped?: Skip) {
-      return yield* SynchronizedRef.modifyEffect(
+  const commands = {
+    push: (chunk: string | Uint8Array, skipped?: Skip) =>
+      SynchronizedRef.modifyEffect(
         state,
         Effect.fnUntraced(function* (current) {
           const working = local(current)
           const changed = yield* push(working, chunk, skipped)
           return [changed, stored(working)] as const
         }),
-      )
-    }),
+      ),
     reset: SynchronizedRef.modify(state, () => {
       nativeDecoder.decode()
-      return [undefined, initial()] as const
+      return [undefined, makeWindowState()] as const
     }),
     end: SynchronizedRef.modifyEffect(state, (current) => {
       const working = local(current)
@@ -522,6 +555,10 @@ export const makeWindow = Effect.fnUntraced(function* (
       return Effect.map(snapshot(working), (value) => [value, stored(working)] as const)
     }),
   }
+  const handle: Window = Object.create(WindowProto)
+  Object.defineProperties(handle, Object.getOwnPropertyDescriptors(commands))
+  Object.defineProperty(handle, WindowTypeId, { value: WindowTypeId, enumerable: false })
+  return handle
 })
 
 /**
@@ -546,7 +583,7 @@ export const end = (self: Buffer): Effect.Effect<void, OutputError> =>
     try: () => endUnsafe(self),
     catch: (cause) =>
       new OutputError({
-        reason: new OutputFailure({ message: 'Unable to finish output decoding', cause }),
+        reason: new OutputFailureError({ message: 'Unable to finish output decoding', cause }),
       }),
   })
 /**
@@ -559,7 +596,7 @@ export const snapshot = (self: Buffer): Effect.Effect<BoundedOutput, OutputError
     try: () => snapshotUnsafe(self),
     catch: (cause) =>
       new OutputError({
-        reason: new OutputFailure({ message: 'Unable to snapshot output', cause }),
+        reason: new OutputFailureError({ message: 'Unable to snapshot output', cause }),
       }),
   })
 
@@ -569,4 +606,26 @@ const BufferProto = {
   toJSON(): unknown {
     return { _id: '@effect-harness/harness/Output/Buffer' }
   },
+}
+
+/** Private native-fault token: safe Results retain the original cause for the existing outer boundary. */
+interface MutationFailure {
+  readonly cause: unknown
+}
+
+/**
+ * Type-level contracts for `boundOutput`.
+ */
+export declare namespace boundOutput {
+  /**
+   * An exact slice of the input within the limits, and what it left out.
+   *
+   * @category models
+   */
+  export interface Slice {
+    readonly text: string
+    readonly bytes: number
+    readonly droppedBytes: number
+    readonly droppedLines: number
+  }
 }

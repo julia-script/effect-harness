@@ -14,7 +14,7 @@ import * as Inbox from 'effect-harness/durable/Inbox'
 import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
 import * as View from 'effect-harness/durable/View'
-import * as Memory from 'effect-harness/durable/storage/Memory'
+import * as Store from 'effect-harness/durable/Store'
 
 const base: readonly [string, ...string[]] = [
   'docs',
@@ -39,7 +39,7 @@ const message = (text: string) =>
 const layers = Event.layer.pipe(
   Layer.provideMerge(View.layer),
   Layer.provideMerge(Session.layer),
-  Layer.provideMerge(Memory.layer),
+  Layer.provideMerge(Store.layerMemory),
 )
 
 // Advance modeled journal polling only after its wait/consumer fiber has been admitted.
@@ -64,22 +64,20 @@ describe('EventDeltas', () => {
       assert.ok(blocks[1])
       assert.ok(blocks[2])
       assert.deepStrictEqual(Event.messageChanges([['set', base, []]], before, after), [
-        { _tag: 'text_start' as const, type: 'text_start', contentIndex: 0, block: blocks[0] },
+        { _tag: 'text_start' as const, contentIndex: 0, block: blocks[0] },
         {
           _tag: 'thinking_start' as const,
-          type: 'thinking_start',
           contentIndex: 1,
           block: blocks[1],
         },
         {
           _tag: 'toolcall_start' as const,
-          type: 'toolcall_start',
           contentIndex: 2,
           block: blocks[2],
         },
       ])
       assert.deepStrictEqual(Event.messageChanges([['set', [...base, 0], {}]], before, after), [
-        { _tag: 'block' as const, type: 'block', contentIndex: 0, block: blocks[0] },
+        { _tag: 'block' as const, contentIndex: 0, block: blocks[0] },
       ])
       const text = Prompt.assistantMessage({ content: [Prompt.textPart({ text: 'a' })] })
       const reasoning = Prompt.assistantMessage({
@@ -89,7 +87,7 @@ describe('EventDeltas', () => {
       assert.ok(block)
       assert.deepStrictEqual(
         Event.messageChanges([['set', [...base, 0, 'text'], 'abc']], text, reasoning),
-        [{ _tag: 'block' as const, type: 'block', contentIndex: 0, block }],
+        [{ _tag: 'block' as const, contentIndex: 0, block }],
       )
     }),
   )
@@ -109,18 +107,16 @@ describe('EventDeltas', () => {
       ]
       const changes = Event.messageChanges(ops, before, after)
       assert.deepStrictEqual(changes, [
-        { _tag: 'text_delta' as const, type: 'text_delta', contentIndex: 0, delta: 'bc' },
-        { _tag: 'thinking_delta' as const, type: 'thinking_delta', contentIndex: 1, delta: 'bc' },
+        { _tag: 'text_delta' as const, contentIndex: 0, delta: 'bc' },
+        { _tag: 'thinking_delta' as const, contentIndex: 1, delta: 'bc' },
         {
           _tag: 'toolcall_delta' as const,
-          type: 'toolcall_delta',
           contentIndex: 2,
           path: ['path'],
           delta: 'bc',
         },
         {
           _tag: 'toolcall_delta' as const,
-          type: 'toolcall_delta',
           contentIndex: 2,
           path: ['other'],
           delta: 'bc',
@@ -130,8 +126,8 @@ describe('EventDeltas', () => {
         const suffix = changes
           .filter(
             (change) =>
-              change.type === type &&
-              (change.type !== 'toolcall_delta' || change.path[0] === 'path'),
+              change._tag === type &&
+              (change._tag !== 'toolcall_delta' || change.path[0] === 'path'),
           )
           .map((change) => ('delta' in change ? change.delta : ''))
           .join('')
@@ -164,7 +160,6 @@ describe('EventDeltas', () => {
           assert.ok(block)
           assert.deepStrictEqual(changes[0], {
             _tag: 'block' as const,
-            type: 'block',
             contentIndex: 0,
             block,
           })
@@ -175,7 +170,7 @@ describe('EventDeltas', () => {
         ['replace', { conversation: { id: Record.ROOT_CONVERSATION_ID }, entries: [], docs: {} }],
       ] satisfies View.Op[]) {
         assert.deepStrictEqual(Event.messageChanges([narrower, ancestor], before, after), [
-          { _tag: 'message' as const, type: 'message', message: after },
+          { _tag: 'message' as const, message: after },
         ])
       }
     }),
@@ -201,7 +196,7 @@ describe('EventDeltas', () => {
             before,
             after,
           ),
-          [{ _tag: 'block' as const, type: 'block', contentIndex: index, block }],
+          [{ _tag: 'block' as const, contentIndex: index, block }],
         )
       }
       const first: View.Op = ['set', [...base, 2, 'params', 'path'], 'abcd']
@@ -213,7 +208,7 @@ describe('EventDeltas', () => {
         const block = message('abcd').content[2]
         assert.ok(block)
         assert.deepStrictEqual(Event.messageChanges(ops, before, message('abcd')), [
-          { _tag: 'block' as const, type: 'block', contentIndex: 2, block },
+          { _tag: 'block' as const, contentIndex: 2, block },
         ])
       }
       assert.deepStrictEqual(
@@ -225,7 +220,6 @@ describe('EventDeltas', () => {
         [
           {
             _tag: 'message' as const,
-            type: 'message',
             message: Prompt.assistantMessage({ content: [] }),
           },
         ],
@@ -275,21 +269,19 @@ describe('EventDeltas', () => {
       const batches = yield* awaitObserved(
         Stream.runCollect(watch.changes.pipe(Stream.take(1), Stream.timeout('3 seconds'))),
       )
-      const update = batches[0]?.find((event) => event.type === 'message_update')
+      const update = batches[0]?.find((event) => event._tag === 'message_update')
       assert.ok(update)
       assert.deepStrictEqual(update.changes, [
-        { _tag: 'text_delta' as const, type: 'text_delta', contentIndex: 0, delta: 'bc' },
-        { _tag: 'thinking_delta' as const, type: 'thinking_delta', contentIndex: 1, delta: 'bc' },
+        { _tag: 'text_delta' as const, contentIndex: 0, delta: 'bc' },
+        { _tag: 'thinking_delta' as const, contentIndex: 1, delta: 'bc' },
         {
           _tag: 'toolcall_delta' as const,
-          type: 'toolcall_delta',
           contentIndex: 2,
           path: ['path'],
           delta: 'bc',
         },
         {
           _tag: 'toolcall_delta' as const,
-          type: 'toolcall_delta',
           contentIndex: 2,
           path: ['other'],
           delta: 'bc',

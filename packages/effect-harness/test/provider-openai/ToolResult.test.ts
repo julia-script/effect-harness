@@ -1,8 +1,8 @@
-// effect-review-allow P9-namespace-alias-equals-module: effect-harness/provider-openai/ToolResult and effect-harness/ToolResult share a basename; ProviderToolResult distinguishes the provider boundary.
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/provider-openai/ToolResult and effect-harness/ToolResult share a basename; ProviderToolResult distinguishes the provider boundary.
 import * as ToolResult from 'effect-harness/provider-openai/ToolResult'
 import { assert, describe, it } from '@effect/vitest'
 import * as OpenAiLanguageModel from '@effect/ai-openai/OpenAiLanguageModel'
-// effect-review-allow P9-namespace-alias-equals-module: effect-harness/ToolResult and packages/effect-harness/test/provider-openai/ToolResult.test.ts both bind ToolResult; Canonical distinguishes the concepts.
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/ToolResult and effect-harness/provider-openai/ToolResult both bind ToolResult; Canonical compares the harness result codec with the provider media translation in this test.
 import * as Canonical from 'effect-harness/ToolResult'
 import * as Model from 'effect-harness/Model'
 import * as Usage from 'effect-harness/Usage'
@@ -17,12 +17,10 @@ import * as Prompt from 'effect/ai/Prompt'
 import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
 import * as HttpClient from 'effect/http/HttpClient'
-import * as HttpClientRequest from 'effect/http/HttpClientRequest'
+import type * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import * as Catalog from 'effect-harness/provider-openai/Catalog'
 import * as ChatGpt from 'effect-harness/provider-openai/ChatGpt'
-// effect-review-allow P9-namespace-alias-equals-module: effect-harness/provider-openai/LanguageModel and effect/ai/LanguageModel both bind LanguageModel; Provider distinguishes the concepts.
-import * as Provider from 'effect-harness/provider-openai/LanguageModel'
 
 const response = {
   id: 'response',
@@ -45,7 +43,7 @@ const response = {
     output_tokens_details: { reasoning_tokens: 0 },
   },
 }
-const body = (request: HttpClientRequest.HttpClientRequest) => {
+const bodyUnsafe = (request: HttpClientRequest.HttpClientRequest) => {
   assert.strictEqual(request.body._tag, 'Uint8Array')
   if (request.body._tag !== 'Uint8Array') throw new Error('Expected native JSON body')
   return JSON.parse(new TextDecoder().decode(request.body.body)) as {
@@ -91,12 +89,12 @@ const fixture = (flow: 'apiKey' | 'account', streaming = false) => {
   const options = { model: 'fixture', config: { fileIdPrefixes: ['file-'] } }
   const layer = (
     flow === 'apiKey'
-      ? Provider.layerApiKey({
+      ? HarnessOpenAiLanguageModel.layerApiKey({
           ...options,
           apiKey: Redacted.make('api-key'),
           apiUrl: 'https://fixture.invalid',
         })
-      : Provider.layerChatGpt({ ...options, account: 'account' })
+      : ChatGptLanguageModel.layer({ ...options, account: 'account' })
   ).pipe(Layer.provide(dependencies))
   return { requests, layer, dependencies }
 }
@@ -153,12 +151,12 @@ const mixed = () =>
       Prompt.textPart({ text: 'last' }),
     ],
     details: { secret: 'private-details' },
-    usage: { ...Usage.zero(), input: 987654321 },
+    usage: { ...Usage.make(), input: 987654321 },
     control: { addTools: ['private-control'] },
     diagnostics: [{ kind: 'truncated', message: 'visible warning', severity: 'warning' }],
   })
-const output = (request: HttpClientRequest.HttpClientRequest) => {
-  const item = body(request).input.find((item) => item.type === 'function_call_output')
+const outputUnsafe = (request: HttpClientRequest.HttpClientRequest) => {
+  const item = bodyUnsafe(request).input.find((item) => item.type === 'function_call_output')
   assert.isDefined(item)
   if (item === undefined) throw new Error('Missing native function output')
   return item
@@ -209,7 +207,7 @@ describe('ToolResult', () => {
           yield* encoded
           const request = f.requests[0]
           if (request === undefined) return yield* Effect.die('Missing request')
-          assert.isArray(output(request).output)
+          assert.isArray(outputUnsafe(request).output)
         }).pipe(Effect.provide(Layer.merge(f.layer, handlers)))
       }),
     )
@@ -231,7 +229,7 @@ describe('ToolResult', () => {
               )
             const request = f.requests[0]
             if (request === undefined) return yield* Effect.die('Missing request')
-            assert.deepStrictEqual(output(request).output, [
+            assert.deepStrictEqual(outputUnsafe(request).output, [
               { type: 'input_file', file_id: 'asset-document' },
               {
                 type: 'input_image',
@@ -259,7 +257,7 @@ describe('ToolResult', () => {
             yield* model.generateText({ prompt: history(result) })
             const request = f.requests[0]
             if (request === undefined) return yield* Effect.die('Missing request')
-            assert.deepStrictEqual(output(request).output, [
+            assert.deepStrictEqual(outputUnsafe(request).output, [
               { type: 'input_image', image_url: 'https://files.invalid/image.jpg', detail: 'auto' },
               {
                 type: 'input_file',
@@ -270,7 +268,7 @@ describe('ToolResult', () => {
             yield* model.generateText({ prompt: history(yield* Canonical.encode({ content: [] })) })
             const empty = f.requests[1]
             if (empty === undefined) return yield* Effect.die('Missing empty request')
-            assert.deepStrictEqual(output(empty).output, [])
+            assert.deepStrictEqual(outputUnsafe(empty).output, [])
           }).pipe(Effect.provide(f.layer))
         }),
       )
@@ -299,7 +297,7 @@ describe('ToolResult', () => {
                   )
                 const request = f.requests[0]
                 if (request === undefined) return yield* Effect.die('Missing request')
-                const item = output(request)
+                const item = outputUnsafe(request)
                 assert.strictEqual(item.call_id, 'call-1')
                 assert.strictEqual(item.status, 'completed')
                 assert.deepStrictEqual(item.output, [
@@ -322,10 +320,10 @@ describe('ToolResult', () => {
                   { type: 'input_text', text: '<harness>\n[warning] visible warning\n</harness>' },
                 ])
                 assert.deepStrictEqual(
-                  body(request).input.map((item) => item.type ?? item.role),
+                  bodyUnsafe(request).input.map((item) => item.type ?? item.role),
                   ['user', 'function_call', 'function_call_output', 'user'],
                 )
-                const encoded = JSON.stringify(body(request))
+                const encoded = JSON.stringify(bodyUnsafe(request))
                 assert.notInclude(encoded, 'private-details')
                 assert.notInclude(encoded, 'private-control')
                 assert.notInclude(encoded, '987654321')
@@ -350,7 +348,7 @@ describe('ToolResult', () => {
               yield* model.generateText({ prompt: history(result) })
               const request = f.requests.at(-1)
               if (request === undefined) return yield* Effect.die('Missing request')
-              assert.strictEqual(output(request).output, JSON.stringify(result))
+              assert.strictEqual(outputUnsafe(request).output, JSON.stringify(result))
             }
           }).pipe(Effect.provide(f.layer))
         }),
@@ -428,11 +426,14 @@ describe('ToolResult', () => {
             yield* descriptor.model.generateText({ prompt: history(yield* mixed()) })
             const request = f.requests[0]
             if (request === undefined) return yield* Effect.die('Missing request')
-            assert.isArray(output(request).output)
-            assert.include(JSON.stringify(output(request).output), '"file_id":"file-image"')
+            assert.isArray(outputUnsafe(request).output)
+            assert.include(JSON.stringify(outputUnsafe(request).output), '"file_id":"file-image"')
           }).pipe(Effect.provide(catalog))
         }),
       )
     }
   })
 })
+
+import * as HarnessOpenAiLanguageModel from 'effect-harness/provider-openai/OpenAiLanguageModel'
+import * as ChatGptLanguageModel from 'effect-harness/provider-openai/ChatGptLanguageModel'

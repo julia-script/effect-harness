@@ -68,8 +68,8 @@ describe('JoseJwt', () => {
       assert.isFalse(Object.hasOwn(identity, 'nonce'))
       assert.isFalse(Object.hasOwn(identity, 'email'))
       assert.strictEqual(
-        (yield* verifier.verify(tokens[1]!, options).pipe(Effect.flip)).code,
-        'identity',
+        (yield* verifier.verify(tokens[1]!, options).pipe(Effect.flip)).reason._tag,
+        'AuthIdentityError',
       )
       assert.strictEqual((yield* verifier.verify(tokens[1]!, options)).sub, 'second')
       assert.strictEqual(reads, 3)
@@ -118,19 +118,19 @@ describe('JoseJwt', () => {
           { ...options, audience: 'wrong' },
         ])
           assert.strictEqual(
-            (yield* verifier.verify(signed, bad).pipe(Effect.flip)).code,
-            'identity',
+            (yield* verifier.verify(signed, bad).pipe(Effect.flip)).reason._tag,
+            'AuthIdentityError',
           )
         const missing = Redacted.make(yield* sign({ sub: '' }))
         assert.strictEqual(
-          (yield* verifier.verify(missing, options).pipe(Effect.flip)).code,
-          'identity',
+          (yield* verifier.verify(missing, options).pipe(Effect.flip)).reason._tag,
+          'AuthIdentityError',
         )
         const segments = Redacted.value(signed).split('.')
         const tampered = Redacted.make(`${segments[0]}.${segments[1]}.bad-signature`)
         assert.strictEqual(
-          (yield* verifier.verify(tampered, options).pipe(Effect.flip)).code,
-          'identity',
+          (yield* verifier.verify(tampered, options).pipe(Effect.flip)).reason._tag,
+          'AuthIdentityError',
         )
         const expired = Redacted.make(
           yield* Effect.tryPromise(() =>
@@ -143,8 +143,8 @@ describe('JoseJwt', () => {
           ),
         )
         assert.strictEqual(
-          (yield* verifier.verify(expired, options).pipe(Effect.flip)).code,
-          'identity',
+          (yield* verifier.verify(expired, options).pipe(Effect.flip)).reason._tag,
+          'AuthIdentityError',
         )
       }),
   )

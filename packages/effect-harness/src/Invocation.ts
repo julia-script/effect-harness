@@ -59,12 +59,6 @@ export const Result = Schema.Struct({
   isError: SchemaField.optional(Schema.Boolean),
 })
 /**
- * Decoded tool content and metadata returned to the executor.
- *
- * @category models
- */
-export type ToolResult = Result
-/**
  * Partial tool output, details and diagnostics published during execution.
  *
  * @category models
@@ -94,7 +88,7 @@ export class Invocation extends Context.Service<
     readonly report: (error: unknown) => Effect.Effect<void>
     readonly progress: (value: Progress) => Effect.Effect<void>
   }
->()('@effect-harness/harness/Invocation') {}
+>()('effect-harness/Invocation') {}
 /**
  * Request-local tool reporting and ownership boundary.
  *
@@ -110,7 +104,7 @@ export class ToolCall extends Context.Service<
   {
     readonly id: string
     /** Native Toolkit preliminary results replace the previous preview and share scoped progress pacing. */
-    readonly preliminary?: ((value: ToolResult) => Effect.Effect<void, ToolError>) | undefined
+    readonly preliminary?: ((value: Result) => Effect.Effect<void, ToolError>) | undefined
     readonly output: (
       chunk: string | Uint8Array,
       skipped?: Output.Skip,
@@ -119,14 +113,14 @@ export class ToolCall extends Context.Service<
       | {
           readonly maxBytes: number
           readonly maxLines: number
-          readonly minIntervalMs: Duration.Input
+          readonly minInterval: Duration.Input
           readonly bytesPerSecond: number
         }
       | undefined
     readonly details: (value: Schema.Json) => Effect.Effect<void, ToolError>
     readonly diagnostic: (value: Diagnostic) => Effect.Effect<void, ToolError>
   }
->()('@effect-harness/harness/Invocation/ToolCall') {}
+>()('effect-harness/Invocation/ToolCall') {}
 /**
  * Provides an Invocation with cwd set to . and no-op reporting.
  *
@@ -180,7 +174,7 @@ export const isControl: (u: unknown) => u is Control = Schema.is(Control)
  *
  * @category guards
  */
-export const isToolResult: (u: unknown) => u is Result = Schema.is(Result)
+export const isResult: (u: unknown) => u is Result = Schema.is(Result)
 
 /**
  * Tool content, private details, diagnostics, usage and optional controls.

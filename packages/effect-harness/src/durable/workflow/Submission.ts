@@ -1,7 +1,3 @@
-/**
- * Native submission Workflow declaration and legacy-compatible payloads.
- */
-import { tagged } from '../internal/legacyTag.ts'
 import * as Identity from '../Identity.ts'
 import * as Struct from 'effect/Struct'
 import * as Prompt from 'effect/ai/Prompt'
@@ -37,18 +33,17 @@ export type EntryDraft = typeof EntryDraft.Type
  *
  * **Details**
  *
- * whenBusy selects steer, followUp or reject for input admission. Decoded variants use _tag
- * while encoded payloads retain type.
+ * whenBusy selects steer, followUp or reject for input admission. Both encoded and decoded
+ * variants use _tag.
  *
  * @category schemas
  */
 export const Input = Schema.Union([
-  tagged('input', {
-    type: Schema.tag('input'),
+  Schema.TaggedStruct('input', {
     message: Prompt.UserMessage,
     whenBusy: Schema.optionalKey(Schema.Literals(['steer', 'followUp', 'reject'])),
   }),
-  tagged('write', { type: Schema.tag('write'), entry: EntryDraft }),
+  Schema.TaggedStruct('write', { entry: EntryDraft }),
 ])
 /**
  * Decoded value validated by the `Input` schema.
@@ -97,5 +92,20 @@ export const Submission = Workflow.make('@effect-harness/durable/Submission/v1',
   success: Result,
   error: ExecutionError,
   idempotencyKey: ({ sessionId, conversationId, requestId, submission }) =>
-    JSON.stringify([sessionId, conversationId, requestId, submission.type]),
+    JSON.stringify([sessionId, conversationId, requestId, submission._tag]),
 })
+
+/** Checks the decoded EntryDraft contract without decoding or coercing input.
+ * @category guards
+ */
+export const isEntryDraft: (u: unknown) => u is EntryDraft = Schema.is(Schema.toType(EntryDraft))
+
+/** Checks the decoded Input contract without decoding or coercing input.
+ * @category guards
+ */
+export const isInput: (u: unknown) => u is Input = Schema.is(Schema.toType(Input))
+
+/** Checks the decoded Result contract without decoding or coercing input.
+ * @category guards
+ */
+export const isResult: (u: unknown) => u is Result = Schema.is(Schema.toType(Result))

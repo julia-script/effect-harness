@@ -4,14 +4,12 @@
 import { MutationLocks } from '../MutationLocks.ts'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as AiTool from 'effect/ai/Tool'
-// effect-review-allow P9-namespace-alias-equals-module: effect/ai/Tool and ../Tool.ts both bind Tool; AiTool preserves the checked imported-name collision.
+import * as Tool from 'effect/ai/Tool'
 import * as Prompt from 'effect/ai/Prompt'
 import { Env } from '../Env.ts'
-import { ToolError, ToolExecution } from '../ToolError.ts'
+import { ToolError, ToolExecutionError } from '../ToolError.ts'
 import { Invocation, Result } from '../Invocation.ts'
-import * as Metadata from '../Tool.ts'
-// effect-review-allow P9-namespace-alias-equals-module: ../Tool.ts and effect/ai/Tool both bind Tool; Metadata preserves the checked imported-name collision.
+import * as ToolRegistration from '../ToolRegistration.ts'
 import * as mutation from './internal/mutation.ts'
 import * as path from './internal/path.ts'
 /**
@@ -20,12 +18,6 @@ import * as path from './internal/path.ts'
  * @category schemas
  */
 export const Parameters = Schema.Struct({ path: Schema.String, content: Schema.String })
-/**
- * Decoded parameters passed to the coding-tool handler.
- *
- * @category models
- */
-export type Input = Parameters
 /**
  * Native write tool replacing a file with supplied text.
  *
@@ -39,7 +31,7 @@ export type Input = Parameters
  *
  * @category constants
  */
-export const tool = AiTool.make('write', {
+export const tool = Tool.make('write', {
   description:
     'Write content to a file. Creates missing parent directories and overwrites existing content.',
   parameters: Parameters,
@@ -49,33 +41,42 @@ export const tool = AiTool.make('write', {
   .addDependency(Env)
   .addDependency(MutationLocks)
   .addDependency(Invocation)
-  .annotate(Metadata.Metadata, {
+  .annotate(ToolRegistration.Metadata, {
     replay: 'unsafe',
-    project: (result) => Metadata.decodeResult('write', result),
+    project: (result) => ToolRegistration.decodeResult('write', result),
   })
+/**
+ * Write result with a readonly payload and freshly owned mutable content array.
+ *
+ * @category models
+ */
+export interface Output {
+  readonly content: Array<Prompt.TextPart>
+}
+
 /**
  * Replaces file content under the host-owned canonical mutation lock.
  *
  * @category combinators
  */
-export const handler = Effect.fnUntraced(function* (
-  input: Input,
-): Effect.fn.Return<
-  { content: Array<Prompt.TextPart> },
-  ToolError,
-  Env | Invocation | MutationLocks
-> {
-  const env = yield* Env
-  const absolute = yield* path.resolve(input.path).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ToolError({
-          reason: new ToolExecution({ name: 'write', message: cause.message, cause: cause }),
-        }),
-    ),
-  )
-  return yield* mutation
-    .withFile(
+export const handler = Effect.fnUntraced(
+  function* (
+    input: Parameters,
+  ): Effect.fn.Return<
+    Output,
+    ToolError | import('../FileError.ts').FileError,
+    Env | Invocation | MutationLocks
+  > {
+    const env = yield* Env
+    const absolute = yield* path.resolve(input.path).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ToolError({
+            reason: new ToolExecutionError({ name: 'write', message: cause.message, cause: cause }),
+          }),
+      ),
+    )
+    return yield* mutation.withFile(
       absolute,
       env.writeFile(absolute, input.content).pipe(
         Effect.as({
@@ -83,15 +84,15 @@ export const handler = Effect.fnUntraced(function* (
         }),
       ),
     )
-    .pipe(
-      Effect.mapError(
-        (cause) =>
-          new ToolError({
-            reason: new ToolExecution({ name: 'write', message: cause.message, cause: cause }),
-          }),
-      ),
-    )
-})
+  },
+  Effect.mapError((cause) =>
+    cause instanceof ToolError
+      ? cause
+      : new ToolError({
+          reason: new ToolExecutionError({ name: 'write', message: cause.message, cause }),
+        }),
+  ),
+)
 
 /**
  * Checks whether a value satisfies the decoded `Parameters` schema.
@@ -103,7 +104,7 @@ export const handler = Effect.fnUntraced(function* (
  *
  * @category guards
  */
-export const isInput: (u: unknown) => u is Parameters = Schema.is(Parameters)
+export const isParameters: (u: unknown) => u is Parameters = Schema.is(Parameters)
 
 /**
  * File path and complete replacement text.

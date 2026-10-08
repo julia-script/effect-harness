@@ -1,3 +1,4 @@
+import { assertFailure } from '@effect/vitest/utils'
 import * as TestClock from 'effect/testing/TestClock'
 import * as Option from 'effect/Option'
 import { assert, describe, it } from '@effect/vitest'
@@ -15,11 +16,12 @@ import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
 import * as Store from 'effect-harness/durable/Store'
 import * as View from 'effect-harness/durable/View'
-import * as Memory from 'effect-harness/durable/storage/Memory'
-import { rejected } from 'effect-harness/durable/StorageError'
-import { ResourceScope, withLayer } from 'effect-harness/durable/testing/Storage'
 
-const layers = Layer.mergeAll(Session.layer, View.layer).pipe(Layer.provideMerge(Memory.layer))
+import { rejected } from 'effect-harness/durable/StorageError'
+import { ResourceScope } from 'effect-harness/durable/testing/Storage'
+import { withLayer } from './StorageFixture.ts'
+
+const layers = Layer.mergeAll(Session.layer, View.layer).pipe(Layer.provideMerge(Store.layerMemory))
 const initialize = Effect.gen(function* () {
   const session = yield* Session.Session
   const views = yield* View.View
@@ -31,7 +33,7 @@ const initialize = Effect.gen(function* () {
   )
   return { session, views, root }
 })
-const append = (session: Session.Service, id: Record.ConversationId) =>
+const append = (session: Session.Session.Service, id: Record.ConversationId) =>
   session.transaction((tx) => tx.appendEntry(id, { kind: 'channel-fixture' }))
 interface Count {
   readonly n: number
@@ -40,7 +42,7 @@ interface Count {
 const countProjection = (
   projected: (n: number) => Effect.Effect<void>,
   reset: (tasks: ReadonlyArray<Record.Task>) => Effect.Effect<void> = () => Effect.void,
-): View.Projection<Count> =>
+): View.View.Projection<Count> =>
   View.makeProjection<Count>({
     initial: (value) => Effect.succeed({ n: value.entries.length, reset: false }),
     project: (change) =>
@@ -101,7 +103,7 @@ describe('ViewChannels', () => {
       }).pipe((effect) =>
         withLayer(
           effect.pipe(Effect.provide(View.layer)),
-          Session.layer.pipe(Layer.provideMerge(Memory.layer)),
+          Session.layer.pipe(Layer.provideMerge(Store.layerMemory)),
         ),
       ),
   )
@@ -200,9 +202,9 @@ describe('ViewChannels', () => {
           yield* awaitObserved(Fiber.join(listening)).pipe(Effect.timeout('2 seconds'))
           assert.deepStrictEqual(received, [{ n: 1, reset: false }])
           assert.strictEqual(watch.value.n, 1)
-          assert.strictEqual(
-            (yield* awaitObserved(Stream.runCollect(watch.changes)).pipe(Effect.result))._tag,
-            'Failure',
+          assertFailure(
+            yield* awaitObserved(Stream.runCollect(watch.changes)).pipe(Effect.result),
+            rejected('Watch is stopped or already consumed'),
           )
         }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)))
       }).pipe(Effect.provide(layers)),
@@ -250,7 +252,6 @@ describe('ViewChannels', () => {
               assert.ok(task)
               yield* tx.write({
                 _tag: 'task' as const,
-                type: 'task',
                 value: {
                   ...task,
                   state: { status: 'terminal', outcome: { status: 'completed' } },
@@ -293,22 +294,25 @@ describe('ViewChannels', () => {
           let block = false
           let committedReads = 0
           const views = yield* View.make.pipe(
-            Effect.provideService(Store.Store, {
-              ...store,
-              committed: Effect.sync(() => {
-                committedReads++
-              }).pipe(Effect.andThen(store.committed)),
-              journal: (after) =>
-                store.journal(after).pipe(
-                  Effect.tap(() => {
-                    if (!block) return Effect.void
-                    block = false
-                    return Deferred.succeed(captured, undefined).pipe(
-                      Effect.andThen(Deferred.await(release)),
-                    )
-                  }),
-                ),
-            }),
+            Effect.provideService(
+              Store.Store,
+              Store.Store.of({
+                ...store,
+                committed: Effect.sync(() => {
+                  committedReads++
+                }).pipe(Effect.andThen(store.committed)),
+                journal: (after) =>
+                  store.journal(after).pipe(
+                    Effect.tap(() => {
+                      if (!block) return Effect.void
+                      block = false
+                      return Deferred.succeed(captured, undefined).pipe(
+                        Effect.andThen(Deferred.await(release)),
+                      )
+                    }),
+                  ),
+              }),
+            ),
           )
           const original = yield* views.watch(root.id)
           yield* original.stop
@@ -333,7 +337,7 @@ describe('ViewChannels', () => {
             ['splice'],
           )
         }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)))
-      }).pipe(Effect.provide(Session.layer.pipe(Layer.provideMerge(Memory.layer)))),
+      }).pipe(Effect.provide(Session.layer.pipe(Layer.provideMerge(Store.layerMemory)))),
   )
 
   it.effect('projection failures end only their own observation and release its mount lease', () =>
@@ -402,13 +406,12 @@ describe('ViewChannels', () => {
           Stream.runCollect(watch.changes.pipe(Stream.take(3), Stream.timeout('2 seconds'))),
         )
         assert.deepStrictEqual(
-          batches[0]?.map((event) => event.type),
+          batches[0]?.map((event) => event._tag),
           ['entry_appended'],
         )
         assert.deepStrictEqual(batches[1], [
           {
             _tag: 'tool_execution_update' as const,
-            type: 'tool_execution_update',
             toolCallId: 'retained',
             toolName: 'tool',
             output: { set: 'append' },
@@ -417,7 +420,6 @@ describe('ViewChannels', () => {
         assert.deepStrictEqual(batches[2], [
           {
             _tag: 'tool_execution_update' as const,
-            type: 'tool_execution_update',
             toolCallId: 'retained',
             toolName: 'tool',
             diagnostics: [{ kind: 'existing' }],

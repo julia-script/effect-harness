@@ -8,7 +8,7 @@ import * as Inspectable from 'effect/Inspectable'
 import * as Predicate from 'effect/Predicate'
 import type * as Types from 'effect/Types'
 import { identity } from 'effect/Function'
-import * as Cause from 'effect/Cause'
+import type * as Cause from 'effect/Cause'
 import * as DateTime from 'effect/DateTime'
 import * as Duration from 'effect/Duration'
 import * as Deferred from 'effect/Deferred'
@@ -17,7 +17,7 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Queue from 'effect/Queue'
 import * as Ref from 'effect/Ref'
-import * as Schema from 'effect/Schema'
+import type * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 import * as Time from './Time.ts'
 
@@ -27,7 +27,7 @@ import * as Time from './Time.ts'
  * @category constants
  */
 export const bytesPerSecond = 100 * 1024
-const TypeId = '~@effect-harness/harness/Progress'
+const TypeId = '~effect-harness/Progress'
 /**
  * Scoped progress reporter with ordered partial updates and settlement.
  *
@@ -63,14 +63,14 @@ export const makeProgress = <E>(
   Object.defineProperty(handle, TypeId, { value: { _E: identity }, enumerable: false })
   return handle
 }
-interface State<E> {
+interface State<in out E> {
   readonly dirty: boolean
   readonly stopped: boolean
   readonly nextAt: DateTime.Utc | undefined
   readonly waiters: ReadonlyArray<Deferred.Deferred<void, E>>
 }
 /**
- * Scoped, one-in-flight progress writer.
+ * Creates a scoped progress writer with at most one active publication.
  *
  * **Details**
  *
@@ -82,10 +82,8 @@ export const make = Effect.fnUntraced(function* <E, R>(
   write: Effect.Effect<number, E, R>,
   options: make.Options<E>,
 ): Effect.fn.Return<Progress<E>, Schema.SchemaError, R | Scope.Scope> {
-  // Standalone pacing accepted finite fractional intervals before this migration;
-  // Settings/window codecs retain their own integer/range policies at admission.
-  const { minIntervalMs, report = () => Effect.void } = options
-  const interval = yield* Time.duration(minIntervalMs)
+  const { report = () => Effect.void } = options
+  const interval = yield* Time.duration(options.minInterval)
   const services = yield* Effect.context<R>()
   const wake = yield* Queue.unbounded<void>()
   const state = yield* Ref.make<State<E>>({
@@ -185,7 +183,6 @@ export const settle = <E>(
 /**
  * Type-level contracts for `make`.
  *
- * @category utility types
  */
 export declare namespace make {
   /**
@@ -193,8 +190,8 @@ export declare namespace make {
    *
    * @category models
    */
-  interface Options<E> {
-    readonly minIntervalMs: Duration.Input
+  interface Options<in E> {
+    readonly minInterval: Duration.Input
     readonly report?: ((cause: Cause.Cause<E>) => Effect.Effect<void>) | undefined
   }
 }

@@ -1,13 +1,6 @@
+import { Config, ConfigProvider, Effect, FileSystem, Layer, Path, Ref, Scope, Exit } from 'effect'
 import { assert, describe, it } from '@effect/vitest'
-import * as Config from 'effect/Config'
-import * as ConfigProvider from 'effect/ConfigProvider'
-import * as Effect from 'effect/Effect'
-import * as FileSystem from 'effect/FileSystem'
-import * as Layer from 'effect/Layer'
-import * as Path from 'effect/Path'
-import * as Ref from 'effect/Ref'
-import * as Scope from 'effect/Scope'
-import * as Exit from 'effect/Exit'
+
 import * as Database from '../src/Database.ts'
 
 const configured = (value: unknown) =>

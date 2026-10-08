@@ -19,8 +19,9 @@ import * as Option from 'effect/Option'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import * as Ownership from '../Ownership.ts'
+import type * as Record from '../Record.ts'
 import * as Session from '../Session.ts'
-import { ExecutionError, InvalidState, Aborted } from './ExecutionError.ts'
+import { ExecutionError, InvalidStateError, AbortedError } from './ExecutionError.ts'
 
 /**
  * Owner-local capabilities supplement native engine cancellation without replacing its journal.
@@ -31,15 +32,15 @@ export class Cancellation extends Context.Service<
   Cancellation,
   {
     readonly register: (
-      identity: Ownership.Identity,
+      identity: Ownership.Current.Identity,
       cancel: Effect.Effect<void>,
     ) => Effect.Effect<void, never, Scope.Scope>
     readonly cancel: (
       sessionId: Identity.SessionId,
-      reached: Ownership.Reached,
+      reached: Ownership.reach.Reached,
     ) => Effect.Effect<void>
   }
->()('@effect-harness/durable/workflow/Cancellation') {}
+>()('effect-harness/durable/workflow/Cancellation') {}
 
 /**
  * Provides scoped registrations for live owned-handler cancellation.
@@ -55,7 +56,8 @@ export const layer: Layer.Layer<Cancellation> = Layer.effect(
   Cancellation,
   Effect.gen(function* () {
     const live = yield* Ref.make(HashMap.empty<string, HashSet.HashSet<Effect.Effect<void>>>())
-    const key = (sessionId: Identity.SessionId, id: number) => JSON.stringify([sessionId, id])
+    const key = (sessionId: Identity.SessionId, id: Record.TaskId) =>
+      JSON.stringify([sessionId, id])
     return Cancellation.of({
       register: (identity, cancel) =>
         Effect.acquireRelease(
@@ -109,23 +111,24 @@ export const layer: Layer.Layer<Cancellation> = Layer.effect(
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: mark is a public combinator over the supplied Session self capability; its facts, journal and owning lifetime must remain those of the selected instance even when ambient services differ.
 export const mark = (
-  session: Session.Service,
-  target: Ownership.Target,
+  session: Session.Session.Service,
+  target: Ownership.reach.Target,
   options?: { readonly background?: boolean | undefined },
-): Effect.Effect<Ownership.Reached, StorageError | ExecutionError> =>
+): Effect.Effect<Ownership.reach.Reached, StorageError | ExecutionError> =>
   session.transaction(
     Effect.fnUntraced(function* (tx) {
       const graph = yield* Ownership.readGraph(tx)
       const reachedOption = Ownership.reach(graph, target, options?.background)
       if (Option.isNone(reachedOption))
         return yield* new ExecutionError({
-          reason: new InvalidState({ message: 'Abort target is absent' }),
+          reason: new InvalidStateError({ message: 'Abort target is absent' }),
         })
       const reached = reachedOption.value
       for (const task of reached.tasks)
         if (!task.abortRequested)
-          yield* tx.write({ _tag: 'task', type: 'task', value: { ...task, abortRequested: true } })
+          yield* tx.write({ _tag: 'task', value: { ...task, abortRequested: true } })
       return reached
     }),
   )
@@ -137,7 +140,7 @@ export const mark = (
  */
 export const cancel = Effect.fnUntraced(function* (
   sessionId: Identity.SessionId,
-  reached: Ownership.Reached,
+  reached: Ownership.reach.Reached,
 ): Effect.fn.Return<void, never, Cancellation> {
   yield* (yield* Cancellation).cancel(sessionId, reached)
 })
@@ -151,9 +154,10 @@ export const cancel = Effect.fnUntraced(function* (
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: activity accepts the selected invocation Session self capability. Close registration, physical abort fencing and scoped Ownership.Current must use that instance even when an ambient Session differs; run preserves this owner through domain-settlement fencing.
 export const activity = <A, E, R>(
-  identity: Ownership.Identity,
-  session: Session.Service,
+  identity: Ownership.Current.Identity,
+  session: Session.Session.Service,
   body: Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E | import('../StorageError.ts').StorageError, Exclude<R, Ownership.Current>> =>
   Effect.scoped(
@@ -183,7 +187,7 @@ export const activity = <A, E, R>(
               yield* Deferred.await(completed)
             }),
           )
-          .pipe(Effect.catchIf((error) => error.reason._tag === 'Closed', constant(pause)))
+          .pipe(Effect.catchReason('StorageError', 'ClosedError', constant(pause)))
         if ((yield* Ref.get(closing)) || (yield* session.isClosed)) return yield* pause
         // Acquired after registration: Scope joins the body handle before removing
         // its cleanup membership, including external invocation interruption.
@@ -249,9 +253,10 @@ export const activity = <A, E, R>(
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: run accepts the selected invocation Session self capability. Close registration, physical abort fencing and scoped Ownership.Current must use that instance even when an ambient Session differs; run preserves this owner through domain-settlement fencing.
 export const run = <A, E, R>(
-  identity: Ownership.Identity,
-  session: Session.Service,
+  identity: Ownership.Current.Identity,
+  session: Session.Session.Service,
   body: Effect.Effect<A, E, R>,
 ): Effect.Effect<
   A,
@@ -274,11 +279,11 @@ export const run = <A, E, R>(
           initial.value.state.status === 'terminal'
         )
           return yield* new ExecutionError({
-            reason: new Aborted({ message: 'Task cannot enter an invocation' }),
+            reason: new AbortedError({ message: 'Task cannot enter an invocation' }),
           })
         if (initial.value.conversationId !== identity.conversationId)
           return yield* new ExecutionError({
-            reason: new InvalidState({
+            reason: new InvalidStateError({
               message: 'Invocation task belongs to another conversation',
             }),
           })
@@ -294,10 +299,7 @@ export const run = <A, E, R>(
           yield* Ref.set(aborted, true)
           yield* Fiber.interrupt(fiber)
         }).pipe(
-          Effect.catchIf(
-            (error) => error.reason._tag === 'Closed',
-            () => Effect.void,
-          ),
+          Effect.catchReason('StorageError', 'ClosedError', () => Effect.void),
           Effect.orDie,
         )
         yield* capabilities.register(identity, stop)
@@ -305,10 +307,7 @@ export const run = <A, E, R>(
           Effect.gen(function* () {
             if (yield* session.isClosed) return yield* Effect.never
             const state = yield* session.committed.pipe(
-              Effect.catchIf(
-                (error) => error.reason._tag === 'Closed',
-                () => Effect.never,
-              ),
+              Effect.catchReason('StorageError', 'ClosedError', () => Effect.never),
             )
             const task = Arr.findFirst(state.tasks, (task) => task.id === identity.taskId)
             if (Option.isNone(task) || task.value.abortRequested) yield* stop
@@ -318,7 +317,7 @@ export const run = <A, E, R>(
         const exit = yield* Effect.raceFirst(Fiber.await(fiber), Fiber.join(monitor))
         if (yield* Ref.get(aborted))
           return yield* new ExecutionError({
-            reason: new Aborted({ message: 'Task has a durable abort mark' }),
+            reason: new AbortedError({ message: 'Task has a durable abort mark' }),
           })
         return yield* exit
       }),

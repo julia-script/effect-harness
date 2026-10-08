@@ -1,18 +1,17 @@
 import { expect, test } from 'tstyche'
 import * as Context from 'effect/Context'
-import * as Effect from 'effect/Effect'
+import type * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as LanguageModel from 'effect/ai/LanguageModel'
+import type * as LanguageModel from 'effect/ai/LanguageModel'
 import type * as AiError from 'effect/ai/AiError'
 import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
-// effect-review-allow P9-namespace-alias-equals-module: effect-harness/provider-openai/LanguageModel and effect/ai/LanguageModel both bind LanguageModel; Provider distinguishes the concepts.
-import * as Provider from 'effect-harness/provider-openai/LanguageModel'
+
 import * as Catalog from 'effect-harness/provider-openai/Catalog'
 import * as ToolResult from 'effect-harness/provider-openai/ToolResult'
 import * as ChatGpt from 'effect-harness/provider-openai/ChatGpt'
-import * as OpenAiSchema from '@effect/ai-openai/OpenAiSchema'
-import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
+import type * as OpenAiSchema from '@effect/ai-openai/OpenAiSchema'
+import type * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
 import type * as Prompt from 'effect/ai/Prompt'
 import type * as Layer from 'effect/Layer'
 import type * as HttpClient from 'effect/http/HttpClient'
@@ -30,7 +29,7 @@ const convert = Tool.make('convert', {
 })
 const toolkit = Toolkit.make(convert)
 declare const withHandlers: Toolkit.WithHandler<Toolkit.Tools<typeof toolkit>>
-declare const model: Effect.Success<ReturnType<typeof Provider.make>>
+declare const model: Effect.Success<ReturnType<typeof OpenAiLanguageModel.make>>
 
 test('public native model retains toolkit mode, handler errors and invocation services', () => {
   const handled = model.generateText({ prompt: 'question', toolkit: withHandlers })
@@ -63,17 +62,19 @@ test('public native model retains toolkit mode, handler errors and invocation se
 })
 
 test('owned public construction exposes the exact captured native client', () => {
-  expect(Provider.make({ model: 'declared' })).type.toBe<
+  expect(OpenAiLanguageModel.make({ model: 'declared' })).type.toBe<
     Effect.Effect<typeof LanguageModel.LanguageModel.Service, never, OpenAiClient.OpenAiClient>
   >()
-  expect(Provider.layer({ model: 'declared' })).type.toBe<
+  expect(OpenAiLanguageModel.layer({ model: 'declared' })).type.toBe<
     Layer.Layer<
       LanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
       never,
       OpenAiClient.OpenAiClient
     >
   >()
-  expect(Provider.layerApiKey({ model: 'declared', apiKey: Redacted.make('secret') })).type.toBe<
+  expect(
+    OpenAiLanguageModel.layerApiKey({ model: 'declared', apiKey: Redacted.make('secret') }),
+  ).type.toBe<
     Layer.Layer<
       LanguageModel.LanguageModel | OpenAiClient.OpenAiClient,
       never,

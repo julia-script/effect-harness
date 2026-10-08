@@ -13,50 +13,7 @@ import type * as Schema from 'effect/Schema'
 import type * as Record from './Record.ts'
 import { rejected, type StorageError } from './StorageError.ts'
 import { validate } from './storage/internal/state.ts'
-
-/**
- * Transaction options without receipt-based replay.
- *
- * @category models
- */
-export type UnkeyedOptions = Store.UnkeyedOptions
-/**
- * Persisted idempotency key and optional request fingerprint.
- *
- * @category models
- */
-export type ReceiptOptions = Store.ReceiptOptions
-/**
- * Choice between an ordinary commit and a persisted replay receipt.
- *
- * @category models
- */
-export type CommitOptions = Store.CommitOptions
-/**
- * Atomic callback that publishes a validated storage candidate.
- *
- * @category models
- */
-export type Transact = Store.Transact
 const CandidateTypeId = '~@effect-harness/durable/Store/Candidate'
-/**
- * Next state, staged writes and callback result proposed for one atomic commit.
- *
- * @category models
- */
-export type Candidate<A> = Store.Candidate<A>
-/**
- * Coherent saved state and retained frames after a requested sequence.
- *
- * @category models
- */
-export type Journal = Store.Journal
-/**
- * Storage adapter contract for commit serialization and lifecycle.
- *
- * @category models
- */
-export type Service = Store.Service
 /**
  * Service for atomic domain state, receipts and retained commit frames.
  *
@@ -77,7 +34,9 @@ export type Service = Store.Service
  *
  * @category services
  */
-export class Store extends Context.Service<Store, Service>()('@effect-harness/durable/Store') {}
+export class Store extends Context.Service<Store, Store.Service>()(
+  'effect-harness/durable/Store',
+) {}
 
 /**
  * Allocates through the transaction callback, validating before publication and again after allocation.
@@ -89,8 +48,8 @@ export const mintId = Effect.fnUntraced(function* <S extends Schema.Constraint>(
 ): Effect.fn.Return<S['Type'], StorageError, Store | S['DecodingServices']> {
   const store = yield* Store
   return yield* store
-    .transact((state) =>
-      Effect.gen(function* () {
+    .transact(
+      Effect.fnUntraced(function* (state) {
         if (!Number.isSafeInteger(state.nextId)) return yield* rejected('ID space is exhausted')
         yield* validate(schema, state.nextId)
         return makeCandidate({
@@ -113,10 +72,11 @@ export const mintId = Effect.fnUntraced(function* <S extends Schema.Constraint>(
  *
  * @category constructors
  */
+// effect-nit-allow P1-pipeable-data-types: this shallow carrier contains application-owned values and descriptors; inheriting inspection or JSON hooks can override payload keys and execute those accessors during serialization. Its nonenumerable marker provides identity without exposing or transforming the payload.
 export const makeCandidate = <A>(
-  input: Omit<Candidate<A>, typeof CandidateTypeId>,
-): Candidate<A> => {
-  const value = Object.assign({}, input, { [CandidateTypeId]: { _A: identity } })
+  input: Omit<Store.Candidate<A>, typeof CandidateTypeId>,
+): Store.Candidate<A> => {
+  const value = { ...input, [CandidateTypeId]: { _A: identity } }
   Object.defineProperties(value, Object.getOwnPropertyDescriptors(input))
   Object.defineProperty(value, CandidateTypeId, { enumerable: false })
   return value
@@ -130,8 +90,8 @@ export const makeCandidate = <A>(
  *
  * @category guards
  */
-export const isCandidate = (input: unknown): input is Candidate<unknown> =>
-  Predicate.hasProperty(input, CandidateTypeId)
+export const isCandidate = (u: unknown): u is Store.Candidate<unknown> =>
+  Predicate.hasProperty(u, CandidateTypeId)
 
 /**
  * Acquires a fresh scoped in-memory Store.
@@ -161,18 +121,10 @@ export const makeMemory: Effect.Effect<Store['Service'], never, Scope.Scope> = E
  * @category layers
  */
 export const layerMemory: Layer.Layer<Store> = Layer.effect(Store, makeMemory)
-/**
- * Alias of layerMemory for scoped in-memory domain storage.
- *
- * @see {@link layerMemory} for acquisition and sharing semantics.
- * @category layers
- */
-export const layerStoreMemory: Layer.Layer<Store> = layerMemory
 
 /**
  * Type-level contracts for `Store`.
  *
- * @category utility types
  */
 export declare namespace Store {
   /**
@@ -218,7 +170,7 @@ export declare namespace Store {
       change: (state: Record.State) => Effect.Effect<Candidate<A>, E, R>,
       options?: UnkeyedOptions,
     ): Effect.Effect<A, StorageError | E, R>
-    <A extends Record.Json | void, E, R>(
+    <A extends Schema.Json | void, E, R>(
       change: (state: Record.State) => Effect.Effect<Candidate<A>, E, R>,
       options: CommitOptions,
     ): Effect.Effect<A, StorageError | E, R>
@@ -270,9 +222,13 @@ export declare namespace Store {
      * Reads authoritative state for transaction construction.
      */
     readonly read: Effect.Effect<Record.State, StorageError>
-    /** Optional stable key for batching reads that share the same storage view. */
+    /**
+     * Optional stable key for batching reads that share the same storage view.
+     */
     readonly readContext?: Effect.Effect<object> | undefined
-    /** Reads the saved snapshot without exposing a transaction candidate. */
+    /**
+     * Committed saved snapshot excluding uncommitted transaction candidates.
+     */
     readonly committed: Effect.Effect<Record.State, StorageError>
     /**
      * Serializes a candidate callback, validates the result and publishes it atomically, with
@@ -291,9 +247,13 @@ export declare namespace Store {
      * a retention gap.
      */
     readonly journal: (after: Record.Seq | 0) => Effect.Effect<Journal, StorageError>
-    /** Stop admission and committed observers while retaining resources for admitted-operation cleanup. */
+    /**
+     * Admission barrier stopping new operations and committed observers while retaining resources for admitted-operation cleanup.
+     */
     readonly seal: Effect.Effect<void>
-    /** Observe the persistent cleanup receipt after the owning Scope releases; never initiates release. */
+    /**
+     * Persistent cleanup receipt observed after the owning Scope releases; observation never initiates release.
+     */
     readonly awaitClosed: Effect.Effect<void, StorageError>
   }
 }

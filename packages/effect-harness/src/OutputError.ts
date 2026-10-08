@@ -8,15 +8,15 @@ import * as Schema from 'effect/Schema'
  *
  * @category errors
  */
-export class OutputFailure extends Schema.TaggedError<OutputFailure>(
-  '@effect-harness/harness/OutputError/OutputFailure',
-)('OutputFailure', { message: Schema.String, cause: SchemaField.optional(Schema.Defect()) }) {}
+export class OutputFailureError extends Schema.TaggedError<OutputFailureError>(
+  '@effect-harness/harness/OutputError/OutputFailureError',
+)('OutputFailureError', { message: Schema.String, cause: SchemaField.optional(Schema.Defect()) }) {}
 /**
  * Schema for output error reason.
  *
  * @category schemas
  */
-export const OutputErrorReason = Schema.Union([OutputFailure])
+export const OutputErrorReason = Schema.Union([OutputFailureError])
 /**
  * Decoded value validated by the `OutputErrorReason` schema.
  *

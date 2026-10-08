@@ -8,7 +8,10 @@ import * as backend from '../storage/internal/backend.ts'
 import { detachedEffect } from '../storage/internal/state.ts'
 
 export const make: Effect.Effect<Store['Service'], never, Scope.Scope> = Effect.gen(function* () {
-  const snapshot = yield* Ref.make<backend.Snapshot>({ state: Record.emptyState(), frames: [] })
+  const snapshot = yield* Ref.make<backend.Backend.Snapshot>({
+    state: Record.emptyState(),
+    frames: [],
+  })
   return yield* backend.make({
     load: Ref.get(snapshot).pipe(Effect.flatMap(detachedEffect)),
     committed: Ref.get(snapshot).pipe(Effect.flatMap(detachedEffect)),

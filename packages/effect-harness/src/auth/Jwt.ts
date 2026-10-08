@@ -6,7 +6,7 @@ import * as Time from './Time.ts'
 import * as Context from 'effect/Context'
 import type * as Effect from 'effect/Effect'
 import type * as Redacted from 'effect/Redacted'
-import type { AuthError } from './Credential.ts'
+import type { AuthError } from './AuthError.ts'
 
 /**
  * Verified domain identity: exact UTC expiry encoded as epoch milliseconds; raw JWT seconds use JoseJwt.Claims.
@@ -40,7 +40,6 @@ export const isIdentity: (u: unknown) => u is Identity = Schema.is(Identity)
 /**
  * Type-level contracts for `Jwt`.
  *
- * @category utility types
  */
 export declare namespace Jwt {
   /**
@@ -57,12 +56,6 @@ export declare namespace Jwt {
   }
 }
 /**
- * Expected issuer, client, nonce and JWKS endpoint for token verification.
- *
- * @category models
- */
-export type VerifyOptions = Jwt.VerifyOptions
-/**
  * Service verifying an identity token against expected authorization claims.
  *
  * **Details**
@@ -77,7 +70,7 @@ export class Jwt extends Context.Service<
   {
     readonly verify: (
       token: Redacted.Redacted<string>,
-      options: VerifyOptions,
+      options: Jwt.VerifyOptions,
     ) => Effect.Effect<Identity, AuthError>
   }
->()('@effect-harness/auth/Jwt') {}
+>()('effect-harness/auth/Jwt') {}

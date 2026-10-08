@@ -1,3 +1,4 @@
+import { assertSome } from '@effect/vitest/utils'
 import * as Submission from 'effect-harness/durable/workflow/Submission'
 import * as Option from 'effect/Option'
 import * as DateTime from 'effect/DateTime'
@@ -6,6 +7,7 @@ import * as Entry from 'effect-harness/durable/Entry'
 import { assert, describe, it } from '@effect/vitest'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as Agent from 'effect-harness/Agent'
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/Usage and effect-harness/durable/Usage both own Usage; Totals keeps their distinct native/harness APIs available together for these constructor, service and declaration assertions.
 import * as Totals from 'effect-harness/Usage'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -18,10 +20,10 @@ import * as Inbox from 'effect-harness/durable/Inbox'
 import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
 import * as Usage from 'effect-harness/durable/Usage'
-import * as Memory from 'effect-harness/durable/storage/Memory'
+import * as Store from 'effect-harness/durable/Store'
 
 const services = Session.layer.pipe(
-  Layer.provideMerge(Memory.layer),
+  Layer.provideMerge(Store.layerMemory),
   Layer.provideMerge(Conversation.layer().pipe(Layer.provide(BunCrypto.layer))),
 )
 const user = (text: string) => Prompt.userMessage({ content: [Prompt.textPart({ text })] })
@@ -42,21 +44,24 @@ describe('ConversationInbox', () => {
       })
       const context = yield* Layer.build(
         Session.layer.pipe(
-          Layer.provideMerge(Memory.layer),
+          Layer.provideMerge(Store.layerMemory),
           Layer.provideMerge(configured),
           Layer.provide(BunCrypto.layer),
         ),
       )
       const session = Context.get(context, Session.Session)
       const config = Context.get(context, Conversation.Configuration)
-      assert.isFalse(config.settings.retry.enabled)
-      assert.isFalse(config.settings.compaction.enabled)
+      assert.isFalse((yield* config.settings).retry.enabled)
+      assert.isFalse((yield* config.settings).compaction.enabled)
       const root = yield* session.root()
       const agent = yield* session.snapshot(Conversation.AgentDoc, { owner: root.id })
-      assert.strictEqual(Option.getOrThrow(agent).value.instructions, 'created atomically')
+      assertSome(
+        Option.map(agent, (snapshot) => snapshot.value.instructions),
+        'created atomically',
+      )
       yield* config.updateSettings({ retry: { enabled: true, maxRetries: 1 } })
-      assert.isTrue(config.settings.retry.enabled)
-      assert.strictEqual(config.settings.retry.maxRetries, 1)
+      assert.isTrue((yield* config.settings).retry.enabled)
+      assert.strictEqual((yield* config.settings).retry.maxRetries, 1)
     }),
   )
 
@@ -80,13 +85,13 @@ describe('ConversationInbox', () => {
         )
         assert.strictEqual(
           (yield* conversation.context(root.id).pipe(Effect.flip)).reason._tag,
-          'InvalidState',
+          'InvalidStateError',
         )
         yield* session.transaction((tx) => tx.appendEntry(root.id, { kind: 'reset', head: 'self' }))
         assert.deepStrictEqual((yield* conversation.context(root.id)).messages, [])
         assert.strictEqual(
           (yield* conversation.context(root.id, malformed.id).pipe(Effect.flip)).reason._tag,
-          'InvalidState',
+          'InvalidStateError',
         )
         const other = yield* conversation.create()
         const invisible = yield* session.transaction((tx) =>
@@ -94,12 +99,12 @@ describe('ConversationInbox', () => {
         )
         assert.strictEqual(
           (yield* conversation.context(root.id, invisible.id).pipe(Effect.flip)).reason._tag,
-          'InvalidArguments',
+          'InvalidArgumentsError',
         )
         const unknown = yield* Schema.decodeEffect(Record.EntryId)(999)
         assert.strictEqual(
           (yield* conversation.context(root.id, unknown).pipe(Effect.flip)).reason._tag,
-          'InvalidArguments',
+          'InvalidArgumentsError',
         )
       }),
   )
@@ -117,7 +122,7 @@ describe('ConversationInbox', () => {
             const agent = yield* tx.doc(Conversation.AgentDoc, { owner: root.id })
             agent.instructions = 'historical instructions'
             yield* Usage.record(tx, root.id, 'models', 'fake/model', {
-              ...Totals.zero(),
+              ...Totals.make(),
               input: 3,
               totalTokens: 3,
             })
@@ -133,7 +138,7 @@ describe('ConversationInbox', () => {
         )
         const fork = yield* session.transaction((tx) =>
           tx.forkConversation(root.id, first.id, {
-            ownership: { _tag: 'ownerless' as const, kind: 'ownerless' },
+            ownership: { _tag: 'ownerless' as const },
           }),
         )
         assert.strictEqual(
@@ -146,7 +151,7 @@ describe('ConversationInbox', () => {
           (yield* session
             .snapshot(Usage.UsageDoc, { owner: fork.id })
             .pipe(Effect.map(Option.getOrUndefined)))?.value,
-          Totals.empty(),
+          Totals.makeState(),
         )
         const forkProvider = yield* session
           .snapshot(Conversation.ProviderDoc, { owner: fork.id })
@@ -195,7 +200,7 @@ describe('ConversationInbox', () => {
             state: { status: 'running' },
           })
           return yield* tx.createConversation({
-            ownership: { _tag: 'task' as const, kind: 'task', taskId },
+            ownership: { _tag: 'task' as const, taskId },
           })
         }),
       )
@@ -264,7 +269,6 @@ describe('ConversationInbox', () => {
               {
                 _tag: 'write' as const,
                 id: writeId,
-                mode: 'write',
                 entry: Document.copyUnsafe(reset),
               },
               {
@@ -346,7 +350,6 @@ describe('ConversationInbox', () => {
               {
                 _tag: 'write' as const,
                 id: stale,
-                mode: 'write',
                 entry: { kind: 'summary', head: first.id },
               },
               {
@@ -381,7 +384,6 @@ describe('ConversationInbox', () => {
             inbox.items.push({
               _tag: 'write' as const,
               id: submission.id,
-              mode: 'write',
               entry: { kind: 'passive' },
             })
             return submission.id
@@ -415,12 +417,12 @@ describe('ConversationInbox', () => {
         yield* session.transaction(
           Effect.fnUntraced(function* (tx) {
             yield* Usage.record(tx, root.id, 'tools', '__proto__', {
-              ...Totals.zero(),
+              ...Totals.make(),
               output: 2,
               totalTokens: 2,
             })
             yield* Usage.record(tx, root.id, 'tools', '__proto__', {
-              ...Totals.zero(),
+              ...Totals.make(),
               output: 3,
               totalTokens: 3,
             })
@@ -428,7 +430,7 @@ describe('ConversationInbox', () => {
               kind: 'harness.assistant',
               model: [encoded],
               data: yield* Schema.encodeEffect(Serialization.json(Entry.AssistantData))({
-                harness: { status: 'aborted', usage: Totals.zero() },
+                harness: { status: 'aborted', usage: Totals.make() },
               }),
             })
           }),
@@ -446,7 +448,7 @@ describe('ConversationInbox', () => {
           model: [false],
         }
         const invalidContext = yield* Conversation.projectEntry(invalid).pipe(Effect.flip)
-        assert.strictEqual(invalidContext.reason._tag, 'InvalidState')
+        assert.strictEqual(invalidContext.reason._tag, 'InvalidStateError')
         assert.ok(invalidContext.cause instanceof Schema.SchemaError)
       }),
   )

@@ -1,3 +1,4 @@
+import * as MutableHashMap from 'effect/MutableHashMap'
 import * as Order from 'effect/Order'
 import * as Predicate from 'effect/Predicate'
 import { dual } from 'effect/Function'
@@ -8,7 +9,14 @@ import * as Schema from 'effect/Schema'
 import * as Result from 'effect/Result'
 import * as Record from '../../Record.ts'
 import * as Document from '../../Document.ts'
-import { rejected, StorageError, Invalid, Corrupt, NotFound, Conflict } from '../../StorageError.ts'
+import {
+  rejected,
+  type StorageError,
+  InvalidError,
+  CorruptError,
+  NotFoundError,
+  ConflictError,
+} from '../../StorageError.ts'
 
 export class CloneError extends Schema.TaggedError<CloneError>(
   '@effect-harness/durable/storage/State/CloneError',
@@ -24,7 +32,7 @@ export const detached = <A>(self: A): Result.Result<A, CloneError> => {
   if (!(cause instanceof DOMException) || cause.name !== 'DataCloneError')
     return Result.fail(new CloneError({ message: 'Cannot detach durable value', cause }))
   const copies = new WeakMap<object, object>()
-  const copy = (input: unknown): unknown => {
+  const copyUnsafe = (input: unknown): unknown => {
     if (input === null || typeof input !== 'object') return input
     const existing = copies.get(input)
     if (existing !== undefined) return existing
@@ -36,7 +44,7 @@ export const detached = <A>(self: A): Result.Result<A, CloneError> => {
       const descriptor = Object.getOwnPropertyDescriptor(input, key)
       if (descriptor?.enumerable !== true) continue
       Object.defineProperty(output, key, {
-        value: copy(Reflect.get(input, key)),
+        value: copyUnsafe(Reflect.get(input, key)),
         enumerable: true,
         configurable: true,
         writable: true,
@@ -46,7 +54,7 @@ export const detached = <A>(self: A): Result.Result<A, CloneError> => {
   }
   // Every object is rebuilt; the generic type preserves the caller's validated record shape.
   return Result.try({
-    try: () => copy(self) as A,
+    try: () => copyUnsafe(self) as A,
     catch: (cause) => new CloneError({ message: 'Cannot detach durable proxy', cause }),
   })
 }
@@ -62,19 +70,19 @@ export const validate = <S extends Schema.Constraint>(
   value: unknown,
 ): Effect.Effect<S['Type'], StorageError, S['DecodingServices']> =>
   Effect.suspend(() => Schema.decodeUnknownEffect(schema)(value)).pipe(
-    Effect.mapError((cause) => rejected('Invalid durable value', Invalid, cause)),
+    Effect.mapError((cause) => rejected('Invalid durable value', InvalidError, cause)),
   )
 
 const applyOpsImpl = Effect.fnUntraced(function* (
-  self: Record.JsonObject,
+  self: Schema.JsonObject,
   ops: ReadonlyArray<Record.Op>,
-): Effect.fn.Return<Record.JsonObject, StorageError> {
+): Effect.fn.Return<Schema.JsonObject, StorageError> {
   const validOps = yield* validate(Schema.Array(Record.Op), ops).pipe(
-    Effect.mapError((cause) => rejected('Invalid document operation', Corrupt, cause)),
+    Effect.mapError((cause) => rejected('Invalid document operation', CorruptError, cause)),
   )
-  // effect-review-allow P2-no-throw-in-effect-code: synchronous operation TypeErrors are confined to this catching thunk and become corrupt StorageError failures.
+  // effect-nit-allow P2-no-throw-in-effect-code: synchronous operation TypeErrors are confined to this catching thunk and become corrupt StorageError failures.
   const result = yield* Effect.try({
-    // effect-review-allow P1-throw-only-in-unsafe-orthrow: this synchronous
+    // effect-nit-allow P1-throw-only-in-unsafe-orthrow: this synchronous
     // catching thunk maps every native clone/operation throw into StorageError.
     try: () => {
       let result = detachedUnsafe(self)
@@ -113,7 +121,7 @@ const applyOpsImpl = Effect.fnUntraced(function* (
       }
       return result
     },
-    catch: (cause) => rejected('Invalid document operation', Corrupt, cause),
+    catch: (cause) => rejected('Invalid document operation', CorruptError, cause),
   })
   return yield* validate(Schema.JsonObject, result)
 })
@@ -121,22 +129,25 @@ const applyOpsImpl = Effect.fnUntraced(function* (
 const materializeImpl = Effect.fnUntraced(function* (
   self: Record.StoredDocument,
   at: Record.Point,
-): Effect.fn.Return<Option.Option<import('../../Document.ts').Snapshot>, StorageError> {
+): Effect.fn.Return<Option.Option<import('../../Document.ts').Document.Snapshot>, StorageError> {
   if (at !== 'current' && Record.isCurrentOnly(self.record))
     return yield* rejected('Document does not retain historical content')
   if (!Record.isAlive(self.record, at)) return Option.none()
   const revisions = Arr.filter(self.revisions, (revision) => at === 'current' || revision.seq <= at)
   const baseIndex = Arr.findLastIndex(
     revisions,
-    (revision) => revision.content.kind === 'base',
+    (revision) => revision.content._tag === 'base',
   ).pipe(Option.getOrElse(() => -1))
   const base = revisions[baseIndex]
-  if (base === undefined || base.content.kind !== 'base')
-    return yield* rejected('Document is missing a required base', Corrupt)
+  if (base === undefined || base.content._tag !== 'base')
+    return yield* rejected('Document is missing a required base', CorruptError)
   let value = yield* detachedEffect(base.content.value)
   for (const revision of revisions.slice(baseIndex + 1)) {
-    if (revision.content.kind !== 'delta' || revision.content.version !== base.content.version)
-      return yield* rejected('Document crosses a stored version boundary without a base', Corrupt)
+    if (revision.content._tag !== 'delta' || revision.content.version !== base.content.version)
+      return yield* rejected(
+        'Document crosses a stored version boundary without a base',
+        CorruptError,
+      )
     value = yield* applyOps(value, revision.content.ops)
   }
   return Option.some(
@@ -155,16 +166,17 @@ const visibleEntriesImpl = Effect.fnUntraced(function* (
   conversationId: Record.ConversationId,
   min = 0,
   max = Number.MAX_SAFE_INTEGER,
-): Effect.fn.Return<ReadonlyArray<Record.Entry>, StorageError> {
+): Effect.fn.Return<Array<Record.Entry>, StorageError> {
   const entries: Array<Record.Entry> = []
   const seen = new Set<number>()
   let current = conversationId
   let cap = max
   while (true) {
-    if (seen.has(current)) return yield* rejected('Conversation ancestry is cyclic', Corrupt)
+    if (seen.has(current)) return yield* rejected('Conversation ancestry is cyclic', CorruptError)
     seen.add(current)
     const conversationOption = Arr.findFirst(self.conversations, (item) => item.id === current)
-    if (Option.isNone(conversationOption)) return yield* rejected('Unknown conversation', NotFound)
+    if (Option.isNone(conversationOption))
+      return yield* rejected('Unknown conversation', NotFoundError)
     const conversation = conversationOption.value
     entries.push(
       ...(yield* detachedEffect(
@@ -219,33 +231,35 @@ const applyWritesImpl = Effect.fnUntraced(function* (
 ): Effect.fn.Return<Record.State, StorageError> {
   const writes = yield* validate(Schema.Array(Record.Write), input)
   const seq = yield* validate(Record.Seq, self.nextSeq)
-  const conversations = new Map(
+  const conversations = MutableHashMap.fromIterable(
     (yield* detachedEffect(self.conversations)).map((item) => [item.id, item]),
   )
-  const entries = new Map(
+  const entries = MutableHashMap.fromIterable(
     (yield* detachedEffect(self.entries)).map((item) => [item.entry.id, item]),
   )
-  const tasks = new Map((yield* detachedEffect(self.tasks)).map((item) => [item.id, item]))
-  const submissions = new Map(
+  const tasks = MutableHashMap.fromIterable(
+    (yield* detachedEffect(self.tasks)).map((item) => [item.id, item]),
+  )
+  const submissions = MutableHashMap.fromIterable(
     (yield* detachedEffect(self.submissions)).map((item) => [item.id, item]),
   )
-  const documents = new Map(
+  const documents = MutableHashMap.fromIterable(
     (yield* detachedEffect(self.documents)).map((item) => [item.record.id, item]),
   )
-  const ids = new Map<number, string>()
+  const ids = MutableHashMap.empty<number, string>()
   for (const [kind, values] of [
     ['conversation', self.conversations],
     ['task', self.tasks],
     ['submission', self.submissions],
   ] as const)
-    for (const item of values) ids.set(item.id, kind)
-  for (const item of self.entries) ids.set(item.entry.id, 'entry')
-  for (const item of self.documents) ids.set(item.record.id, 'document')
+    for (const item of values) MutableHashMap.set(ids, item.id, kind)
+  for (const item of self.entries) MutableHashMap.set(ids, item.entry.id, 'entry')
+  for (const item of self.documents) MutableHashMap.set(ids, item.record.id, 'document')
   let nextId = self.nextId
   const changed = new Set(
     Arr.flatMap(writes, (write) => {
-      if (write.type === 'document.change' || write.type === 'document.retire') return [write.id]
-      if (write.type === 'document.create' || write.type === 'document.copy')
+      if (write._tag === 'document.change' || write._tag === 'document.retire') return [write.id]
+      if (write._tag === 'document.create' || write._tag === 'document.copy')
         return [write.record.id]
       return []
     }),
@@ -253,7 +267,7 @@ const applyWritesImpl = Effect.fnUntraced(function* (
   const contentCommands = new Set<number>()
   const retired = new Set<Record.DocumentId>()
   for (const write of writes) {
-    if (write.type === 'document.retire') {
+    if (write._tag === 'document.retire') {
       if (retired.has(write.id)) return yield* rejected('Document is retired more than once')
       retired.add(write.id)
       continue
@@ -264,41 +278,44 @@ const applyWritesImpl = Effect.fnUntraced(function* (
     else id = write.id
     if (
       id === 1 &&
-      (write.type !== 'conversation' ||
+      (write._tag !== 'conversation' ||
         write.value.parent !== undefined ||
         write.value.owner !== undefined)
     )
       return yield* rejected('ID 1 is reserved for the root conversation')
-    const kind = write.type.startsWith('document.') ? 'document' : write.type
-    if (write.type !== 'document.change') {
-      const existing = ids.get(id)
+    const kind = write._tag.startsWith('document.') ? 'document' : write._tag
+    if (write._tag !== 'document.change') {
+      const existing = Option.getOrUndefined(MutableHashMap.get(ids, id))
       if (
         existing !== undefined &&
         (existing !== kind || kind === 'conversation' || kind === 'entry' || kind === 'document')
       )
-        return yield* rejected(`ID ${id} already belongs to ${existing}`, Conflict)
-      ids.set(id, kind)
+        return yield* rejected(`ID ${id} already belongs to ${existing}`, ConflictError)
+      MutableHashMap.set(ids, id, kind)
       nextId = Math.max(nextId, id + 1)
     }
-    switch (write.type) {
+    switch (write._tag) {
       case 'conversation':
-        conversations.set(write.value.id, yield* detachedEffect(write.value))
+        MutableHashMap.set(conversations, write.value.id, yield* detachedEffect(write.value))
         break
       case 'entry':
-        entries.set(write.value.id, { entry: yield* detachedEffect(write.value), commitSeq: seq })
+        MutableHashMap.set(entries, write.value.id, {
+          entry: yield* detachedEffect(write.value),
+          commitSeq: seq,
+        })
         break
       case 'task':
-        tasks.set(write.value.id, yield* detachedEffect(write.value))
+        MutableHashMap.set(tasks, write.value.id, yield* detachedEffect(write.value))
         break
       case 'submission':
-        submissions.set(write.value.id, yield* detachedEffect(write.value))
+        MutableHashMap.set(submissions, write.value.id, yield* detachedEffect(write.value))
         break
       case 'document.create':
       case 'document.copy': {
         if (contentCommands.has(id))
           return yield* rejected('Document has more than one content command')
         contentCommands.add(id)
-        if (write.record.scope.kind === 'conversation') {
+        if (write.record.scope._tag === 'conversation') {
           if (
             write.record.history === undefined ||
             write.record.fork === undefined ||
@@ -308,17 +325,17 @@ const applyWritesImpl = Effect.fnUntraced(function* (
         } else if (write.record.history !== undefined || write.record.fork !== undefined)
           return yield* rejected('Only conversation documents specify history and fork')
         let content: Record.Content
-        if (write.type === 'document.copy') {
+        if (write._tag === 'document.copy') {
           if (changed.has(write.source.id))
             return yield* rejected('Document copy source is changed in the copy batch')
-          const source = documents.get(write.source.id)
+          const source = Option.getOrUndefined(MutableHashMap.get(documents, write.source.id))
           if (source === undefined)
-            return yield* rejected('Document copy source is absent', NotFound)
+            return yield* rejected('Document copy source is absent', NotFoundError)
           const storedOption = yield* materialize(source, write.source.at)
           if (
             Option.isNone(storedOption) ||
-            source.record.scope.kind !== 'conversation' ||
-            write.record.scope.kind !== 'conversation' ||
+            source.record.scope._tag !== 'conversation' ||
+            write.record.scope._tag !== 'conversation' ||
             source.record.kind !== write.record.kind ||
             source.record.key !== write.record.key ||
             source.record.history !== write.record.history ||
@@ -326,10 +343,10 @@ const applyWritesImpl = Effect.fnUntraced(function* (
           )
             return yield* rejected('Document copy source does not match')
           const stored = storedOption.value
-          content = { _tag: 'base', kind: 'base', version: stored.version, value: stored.value }
+          content = { _tag: 'base', version: stored.version, value: stored.value }
         } else content = write.content
-        if (content.kind !== 'base') return yield* rejected('Document creation requires a base')
-        documents.set(write.record.id, {
+        if (content._tag !== 'base') return yield* rejected('Document creation requires a base')
+        MutableHashMap.set(documents, write.record.id, {
           record: { ...write.record, createdAt: seq },
           revisions: [{ seq, content: yield* detachedEffect(content) }],
         })
@@ -339,16 +356,16 @@ const applyWritesImpl = Effect.fnUntraced(function* (
         if (contentCommands.has(id))
           return yield* rejected('Document has more than one content command')
         contentCommands.add(id)
-        const previous = documents.get(write.id)
+        const previous = Option.getOrUndefined(MutableHashMap.get(documents, write.id))
         if (previous === undefined || previous.record.retiredAt !== undefined)
-          return yield* rejected('Document is absent or retired', NotFound)
+          return yield* rejected('Document is absent or retired', NotFoundError)
         const latest = previous.revisions.at(-1)
         if (
-          write.content.kind === 'delta' &&
+          write.content._tag === 'delta' &&
           (latest === undefined || latest.content.version !== write.content.version)
         )
           return yield* rejected('Document version transition requires a base')
-        if (write.content.kind === 'delta') {
+        if (write.content._tag === 'delta') {
           const snapshotOption = yield* materialize(previous, 'current')
           if (Option.isNone(snapshotOption)) return yield* rejected('Document is absent')
           const snapshot = snapshotOption.value
@@ -364,17 +381,17 @@ const applyWritesImpl = Effect.fnUntraced(function* (
           const snapshot = snapshotOption.value
           const published = yield* applyOps(snapshot.value, write.publicationOps)
           const persisted =
-            write.content.kind === 'base'
+            write.content._tag === 'base'
               ? write.content.value
               : yield* applyOps(snapshot.value, write.content.ops)
           if (!Json.equals(published, persisted))
             return yield* rejected('Publication operations differ from persisted document')
         }
         const revisions =
-          write.content.kind === 'base' && Record.isCurrentOnly(previous.record)
+          write.content._tag === 'base' && Record.isCurrentOnly(previous.record)
             ? []
             : previous.revisions
-        documents.set(write.id, {
+        MutableHashMap.set(documents, write.id, {
           record: previous.record,
           revisions: [...revisions, { seq, content: yield* detachedEffect(write.content) }],
         })
@@ -383,31 +400,31 @@ const applyWritesImpl = Effect.fnUntraced(function* (
     }
   }
   for (const id of retired) {
-    const previous = documents.get(id)
+    const previous = Option.getOrUndefined(MutableHashMap.get(documents, id))
     if (previous === undefined || previous.record.retiredAt !== undefined)
-      return yield* rejected('Document is absent or retired', NotFound)
-    documents.set(previous.record.id, {
+      return yield* rejected('Document is absent or retired', NotFoundError)
+    MutableHashMap.set(documents, previous.record.id, {
       record: { ...previous.record, retiredAt: seq },
       revisions: Record.isCurrentOnly(previous.record) ? [] : previous.revisions,
     })
   }
   const addresses = new Set<string>()
-  for (const document of documents.values()) {
+  for (const document of MutableHashMap.values(documents)) {
     if (document.record.retiredAt !== undefined) continue
     const address = Record.addressKey(document.record)
     if (addresses.has(address))
-      return yield* rejected('Document address already has a current incarnation', Conflict)
+      return yield* rejected('Document address already has a current incarnation', ConflictError)
     addresses.add(address)
   }
   return {
     ...self,
     nextId,
     nextSeq: seq + 1,
-    conversations: [...conversations.values()],
-    entries: [...entries.values()],
-    tasks: [...tasks.values()],
-    submissions: [...submissions.values()],
-    documents: [...documents.values()],
+    conversations: [...MutableHashMap.values(conversations)],
+    entries: [...MutableHashMap.values(entries)],
+    tasks: [...MutableHashMap.values(tasks)],
+    submissions: [...MutableHashMap.values(submissions)],
+    documents: [...MutableHashMap.values(documents)],
   }
 })
 const findDocumentImpl = (
@@ -425,7 +442,7 @@ const documentsInScopeImpl = (
   self: Record.State,
   scope: Record.Scope,
   at: Record.Point,
-): ReadonlyArray<Record.StoredDocument> =>
+): Array<Record.StoredDocument> =>
   Arr.filter(
     self.documents,
     (item) => sameScope(item.record.scope, scope) && Record.isAlive(item.record, at),
@@ -444,14 +461,14 @@ export const applyWrites: {
 
 export const cursor = (nextSeq: number): Effect.Effect<Record.Seq | 0, StorageError> =>
   validate(Record.JournalCursor, nextSeq - 1).pipe(
-    Effect.mapError((cause) => rejected('Invalid computed journal cursor', Corrupt, cause)),
+    Effect.mapError((cause) => rejected('Invalid computed journal cursor', CorruptError, cause)),
   )
 /** Validates the authoritative snapshot at a persistence boundary, including retained history. */
 export const validateState = Effect.fnUntraced(function* (
   input: unknown,
 ): Effect.fn.Return<Record.State, StorageError> {
   const state = yield* validate(Record.State, input).pipe(
-    Effect.mapError((cause) => rejected('Invalid persisted durable state', Corrupt, cause)),
+    Effect.mapError((cause) => rejected('Invalid persisted durable state', CorruptError, cause)),
   )
   const ids = new Set<number>()
   const allIds: ReadonlyArray<number> = [
@@ -463,7 +480,7 @@ export const validateState = Effect.fnUntraced(function* (
   ]
   for (const id of allIds) {
     if (ids.has(id) || id >= state.nextId)
-      return yield* rejected('Persisted ID namespace or allocator is corrupt', Corrupt)
+      return yield* rejected('Persisted ID namespace or allocator is corrupt', CorruptError)
     ids.add(id)
   }
   if (
@@ -472,7 +489,7 @@ export const validateState = Effect.fnUntraced(function* (
       (record) => record.id === 1 && record.parent === undefined && record.owner === undefined,
     )
   )
-    return yield* rejected('Persisted reserved root ID is corrupt', Corrupt)
+    return yield* rejected('Persisted reserved root ID is corrupt', CorruptError)
   const addresses = new Set<string>()
   for (const document of state.documents) {
     const record = document.record
@@ -481,16 +498,16 @@ export const validateState = Effect.fnUntraced(function* (
       (record.retiredAt !== undefined &&
         (record.retiredAt < record.createdAt || record.retiredAt >= state.nextSeq))
     )
-      return yield* rejected('Persisted document lifetime is corrupt', Corrupt)
-    if (record.scope.kind === 'conversation') {
+      return yield* rejected('Persisted document lifetime is corrupt', CorruptError)
+    if (record.scope._tag === 'conversation') {
       if (
         record.history === undefined ||
         record.fork === undefined ||
         (record.history === 'latest' && record.fork === 'asOf')
       )
-        return yield* rejected('Persisted document policy is corrupt', Corrupt)
+        return yield* rejected('Persisted document policy is corrupt', CorruptError)
     } else if (record.history !== undefined || record.fork !== undefined)
-      return yield* rejected('Persisted document policy is corrupt', Corrupt)
+      return yield* rejected('Persisted document policy is corrupt', CorruptError)
     if (
       !Record.isCurrentOnly(record) &&
       (record.retiredAt === undefined || record.retiredAt > record.createdAt)
@@ -504,22 +521,22 @@ export const validateState = Effect.fnUntraced(function* (
         revision.seq >= state.nextSeq ||
         (record.retiredAt !== undefined && revision.seq > record.retiredAt)
       )
-        return yield* rejected('Persisted document revision sequence is corrupt', Corrupt)
+        return yield* rejected('Persisted document revision sequence is corrupt', CorruptError)
       previous = revision.seq
-      if (revision.content.kind === 'base' && !Record.isCurrentOnly(record))
+      if (revision.content._tag === 'base' && !Record.isCurrentOnly(record))
         yield* materialize(document, revision.seq)
     }
     if (record.retiredAt === undefined) {
       const key = Record.addressKey(record)
       if (addresses.has(key))
-        return yield* rejected('Persisted document addresses overlap', Corrupt)
+        return yield* rejected('Persisted document addresses overlap', CorruptError)
       addresses.add(key)
       yield* materialize(document, 'current')
     } else if (!Record.isCurrentOnly(record) && record.retiredAt > record.createdAt)
       yield* materialize(
         document,
         yield* validate(Record.Seq, record.retiredAt - 1).pipe(
-          Effect.mapError((cause) => rejected('Invalid retirement boundary', Corrupt, cause)),
+          Effect.mapError((cause) => rejected('Invalid retirement boundary', CorruptError, cause)),
         ),
       )
   }
@@ -530,12 +547,12 @@ export const validateState = Effect.fnUntraced(function* (
       keys.has(receipt.key) ||
       receipt.seq >= state.nextSeq
     )
-      return yield* rejected('Persisted operation receipts are corrupt', Corrupt)
+      return yield* rejected('Persisted operation receipts are corrupt', CorruptError)
     keys.add(receipt.key)
   }
   for (const entry of state.entries)
     if (entry.commitSeq >= state.nextSeq)
-      return yield* rejected('Persisted entry commit sequence is corrupt', Corrupt)
+      return yield* rejected('Persisted entry commit sequence is corrupt', CorruptError)
   return state
 })
 import * as Json from 'effect-harness/Json'
@@ -543,21 +560,23 @@ import * as Json from 'effect-harness/Json'
 export const applyOps: {
   (
     ops: ReadonlyArray<Record.Op>,
-  ): (self: Record.JsonObject) => Effect.Effect<Record.JsonObject, StorageError>
+  ): (self: Schema.JsonObject) => Effect.Effect<Schema.JsonObject, StorageError>
   (
-    self: Record.JsonObject,
+    self: Schema.JsonObject,
     ops: ReadonlyArray<Record.Op>,
-  ): Effect.Effect<Record.JsonObject, StorageError>
+  ): Effect.Effect<Schema.JsonObject, StorageError>
 } = dual(2, applyOpsImpl)
 
 export const materialize: {
   (
     at: Record.Point,
-  ): (self: Record.StoredDocument) => Effect.Effect<Option.Option<Document.Snapshot>, StorageError>
+  ): (
+    self: Record.StoredDocument,
+  ) => Effect.Effect<Option.Option<Document.Document.Snapshot>, StorageError>
   (
     self: Record.StoredDocument,
     at: Record.Point,
-  ): Effect.Effect<Option.Option<Document.Snapshot>, StorageError>
+  ): Effect.Effect<Option.Option<Document.Document.Snapshot>, StorageError>
 } = dual(2, materializeImpl)
 
 export const visibleEntries: {
@@ -565,13 +584,13 @@ export const visibleEntries: {
     conversationId: Record.ConversationId,
     min?: number,
     max?: number,
-  ): (self: Record.State) => Effect.Effect<ReadonlyArray<Record.Entry>, StorageError>
+  ): (self: Record.State) => Effect.Effect<Array<Record.Entry>, StorageError>
   (
     self: Record.State,
     conversationId: Record.ConversationId,
     min?: number,
     max?: number,
-  ): Effect.Effect<ReadonlyArray<Record.Entry>, StorageError>
+  ): Effect.Effect<Array<Record.Entry>, StorageError>
 } = dual((args) => Predicate.hasProperty(args[0], 'conversations'), visibleEntriesImpl)
 
 export const page: {
@@ -601,9 +620,6 @@ export const findDocument: {
 } = dual(3, findDocumentImpl)
 
 export const documentsInScope: {
-  (
-    scope: Record.Scope,
-    at: Record.Point,
-  ): (self: Record.State) => ReadonlyArray<Record.StoredDocument>
-  (self: Record.State, scope: Record.Scope, at: Record.Point): ReadonlyArray<Record.StoredDocument>
+  (scope: Record.Scope, at: Record.Point): (self: Record.State) => Array<Record.StoredDocument>
+  (self: Record.State, scope: Record.Scope, at: Record.Point): Array<Record.StoredDocument>
 } = dual(3, documentsInScopeImpl)

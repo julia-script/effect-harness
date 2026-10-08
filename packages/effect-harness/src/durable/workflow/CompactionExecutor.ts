@@ -1,15 +1,15 @@
+import * as Predicate from 'effect/Predicate'
 /**
  * Native compaction execution, retries and atomic summary settlement.
  */
-import * as result from 'effect/Result'
-// effect-review-allow P9-namespace-alias-equals-module: the native Workflow Result schema is an imported binding in this module.
-import * as Arr from 'effect/Array'
-import { tagged } from '../internal/legacyTag.ts'
+import { rejected } from '../StorageError.ts'
+import * as Result from 'effect/Result'
+import * as Array from 'effect/Array'
 import type { StorageError } from '../StorageError.ts'
 import * as Option from 'effect/Option'
 import * as Time from 'effect-harness/Time'
 import * as Schedule from 'effect/Schedule'
-import { ModelRetry, policy as retryPolicy } from './ModelRetry.ts'
+import { ModelRetryError, policy as retryPolicy } from './ModelRetry.ts'
 import * as Identity from '../Identity.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
 import type * as Layer from 'effect/Layer'
@@ -30,35 +30,43 @@ import * as Record from '../Record.ts'
 import type * as Session from '../Session.ts'
 import { SessionDirectory } from '../SessionDirectory.ts'
 import { record as recordUsage } from '../Usage.ts'
-import { Compaction, Result } from './Compaction.ts'
+import { Compaction, Result as WorkflowResult } from './Compaction.ts'
 import * as Cancellation from './Cancellation.ts'
 import * as Structured from './Structured.ts'
-import { ExecutionError, InvalidState, Aborted, NoModel, ModelError } from './ExecutionError.ts'
+import {
+  ExecutionError,
+  InvalidStateError,
+  AbortedError,
+  NoModelError,
+  ModelError,
+} from './ExecutionError.ts'
 import { Submission, EntryDraft } from './Submission.ts'
 import * as SubmissionExecutor from './SubmissionExecutor.ts'
 
 const Prepared = Schema.Union([
-  tagged('none', { type: Schema.tag('none') }),
-  tagged('summary', {
-    type: Schema.tag('summary'),
+  Schema.TaggedStruct('none', {}),
+  Schema.TaggedStruct('summary', {
     firstKept: Record.EntryId,
     summary: Schema.String,
   }),
-  tagged('request', { type: Schema.tag('request'), request: Executor.SummaryRequest }),
+  Schema.TaggedStruct('request', { request: Executor.SummaryRequest }),
 ])
 const SummarySubmission = Schema.Struct({
   ...Submission.payloadSchema.fields,
-  submission: tagged('write', { type: Schema.tag('write'), entry: EntryDraft }),
+  submission: Schema.TaggedStruct('write', { entry: EntryDraft }),
 })
 const Settlement = Schema.Struct({
-  result: Result,
+  result: WorkflowResult,
   notify: Schema.Array(Record.SubmissionId),
   submission: Schema.optionalKey(SummarySubmission),
 })
+const CompactionDecision = Schema.Struct({
+  at: Time.DateTimeUtcFromEpochMillis,
+  retry: Schema.Boolean,
+})
 const Attempt = Schema.Union([
-  tagged('summary', { type: Schema.tag('summary'), summary: Executor.Summary }),
-  tagged('failure', {
-    type: Schema.tag('failure'),
+  Schema.TaggedStruct('summary', { summary: Executor.Summary }),
+  Schema.TaggedStruct('failure', {
     message: Schema.String,
     retryable: Schema.Boolean,
     usage: Schema.optionalKey(Usage.Usage),
@@ -68,7 +76,7 @@ const domainError = (error: import('../StorageError.ts').StorageError | Executio
   error._tag === 'StorageError' ? SubmissionExecutor.storageError(error) : error
 const invalid = (cause?: unknown) =>
   new ExecutionError({
-    reason: new InvalidState({
+    reason: new InvalidStateError({
       message: 'Invalid compaction state',
       ...(cause === undefined ? {} : { cause }),
     }),
@@ -79,14 +87,21 @@ const invalid = (cause?: unknown) =>
  *
  * @category constructors
  */
+/** Compaction creation data; tx remains the sole resource subject.
+ * @category models
+ */
+export interface Options {
+  readonly sessionId: Identity.SessionId
+  readonly conversationId: Record.ConversationId
+  readonly reason: (typeof Compaction.payloadSchema.Type)['reason']
+  readonly owner?: Record.TaskId | undefined
+  readonly instructions?: string | undefined
+}
 export const make = Effect.fnUntraced(function* (
   tx: Session.Transaction,
-  sessionId: Identity.SessionId,
-  conversationId: Record.ConversationId,
-  reason: (typeof Compaction.payloadSchema.Type)['reason'],
-  owner?: Record.TaskId,
-  instructions?: string,
+  options: Options,
 ): Effect.fn.Return<typeof Compaction.payloadSchema.Type, StorageError | ExecutionError> {
+  const { sessionId, conversationId, reason, owner, instructions } = options
   if (owner !== undefined) {
     const taskOption = yield* tx.task(owner)
     if (
@@ -95,7 +110,7 @@ export const make = Effect.fnUntraced(function* (
       taskOption.value.state.status === 'terminal'
     )
       return yield* new ExecutionError({
-        reason: new Aborted({ message: 'Compaction owner has ended' }),
+        reason: new AbortedError({ message: 'Compaction owner has ended' }),
       })
   }
   const taskId = yield* tx.mint(Record.TaskId)
@@ -114,7 +129,6 @@ export const make = Effect.fnUntraced(function* (
   }
   yield* tx.write({
     _tag: 'task',
-    type: 'task',
     value: {
       id: taskId,
       conversationId,
@@ -172,13 +186,13 @@ export const layer: Layer.Layer<
       const task = taskOption.value
       if (task.abortRequested || task.state.status === 'terminal')
         return yield* new ExecutionError({
-          reason: new Aborted({ message: 'Compaction has ended' }),
+          reason: new AbortedError({ message: 'Compaction has ended' }),
         })
       return task
     })
-    const removeStatus = (live: Document.Draft<Inbox.LiveState>) => {
+    const removeStatus = (live: Document.Document.Draft<Inbox.LiveState>) => {
       if (live.compactions !== undefined)
-        live.compactions = Arr.filter(
+        live.compactions = Array.filter(
           live.compactions,
           (status) => status.taskId !== payload.taskId,
         )
@@ -200,10 +214,10 @@ export const layer: Layer.Layer<
               const task = taskOption.value
               if (task.abortRequested)
                 return yield* new ExecutionError({
-                  reason: new Aborted({ message: 'Compaction aborted' }),
+                  reason: new AbortedError({ message: 'Compaction aborted' }),
                 })
               const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
-              let result: Result = {}
+              let result: WorkflowResult = {}
               let notify: ReadonlyArray<Record.SubmissionId> = []
               let submission: typeof SummarySubmission.Type | undefined
               if (summary !== undefined) {
@@ -230,14 +244,26 @@ export const layer: Layer.Layer<
                     sessionId: payload.sessionId,
                     conversationId: payload.conversationId,
                     requestId: Identity.RequestId.make(`compaction:${payload.taskId}`),
-                    submission: { _tag: 'write', type: 'write', entry },
+                    submission: { _tag: 'write', entry },
                   }
-                  const admitted = yield* SubmissionExecutor.admitInTransaction(
+                  const submissionExecutionId = yield* Submission.executionId(submission)
+                  const existing = yield* SubmissionExecutor.existingAdmission(
                     tx,
-                    config,
                     submission,
-                    yield* Submission.executionId(submission),
+                    submissionExecutionId,
                   )
+                  const admitted = Option.isSome(existing)
+                    ? existing.value
+                    : yield* SubmissionExecutor.admitInTransaction(
+                        tx,
+                        yield* config.settings.pipe(
+                          Effect.mapError((cause) =>
+                            rejected('Invalid host settings', undefined, cause),
+                          ),
+                        ),
+                        submission,
+                        submissionExecutionId,
+                      )
                   result = { submissionId: admitted.id }
                   notify = admitted.notify
                 }
@@ -289,7 +315,7 @@ export const layer: Layer.Layer<
             }
             if (Option.isNone(providerOption) || providerOption.value.value.sessionId === '')
               return yield* new ExecutionError({
-                reason: new InvalidState({
+                reason: new InvalidStateError({
                   message:
                     'Provider identity requires Conversation.layer(options) during Session construction',
                 }),
@@ -301,23 +327,37 @@ export const layer: Layer.Layer<
             const value = yield* executor
               .prepareCompaction({
                 state,
-                settings: config.settings,
+                settings: yield* config.settings.pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ExecutionError({
+                        reason: new InvalidStateError({ message: 'Invalid host settings', cause }),
+                      }),
+                  ),
+                ),
                 view,
                 reason: payload.reason === 'background' ? 'threshold' : payload.reason,
                 instructions: payload.instructions,
                 sessionId: provider.value.sessionId,
               })
               .pipe(
-                Effect.provideService(Invocation.Invocation, {
-                  ...invocation,
-                  cwd: state.cwd ?? config.cwd,
-                }),
+                Effect.provideService(
+                  Invocation.Invocation,
+                  Invocation.Invocation.of({
+                    ...invocation,
+                    cwd: state.cwd ?? config.cwd,
+                  }),
+                ),
                 Effect.mapError(
                   (error) =>
                     new ExecutionError({
-                      reason: new ('reason' in error && error.reason._tag === 'ModelNoModel'
-                        ? NoModel
-                        : ModelError)({ message: error.message, cause: error }),
+                      reason: new (Predicate.hasProperty(error, 'reason') &&
+                        error.reason._tag === 'ModelNoModelError'
+                        ? NoModelError
+                        : ModelError)({
+                        message: error.message,
+                        cause: error,
+                      }),
                     }),
                 ),
               )
@@ -328,11 +368,16 @@ export const layer: Layer.Layer<
           }),
         ).pipe(Effect.mapError(domainError)),
       })
-      if (prepared.type === 'none') return yield* complete()
-      if (prepared.type === 'summary')
-        return yield* complete({ firstKept: prepared.firstKept, text: prepared.summary })
+      switch (prepared._tag) {
+        case 'none':
+          return yield* complete()
+        case 'summary':
+          return yield* complete({ firstKept: prepared.firstKept, text: prepared.summary })
+        case 'request':
+          break
+      }
       const pinned = prepared.request
-      const attemptModel = Effect.fnUntraced(function* () {
+      const attemptComputation = Effect.gen(function* () {
         const attempt = (yield* Schedule.CurrentMetadata).attempt + 1
         const response = yield* Activity.make({
           name: `summary/${attempt}`,
@@ -349,11 +394,11 @@ export const layer: Layer.Layer<
                     const taskOption = yield* tx.task(payload.taskId)
                     if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                       return yield* new ExecutionError({
-                        reason: new Aborted({ message: 'Compaction aborted' }),
+                        reason: new AbortedError({ message: 'Compaction aborted' }),
                       })
                     const task = taskOption.value
                     const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
-                    const status = Arr.findFirst(
+                    const status = Array.findFirst(
                       live.compactions ?? [],
                       (status) => status.taskId === payload.taskId,
                     )
@@ -363,32 +408,32 @@ export const layer: Layer.Layer<
                     }
                     yield* tx.write({
                       _tag: 'task',
-                      type: 'task',
                       value: { ...task, state: { status: 'running' } },
                     })
                   }),
                 )
                 .pipe(Effect.mapError(domainError))
               const attemptResult = yield* Effect.result(executor.compact({ ...pinned, attempt }))
-              return yield* result.match(attemptResult, {
-                onSuccess: (summary) =>
-                  Effect.succeed({ _tag: 'summary' as const, type: 'summary' as const, summary }),
+              return yield* Result.match(attemptResult, {
+                onSuccess: (summary) => Effect.succeed({ _tag: 'summary' as const, summary }),
                 onFailure: (error) =>
                   executor.classifyFailure(pinned.request, error).pipe(
                     Effect.mapError(
                       (failure) =>
                         new ExecutionError({
-                          reason: new (failure.reason._tag === 'ModelNoModel'
-                            ? NoModel
-                            : ModelError)({ message: failure.message, cause: failure }),
+                          reason: new (failure.reason._tag === 'ModelNoModelError'
+                            ? NoModelError
+                            : ModelError)({
+                            message: failure.message,
+                            cause: failure,
+                          }),
                         }),
                     ),
                     Effect.map((classification) => ({
                       _tag: 'failure' as const,
-                      type: 'failure' as const,
                       message: error.message,
                       retryable: classification.retryable,
-                      ...('usage' in error && error.usage !== undefined
+                      ...(Predicate.hasProperty(error, 'usage') && error.usage !== undefined
                         ? { usage: error.usage }
                         : {}),
                     })),
@@ -399,7 +444,7 @@ export const layer: Layer.Layer<
         })
         const decision = yield* Activity.make({
           name: `usage/${attempt}`,
-          success: Schema.Struct({ at: Time.EpochMillis, retry: Schema.Boolean }),
+          success: CompactionDecision,
           error: ExecutionError,
           execute: session
             .transaction(
@@ -407,11 +452,11 @@ export const layer: Layer.Layer<
                 const taskOption = yield* tx.task(payload.taskId)
                 if (Option.isNone(taskOption) || taskOption.value.abortRequested)
                   return yield* new ExecutionError({
-                    reason: new Aborted({ message: 'Compaction aborted' }),
+                    reason: new AbortedError({ message: 'Compaction aborted' }),
                   })
 
                 const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
-                const usage = response.type === 'summary' ? response.summary.usage : response.usage
+                const usage = response._tag === 'summary' ? response.summary.usage : response.usage
                 if (usage !== undefined)
                   yield* recordUsage(
                     tx,
@@ -421,17 +466,44 @@ export const layer: Layer.Layer<
                     usage,
                   )
                 const retry =
-                  response.type === 'failure' &&
-                  Agent.isRetryAllowed(config.settings.retry, attempt, response.retryable)
+                  response._tag === 'failure' &&
+                  Agent.isRetryAllowed(
+                    (yield* config.settings.pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ExecutionError({
+                            reason: new InvalidStateError({
+                              message: 'Invalid host settings',
+                              cause,
+                            }),
+                          }),
+                      ),
+                    )).retry,
+                    attempt,
+                    response.retryable,
+                  )
                 const at = DateTime.addDuration(
                   yield* DateTime.now,
-                  Agent.retryDelay(config.settings.retry, attempt),
+                  Agent.retryDelay(
+                    (yield* config.settings.pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ExecutionError({
+                            reason: new InvalidStateError({
+                              message: 'Invalid host settings',
+                              cause,
+                            }),
+                          }),
+                      ),
+                    )).retry,
+                    attempt,
+                  ),
                 )
-                const status = Arr.findFirst(
+                const status = Array.findFirst(
                   live.compactions ?? [],
                   (status) => status.taskId === payload.taskId,
                 )
-                if (Option.isSome(status) && retry && response.type === 'failure')
+                if (Option.isSome(status) && retry && response._tag === 'failure')
                   status.value.retry = { at: DateTime.toEpochMillis(at), error: response.message }
                 return { at: DateTime.toEpochMillis(at), retry }
               }),
@@ -439,15 +511,13 @@ export const layer: Layer.Layer<
             )
             .pipe(
               Effect.mapError(domainError),
-              Effect.flatMap(
-                Schema.decodeEffect(Schema.Struct({ at: Time.EpochMillis, retry: Schema.Boolean })),
-              ),
+              Effect.flatMap(Schema.decodeEffect(CompactionDecision)),
               Effect.mapError((cause) =>
                 cause instanceof ExecutionError ? cause : invalid(cause),
               ),
             ),
         })
-        if (response.type === 'summary')
+        if (response._tag === 'summary')
           return yield* complete({
             firstKept: yield* Schema.decodeEffect(Record.EntryId)(pinned.firstKept).pipe(
               Effect.mapError(invalid),
@@ -458,21 +528,26 @@ export const layer: Layer.Layer<
           return yield* new ExecutionError({
             reason: new ModelError({ message: response.message, cause: response }),
           })
-        return yield* new ModelRetry({ name: `retry/${attempt}`, at: decision.at })
+        return yield* new ModelRetryError({ name: `retry/${attempt}`, at: decision.at })
       })
-      return yield* attemptModel().pipe(
+      const attemptModel: Effect.Effect<
+        WorkflowResult,
+        ExecutionError,
+        Effect.Services<typeof attemptComputation>
+      > = attemptComputation.pipe(
         Effect.retry(retryPolicy),
-        Effect.catchTag('ModelRetry', (cause) => Effect.fail(invalid(cause))),
+        Effect.catchTag('ModelRetryError', (cause) => Effect.fail(invalid(cause))),
       )
+      return yield* attemptModel
     })
     // Settlement receipts restore native Activities before terminal-task fencing.
     const receipts = (yield* session.committed.pipe(Effect.mapError(domainError))).receipts
-    const placement = Arr.findFirst(
+    const placement = Array.findFirst(
       receipts,
       (receipt) => receipt.key === `workflow/compaction/placement/${executionId}`,
     )
     if (Option.isSome(placement)) return yield* complete()
-    const failed = Arr.findFirst(
+    const failed = Array.findFirst(
       receipts,
       (receipt) => receipt.key === `workflow/compaction/failure/${executionId}`,
     )
@@ -518,7 +593,7 @@ export const layer: Layer.Layer<
                   tx,
                   task,
                   {
-                    status: error.reason._tag === 'Aborted' ? 'aborted' : 'failed',
+                    status: error.reason._tag === 'AbortedError' ? 'aborted' : 'failed',
                     message: error.message,
                     reason: error.reason._tag,
                   },

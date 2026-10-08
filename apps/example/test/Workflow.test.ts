@@ -1,15 +1,9 @@
+import { Submission } from 'effect-harness/durable/workflow'
+import { ConfigProvider, Effect, FileSystem, Layer, Option, Path, Ref, Stream } from 'effect'
+import { LanguageModel } from 'effect/ai'
 import { BunServices } from '@effect/platform-bun'
 import { assert, it } from '@effect/vitest'
-import { Submission } from 'effect-harness/durable/workflow/Submission'
-import * as ConfigProvider from 'effect/ConfigProvider'
-import * as Effect from 'effect/Effect'
-import * as FileSystem from 'effect/FileSystem'
-import * as Layer from 'effect/Layer'
-import * as Option from 'effect/Option'
-import * as Path from 'effect/Path'
-import * as Ref from 'effect/Ref'
-import * as Stream from 'effect/Stream'
-import * as LanguageModel from 'effect/ai/LanguageModel'
+
 import * as Application from '../dist/Application.js'
 import * as DemoModel from '../dist/DemoModel.js'
 import * as Uppercase from '../dist/Uppercase.js'
@@ -66,12 +60,12 @@ it.live(
         assert.strictEqual(yield* Ref.get(modelCalls), 2)
         assert.strictEqual(yield* Ref.get(toolCalls), 1)
 
-        const executionId = yield* Submission.execute(input, { discard: true })
-        const polled = yield* Submission.poll(executionId)
+        const executionId = yield* Submission.Submission.execute(input, { discard: true })
+        const polled = yield* Submission.Submission.poll(executionId)
         assert.isTrue(Option.isSome(polled))
         assert.strictEqual(Option.getOrThrow(polled)._tag, 'Complete')
-        yield* Submission.resume(executionId)
-        const replayed = yield* Submission.execute(input)
+        yield* Submission.Submission.resume(executionId)
+        const replayed = yield* Submission.Submission.execute(input)
         assert.strictEqual(replayed.id, first.result.id)
         assert.strictEqual(yield* Ref.get(modelCalls), 2)
         assert.strictEqual(yield* Ref.get(toolCalls), 1)

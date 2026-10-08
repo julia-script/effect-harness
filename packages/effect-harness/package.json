@@ -33,26 +33,16 @@
       "types": "./dist/env/index.d.ts",
       "default": "./dist/env/index.js"
     },
-    "./Error": null,
-    "./env/Exec": null,
-    "./env/Watch": null,
-    "./tools/Mutation": null,
-    "./tools/Path": null,
     "./env/internal/*": null,
     "./tools/internal/*": null,
     "./internal/*": null,
     "./internal": null,
     "./env/internal": null,
     "./tools/internal": null,
-    "./env/Error": null,
     "./durable": {
       "types": "./dist/durable/index.d.ts",
       "default": "./dist/durable/index.js"
     },
-    "./durable/storage/State": null,
-    "./durable/storage/Backend": null,
-    "./durable/storage/State/*": null,
-    "./durable/storage/Backend/*": null,
     "./durable/internal": null,
     "./durable/internal/*": null,
     "./durable/storage/internal": null,
@@ -73,13 +63,6 @@
       "types": "./dist/durable/testing/index.d.ts",
       "default": "./dist/durable/testing/index.js"
     },
-    "./durable/storage/SqlStore": null,
-    "./durable/storage/SqliteStore": null,
-    "./durable/storage/BunSqliteStore": null,
-    "./durable/storage/NodeSqliteStore": null,
-    "./durable/storage/Sqlite": null,
-    "./durable/storage/Bun": null,
-    "./durable/storage/Node": null,
     "./durable/*": {
       "types": "./dist/durable/*.d.ts",
       "default": "./dist/durable/*.js"
@@ -122,7 +105,7 @@
     "provenance": true
   },
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "dev": "tsc --watch --preserveWatchOutput",
     "typecheck": "tsc --noEmit",
     "test": "cd ../.. && vitest run packages/effect-harness/test",

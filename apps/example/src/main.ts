@@ -1,32 +1,25 @@
+import { Conversation, Identity, Record, Session } from 'effect-harness/durable'
+import { Submission } from 'effect-harness/durable/workflow'
+import { ConfigProvider, Console, Effect, Layer, Schema } from 'effect'
+import { Prompt } from 'effect/ai'
 import { BunRuntime, BunServices } from '@effect/platform-bun'
-import * as Conversation from 'effect-harness/durable/Conversation'
-import * as Identity from 'effect-harness/durable/Identity'
-import { ROOT_CONVERSATION_ID } from 'effect-harness/durable/Record'
-import * as Session from 'effect-harness/durable/Session'
-import { Submission } from 'effect-harness/durable/workflow/Submission'
-import * as ConfigProvider from 'effect/ConfigProvider'
-import * as Console from 'effect/Console'
-import * as Data from 'effect/Data'
-import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
-import * as Schema from 'effect/Schema'
-import * as Prompt from 'effect/ai/Prompt'
+
 import * as Application from './Application.ts'
 import * as DemoModel from './DemoModel.ts'
 import * as Greeting from './Greeting.ts'
 
-class UnansweredSubmission extends Data.TaggedError('UnansweredSubmission')<{
-  readonly result: typeof Submission.successSchema.Type
-}> {}
+class UnansweredSubmissionError extends Schema.TaggedError<UnansweredSubmissionError>()(
+  'UnansweredSubmission',
+  { result: Submission.Submission.successSchema },
+) {}
 
 // A stable request identity reuses its persisted receipt across process runs.
-export const input: typeof Submission.payloadSchema.Type = {
+export const input: typeof Submission.Submission.payloadSchema.Type = {
   sessionId: Application.sessionId,
-  conversationId: ROOT_CONVERSATION_ID,
+  conversationId: Record.ROOT_CONVERSATION_ID,
   requestId: Identity.RequestId.make('uppercase-v1'),
   submission: {
     _tag: 'input',
-    type: 'input',
     message: Prompt.userMessage({ content: [Prompt.textPart({ text: 'uppercase hello' })] }),
   },
 }
@@ -44,10 +37,10 @@ export const program = Effect.gen(function* () {
 
   // Custom and built-in Workflows both use the ordinary native execution API.
   const greeting = yield* Greeting.Greeting.execute({ name: 'Effect' })
-  const result = yield* Submission.execute(input)
+  const result = yield* Submission.Submission.execute(input)
   yield* Conversation.awaitIdle(session, root.id)
 
-  if (result._tag !== 'InputDone') return yield* new UnansweredSubmission({ result })
+  if (result._tag !== 'InputDone') return yield* new UnansweredSubmissionError({ result })
   const answer = yield* session
     .entry(result.answer, root.id)
     .pipe(Effect.flatMap(Effect.fromOption))
@@ -71,12 +64,13 @@ const Platform = Layer.merge(
   ConfigProvider.layer(ConfigProvider.fromEnv({ preserveEmptyStrings: true })),
   BunServices.layer,
 )
-const MainLive = Application.layer.pipe(Layer.provide(Platform))
+// effect-nit-allow P3-layer-naming-layer-prefix: MainLayer composes the example Application with its selected config provider and platform services; it is application wiring rather than one module's implementation layer.
+const MainLayer = Application.layer.pipe(Layer.provide(Platform))
 
 if (import.meta.main) {
   BunRuntime.runMain(
     program.pipe(
-      Effect.provide(MainLive),
+      Effect.provide(MainLayer),
       Effect.tap(() => Console.log('native-workflow-example-ok')),
     ),
   )

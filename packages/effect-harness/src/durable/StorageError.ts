@@ -13,9 +13,9 @@ const fields = { message: Schema.String, cause: Schema.optionalKey(Schema.Defect
  *
  * @category errors
  */
-export class Invalid extends Schema.TaggedError<Invalid>(
-  '@effect-harness/durable/StorageError/Invalid',
-)('Invalid', fields) {
+export class InvalidError extends Schema.TaggedError<InvalidError>(
+  '@effect-harness/durable/StorageError/InvalidError',
+)('InvalidError', fields) {
   readonly certainty = 'rejected' as const
   get isRetryable(): boolean {
     return false
@@ -27,9 +27,9 @@ export class Invalid extends Schema.TaggedError<Invalid>(
  *
  * @category errors
  */
-export class Conflict extends Schema.TaggedError<Conflict>(
-  '@effect-harness/durable/StorageError/Conflict',
-)('Conflict', fields) {
+export class ConflictError extends Schema.TaggedError<ConflictError>(
+  '@effect-harness/durable/StorageError/ConflictError',
+)('ConflictError', fields) {
   readonly certainty = 'rejected' as const
   get isRetryable(): boolean {
     return false
@@ -41,9 +41,9 @@ export class Conflict extends Schema.TaggedError<Conflict>(
  *
  * @category errors
  */
-export class NotFound extends Schema.TaggedError<NotFound>(
-  '@effect-harness/durable/StorageError/NotFound',
-)('NotFound', fields) {
+export class NotFoundError extends Schema.TaggedError<NotFoundError>(
+  '@effect-harness/durable/StorageError/NotFoundError',
+)('NotFoundError', fields) {
   readonly certainty = 'rejected' as const
   get isRetryable(): boolean {
     return false
@@ -55,9 +55,9 @@ export class NotFound extends Schema.TaggedError<NotFound>(
  *
  * @category errors
  */
-export class Closed extends Schema.TaggedError<Closed>(
-  '@effect-harness/durable/StorageError/Closed',
-)('Closed', fields) {
+export class ClosedError extends Schema.TaggedError<ClosedError>(
+  '@effect-harness/durable/StorageError/ClosedError',
+)('ClosedError', fields) {
   readonly certainty = 'rejected' as const
   get isRetryable(): boolean {
     return false
@@ -69,9 +69,9 @@ export class Closed extends Schema.TaggedError<Closed>(
  *
  * @category errors
  */
-export class Poisoned extends Schema.TaggedError<Poisoned>(
-  '@effect-harness/durable/StorageError/Poisoned',
-)('Poisoned', fields) {
+export class PoisonedError extends Schema.TaggedError<PoisonedError>(
+  '@effect-harness/durable/StorageError/PoisonedError',
+)('PoisonedError', fields) {
   readonly certainty = 'rejected' as const
   get isRetryable(): boolean {
     return false
@@ -83,9 +83,9 @@ export class Poisoned extends Schema.TaggedError<Poisoned>(
  *
  * @category errors
  */
-export class Corrupt extends Schema.TaggedError<Corrupt>(
-  '@effect-harness/durable/StorageError/Corrupt',
-)('Corrupt', fields) {
+export class CorruptError extends Schema.TaggedError<CorruptError>(
+  '@effect-harness/durable/StorageError/CorruptError',
+)('CorruptError', fields) {
   readonly certainty = 'rejected' as const
   get isRetryable(): boolean {
     return false
@@ -97,7 +97,9 @@ export class Corrupt extends Schema.TaggedError<Corrupt>(
  *
  * @category errors
  */
-export class Io extends Schema.TaggedError<Io>('@effect-harness/durable/StorageError/Io')('Io', {
+export class IoError extends Schema.TaggedError<IoError>(
+  '@effect-harness/durable/StorageError/IoError',
+)('IoError', {
   ...fields,
   certainty: Schema.Literals(['rejected', 'uncertain']).pipe(
     Schema.withConstructorDefault(Effect.succeed('rejected')),
@@ -113,9 +115,9 @@ export class Io extends Schema.TaggedError<Io>('@effect-harness/durable/StorageE
  *
  * @category errors
  */
-export class ReadAfterWrite extends Schema.TaggedError<ReadAfterWrite>(
-  '@effect-harness/durable/StorageError/ReadAfterWrite',
-)('ReadAfterWrite', fields) {
+export class ReadAfterWriteError extends Schema.TaggedError<ReadAfterWriteError>(
+  '@effect-harness/durable/StorageError/ReadAfterWriteError',
+)('ReadAfterWriteError', fields) {
   readonly certainty = 'rejected' as const
   get isRetryable(): boolean {
     return false
@@ -127,9 +129,9 @@ export class ReadAfterWrite extends Schema.TaggedError<ReadAfterWrite>(
  *
  * @category errors
  */
-export class Revoked extends Schema.TaggedError<Revoked>(
-  '@effect-harness/durable/StorageError/Revoked',
-)('Revoked', fields) {
+export class RevokedError extends Schema.TaggedError<RevokedError>(
+  '@effect-harness/durable/StorageError/RevokedError',
+)('RevokedError', fields) {
   readonly certainty = 'rejected' as const
   get isRetryable(): boolean {
     return false
@@ -142,15 +144,15 @@ export class Revoked extends Schema.TaggedError<Revoked>(
  * @category schemas
  */
 export const StorageErrorReason = Schema.Union([
-  Invalid,
-  Conflict,
-  NotFound,
-  Closed,
-  Poisoned,
-  Corrupt,
-  Io,
-  ReadAfterWrite,
-  Revoked,
+  InvalidError,
+  ConflictError,
+  NotFoundError,
+  ClosedError,
+  PoisonedError,
+  CorruptError,
+  IoError,
+  ReadAfterWriteError,
+  RevokedError,
 ])
 /**
  * Decoded value validated by the `StorageErrorReason` schema.
@@ -188,11 +190,9 @@ export class StorageError extends Schema.TaggedError<StorageError>(
   get certainty(): 'rejected' | 'uncertain' {
     return this.reason.certainty
   }
-  /** Original discriminator for compatibility records; runtime policies match reason._tag. */
-  get code(): LegacyReason {
-    return reasonCodes[this.reason._tag]
-  }
-  /** No storage failure currently has a documented automatic retry policy. */
+  /**
+   * Automatic retry eligibility; no storage failure currently has a documented automatic retry policy.
+   */
   get isRetryable(): boolean {
     return this.reason.isRetryable
   }
@@ -209,7 +209,7 @@ type ReasonConstructor = new (props: {
  */
 export const rejected = (
   message: string,
-  Reason: ReasonConstructor = Invalid,
+  Reason: ReasonConstructor = InvalidError,
   cause?: unknown,
 ): StorageError =>
   new StorageError({ reason: new Reason({ message, ...(cause === undefined ? {} : { cause }) }) })
@@ -220,44 +220,76 @@ export const rejected = (
  */
 export const uncertain = (message: string, cause?: unknown): StorageError =>
   new StorageError({
-    reason: new Io({ message, certainty: 'uncertain', ...(cause === undefined ? {} : { cause }) }),
+    reason: new IoError({
+      message,
+      certainty: 'uncertain',
+      ...(cause === undefined ? {} : { cause }),
+    }),
   })
 
-const legacyReasons = {
-  invalid: Invalid,
-  conflict: Conflict,
-  not_found: NotFound,
-  closed: Closed,
-  poisoned: Poisoned,
-  corrupt: Corrupt,
-  io: Io,
-  read_after_write: ReadAfterWrite,
-  revoked: Revoked,
-} as const
-const reasonCodes = {
-  Invalid: 'invalid',
-  Conflict: 'conflict',
-  NotFound: 'not_found',
-  Closed: 'closed',
-  Poisoned: 'poisoned',
-  Corrupt: 'corrupt',
-  Io: 'io',
-  ReadAfterWrite: 'read_after_write',
-  Revoked: 'revoked',
-} as const
-/**
- * Compatibility code translated into a structured storage failure reason.
- *
- * @category models
+/** Checks the decoded Invalid contract without decoding or coercing input.
+ * @category guards
  */
-export type LegacyReason = keyof typeof legacyReasons
-/**
- * Input-only adapter for older callers; the runtime reason is always structured.
- *
- * @category combinators
+export const isInvalid: (u: unknown) => u is InvalidError = Schema.is(Schema.toType(InvalidError))
+
+/** Checks the decoded Conflict contract without decoding or coercing input.
+ * @category guards
  */
-export const rejectedLegacy = (
-  message: string,
-  reason: LegacyReason = 'invalid',
-  cause?: unknown,
-): StorageError => rejected(message, legacyReasons[reason], cause)
+export const isConflict: (u: unknown) => u is ConflictError = Schema.is(
+  Schema.toType(ConflictError),
+)
+
+/** Checks the decoded NotFound contract without decoding or coercing input.
+ * @category guards
+ */
+export const isNotFound: (u: unknown) => u is NotFoundError = Schema.is(
+  Schema.toType(NotFoundError),
+)
+
+/** Checks the decoded Closed contract without decoding or coercing input.
+ * @category guards
+ */
+export const isClosed: (u: unknown) => u is ClosedError = Schema.is(Schema.toType(ClosedError))
+
+/** Checks the decoded Poisoned contract without decoding or coercing input.
+ * @category guards
+ */
+export const isPoisoned: (u: unknown) => u is PoisonedError = Schema.is(
+  Schema.toType(PoisonedError),
+)
+
+/** Checks the decoded Corrupt contract without decoding or coercing input.
+ * @category guards
+ */
+export const isCorrupt: (u: unknown) => u is CorruptError = Schema.is(Schema.toType(CorruptError))
+
+/** Checks the decoded Io contract without decoding or coercing input.
+ * @category guards
+ */
+export const isIo: (u: unknown) => u is IoError = Schema.is(Schema.toType(IoError))
+
+/** Checks the decoded ReadAfterWrite contract without decoding or coercing input.
+ * @category guards
+ */
+export const isReadAfterWrite: (u: unknown) => u is ReadAfterWriteError = Schema.is(
+  Schema.toType(ReadAfterWriteError),
+)
+
+/** Checks the decoded Revoked contract without decoding or coercing input.
+ * @category guards
+ */
+export const isRevoked: (u: unknown) => u is RevokedError = Schema.is(Schema.toType(RevokedError))
+
+/** Checks the decoded StorageError contract without decoding or coercing input.
+ * @category guards
+ */
+export const isStorageError: (u: unknown) => u is StorageError = Schema.is(
+  Schema.toType(StorageError),
+)
+
+/** Checks the decoded StorageErrorReason contract without decoding or coercing input.
+ * @category guards
+ */
+export const isStorageErrorReason: (u: unknown) => u is StorageErrorReason = Schema.is(
+  Schema.toType(StorageErrorReason),
+)

@@ -1,7 +1,3 @@
-/**
- * Native abort Workflow declaration and legacy-compatible target payloads.
- */
-import { tagged } from '../internal/legacyTag.ts'
 import * as Identity from '../Identity.ts'
 import * as Schema from 'effect/Schema'
 import * as Workflow from 'effect/workflow/Workflow'
@@ -28,8 +24,8 @@ export const Abort = Workflow.make('@effect-harness/durable/Abort/v1', {
     sessionId: Identity.SessionId,
     requestId: Identity.RequestId,
     target: Schema.Union([
-      tagged('conversation', { type: Schema.tag('conversation'), id: Record.ConversationId }),
-      tagged('task', { type: Schema.tag('task'), id: Record.TaskId }),
+      Schema.TaggedStruct('conversation', { id: Record.ConversationId }),
+      Schema.TaggedStruct('task', { id: Record.TaskId }),
     ]),
     background: Schema.Boolean,
     reason: Schema.optionalKey(Schema.String),

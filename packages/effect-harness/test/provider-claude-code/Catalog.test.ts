@@ -1,6 +1,7 @@
+// effect-nit-allow P8-tests-import-public-specifiers: the native factory is a null-exported owned dependency; no Effect module is replaced.
+// effect-nit-allow P9-no-internal-cross-import: the native factory is a null-exported owned dependency; no Effect module is replaced.
+import * as NativeLanguageModel from '../../src/internal/NativeLanguageModel.ts'
 import * as Schema from 'effect/Schema'
-import { vi } from 'vitest'
-vi.mock('effect/ai/LanguageModel', { spy: true })
 import * as LanguageModel from 'effect/ai/LanguageModel'
 import { assert, describe, it } from '@effect/vitest'
 import * as Model from 'effect-harness/Model'
@@ -99,6 +100,7 @@ const fixture = (options?: {
     commands,
     inputs,
     layer,
+    transport: Layer.merge(transport, IntentServer.layerDisabled),
     get released() {
       return released
     },
@@ -111,7 +113,7 @@ const resolve = () =>
 const argument = (command: ChildProcess.StandardCommand, name: string) =>
   command.args[command.args.indexOf(name) + 1]
 
-describe('Catalog', () => {
+describe('Catalog', { concurrent: false }, () => {
   it.effect('empty malformed subjects fail semantically before any native model work', () =>
     Effect.gen(function* () {
       // Deliberately model an untyped JavaScript caller that supplies a malformed subject.
@@ -120,7 +122,7 @@ describe('Catalog', () => {
       assert.isTrue(Effect.isEffect(result))
       const error = yield* result.pipe(Effect.provide(fixture().layer), Effect.flip)
       assert.strictEqual(error._tag, 'ModelError')
-      assert.strictEqual(error.reason._tag, 'ModelUnsupported')
+      assert.strictEqual(error.reason._tag, 'ModelUnsupportedError')
     }),
   )
 
@@ -158,7 +160,7 @@ describe('Catalog', () => {
               alwaysThinkingEnabled: true,
               autoCompactEnabled: false,
             })
-            const input = SchemaJson.parse(f.inputs[0] ?? '{}')
+            const input = SchemaJson.parseUnsafe(f.inputs[0] ?? '{}')
             assert.strictEqual(input.session_id, sessionId)
             assert.strictEqual(f.released, 2)
             const finish = response.content.find((part) => part.type === 'finish')
@@ -225,14 +227,14 @@ describe('Catalog', () => {
             for (const request of negatives)
               assert.strictEqual(
                 (yield* descriptor.configure(request).pipe(Effect.flip)).reason._tag,
-                'ModelUnsupported',
+                'ModelUnsupportedError',
               )
             const modern = yield* Catalog.descriptor({ ...entry, supportsThinkingOff: false })
             assert.strictEqual(
               (yield* modern
                 .configure({ thinking: 'off', options: {}, sessionId })
                 .pipe(Effect.flip)).reason._tag,
-              'ModelUnsupported',
+              'ModelUnsupportedError',
             )
             const wrong = Context.make(RequestOptions.Current, { model: 'different' })
             assert.strictEqual(
@@ -316,7 +318,7 @@ describe('Catalog', () => {
             assert.strictEqual(partial?.cost.totalKnown, false)
             const total = descriptor.usage?.(usage, { claudeCode: { totalCostUsd: 0.4 } })
             assert.strictEqual(total?.cost.totalKnown, true)
-            const combined = Usage.add(total ?? Usage.zero(), partial ?? Usage.zero())
+            const combined = Usage.add(total ?? Usage.make(), partial ?? Usage.make())
             assert.strictEqual(combined.cost.total, 0.4)
             assert.strictEqual(combined.cost.totalKnown, false)
           }).pipe(Effect.provide(f.layer))
@@ -324,7 +326,7 @@ describe('Catalog', () => {
     )
   })
   const SchemaJson = {
-    parse: (text: string) => Schema.decodeUnknownSync(Schema.JsonObject)(JSON.parse(text)),
+    parseUnsafe: (text: string) => Schema.decodeUnknownSync(Schema.JsonObject)(JSON.parse(text)),
   }
 
   describe('catalogue schema admission', () => {
@@ -333,8 +335,18 @@ describe('Catalog', () => {
       () =>
         Effect.gen(function* () {
           const f = fixture()
+          let constructions = 0
+          const nativeLayer = Layer.succeed(
+            NativeLanguageModel.NativeLanguageModel,
+            NativeLanguageModel.NativeLanguageModel.of({
+              make: (options) =>
+                Effect.suspend(() => {
+                  constructions++
+                  return LanguageModel.make(options)
+                }),
+            }),
+          )
           return yield* Effect.gen(function* () {
-            const constructions = vi.mocked(LanguageModel.make).mock.calls.length
             const invalid: ReadonlyArray<Catalog.Entry> = [
               { ...entry, modelId: '' },
               { ...entry, contextWindow: Number.MAX_SAFE_INTEGER + 1 },
@@ -343,12 +355,12 @@ describe('Catalog', () => {
             ]
             for (const value of invalid) {
               const error = yield* Catalog.descriptor(value).pipe(Effect.flip)
-              assert.strictEqual(error.reason._tag, 'ModelUnsupported')
+              assert.strictEqual(error.reason._tag, 'ModelUnsupportedError')
               assert.isTrue(Schema.isSchemaError(error.cause))
             }
-            assert.strictEqual(vi.mocked(LanguageModel.make).mock.calls.length, constructions)
+            assert.strictEqual(constructions, 0)
             assert.strictEqual(f.commands.length, 0)
-          }).pipe(Effect.provide(f.layer))
+          }).pipe(Effect.provide(f.transport.pipe(Layer.provideMerge(nativeLayer))))
         }),
     )
   })

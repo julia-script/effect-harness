@@ -15,7 +15,7 @@ import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
 import { Store } from 'effect-harness/durable/Store'
 import { rejected } from 'effect-harness/durable/StorageError'
-import * as Memory from 'effect-harness/durable/storage/Memory'
+import * as StoreModule from 'effect-harness/durable/Store'
 import { sessionLayer } from 'effect-harness/durable/testing/Storage'
 const root = Record.ROOT_CONVERSATION_ID
 const token = Document.defineUnsafe({
@@ -30,9 +30,52 @@ const token = Document.defineUnsafe({
 })
 const fail = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.flip, Effect.orDie)
 const provide = <A, E>(effect: Effect.Effect<A, E, Session.Session | Store | Scope.Scope>) =>
-  Effect.scoped(effect.pipe(Effect.provide(sessionLayer(Memory.layer))))
+  effect.pipe(Effect.provide(sessionLayer(StoreModule.layerMemory)))
 class DomainError extends Data.TaggedError('DomainError')<{ readonly message: string }> {}
 describe('SessionAdversarial', () => {
+  it.effect(
+    'serializes competing submission settlement and delayed placement in one transaction',
+    () =>
+      provide(
+        Effect.gen(function* () {
+          const session = yield* Session.Session
+          const id = yield* session.transaction(
+            Effect.fnUntraced(function* (tx) {
+              yield* tx.ensureRoot
+              const submission = yield* tx.createSubmission({
+                _tag: 'InputQueued',
+                type: 'input',
+                status: 'queued',
+                conversationId: root,
+              })
+              const entry = yield* tx.appendEntry(root, { kind: 'user' })
+              const settled = yield* Deferred.make<void>()
+              const placement = yield* Deferred.await(settled).pipe(
+                Effect.andThen(tx.placeSubmission(submission.id, entry.id)),
+                Effect.forkScoped,
+              )
+              yield* Effect.all(
+                [
+                  tx.settleSubmission(submission.id, { status: 'unanswered', reason: 'first' }),
+                  tx.settleSubmission(submission.id, { status: 'unanswered', reason: 'second' }),
+                ],
+                { concurrency: 'unbounded' },
+              )
+              yield* Deferred.succeed(settled, undefined)
+              yield* Fiber.join(placement)
+              return submission.id
+            }),
+          )
+          const record = yield* session.submission(id)
+          assert.isTrue(Option.isSome(record))
+          if (Option.isSome(record)) {
+            assert.strictEqual(record.value._tag, 'InputUnanswered')
+            assert.strictEqual(record.value.status, 'unanswered')
+            assert.strictEqual(record.value.reason, 'first')
+          }
+        }),
+      ),
+  )
   describe('SessionAdversarial', () => {
     it.effect('preserves user typed errors and interrupts without poison or partial adoption', () =>
       provide(
@@ -76,7 +119,7 @@ describe('SessionAdversarial', () => {
       provide(
         Effect.gen(function* () {
           const session = yield* Session.Session
-          let retained: Document.Draft<typeof token.definition.schema.Type> | undefined
+          let retained: Document.Document.Draft<typeof token.definition.schema.Type> | undefined
           yield* session.transaction(
             Effect.fnUntraced(function* (tx) {
               const d = yield* tx.doc(token)
@@ -113,7 +156,7 @@ describe('SessionAdversarial', () => {
               }),
             ),
           )
-          assert.strictEqual(error.reason._tag, 'Invalid')
+          assert.strictEqual(error.reason._tag, 'InvalidError')
           assert.strictEqual(
             yield* session.snapshot(token).pipe(Effect.map(Option.getOrUndefined)),
             undefined,
@@ -253,7 +296,7 @@ describe('SessionAdversarial', () => {
             version: 1,
             scope: 'session',
             schema: Schema.JsonObject,
-            initial: (): Record.JsonObject => ({}),
+            initial: (): Schema.JsonObject => ({}),
           })
           yield* session.transaction(
             Effect.fnUntraced(function* (tx) {
@@ -392,7 +435,7 @@ describe('SessionAdversarial', () => {
               session.transaction(
                 Effect.fnUntraced(function* (tx) {
                   yield* tx.forkConversation(root, entry.id, {
-                    ownership: { _tag: 'ownerless' as const, kind: 'ownerless' },
+                    ownership: { _tag: 'ownerless' as const },
                   })
                   yield* tx.doc(current, { owner: root })
                   return null
@@ -425,7 +468,7 @@ describe('SessionAdversarial', () => {
               if (rejectNext) return yield* rejected('hook failed')
             }),
         })
-        const store = yield* Memory.make
+        const store = yield* StoreModule.makeMemory
         const session = yield* Session.make.pipe(
           Effect.provideService(Store, store),
           Effect.provideService(Session.CreationHook, hook),
@@ -433,12 +476,12 @@ describe('SessionAdversarial', () => {
         yield* session.root()
         yield* session.root()
         const child = yield* session.transaction((tx) =>
-          tx.createConversation({ ownership: { _tag: 'ownerless' as const, kind: 'ownerless' } }),
+          tx.createConversation({ ownership: { _tag: 'ownerless' as const } }),
         )
         const entry = yield* session.transaction((tx) => tx.appendEntry(root, { kind: 'cutoff' }))
         const fork = yield* session.transaction((tx) =>
           tx.forkConversation(root, entry.id, {
-            ownership: { _tag: 'ownerless' as const, kind: 'ownerless' },
+            ownership: { _tag: 'ownerless' as const },
           }),
         )
         assert.strictEqual(calls, 3)
@@ -450,7 +493,7 @@ describe('SessionAdversarial', () => {
         rejectNext = true
         yield* fail(
           session.transaction((tx) =>
-            tx.createConversation({ ownership: { _tag: 'ownerless' as const, kind: 'ownerless' } }),
+            tx.createConversation({ ownership: { _tag: 'ownerless' as const } }),
           ),
         )
         assert.deepStrictEqual(yield* store.read, before)
@@ -474,7 +517,7 @@ describe('SessionAdversarial', () => {
                 if (conversation.parent !== undefined) d.count++
               }),
           })
-          const store = yield* Memory.make
+          const store = yield* StoreModule.makeMemory
           const session = yield* Session.make.pipe(
             Effect.provideService(Store, store),
             Effect.provideService(Session.CreationHook, hook),
@@ -496,7 +539,7 @@ describe('SessionAdversarial', () => {
           )
           const fork = yield* session.transaction((tx) =>
             tx.forkConversation(root, cutoff.id, {
-              ownership: { _tag: 'ownerless' as const, kind: 'ownerless' },
+              ownership: { _tag: 'ownerless' as const },
             }),
           )
           assert.strictEqual(
@@ -521,7 +564,7 @@ describe('SessionAdversarial', () => {
           run: () =>
             Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
         })
-        const store = yield* Memory.make
+        const store = yield* StoreModule.makeMemory
         const session = yield* Session.make.pipe(
           Effect.provideService(Store, store),
           Effect.provideService(Session.CreationHook, hook),
@@ -531,7 +574,7 @@ describe('SessionAdversarial', () => {
             Effect.fnUntraced(function* (tx) {
               yield* tx
                 .createConversation({
-                  ownership: { _tag: 'ownerless' as const, kind: 'ownerless' },
+                  ownership: { _tag: 'ownerless' as const },
                 })
                 .pipe(Effect.forkScoped)
               yield* Deferred.await(entered)
@@ -539,7 +582,7 @@ describe('SessionAdversarial', () => {
             }),
           ),
         )
-        assert.strictEqual(error.reason._tag, 'Invalid')
+        assert.strictEqual(error.reason._tag, 'InvalidError')
         assert.deepStrictEqual((yield* store.read).conversations, [])
         yield* Deferred.succeed(release, undefined)
       }),
@@ -550,7 +593,7 @@ describe('SessionAdversarial', () => {
       'retains acquisition value until started, isolates listener error and settles stop during in-flight delivery',
       () =>
         Effect.gen(function* () {
-          const store = yield* Memory.make
+          const store = yield* StoreModule.makeMemory
           const session = yield* Session.make.pipe(Effect.provideService(Store, store))
           yield* session.transaction((tx) => tx.doc(token).pipe(Effect.as(null)))
           const first = yield* session.watchDoc(token).pipe(Effect.map(Option.getOrUndefined))
@@ -609,7 +652,7 @@ describe('SessionAdversarial', () => {
           yield* watch.changes.pipe(Stream.take(1), Stream.runCollect)
           assert.strictEqual(
             (yield* fail(watch.changes.pipe(Stream.runCollect))).reason._tag,
-            'Invalid',
+            'InvalidError',
           )
         }),
       ),

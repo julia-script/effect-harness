@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config'
 
-// effect-review-allow PX-no-default-export: Vitest loads its configuration through this default export.
+// effect-nit-allow PX-no-default-export: Vitest loads its configuration through this default export.
 export default defineConfig({
   resolve: {
     alias: [

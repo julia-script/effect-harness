@@ -4,6 +4,12 @@
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
 
+const Payload = Schema.Struct({
+  message: Schema.String,
+  cause: SchemaField.optional(Schema.Defect()),
+  spillPath: SchemaField.optional(Schema.String),
+})
+
 /**
  * Schema for execution error code.
  *
@@ -28,13 +34,9 @@ export type ExecutionErrorCode = typeof ExecutionErrorCode.Type
  *
  * @category errors
  */
-export class ExecutionAborted extends Schema.TaggedError<ExecutionAborted>(
-  '@effect-harness/harness/ExecutionError/ExecutionAborted',
-)('ExecutionAborted', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  spillPath: SchemaField.optional(Schema.String),
-}) {
+export class ExecutionAbortedError extends Schema.TaggedError<ExecutionAbortedError>(
+  '@effect-harness/harness/ExecutionError/ExecutionAbortedError',
+)('ExecutionAbortedError', Payload.fields) {
   get code(): 'aborted' {
     return 'aborted'
   }
@@ -44,13 +46,9 @@ export class ExecutionAborted extends Schema.TaggedError<ExecutionAborted>(
  *
  * @category errors
  */
-export class ExecutionTimeout extends Schema.TaggedError<ExecutionTimeout>(
-  '@effect-harness/harness/ExecutionError/ExecutionTimeout',
-)('ExecutionTimeout', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  spillPath: SchemaField.optional(Schema.String),
-}) {
+export class ExecutionTimeoutError extends Schema.TaggedError<ExecutionTimeoutError>(
+  '@effect-harness/harness/ExecutionError/ExecutionTimeoutError',
+)('ExecutionTimeoutError', Payload.fields) {
   get code(): 'timeout' {
     return 'timeout'
   }
@@ -60,13 +58,9 @@ export class ExecutionTimeout extends Schema.TaggedError<ExecutionTimeout>(
  *
  * @category errors
  */
-export class ExecutionShellUnavailable extends Schema.TaggedError<ExecutionShellUnavailable>(
-  '@effect-harness/harness/ExecutionError/ExecutionShellUnavailable',
-)('ExecutionShellUnavailable', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  spillPath: SchemaField.optional(Schema.String),
-}) {
+export class ExecutionShellUnavailableError extends Schema.TaggedError<ExecutionShellUnavailableError>(
+  '@effect-harness/harness/ExecutionError/ExecutionShellUnavailableError',
+)('ExecutionShellUnavailableError', Payload.fields) {
   get code(): 'shell_unavailable' {
     return 'shell_unavailable'
   }
@@ -78,11 +72,7 @@ export class ExecutionShellUnavailable extends Schema.TaggedError<ExecutionShell
  */
 export class ExecutionSpawnError extends Schema.TaggedError<ExecutionSpawnError>(
   '@effect-harness/harness/ExecutionError/ExecutionSpawnError',
-)('ExecutionSpawnError', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  spillPath: SchemaField.optional(Schema.String),
-}) {
+)('ExecutionSpawnError', Payload.fields) {
   get code(): 'spawn_error' {
     return 'spawn_error'
   }
@@ -94,11 +84,7 @@ export class ExecutionSpawnError extends Schema.TaggedError<ExecutionSpawnError>
  */
 export class ExecutionCallbackError extends Schema.TaggedError<ExecutionCallbackError>(
   '@effect-harness/harness/ExecutionError/ExecutionCallbackError',
-)('ExecutionCallbackError', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  spillPath: SchemaField.optional(Schema.String),
-}) {
+)('ExecutionCallbackError', Payload.fields) {
   get code(): 'callback_error' {
     return 'callback_error'
   }
@@ -108,13 +94,9 @@ export class ExecutionCallbackError extends Schema.TaggedError<ExecutionCallback
  *
  * @category errors
  */
-export class ExecutionUnknown extends Schema.TaggedError<ExecutionUnknown>(
-  '@effect-harness/harness/ExecutionError/ExecutionUnknown',
-)('ExecutionUnknown', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  spillPath: SchemaField.optional(Schema.String),
-}) {
+export class ExecutionUnknownError extends Schema.TaggedError<ExecutionUnknownError>(
+  '@effect-harness/harness/ExecutionError/ExecutionUnknownError',
+)('ExecutionUnknownError', Payload.fields) {
   get code(): 'unknown' {
     return 'unknown'
   }
@@ -125,12 +107,12 @@ export class ExecutionUnknown extends Schema.TaggedError<ExecutionUnknown>(
  * @category schemas
  */
 export const ExecutionErrorReason = Schema.Union([
-  ExecutionAborted,
-  ExecutionTimeout,
-  ExecutionShellUnavailable,
+  ExecutionAbortedError,
+  ExecutionTimeoutError,
+  ExecutionShellUnavailableError,
   ExecutionSpawnError,
   ExecutionCallbackError,
-  ExecutionUnknown,
+  ExecutionUnknownError,
 ])
 /**
  * Decoded value validated by the `ExecutionErrorReason` schema.

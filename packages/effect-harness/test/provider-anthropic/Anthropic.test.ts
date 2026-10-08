@@ -2,6 +2,7 @@ import { assertSome } from '@effect/vitest/utils'
 import * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
 import { vi } from 'vitest'
+// effect-nit-allow P8-test-doubles-are-layers: this external npm SDK factory is the adapter construction-count subject; native HTTP/service layer wiring remains real.
 vi.mock('@effect/ai-anthropic/AnthropicLanguageModel', { spy: true })
 import * as Config from 'effect/Config'
 import * as ConfigProvider from 'effect/ConfigProvider'
@@ -17,7 +18,6 @@ import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import * as Layer from 'effect/Layer'
 import * as Redacted from 'effect/Redacted'
 import * as Stream from 'effect/Stream'
-import * as Anthropic from 'effect-harness/provider-anthropic/Anthropic'
 
 const message = {
   id: 'msg_test',
@@ -38,13 +38,13 @@ const message = {
 }
 
 const model = (client: HttpClient.HttpClient) =>
-  Anthropic.layer({
+  HarnessAnthropicLanguageModel.layerApiKey({
     model: 'claude-sonnet-4-5',
     apiKey: Redacted.make('test-key'),
     config: { max_tokens: 1234 },
   }).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, client)))
 
-describe('Anthropic', () => {
+describe('Anthropic', { concurrent: false }, () => {
   describe('Anthropic native Effect AI provider', () => {
     it.effect('uses API-key transport and keeps model parts and usage', () =>
       Effect.gen(function* () {
@@ -241,14 +241,14 @@ describe('Anthropic', () => {
           assert.strictEqual(payload.max_tokens, 2000)
           return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json(message)))
         })
-        const layer = Anthropic.layerDefaultConfig({
+        const layer = HarnessAnthropicLanguageModel.layerDefaultConfig({
           model: Config.String('MODEL'),
           apiUrl: Config.String('API_URL'),
           config: { max_tokens: Config.Int('MAX_TOKENS') },
         }).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, http)))
         return yield* Effect.gen(function* () {
           yield* LanguageModel.generateText({ prompt: 'Hello' }).pipe(
-            Anthropic.withConfigOverride({ max_tokens: 2000 }),
+            HarnessAnthropicLanguageModel.withConfigOverride({ max_tokens: 2000 }),
           )
           assert.isDefined(yield* AnthropicClient.AnthropicClient)
           assert.strictEqual(requests, 1)
@@ -268,3 +268,5 @@ describe('Anthropic', () => {
     )
   })
 })
+
+import * as HarnessAnthropicLanguageModel from 'effect-harness/provider-anthropic/AnthropicLanguageModel'

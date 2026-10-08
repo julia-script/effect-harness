@@ -1,19 +1,19 @@
+import * as Serialization from './Serialization.ts'
 /**
  * Agent and provider documents, conversation projections and configuration.
  */
+import * as MutableHashMap from 'effect/MutableHashMap'
 import { constTrue } from 'effect/Function'
-import * as Arr from 'effect/Array'
-import * as records from 'effect/Record'
-// effect-review-allow P9-namespace-alias-equals-module: effect/Record and durable/Record both introduce Record; the records alias distinguishes dictionary operations from the imported domain schema namespace.
+import * as Array from 'effect/Array'
+import * as Record from 'effect/Record'
 import * as Predicate from 'effect/Predicate'
-import * as systemPatch from 'effect-harness/SystemPatch'
-// effect-review-allow P9-namespace-alias-equals-module: the exported SystemPatch schema binding collides with its canonical source namespace.
+import * as SystemPatch from 'effect-harness/SystemPatch'
 import * as Agent from 'effect-harness/Agent'
-import * as Context from 'effect-harness/Context'
+import * as Transcript from 'effect-harness/Transcript'
 import * as Registry from 'effect-harness/Registry'
 import * as Invocation from 'effect-harness/Invocation'
 import * as Usage from 'effect-harness/Usage'
-import { Service } from 'effect/Context'
+import * as Context from 'effect/Context'
 import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -26,13 +26,24 @@ import * as AiError from 'effect/ai/AiError'
 import * as Schema from 'effect/Schema'
 import * as Document from './Document.ts'
 import * as Inbox from './Inbox.ts'
-import type * as Record from './Record.ts'
+import type {
+  Conversation as ConversationRecord,
+  Entry as EntryRecord,
+  ConversationId as ConversationIdRecord,
+  EntryId as EntryIdRecord,
+  TaskId as TaskIdRecord,
+  Task as TaskRecord,
+} from './Record.ts'
 import * as Session from './Session.ts'
-import { rejected, type StorageError, NotFound } from './StorageError.ts'
+import { rejected, type StorageError, NotFoundError } from './StorageError.ts'
 import { UsageDoc } from './Usage.ts'
 import * as Ownership from './Ownership.ts'
 import type * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
-import { ExecutionError, InvalidState, InvalidArguments } from './workflow/ExecutionError.ts'
+import {
+  ExecutionError,
+  InvalidStateError,
+  InvalidArgumentsError,
+} from './workflow/ExecutionError.ts'
 
 /**
  * Agent settings document definition.
@@ -45,7 +56,7 @@ export const AgentDoc = Document.defineUnsafe({
   scope: 'conversation',
   history: 'rewindable',
   fork: 'asOf',
-  schema: Document.jsonObjectCodec(Agent.State),
+  schema: Serialization.object(Agent.State),
   initial: (): Agent.State => ({}),
   checkpointWhen: constTrue,
 })
@@ -80,8 +91,6 @@ export const ProviderDoc = Document.defineUnsafe({
 
 /**
  * Type-level contracts for `Conversation`.
- *
- * @category utility types
  */
 export declare namespace Conversation {
   /**
@@ -90,49 +99,50 @@ export declare namespace Conversation {
    * @category models
    */
   interface Options {
-    /** Positive safe integer, default sixteen; sequential tool rounds remain one. */
+    /**
+     * Positive safe integer, default sixteen; sequential tool rounds remain one.
+     */
     readonly toolConcurrency?: number | undefined
 
-    readonly settings?: Agent.SettingsInput | undefined
+    readonly settings?: Agent.Settings.Input | undefined
     readonly cwd?: string | undefined
     readonly report?: ((error: unknown) => Effect.Effect<void>) | undefined
     readonly created?:
       | ((
           tx: Session.Transaction,
-          conversation: Record.Conversation,
+          conversation: ConversationRecord,
         ) => Effect.Effect<void, StorageError>)
       | undefined
   }
 }
-/**
- * Host settings and callbacks used to build conversation Configuration.
- *
- * @category models
- */
-export type Options = Conversation.Options
 
 /**
  * Configuration service.
  *
  * @category services
  */
-export class Configuration extends Service<
+export class Configuration extends Context.Service<
   Configuration,
   {
-    readonly settings: Agent.Settings
+    /**
+     * Lazily returns a fresh validated defensive copy of the current policy.
+     */
+    readonly settings: Effect.Effect<Agent.Settings, Schema.SchemaError>
     readonly toolConcurrency: number
-    /** Replace host defaults for subsequent preparation and current retry/compaction policy decisions. */
+    /**
+     * Replaces host defaults for subsequent preparation and current retry/compaction policy decisions.
+     */
     readonly updateSettings: (
-      options: Agent.SettingsInput,
+      options: Agent.Settings.Input,
     ) => Effect.Effect<void, Schema.SchemaError>
     readonly cwd: string
     readonly report: (error: unknown) => Effect.Effect<void>
     readonly created: (
       tx: Session.Transaction,
-      conversation: Record.Conversation,
+      conversation: ConversationRecord,
     ) => Effect.Effect<void, StorageError>
   }
->()('@effect-harness/durable/Conversation/Configuration') {}
+>()('effect-harness/durable/Conversation/Configuration') {}
 /**
  * Builds host policy and callbacks for conversation execution.
  *
@@ -151,40 +161,43 @@ export class Configuration extends Service<
  * Invalid settings fail with SchemaError. Agent overrides are committed separately through
  * Conversation.configure.
  *
+ * @category constructors
+ */
+export const makeConfiguration = Effect.fnUntraced(function* (
+  options: Conversation.Options = {},
+): Effect.fn.Return<Configuration['Service'], Schema.SchemaError> {
+  const settings = yield* Ref.make(yield* Agent.settings(options.settings))
+  return Configuration.of({
+    settings: Ref.get(settings).pipe(
+      Effect.flatMap(Schema.encodeEffect(Agent.Settings)),
+      Effect.flatMap(Schema.decodeEffect(Agent.Settings)),
+    ),
+    updateSettings: (input) =>
+      Agent.settings(input).pipe(
+        Effect.tap((next) => Ref.set(settings, next)),
+        Effect.asVoid,
+      ),
+    toolConcurrency: yield* Schema.decodeEffect(
+      Schema.Int.check(
+        Schema.isGreaterThan(0),
+        Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+      ),
+    )(options.toolConcurrency ?? 16),
+    cwd: options.cwd ?? '.',
+    report: options.report ?? (() => Effect.void),
+    created: options.created ?? (() => Effect.void),
+  })
+})
+
+/**
+ * Provides validated live host settings and conversation callbacks.
+ *
  * @category layers
  */
 export const layerConfiguration = (
-  options: Options = {},
+  options: Conversation.Options = {},
 ): Layer.Layer<Configuration, Schema.SchemaError> =>
-  Layer.effect(
-    Configuration,
-    Effect.gen(function* () {
-      const settings = yield* Ref.make(yield* Agent.settings(options.settings))
-      return Configuration.of({
-        get settings() {
-          // effect-review-allow P1-throw-only-in-unsafe-orthrow: this synchronous
-          // service getter copies settings already validated by Agent.Settings.
-          return Schema.decodeSync(Agent.Settings)(
-            Schema.encodeSync(Agent.Settings)(Ref.getUnsafe(settings)),
-          )
-        },
-        updateSettings: (input) =>
-          Agent.settings(input).pipe(
-            Effect.tap((next) => Ref.set(settings, next)),
-            Effect.asVoid,
-          ),
-        toolConcurrency: yield* Schema.decodeEffect(
-          Schema.Int.check(
-            Schema.isGreaterThan(0),
-            Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
-          ),
-        )(options.toolConcurrency ?? 16),
-        cwd: options.cwd ?? '.',
-        report: options.report ?? (() => Effect.void),
-        created: options.created ?? (() => Effect.void),
-      })
-    }),
-  )
+  Layer.effect(Configuration, makeConfiguration(options))
 
 /**
  * Installs atomic built-in document creation and recovery initialization.
@@ -218,7 +231,7 @@ export const layerCreation: Layer.Layer<
     const registry = yield* Effect.serviceOption(Registry.Registry)
     const recover = Effect.fnUntraced(function* (
       tx: Session.Transaction,
-      conversation: Record.Conversation,
+      conversation: ConversationRecord,
     ) {
       const sessionId = yield* crypto.randomUUIDv7.pipe(
         Effect.mapError((cause) =>
@@ -243,11 +256,17 @@ export const layerCreation: Layer.Layer<
         yield* tx.doc(UsageDoc, { owner: conversation.id })
         yield* recover(tx, conversation)
         if (Option.isSome(registry)) {
-          const invocation = { cwd: config.cwd, report: config.report, progress: () => Effect.void }
+          const invocation = Invocation.Invocation.of({
+            cwd: config.cwd,
+            report: config.report,
+            progress: () => Effect.void,
+          })
           const agent = yield* Registry.resolve(
             yield* registry.value.snapshot,
             yield* tx.doc(AgentDoc, { owner: conversation.id }),
-            config.settings,
+            yield* config.settings.pipe(
+              Effect.mapError((cause) => rejected('Invalid host settings', undefined, cause)),
+            ),
           ).pipe(Effect.provideService(Invocation.Invocation, invocation))
           for (const handlers of Registry.handlers(agent, 'conversation')) {
             const callback = handlers.conversationCreated
@@ -269,7 +288,7 @@ export const layerCreation: Layer.Layer<
  *
  * **When to use**
  *
- * Supply this Layer when constructing a Session for durable AI conversations.
+ * Use when constructing a Session for durable AI conversations.
  * Use Layer.provideMerge to retain Configuration for the executor registration Layer
  * and live policy updates.
  *
@@ -279,7 +298,8 @@ export const layerCreation: Layer.Layer<
  * Crypto for provider session UUIDs and an optional Registry for creation callbacks.
  * Invalid settings fail with SchemaError during Layer construction.
  *
- * @example
+ * **Example** (Composing creation and Session Layers)
+ *
  * ```ts
  * const Creation = Conversation.layer({
  *   settings: {
@@ -293,22 +313,10 @@ export const layerCreation: Layer.Layer<
  * @category layers
  */
 export const layer = (
-  options: Options = {},
+  options: Conversation.Options = {},
 ): Layer.Layer<Configuration | Session.CreationHook, Schema.SchemaError, Crypto.Crypto> =>
   layerCreation.pipe(Layer.provideMerge(layerConfiguration(options)))
 
-/**
- * Managed prompt sections and tool declarations recorded in conversation history.
- *
- * @category combinators
- */
-export const SystemPatch = systemPatch.SystemPatch
-/**
- * Managed prompt sections and tool declarations recorded in conversation history.
- *
- * @category models
- */
-export type SystemPatch = typeof SystemPatch.Type
 /**
  * Schema for entry metadata for conversation context projection.
  *
@@ -324,7 +332,7 @@ export const Metadata = Schema.Struct({
   ),
   usage: Schema.optionalKey(Usage.Usage),
   error: Schema.optionalKey(AiError.AiError),
-  system: Schema.optionalKey(SystemPatch),
+  system: Schema.optionalKey(SystemPatch.SystemPatch),
 })
 /**
  * Entry metadata for conversation context projection.
@@ -334,16 +342,16 @@ export const Metadata = Schema.Struct({
 export type Metadata = typeof Metadata.Type
 
 /**
- * Convert committed encoded AI messages and context edits into the generic harness's pure context inputs.
+ * Converts committed encoded AI messages and context edits to pure harness context inputs.
  *
  * @category combinators
  */
 export const projectEntry = Effect.fnUntraced(function* (
-  entry: Record.Entry,
-): Effect.fn.Return<Context.Entry, ExecutionError> {
+  entry: EntryRecord,
+): Effect.fn.Return<Transcript.Entry, ExecutionError> {
   const invalid = (cause?: unknown) =>
     new ExecutionError({
-      reason: new InvalidState({
+      reason: new InvalidStateError({
         message: `Entry ${entry.id} has invalid model context`,
         ...(cause === undefined ? {} : { cause }),
       }),
@@ -351,9 +359,9 @@ export const projectEntry = Effect.fnUntraced(function* (
   const messages = yield* Schema.decodeEffect(Schema.toCodecJson(Schema.Array(Prompt.Message)))(
     entry.model ?? [],
   ).pipe(Effect.mapError(invalid))
-  const edits: Array<Context.Edit> = []
+  const edits: Array<Transcript.Edit> = []
   for (const edit of entry.edits ?? []) {
-    if (edit.action === 'omit') edits.push(edit)
+    if (edit._tag === 'omit') edits.push(edit)
     else
       edits.push({
         ...edit,
@@ -366,7 +374,7 @@ export const projectEntry = Effect.fnUntraced(function* (
   const metadata =
     data !== null &&
     Predicate.isObject(data) &&
-    !Arr.isArray(data) &&
+    !Array.isArray(data) &&
     Object.hasOwn(data, 'harness')
       ? yield* Schema.decodeUnknownEffect(Schema.Struct({ harness: Metadata }))(data).pipe(
           Effect.map((value) => value.harness),
@@ -388,18 +396,19 @@ export const projectEntry = Effect.fnUntraced(function* (
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: context is a public combinator over the supplied Session self capability; its facts, journal and owning lifetime must remain those of the selected instance even when ambient services differ.
 export const context = Effect.fnUntraced(function* (
-  session: Session.Service,
-  conversationId: Record.ConversationId,
-  at?: Record.EntryId,
-): Effect.fn.Return<Context.View, StorageError | ExecutionError> {
+  session: Session.Session.Service,
+  conversationId: ConversationIdRecord,
+  at?: EntryIdRecord,
+): Effect.fn.Return<Transcript.View, StorageError | ExecutionError> {
   if (at !== undefined && Option.isNone(yield* session.entry(at, conversationId)))
     return yield* new ExecutionError({
-      reason: new InvalidArguments({
+      reason: new InvalidArgumentsError({
         message: 'Context cutoff is not visible in this conversation',
       }),
     })
-  const entries: Array<Record.Entry> = []
+  const entries: Array<EntryRecord> = []
   // Freeze the visible cutoff before paginating so concurrent appends cannot extend this read.
   const first = yield* session.scanEntries(
     { conversationId, ...(at === undefined ? {} : { maxEntryId: at }) },
@@ -419,23 +428,27 @@ export const context = Effect.fnUntraced(function* (
   }
   const head = Option.getOrUndefined(
     Option.flatMap(
-      Arr.findFirst(entries, (entry) => entry.head !== undefined),
+      Array.findFirst(entries, (entry) => entry.head !== undefined),
       (entry) => Option.fromUndefinedOr(entry.head),
     ),
   )
-  const active = Arr.filter(entries, (entry) => head === undefined || entry.id >= head)
+  const active = Array.filter(entries, (entry) => head === undefined || entry.id >= head)
   const projected = yield* Effect.forEach(active.reverse(), projectEntry)
-  return Context.derive(projected, at)
+  return Transcript.derive(projected, at)
 })
 
 /**
- * Reset is an ordinary entry draft admitted by Submission; transcript, agent, usage and provider identity remain durable.
+ * Creates a reset entry draft for submission admission.
+ *
+ * **Details**
+ *
+ * Reset preserves the durable transcript, agent, usage and provider identity.
  *
  * @category combinators
  */
 export const resetDraft = Effect.fnUntraced(function* (
   note?: string,
-): Effect.fn.Return<Record.EntryDraft, ExecutionError> {
+): Effect.fn.Return<EntryRecord.Draft, ExecutionError> {
   const message =
     note === undefined ? [] : [Prompt.userMessage({ content: [Prompt.textPart({ text: note })] })]
   const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(Schema.Array(Prompt.Message)))(
@@ -444,7 +457,7 @@ export const resetDraft = Effect.fnUntraced(function* (
     Effect.mapError(
       (cause) =>
         new ExecutionError({
-          reason: new InvalidArguments({ message: 'Invalid reset note', cause }),
+          reason: new InvalidArgumentsError({ message: 'Invalid reset note', cause }),
         }),
     ),
   )
@@ -454,11 +467,11 @@ export const resetDraft = Effect.fnUntraced(function* (
     Effect.mapError(
       (cause) =>
         new ExecutionError({
-          reason: new InvalidArguments({ message: 'Invalid reset messages', cause }),
+          reason: new InvalidArgumentsError({ message: 'Invalid reset messages', cause }),
         }),
     ),
   )
-  return { kind: 'harness.reset', head: 'self' as const, model } satisfies Record.EntryDraft
+  return { kind: 'harness.reset', head: 'self' as const, model } satisfies EntryRecord.Draft
 })
 
 /**
@@ -466,28 +479,28 @@ export const resetDraft = Effect.fnUntraced(function* (
  *
  * @category services
  */
-export class Conversation extends Service<
+export class Conversation extends Context.Service<
   Conversation,
   {
-    readonly root: Session.Service['root']
+    readonly root: Session.Session.Service['root']
     readonly create: (
-      ownership?: Session.Ownership,
-    ) => Effect.Effect<Record.Conversation, StorageError>
+      ownership?: Session.Session.Ownership,
+    ) => Effect.Effect<ConversationRecord, StorageError>
     readonly fork: (
-      parent: Record.ConversationId,
-      at: Record.EntryId,
-      ownership?: Session.Ownership,
-    ) => Effect.Effect<Record.Conversation, StorageError>
+      parent: ConversationIdRecord,
+      at: EntryIdRecord,
+      ownership?: Session.Session.Ownership,
+    ) => Effect.Effect<ConversationRecord, StorageError>
     readonly configure: (
-      id: Record.ConversationId,
-      change: Agent.Change,
+      id: ConversationIdRecord,
+      change: Agent.State.Change,
     ) => Effect.Effect<Agent.State, StorageError>
     readonly context: (
-      id: Record.ConversationId,
-      at?: Record.EntryId,
-    ) => Effect.Effect<Context.View, StorageError | ExecutionError>
+      id: ConversationIdRecord,
+      at?: EntryIdRecord,
+    ) => Effect.Effect<Transcript.View, StorageError | ExecutionError>
   }
->()('@effect-harness/durable/Conversation') {}
+>()('effect-harness/durable/Conversation') {}
 
 /**
  * Provides conversation creation, fork, configuration and context operations.
@@ -506,18 +519,18 @@ export const layerFromSession: Layer.Layer<Conversation, never, Session.Session>
     const session = yield* Session.Session
     return Conversation.of({
       root: session.root,
-      create: (ownership = { _tag: 'ownerless', kind: 'ownerless' }) =>
+      create: (ownership = { _tag: 'ownerless' }) =>
         session.transaction((tx) => tx.createConversation({ ownership })),
-      fork: (parent, at, ownership = { _tag: 'ownerless', kind: 'ownerless' }) =>
+      fork: (parent, at, ownership = { _tag: 'ownerless' }) =>
         session.transaction((tx) => tx.forkConversation(parent, at, { ownership })),
       configure: (id, change) =>
         session.transaction(
           Effect.fnUntraced(function* (tx) {
             if (Option.isNone(yield* tx.conversation(id)))
-              return yield* rejected('Conversation is absent', NotFound)
+              return yield* rejected('Conversation is absent', NotFoundError)
             const draft = yield* tx.doc(AgentDoc, { owner: id })
             const next = Agent.configure(draft, change)
-            for (const key of records.keys<string, unknown>(draft))
+            for (const key of Record.keys<string, unknown>(draft))
               Reflect.deleteProperty(draft, key)
             Object.assign(draft, next)
             return yield* Document.copyEffect(next)
@@ -548,9 +561,10 @@ export const layerFromSession: Layer.Layer<Conversation, never, Session.Session>
  *
  * @category combinators
  */
+// effect-nit-allow B-no-service-arguments: awaitIdle is a public combinator over the supplied Session self capability; its facts, journal and owning lifetime must remain those of the selected instance even when ambient services differ.
 export const awaitIdle = Effect.fnUntraced(function* (
-  session: Session.Service,
-  id?: Record.ConversationId,
+  session: Session.Session.Service,
+  id?: ConversationIdRecord,
 ): Effect.fn.Return<
   void,
   StorageError | ExecutionError,
@@ -559,31 +573,30 @@ export const awaitIdle = Effect.fnUntraced(function* (
   const declarations = yield* Ownership.Declarations
   return yield* Effect.scoped(
     Effect.gen(function* () {
-      const started = yield* Ref.make(HashSet.empty<Record.TaskId>())
-      const failures = yield* Ref.make(HashMap.empty<Record.TaskId, ExecutionError>())
+      const started = yield* Ref.make(HashSet.empty<TaskIdRecord>())
+      const failures = yield* Ref.make(HashMap.empty<TaskIdRecord, ExecutionError>())
       while (true) {
         const state = yield* session.committed
         const roots =
           id === undefined
-            ? Arr.filter(
+            ? Array.filter(
                 state.conversations,
                 (conversation) => conversation.owner === undefined,
               ).map((conversation) => conversation.id)
             : [id]
-        const tasks = new Map<Record.TaskId, Record.Task>()
+        const tasks = MutableHashMap.empty<TaskIdRecord, TaskRecord>()
         for (const root of roots) {
           const reachedOption = Ownership.reach(state, {
             _tag: 'conversation',
-            kind: 'conversation',
             id: root,
           })
           if (Option.isNone(reachedOption))
-            return yield* rejected('Conversation is absent', NotFound)
+            return yield* rejected('Conversation is absent', NotFoundError)
           const reached = reachedOption.value
-          for (const task of reached.tasks) tasks.set(task.id, task)
+          for (const task of reached.tasks) MutableHashMap.set(tasks, task.id, task)
         }
-        if (tasks.size === 0) return
-        for (const task of tasks.values()) {
+        if (MutableHashMap.size(tasks) === 0) return
+        for (const task of MutableHashMap.values(tasks)) {
           const failure = HashMap.get(yield* Ref.get(failures), task.id)
           if (Option.isSome(failure)) return yield* failure.value
           if (HashSet.has(yield* Ref.get(started), task.id)) continue
@@ -591,7 +604,7 @@ export const awaitIdle = Effect.fnUntraced(function* (
             Effect.mapError(
               (cause) =>
                 new ExecutionError({
-                  reason: new InvalidState({
+                  reason: new InvalidStateError({
                     message: `Task ${task.id} has no native binding`,
                     cause,
                   }),
@@ -610,3 +623,15 @@ export const awaitIdle = Effect.fnUntraced(function* (
     }),
   )
 })
+
+/** Checks the decoded ProviderState contract without decoding or coercing input.
+ * @category guards
+ */
+export const isProviderState: (u: unknown) => u is ProviderState = Schema.is(
+  Schema.toType(ProviderState),
+)
+
+/** Checks the decoded Metadata contract without decoding or coercing input.
+ * @category guards
+ */
+export const isMetadata: (u: unknown) => u is Metadata = Schema.is(Schema.toType(Metadata))

@@ -1,13 +1,13 @@
 /**
  * Identity-keyed registration and resolution of scoped sessions.
  */
-import * as Option from 'effect/Option'
+import * as MutableHashMap from 'effect/MutableHashMap'
 import type * as Identity from './Identity.ts'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
-import { Session, type Service as SessionService } from './Session.ts'
-import { rejected, type StorageError, NotFound } from './StorageError.ts'
+import { Session } from './Session.ts'
+import { rejected, type StorageError, NotFoundError } from './StorageError.ts'
 
 /**
  * Service resolving durable session identities to already scoped Sessions.
@@ -26,9 +26,11 @@ export class SessionDirectory extends Context.Service<
      * Returns the already scoped Session registered under this identity; missing registrations
      * fail with NotFound.
      */
-    readonly resolve: (sessionId: Identity.SessionId) => Effect.Effect<SessionService, StorageError>
+    readonly resolve: (
+      sessionId: Identity.SessionId,
+    ) => Effect.Effect<Session.Service, StorageError>
   }
->()('@effect-harness/durable/SessionDirectory') {}
+>()('effect-harness/durable/SessionDirectory') {}
 
 /**
  * Application-owned map of durable identities to scoped Session services.
@@ -42,8 +44,8 @@ export class SessionDirectory extends Context.Service<
  */
 export class Registrations extends Context.Service<
   Registrations,
-  ReadonlyMap<Identity.SessionId, SessionService>
->()('@effect-harness/durable/SessionDirectory/Registrations') {}
+  ReadonlyMap<Identity.SessionId, Session.Service>
+>()('effect-harness/durable/SessionDirectory/Registrations') {}
 
 /**
  * Builds a directory from a snapshot of explicit Session registrations.
@@ -58,11 +60,11 @@ export class Registrations extends Context.Service<
 export const layer: Layer.Layer<SessionDirectory, never, Registrations> = Layer.effect(
   SessionDirectory,
   Effect.gen(function* () {
-    const entries = new Map(yield* Registrations)
+    const entries = MutableHashMap.fromIterable(yield* Registrations)
     return SessionDirectory.of({
       resolve: (sessionId) => {
-        return Effect.fromOption(Option.fromUndefinedOr(entries.get(sessionId)), () =>
-          rejected(`Session ${sessionId} is not registered`, NotFound),
+        return Effect.fromOption(MutableHashMap.get(entries, sessionId), () =>
+          rejected(`Session ${sessionId} is not registered`, NotFoundError),
         )
       },
     })
@@ -94,7 +96,7 @@ export const layerSingle = (
         resolve: (requested) =>
           requested === sessionId
             ? Effect.succeed(session)
-            : Effect.fail(rejected(`Session ${requested} is not registered`, NotFound)),
+            : Effect.fail(rejected(`Session ${requested} is not registered`, NotFoundError)),
       })
     }),
   )

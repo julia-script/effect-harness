@@ -1,6 +1,8 @@
+import { SnapshotPayload } from './internal/SnapshotPayload.ts'
 /**
  * Domain snapshots stored through Effect persistence services.
  */
+import * as Config from 'effect/Config'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
@@ -10,7 +12,14 @@ import * as KeyValueStore from 'effect/persistence/KeyValueStore'
 import * as EventJournal from 'effect/eventlog/EventJournal'
 import * as EventLogMessage from 'effect/eventlog/EventLogMessage'
 import * as Record from '../Record.ts'
-import { Corrupt, Invalid, Io, rejected, uncertain, type StorageError } from '../StorageError.ts'
+import {
+  CorruptError,
+  InvalidError,
+  IoError,
+  rejected,
+  uncertain,
+  type StorageError,
+} from '../StorageError.ts'
 import { Store } from '../Store.ts'
 import * as backend from './internal/backend.ts'
 import { validateState } from './internal/state.ts'
@@ -22,9 +31,15 @@ import { validateState } from './internal/state.ts'
  */
 export const Snapshot = Schema.Struct({
   version: Schema.Literal(1),
-  state: Record.State,
-  frames: Schema.Array(Record.Frame),
+  ...SnapshotPayload.fields,
 })
+
+/**
+ * Versioned domain snapshot decoded by the persistence schema.
+ *
+ * @category models
+ */
+export type Snapshot = typeof Snapshot.Type
 
 /**
  * Snapshot namespace for one domain Session.
@@ -95,17 +110,17 @@ export const make = Effect.fnUntraced(function* (
     .pipe(
       Effect.mapError((cause) =>
         Schema.isSchemaError(cause)
-          ? rejected('Invalid persisted domain snapshot', Corrupt, cause)
-          : rejected('Cannot read domain snapshot', Io, cause),
+          ? rejected('Invalid persisted domain snapshot', CorruptError, cause)
+          : rejected('Cannot read domain snapshot', IoError, cause),
       ),
     )
   const save = Effect.fnUntraced(
-    function* (snapshot: backend.Snapshot) {
+    function* (snapshot: backend.Backend.Snapshot) {
       yield* values.set(key, { version: 1, ...snapshot })
     },
     Effect.mapError((cause) =>
       Schema.isSchemaError(cause)
-        ? rejected('Cannot encode domain snapshot', Invalid, cause)
+        ? rejected('Cannot encode domain snapshot', InvalidError, cause)
         : uncertain('Domain snapshot write outcome is uncertain', cause),
     ),
   )
@@ -118,12 +133,12 @@ export const make = Effect.fnUntraced(function* (
 
   const load = Effect.gen(function* () {
     const value = yield* read
-    if (Option.isNone(value)) return yield* rejected('Domain snapshot is missing', Corrupt)
+    if (Option.isNone(value)) return yield* rejected('Domain snapshot is missing', CorruptError)
     const state = yield* validateState(value.value.state)
     let previous = 0
     for (const frame of value.value.frames) {
       if (frame.seq <= previous || frame.seq >= state.nextSeq)
-        return yield* rejected('Domain snapshot journal sequence is corrupt', Corrupt)
+        return yield* rejected('Domain snapshot journal sequence is corrupt', CorruptError)
       previous = frame.seq
     }
     return { state, frames: value.value.frames }
@@ -167,4 +182,21 @@ export const layerWith = (
  * @see {@link layerWith} for namespace configuration.
  * @category layers
  */
-export const layer = layerWith()
+export const layer: Layer.Layer<
+  Store,
+  StorageError,
+  EventJournal.EventJournal | KeyValueStore.KeyValueStore
+> = layerWith()
+
+/**
+ * Provides snapshot storage from the caller's ConfigProvider, retaining the default key when omitted.
+ *
+ * @category layers
+ */
+export const layerConfig = (
+  config: Config.Wrap<Options>,
+): Layer.Layer<
+  Store,
+  StorageError | Config.ConfigError,
+  EventJournal.EventJournal | KeyValueStore.KeyValueStore
+> => Layer.effect(Store, Config.unwrap(config).pipe(Effect.flatMap(make)))

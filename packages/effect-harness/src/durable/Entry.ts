@@ -4,7 +4,7 @@
 import * as Time from 'effect-harness/Time'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
-import * as Tool from 'effect-harness/Tool'
+import * as ToolRegistration from 'effect-harness/ToolRegistration'
 import * as Conversation from './Conversation.ts'
 import * as Record from './Record.ts'
 
@@ -13,7 +13,9 @@ import * as Record from './Record.ts'
  *
  * @category schemas
  */
-export const UserData = Schema.Struct({ timestamp: Schema.optionalKey(Time.EpochMillis) })
+export const UserData = Schema.Struct({
+  timestamp: Schema.optionalKey(Time.DateTimeUtcFromEpochMillis),
+})
 /**
  * Optional stored timestamp attached to a user entry.
  *
@@ -27,7 +29,7 @@ export type UserData = typeof UserData.Type
  * @category schemas
  */
 export const AssistantData = Schema.Struct({
-  timestamp: Schema.optionalKey(Time.EpochMillis),
+  ...UserData.fields,
   harness: Conversation.Metadata,
 })
 /**
@@ -43,7 +45,7 @@ export type AssistantData = typeof AssistantData.Type
  * @category schemas
  */
 export const SystemData = Schema.Struct({
-  harness: Schema.Struct({ system: Conversation.SystemPatch }),
+  harness: Schema.Struct({ system: SystemPatch.SystemPatch }),
 })
 /**
  * Managed system-section and tool-declaration patch recorded in history.
@@ -58,11 +60,11 @@ export type SystemData = typeof SystemData.Type
  * @category schemas
  */
 export const ToolResultData = Schema.Struct({
-  timestamp: Time.EpochMillis,
+  timestamp: Time.DateTimeUtcFromEpochMillis,
   assistantId: Record.EntryId,
   callId: Schema.String,
   name: Schema.String,
-  execution: Schema.toCodecJson(Tool.Execution),
+  execution: Schema.toCodecJson(ToolRegistration.Execution),
 })
 /**
  * Timestamp, call identity and encoded execution result of a settled tool.
@@ -86,8 +88,8 @@ export const CompactionData = Schema.Struct({
  */
 export type CompactionData = typeof CompactionData.Type
 
-/** Checks identity only; the attached decoder validates stored JSON before exposing native parts. */
-const token = <K extends string, S extends Schema.Top>(
+/** Creates a decoded entry token through its unchecked synchronous definition boundary. */
+const tokenUnsafe = <K extends string, S extends Schema.Top>(
   kind: K,
   schema: S,
 ): Record.DecodedEntryToken<K, S> => Record.defineEntryUnsafe(kind, schema)
@@ -108,7 +110,7 @@ const user = Schema.Tuple([Schema.toCodecJson(Prompt.UserMessage)])
  *
  * @category models
  */
-export const UserEntry = token(
+export const UserEntry = tokenUnsafe(
   'harness.user',
   Schema.Struct({
     ...Record.Entry.fields,
@@ -132,7 +134,7 @@ export const UserEntry = token(
  *
  * @category models
  */
-export const AssistantEntry = token(
+export const AssistantEntry = tokenUnsafe(
   'harness.assistant',
   Schema.Struct({
     ...Record.Entry.fields,
@@ -156,7 +158,7 @@ export const AssistantEntry = token(
  *
  * @category models
  */
-export const SystemEntry = token(
+export const SystemEntry = tokenUnsafe(
   'harness.system',
   Schema.Struct({
     ...Record.Entry.fields,
@@ -180,7 +182,7 @@ export const SystemEntry = token(
  *
  * @category models
  */
-export const ToolResultEntry = token(
+export const ToolResultEntry = tokenUnsafe(
   'harness.tool',
   Schema.Struct({
     ...Record.Entry.fields,
@@ -204,7 +206,7 @@ export const ToolResultEntry = token(
  *
  * @category models
  */
-export const ResetEntry = token(
+export const ResetEntry = tokenUnsafe(
   'harness.reset',
   Schema.Struct({
     ...Record.Entry.fields,
@@ -228,7 +230,7 @@ export const ResetEntry = token(
  *
  * @category models
  */
-export const CompactionEntry = token(
+export const CompactionEntry = tokenUnsafe(
   'harness.compaction',
   Schema.Struct({
     ...Record.Entry.fields,
@@ -238,3 +240,36 @@ export const CompactionEntry = token(
     data: CompactionData,
   }),
 )
+
+/** Checks the decoded UserData contract without decoding or coercing input.
+ * @category guards
+ */
+export const isUserData: (u: unknown) => u is UserData = Schema.is(Schema.toType(UserData))
+
+/** Checks the decoded AssistantData contract without decoding or coercing input.
+ * @category guards
+ */
+export const isAssistantData: (u: unknown) => u is AssistantData = Schema.is(
+  Schema.toType(AssistantData),
+)
+
+/** Checks the decoded SystemData contract without decoding or coercing input.
+ * @category guards
+ */
+export const isSystemData: (u: unknown) => u is SystemData = Schema.is(Schema.toType(SystemData))
+
+/** Checks the decoded ToolResultData contract without decoding or coercing input.
+ * @category guards
+ */
+export const isToolResultData: (u: unknown) => u is ToolResultData = Schema.is(
+  Schema.toType(ToolResultData),
+)
+
+/** Checks the decoded CompactionData contract without decoding or coercing input.
+ * @category guards
+ */
+export const isCompactionData: (u: unknown) => u is CompactionData = Schema.is(
+  Schema.toType(CompactionData),
+)
+
+import * as SystemPatch from 'effect-harness/SystemPatch'

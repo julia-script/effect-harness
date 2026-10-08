@@ -1,7 +1,11 @@
+import { rejected, ClosedError } from 'effect-harness/durable/StorageError'
+import { InvalidError } from 'effect-harness/durable/StorageError'
+import { assertExitFailure } from '@effect/vitest/utils'
 import { assertFailure } from '@effect/vitest/utils'
 import * as TestClock from 'effect/testing/TestClock'
 import * as Identity from 'effect-harness/durable/Identity'
-import { ResourceScope, withLayer } from 'effect-harness/durable/testing/Storage'
+import { ResourceScope } from 'effect-harness/durable/testing/Storage'
+import { withLayer } from './StorageFixture.ts'
 import * as Scope from 'effect/Scope'
 import { assert, describe, it } from '@effect/vitest'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
@@ -23,7 +27,7 @@ import * as Ownership from 'effect-harness/durable/Ownership'
 import * as Conversation from 'effect-harness/durable/Conversation'
 import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
-import * as Memory from 'effect-harness/durable/storage/Memory'
+import * as Store from 'effect-harness/durable/Store'
 import * as Cancellation from 'effect-harness/durable/workflow/Cancellation'
 import * as Structured from 'effect-harness/durable/workflow/Structured'
 import { Generation } from 'effect-harness/durable/workflow/Generation'
@@ -31,9 +35,9 @@ import { ToolCall } from 'effect-harness/durable/workflow/ToolCall'
 import { Compaction } from 'effect-harness/durable/workflow/Compaction'
 import {
   ExecutionError,
-  Storage,
-  InvalidArguments,
-  InvalidState,
+  StorageError as WorkflowStorageError,
+  InvalidArgumentsError,
+  InvalidStateError,
 } from 'effect-harness/durable/workflow/ExecutionError'
 
 const Notes = Document.defineUnsafe({
@@ -59,13 +63,13 @@ type Payload = typeof Node.payloadSchema.Type
 const identity = (
   taskId: Record.TaskId,
   conversationId = Record.ROOT_CONVERSATION_ID,
-): Ownership.Identity => ({
+): Ownership.Current.Identity => ({
   sessionId: Identity.SessionId.make('ownership'),
   conversationId,
   taskId,
 })
 const reserve = Effect.fnUntraced(function* (
-  session: Session.Service,
+  session: Session.Session.Service,
   name: string,
   options?: {
     readonly owner?: Record.TaskId
@@ -128,8 +132,8 @@ type Services =
   | WorkflowEngine.WorkflowInstance
 type Behavior = (
   payload: Payload,
-  session: Session.Service,
-) => Effect.Effect<Record.Json, ExecutionError, Services>
+  session: Session.Session.Service,
+) => Effect.Effect<Schema.Json, ExecutionError, Services>
 const setup = (behaviors: ReadonlyMap<string, Behavior>) => {
   const executor = Node.toLayer(
     Effect.fnUntraced(
@@ -142,12 +146,12 @@ const setup = (behaviors: ReadonlyMap<string, Behavior>) => {
         )
         if (Exit.isFailure(exit) && !exit.cause.reasons.some((reason) => reason._tag === 'Fail'))
           return yield* Effect.failCause(exit.cause)
-        const outcome: Record.Json = Exit.isSuccess(exit) ? exit.value : { status: 'aborted' }
+        const outcome: Schema.Json = Exit.isSuccess(exit) ? exit.value : { status: 'aborted' }
         return yield* Structured.complete(session, payload.taskId, outcome, payload.sessionId).pipe(
           Effect.mapError((error) =>
             error._tag === 'StorageError'
               ? new ExecutionError({
-                  reason: new Storage({ message: error.message, cause: error }),
+                  reason: new WorkflowStorageError({ message: error.message, cause: error }),
                 })
               : error,
           ),
@@ -155,7 +159,9 @@ const setup = (behaviors: ReadonlyMap<string, Behavior>) => {
       },
       Effect.mapError((error) =>
         error._tag === 'StorageError'
-          ? new ExecutionError({ reason: new Storage({ message: error.message, cause: error }) })
+          ? new ExecutionError({
+              reason: new WorkflowStorageError({ message: error.message, cause: error }),
+            })
           : error,
       ),
     ),
@@ -174,7 +180,7 @@ const withSetup = <A, E, R>(
 ) =>
   withLayer(
     effect.pipe(Effect.provide(setup(behaviors))),
-    Session.layer.pipe(Layer.provideMerge(Memory.layer)),
+    Session.layer.pipe(Layer.provideMerge(Store.layerMemory)),
   )
 
 describe('Ownership', () => {
@@ -214,24 +220,27 @@ describe('Ownership', () => {
             const ordinary = yield* reserve(session, 'ordinary')
             const other = yield* session.transaction((tx) =>
               tx.createConversation({
-                ownership: { _tag: 'ownerless' as const, kind: 'ownerless' },
+                ownership: { _tag: 'ownerless' as const },
               }),
             )
             yield* reserve(session, 'failure', { conversationId: other.id })
             const background = yield* reserve(session, 'background', { background: true })
             const owned = yield* session.transaction((tx) =>
               tx.createConversation({
-                ownership: { _tag: 'task' as const, kind: 'task', taskId: background.taskId },
+                ownership: { _tag: 'task' as const, taskId: background.taskId },
               }),
             )
             const below = yield* reserve(session, 'below-background', {
               conversationId: owned.id,
             })
             const waiting = yield* Conversation.awaitIdle(session).pipe(
-              Effect.provideService(Ownership.Declarations, {
-                ...declarations,
-                get: (name) => (available ? declarations.get(name) : Option.none()),
-              }),
+              Effect.provideService(
+                Ownership.Declarations,
+                Ownership.Declarations.of({
+                  ...declarations,
+                  get: (name) => (available ? declarations.get(name) : Option.none()),
+                }),
+              ),
               Effect.forkScoped,
             )
             // Native awaitIdle scans on its captured clock; this negative window proves unavailable declarations cannot start after a full scan interval.
@@ -256,15 +265,18 @@ describe('Ownership', () => {
             )
             const blocked = yield* reserve(session, 'unregistered')
             const closing = yield* Conversation.awaitIdle(session, blocked.conversationId).pipe(
-              Effect.provideService(Ownership.Declarations, {
-                ...declarations,
-                get: () => Option.none(),
-              }),
+              Effect.provideService(
+                Ownership.Declarations,
+                Ownership.Declarations.of({
+                  ...declarations,
+                  get: () => Option.none(),
+                }),
+              ),
               Effect.result,
               Effect.forkScoped,
             )
             yield* Scope.close(yield* ResourceScope, Exit.void)
-            assert.strictEqual((yield* Fiber.join(closing))._tag, 'Failure')
+            assertFailure(yield* Fiber.join(closing), rejected('Session is closed', ClosedError))
           }),
         )
       }),
@@ -280,7 +292,7 @@ describe('Ownership', () => {
         const child = yield* reserve(session, 'child', { owner: parent.taskId })
         const owned = yield* session.transaction((tx) =>
           tx.createConversation({
-            ownership: { _tag: 'task' as const, kind: 'task', taskId: grandparent.taskId },
+            ownership: { _tag: 'task' as const, taskId: grandparent.taskId },
           }),
         )
         const conversational = yield* reserve(session, 'conversational', {
@@ -293,7 +305,7 @@ describe('Ownership', () => {
           assertFailure(
             result,
             new ExecutionError({
-              reason: new InvalidState({ message: 'A task cannot await itself or its owner' }),
+              reason: new InvalidStateError({ message: 'A task cannot await itself or its owner' }),
             }),
           )
           assert.deepStrictEqual(
@@ -315,13 +327,13 @@ describe('Ownership', () => {
           const ended = yield* reserve(session, 'ended')
           const retained = yield* session.transaction((tx) =>
             tx.createConversation({
-              ownership: { _tag: 'task' as const, kind: 'task', taskId: ended.taskId },
+              ownership: { _tag: 'task' as const, taskId: ended.taskId },
             }),
           )
           const outer = yield* reserve(session, 'outer')
           const nested = yield* session.transaction((tx) =>
             tx.createConversation({
-              ownership: { _tag: 'task' as const, kind: 'task', taskId: outer.taskId },
+              ownership: { _tag: 'task' as const, taskId: outer.taskId },
             }),
           )
           const background = yield* reserve(session, 'background', {
@@ -330,7 +342,7 @@ describe('Ownership', () => {
           })
           const surviving = yield* session.transaction((tx) =>
             tx.createConversation({
-              ownership: { _tag: 'task' as const, kind: 'task', taskId: background.taskId },
+              ownership: { _tag: 'task' as const, taskId: background.taskId },
             }),
           )
           yield* session.transaction(
@@ -343,7 +355,6 @@ describe('Ownership', () => {
                 .pipe(Effect.map(Option.getOrUndefined)))!
               yield* tx.write({
                 _tag: 'task' as const,
-                type: 'task',
                 value: {
                   ...endedTask,
                   abortRequested: true,
@@ -352,7 +363,6 @@ describe('Ownership', () => {
               })
               yield* tx.write({
                 _tag: 'task' as const,
-                type: 'task',
                 value: { ...outerTask, abortRequested: true },
               })
             }),
@@ -386,7 +396,7 @@ describe('Ownership', () => {
           const ended = yield* reserve(session, 'ended', { owner: parent.taskId })
           const owned = yield* session.transaction((tx) =>
             tx.createConversation({
-              ownership: { _tag: 'task' as const, kind: 'task', taskId: ended.taskId },
+              ownership: { _tag: 'task' as const, taskId: ended.taskId },
             }),
           )
           yield* Structured.complete(
@@ -400,28 +410,19 @@ describe('Ownership', () => {
           for (const background of [false, true]) {
             assert.deepStrictEqual(
               Option.getOrUndefined(
-                Ownership.reach(
-                  graph,
-                  { _tag: 'task' as const, kind: 'task', id: ended.taskId },
-                  background,
-                ),
+                Ownership.reach(graph, { _tag: 'task' as const, id: ended.taskId }, background),
               ),
               { tasks: [], conversations: [] },
             )
             assert.isFalse(
               Option.getOrUndefined(
-                Ownership.reach(
-                  graph,
-                  { _tag: 'task' as const, kind: 'task', id: parent.taskId },
-                  background,
-                ),
+                Ownership.reach(graph, { _tag: 'task' as const, id: parent.taskId }, background),
               )!.tasks.some((task) => task.id === below.taskId),
             )
           }
           const reached = Option.getOrUndefined(
             Ownership.reach(graph, {
               _tag: 'conversation' as const,
-              kind: 'conversation',
               id: parent.conversationId,
             }),
           )!
@@ -661,7 +662,6 @@ describe('Ownership', () => {
             yield* Deferred.await(entered)
             const reached = yield* Cancellation.mark(session, {
               _tag: 'task' as const,
-              kind: 'task',
               id: task.taskId,
             })
             const cancellation = yield* Cancellation.cancel(
@@ -677,7 +677,7 @@ describe('Ownership', () => {
             yield* rejection(
               reserve(session, 'late', { owner: task.taskId }),
               'StorageError',
-              'Invalid',
+              'InvalidError',
               'Invalid task owner',
             )
             yield* Deferred.succeed(finishCleanup, undefined)
@@ -727,7 +727,6 @@ describe('Ownership', () => {
             )
             const reached = yield* Cancellation.mark(session, {
               _tag: 'conversation' as const,
-              kind: 'conversation',
               id: parent.conversationId,
             })
             assert.deepStrictEqual(
@@ -745,7 +744,6 @@ describe('Ownership', () => {
             })
             const explicit = yield* Cancellation.mark(session, {
               _tag: 'task' as const,
-              kind: 'task',
               id: background.taskId,
             })
             assert.deepStrictEqual(
@@ -781,7 +779,7 @@ describe('Ownership', () => {
               Effect.gen(function* () {
                 const conversation = yield* session.transaction((tx) =>
                   tx.createConversation({
-                    ownership: { _tag: 'task' as const, kind: 'task', taskId: payload.taskId },
+                    ownership: { _tag: 'task' as const, taskId: payload.taskId },
                   }),
                 )
                 owned = conversation.id
@@ -840,7 +838,7 @@ describe('Ownership', () => {
               Effect.gen(function* () {
                 const conversation = yield* session.transaction((tx) =>
                   tx.createConversation({
-                    ownership: { _tag: 'task' as const, kind: 'task', taskId: payload.taskId },
+                    ownership: { _tag: 'task' as const, taskId: payload.taskId },
                   }),
                 )
                 yield* session.transaction((tx) =>
@@ -885,7 +883,7 @@ describe('Ownership', () => {
             yield* Deferred.succeed(dispatchFinish, undefined)
             assert.deepStrictEqual(yield* Fiber.join(fiber), { status: 'completed' })
           }).pipe(Effect.provide(setup(behaviors).pipe(Layer.provideMerge(drain)))),
-          Session.layer.pipe(Layer.provideMerge(Memory.layer)),
+          Session.layer.pipe(Layer.provideMerge(Store.layerMemory)),
         )
       }),
   )
@@ -920,7 +918,7 @@ describe('Ownership', () => {
                       ).pipe(Effect.flip)
                       assert.instanceOf(error, ExecutionError)
                       if (error instanceof ExecutionError) {
-                        assert.strictEqual(error.reason._tag, 'Aborted')
+                        assert.strictEqual(error.reason._tag, 'AbortedError')
                         assert.strictEqual(
                           error.message,
                           'Task no longer accepts invocation writes',
@@ -942,7 +940,6 @@ describe('Ownership', () => {
             yield* Deferred.await(started)
             yield* Cancellation.mark(session, {
               _tag: 'task' as const,
-              kind: 'task',
               id: task.taskId,
             })
             yield* until(Effect.sync(() => fiber.pollUnsafe() !== undefined))
@@ -951,7 +948,7 @@ describe('Ownership', () => {
             yield* rejection(
               captured!.check,
               'ExecutionError',
-              'Closed',
+              'ClosedError',
               'Task invocation has ended',
             )
           }),
@@ -973,31 +970,31 @@ describe('Ownership', () => {
           yield* rejection(
             Structured.join(session, root.taskId, [root.taskId]),
             'ExecutionError',
-            'InvalidState',
+            'InvalidStateError',
             'A task cannot await itself or its owner',
           )
           yield* rejection(
             Structured.join(session, root.taskId, [Record.TaskId.make(9999)]),
             'ExecutionError',
-            'InvalidState',
+            'InvalidStateError',
             'Awaited task 9999 is absent',
           )
           yield* rejection(
             Structured.join(session, child.taskId, [root.taskId]),
             'ExecutionError',
-            'InvalidState',
+            'InvalidStateError',
             'A task cannot await itself or its owner',
           )
           yield* rejection(
             Structured.join(session, root.taskId, [foreign.taskId], 'failFast'),
             'ExecutionError',
-            'InvalidState',
+            'InvalidStateError',
             'Fail-fast requires directly owned tasks',
           )
           const background = yield* reserve(session, 'background', { background: true })
           const owned = yield* session.transaction((tx) =>
             tx.createConversation({
-              ownership: { _tag: 'task' as const, kind: 'task', taskId: background.taskId },
+              ownership: { _tag: 'task' as const, taskId: background.taskId },
             }),
           )
           yield* Structured.complete(
@@ -1012,7 +1009,6 @@ describe('Ownership', () => {
             Option.getOrUndefined(
               Ownership.reach(state, {
                 _tag: 'conversation' as const,
-                kind: 'conversation',
                 id: root.conversationId,
               }),
             )!.tasks.some((task) => task.id === below.taskId),
@@ -1021,7 +1017,7 @@ describe('Ownership', () => {
             Option.getOrUndefined(
               Ownership.reach(
                 state,
-                { _tag: 'conversation' as const, kind: 'conversation', id: root.conversationId },
+                { _tag: 'conversation' as const, id: root.conversationId },
                 true,
               ),
             )!.tasks.some((task) => task.id === below.taskId),
@@ -1130,7 +1126,7 @@ describe('Ownership', () => {
               payload.name === 'completed'
                 ? Effect.succeed('value')
                 : Effect.fail(
-                    new ExecutionError({ reason: new InvalidArguments({ message: 'bad' }) }),
+                    new ExecutionError({ reason: new InvalidArgumentsError({ message: 'bad' }) }),
                   )
             return yield* Structured.evaluate(
               payload,
@@ -1140,7 +1136,7 @@ describe('Ownership', () => {
               Effect.mapError((error) =>
                 error._tag === 'StorageError'
                   ? new ExecutionError({
-                      reason: new Storage({ message: error.message, cause: error }),
+                      reason: new WorkflowStorageError({ message: error.message, cause: error }),
                     })
                   : error,
               ),
@@ -1175,7 +1171,7 @@ describe('Ownership', () => {
               )
             }
           }).pipe(Effect.provide(custom)),
-          Session.layer.pipe(Layer.provideMerge(Memory.layer)),
+          Session.layer.pipe(Layer.provideMerge(Store.layerMemory)),
         )
       }),
   )
@@ -1224,18 +1220,16 @@ describe('Ownership', () => {
               }),
             )
             .pipe(Effect.exit)
-          assert.isTrue(Exit.isFailure(rejected))
-          if (Exit.isFailure(rejected)) {
-            const failure = Cause.squash(rejected.cause)
-            assert.instanceOf(failure, StorageError)
-            if (failure instanceof StorageError) {
-              assert.strictEqual(failure.reason._tag, 'Invalid')
-              assert.strictEqual(
-                failure.message,
-                'New owned work requires a live non-aborting owner',
-              )
-            }
-          }
+          assertExitFailure(
+            rejected,
+            Cause.fail(
+              new StorageError({
+                reason: new InvalidError({
+                  message: 'New owned work requires a live non-aborting owner',
+                }),
+              }),
+            ),
+          )
           assert.strictEqual((yield* session.committed).tasks.length, 1)
           const missing = yield* reserve(session, 'missing', { owner: parent.taskId })
           yield* session.transaction(
@@ -1244,7 +1238,6 @@ describe('Ownership', () => {
               const binding = yield* Schema.decodeUnknownEffect(Ownership.Binding)(task.input)
               yield* tx.write({
                 _tag: 'task' as const,
-                type: 'task',
                 value: { ...task, input: { ...binding, workflow: 'missing/declaration' } },
               })
             }),
@@ -1259,7 +1252,7 @@ describe('Ownership', () => {
           assertFailure(
             blocked,
             new ExecutionError({
-              reason: new InvalidState({
+              reason: new InvalidStateError({
                 message: `Workflow missing/declaration is not declared; task ${missing.taskId} remains blocked`,
               }),
             }),
@@ -1278,7 +1271,6 @@ describe('Ownership', () => {
           )
           yield* Cancellation.mark(session, {
             _tag: 'task' as const,
-            kind: 'task',
             id: missing.taskId,
           })
           yield* Structured.drain(session, parent.taskId, parent.sessionId)
@@ -1406,9 +1398,7 @@ describe('Ownership', () => {
           yield* Deferred.await(entered)
           yield* Scope.close(yield* ResourceScope, Exit.void)
           const closed = yield* Fiber.join(fiber)
-          assert.isTrue(Exit.isFailure(closed))
-          // Resource closure interrupts the admitted body; fiber IDs depend on scheduling.
-          if (Exit.isFailure(closed)) assert.isTrue(Cause.hasInterruptsOnly(closed.cause))
+          assertExitFailure(closed, Cause.interrupt(fiber.id))
           assert.isTrue(cleaned)
         }),
       )
@@ -1439,7 +1429,6 @@ describe('Ownership', () => {
             const reached = Option.getOrUndefined(
               Ownership.reach(yield* session.committed, {
                 _tag: 'task' as const,
-                kind: 'task',
                 id: task.taskId,
               }),
             )!
@@ -1502,7 +1491,7 @@ describe('Ownership', () => {
             Effect.mapError((error) =>
               error._tag === 'StorageError'
                 ? new ExecutionError({
-                    reason: new Storage({ message: error.message, cause: error }),
+                    reason: new WorkflowStorageError({ message: error.message, cause: error }),
                   })
                 : error,
             ),
@@ -1534,7 +1523,11 @@ describe('Ownership', () => {
           available = true
           yield* Node.resume(executionId)
           const result = yield* Node.execute(parent)
-          assert.deepStrictEqual(result, { status: 'completed', result: 'parent' })
+          assert.deepStrictEqual(result, {
+            _tag: 'Completed',
+            status: 'completed',
+            result: 'parent',
+          })
           assert.deepStrictEqual(executions, ['parent', 'child'])
           assert.strictEqual(
             (yield* session.task(child.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
@@ -1550,7 +1543,7 @@ describe('Ownership', () => {
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
-            Session.layer.pipe(Layer.provideMerge(Memory.layer)),
+            Session.layer.pipe(Layer.provideMerge(Store.layerMemory)),
             WorkflowEngine.layerMemory,
             BunCrypto.layer,
           ),
@@ -1574,7 +1567,7 @@ describe('Ownership', () => {
         }),
       ).pipe(
         Layer.provideMerge(WorkflowEngine.layerMemory),
-        Layer.provideMerge(Session.layer.pipe(Layer.provideMerge(Memory.layer))),
+        Layer.provideMerge(Session.layer.pipe(Layer.provideMerge(Store.layerMemory))),
         Layer.provideMerge(Cancellation.layer),
         Layer.provideMerge(Ownership.layerDeclarations([Incomplete])),
         Layer.provide(BunCrypto.layer),
@@ -1598,7 +1591,7 @@ describe('Ownership', () => {
           parent.sessionId,
         ).pipe(Effect.result, Effect.timeout('2 seconds'))
         const expected = new ExecutionError({
-          reason: new InvalidState({
+          reason: new InvalidStateError({
             message: `Native execution ${child.taskId} ended before its domain projection settled`,
           }),
         })

@@ -1,24 +1,22 @@
 /**
  * Node environment construction with injected platform services and decoded host configuration.
  */
-import { resolveShell, watchMode } from './internal/nodeEnv.ts'
+import { makeShellResolver, makeWatchMode } from './internal/nodeEnv.ts'
 import * as Effect from 'effect/Effect'
 import * as Config from 'effect/Config'
 import * as Layer from 'effect/Layer'
-import * as FileSystem from 'effect/FileSystem'
-import * as Path from 'effect/Path'
+import type * as FileSystem from 'effect/FileSystem'
+import type * as Path from 'effect/Path'
 import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
-import * as Os from 'node:os'
-import * as NodePath from 'node:path'
-// effect-review-allow P9-namespace-alias-equals-module: node:path and effect/Path both bind Path; NodePath preserves the checked imported-name collision.
+import * as os from 'node:os'
+import * as path from 'node:path'
 import {
-  Env,
+  type Env,
   make as makeEnvironment,
   layer as environmentLayer,
   type WatchTarget,
-  type Options as EnvOptions,
 } from './Env.ts'
-import { layerNative } from './NodeNativeFiles.ts'
+import * as NodeNativeFiles from './NodeNativeFiles.ts'
 /**
  * Platform, cwd, home and search-path conventions supplied by the host.
  *
@@ -35,7 +33,8 @@ export interface Host {
  *
  * @category models
  */
-export interface Options extends Partial<EnvOptions> {
+type OptionalEnvOptions = { readonly [K in keyof Env.Options]?: Env.Options[K] | undefined }
+export interface Options extends OptionalEnvOptions {
   readonly host?: Host | undefined
 }
 /**
@@ -51,20 +50,24 @@ export interface Options extends Partial<EnvOptions> {
 export const hostDefaults: Effect.Effect<Host> = Effect.sync(() => ({
   platform: process.platform,
   cwd: process.cwd(),
-  home: Os.homedir(),
-  searchPathDelimiter: NodePath.delimiter,
+  home: os.homedir(),
+  searchPathDelimiter: path.delimiter,
 }))
 /**
- * Native statfs policy accessor; normal parent traversal requires the supplied Path service.
+ * Selects native or polling watching for the supplied targets.
+ *
+ * **Details**
+ *
+ * Samples Node host defaults and the native statfs policy. Parent-directory traversal requires the supplied Path service.
  *
  * @category combinators
  */
 export const resolveWatchMode = Effect.fnUntraced(function* (
   targets: ReadonlyArray<WatchTarget>,
 ): Effect.fn.Return<'native' | 'polling', never, Path.Path> {
-  const path = yield* Path.Path
   const host = yield* hostDefaults
-  return yield* watchMode(path, host.platform, targets)
+  const watchMode = yield* makeWatchMode(host.platform)
+  return yield* watchMode(targets)
 })
 /**
  * Provides Env with Node-native file capabilities.
@@ -90,21 +93,20 @@ export const layer = (
 > =>
   Layer.unwrap(
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem
-      const path = yield* Path.Path
       const host = options.host ?? (yield* hostDefaults)
+      const resolveShell = yield* makeShellResolver(host)
+      const watchMode = yield* makeWatchMode(host.platform)
       return environmentLayer({
         id: options.id ?? 'node:local',
         cwd: options.cwd ?? host.cwd,
         home: options.home ?? host.home,
-        resolveShell: options.resolveShell ?? resolveShell(fs, path, host, options.shell),
-        resolveWatchMode:
-          options.resolveWatchMode ?? ((targets) => watchMode(path, host.platform, targets)),
+        resolveShell: options.resolveShell ?? resolveShell(options.shell),
+        resolveWatchMode: options.resolveWatchMode ?? watchMode,
         ...(options.watch === undefined ? {} : { watch: options.watch }),
         ...(options.env === undefined ? {} : { env: options.env }),
       })
     }),
-  ).pipe(Layer.provide(layerNative))
+  ).pipe(Layer.provide(NodeNativeFiles.layer))
 /**
  * Resolves Node environment options through the active ConfigProvider.
  *
@@ -128,28 +130,26 @@ export const layerConfig = (
  *
  * @category constructors
  */
-export const make = (
+export const make = Effect.fnUntraced(function* (
   options: Options = {},
-): Effect.Effect<
+): Effect.fn.Return<
   Env['Service'],
   never,
   | FileSystem.FileSystem
   | Path.Path
   | ChildProcessSpawner.ChildProcessSpawner
   | import('effect/Scope').Scope
-> =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem
-    const path = yield* Path.Path
-    const host = options.host ?? (yield* hostDefaults)
-    return yield* makeEnvironment({
-      id: options.id ?? 'node:local',
-      cwd: options.cwd ?? host.cwd,
-      home: options.home ?? host.home,
-      resolveShell: options.resolveShell ?? resolveShell(fs, path, host, options.shell),
-      resolveWatchMode:
-        options.resolveWatchMode ?? ((targets) => watchMode(path, host.platform, targets)),
-      ...(options.watch === undefined ? {} : { watch: options.watch }),
-      ...(options.env === undefined ? {} : { env: options.env }),
-    }).pipe(Effect.provide(layerNative))
-  })
+> {
+  const host = options.host ?? (yield* hostDefaults)
+  const resolveShell = yield* makeShellResolver(host)
+  const watchMode = yield* makeWatchMode(host.platform)
+  return yield* makeEnvironment({
+    id: options.id ?? 'node:local',
+    cwd: options.cwd ?? host.cwd,
+    home: options.home ?? host.home,
+    resolveShell: options.resolveShell ?? resolveShell(options.shell),
+    resolveWatchMode: options.resolveWatchMode ?? watchMode,
+    ...(options.watch === undefined ? {} : { watch: options.watch }),
+    ...(options.env === undefined ? {} : { env: options.env }),
+  }).pipe(Effect.provide(NodeNativeFiles.layer))
+})

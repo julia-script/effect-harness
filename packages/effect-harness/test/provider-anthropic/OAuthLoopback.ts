@@ -9,7 +9,7 @@ import { createServer } from 'node:http'
 export class OAuthLoopback extends Context.Service<
   OAuthLoopback,
   typeof HttpServer.HttpServer.Service
->()('test/OAuthLoopback') {
+>()('effect-harness/test/provider-anthropic/OAuthLoopback/OAuthLoopback') {
   static readonly layer = Layer.effect(OAuthLoopback)(Effect.service(HttpServer.HttpServer)).pipe(
     Layer.provideMerge(
       NodeHttpServer.layer(createServer, {

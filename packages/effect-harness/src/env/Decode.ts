@@ -3,7 +3,8 @@
  */
 import * as Pipeable from 'effect/Pipeable'
 import * as Inspectable from 'effect/Inspectable'
-import { FileError, FileUnknown } from '../Env.ts'
+import { FileError, FileUnknownError } from '../FileError.ts'
+
 import * as Effect from 'effect/Effect'
 import * as Predicate from 'effect/Predicate'
 // Adapted from pi-durable (MIT), pinned 636703a0; see package NOTICE.
@@ -12,14 +13,15 @@ import * as Predicate from 'effect/Predicate'
  *
  * @category combinators
  */
-export const rangeDecoder = (): TextDecoder => new TextDecoder('utf-8', { ignoreBOM: true })
+export const makeRangeDecoder = (): TextDecoder => new TextDecoder('utf-8', { ignoreBOM: true })
 /**
  * Checks the initial UTF-8 byte-order-mark bytes.
  *
  * @category guards
  */
-export const hasBom = (u: Uint8Array): boolean => u[0] === 0xef && u[1] === 0xbb && u[2] === 0xbf
-const TypeId = '~@effect-harness/harness/env/Decode'
+export const hasBom = (self: Uint8Array): boolean =>
+  self[0] === 0xef && self[1] === 0xbb && self[2] === 0xbf
+const TypeId = '~effect-harness/env/Decode'
 /**
  * Incremental text decoder selected from the file’s leading byte window.
  *
@@ -48,7 +50,7 @@ export const isDecoder = (u: unknown): u is Decoder => Predicate.hasProperty(u, 
 export const make = (): Decoder => {
   const handle: Decoder = Object.assign(Object.create(DecoderProto), {
     [TypeId]: TypeId,
-    decoder: rangeDecoder(),
+    decoder: makeRangeDecoder(),
     started: false,
   })
   Object.defineProperty(handle, TypeId, { enumerable: false })
@@ -76,7 +78,9 @@ export const decode = (self: Decoder, bytes?: Uint8Array): Effect.Effect<string,
   Effect.try({
     try: () => decodeUnsafe(self, bytes),
     catch: (cause) =>
-      new FileError({ reason: new FileUnknown({ message: 'Unable to decode file bytes', cause }) }),
+      new FileError({
+        reason: new FileUnknownError({ message: 'Unable to decode file bytes', cause }),
+      }),
   })
 
 const DecoderProto = {

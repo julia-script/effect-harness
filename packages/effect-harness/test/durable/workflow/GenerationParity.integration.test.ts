@@ -1,48 +1,95 @@
+import { assertFailure } from '@effect/vitest/utils'
+import * as Result from 'effect/Result'
+import * as DirectoryFixture from '../DirectoryFixture.ts'
 import { awaitTransition } from './ModeledWorkflow.ts'
+
 import * as Option from 'effect/Option'
+
 import * as Structured from 'effect-harness/durable/workflow/Structured'
+
 import * as Identity from 'effect-harness/durable/Identity'
+
 import { assert, describe, it } from '@effect/vitest'
+
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
+
 import * as NodeServices from '@effect/platform-node/NodeServices'
+
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/Executor and effect-harness/durable/Executor both own Executor; Harness keeps their distinct native/harness APIs available together for these constructor, service and declaration assertions.
 import * as Harness from 'effect-harness/Executor'
-import { HookError, HookFailure } from 'effect-harness/HookError'
-import { ToolError, ToolExecution } from 'effect-harness/ToolError'
-import { type RegistryError } from 'effect-harness/RegistryError'
+
+import { HookError, HookFailureError } from 'effect-harness/HookError'
+
+import { ToolError, ToolExecutionError } from 'effect-harness/ToolError'
+
+import { type RegistryError } from 'effect-harness/Registry'
+
 import * as Hook from 'effect-harness/Hook'
+
 import * as Invocation from 'effect-harness/Invocation'
+
 import * as Model from 'effect-harness/Model'
+
 import * as Registry from 'effect-harness/Registry'
-import * as Tool from 'effect-harness/Tool'
-import * as ToolContent from 'effect-harness/ToolResult'
+
+import * as ToolRegistration from 'effect-harness/ToolRegistration'
+
+import * as ToolResult from 'effect-harness/ToolResult'
+
 import * as Context from 'effect/Context'
+
 import * as Deferred from 'effect/Deferred'
+
 import * as Effect from 'effect/Effect'
+
 import * as FileSystem from 'effect/FileSystem'
+
 import * as Layer from 'effect/Layer'
+
 import * as Path from 'effect/Path'
+
 import * as Ref from 'effect/Ref'
+
 import * as Schema from 'effect/Schema'
+
 import * as Stream from 'effect/Stream'
-import * as NativeModel from 'effect/ai/LanguageModel'
+
+import * as LanguageModel from 'effect/ai/LanguageModel'
+
 import * as Prompt from 'effect/ai/Prompt'
-import * as Response from 'effect/ai/Response'
+
+import type * as Response from 'effect/ai/Response'
+
 import * as AiError from 'effect/ai/AiError'
-import * as AiTool from 'effect/ai/Tool'
+
+import * as Tool from 'effect/ai/Tool'
+
 import * as Toolkit from 'effect/ai/Toolkit'
+
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
+
 import * as Conversation from 'effect-harness/durable/Conversation'
+
 import * as Executor from 'effect-harness/durable/Executor'
+
 import * as Ownership from 'effect-harness/durable/Ownership'
+
 import * as Record from 'effect-harness/durable/Record'
+
 import * as Session from 'effect-harness/durable/Session'
-import * as Directory from 'effect-harness/durable/SessionDirectory'
-import * as Memory from 'effect-harness/durable/storage/Memory'
+
+import * as SessionDirectory from 'effect-harness/durable/SessionDirectory'
+
 import * as Store from 'effect-harness/durable/Store'
+
 import { Submission } from 'effect-harness/durable/workflow/Submission'
+
 import { Compaction } from 'effect-harness/durable/workflow/Compaction'
+
 import * as CompactionExecutor from 'effect-harness/durable/workflow/CompactionExecutor'
+
 import { ToolCall } from 'effect-harness/durable/workflow/ToolCall'
+
 import * as ToolExecutor from 'effect-harness/durable/workflow/ToolExecutor'
 
 const ref = { provider: 'custom', modelId: 'model' }
@@ -73,7 +120,6 @@ const input = (requestId: string) => ({
   requestId: Identity.RequestId.make(requestId),
   submission: {
     _tag: 'input' as const,
-    type: 'input' as const,
     message: Prompt.userMessage({ content: [Prompt.textPart({ text: 'request' })] }),
   },
 })
@@ -83,7 +129,7 @@ const runtime = (
   config = Conversation.layerConfiguration({
     settings: {
       compaction: { enabled: false },
-      retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 },
+      retry: { enabled: true, maxRetries: 1, baseDelay: 0 },
     },
   }),
 ) => {
@@ -92,25 +138,27 @@ const runtime = (
     Layer.provide(config),
     Layer.provide(BunCrypto.layer),
   )
-  const session = Session.layer.pipe(Layer.provideMerge(Memory.layer), Layer.provide(creation))
+  const session = Session.layer.pipe(Layer.provideMerge(Store.layerMemory), Layer.provide(creation))
   return Executor.layer.pipe(
     Layer.provideMerge(WorkflowEngine.layerMemory),
     Layer.provideMerge(
-      Directory.layerSingle(Identity.SessionId.make('parity')).pipe(Layer.provideMerge(session)),
+      SessionDirectory.layerSingle(Identity.SessionId.make('parity')).pipe(
+        Layer.provideMerge(session),
+      ),
     ),
     Layer.provideMerge(config),
     Layer.provideMerge(catalog),
     Layer.provide(Harness.layer.pipe(Layer.provide(Layer.mergeAll(registry, catalog)))),
   )
 }
-const selectModel = (session: Session.Service) =>
+const selectModel = (session: Session.Session.Service) =>
   session.transaction(
     Effect.fnUntraced(function* (tx) {
       const agent = yield* tx.doc(Conversation.AgentDoc, { owner: Record.ROOT_CONVERSATION_ID })
       agent.model = ref
     }),
   )
-const descriptor = (model: NativeModel.LanguageModel): Model.Descriptor => ({
+const descriptor = (model: LanguageModel.LanguageModel): Model.Descriptor => ({
   ref,
   model,
   contextWindow: 100000,
@@ -127,12 +175,12 @@ describe('GenerationParity', () => {
           const requests: Prompt.Prompt[] = []
           let executions = 0
           const toolkit = Toolkit.make(
-            AiTool.make('known', {
+            Tool.make('known', {
               parameters: Schema.Struct({ text: Schema.String }),
               success: Schema.String,
             }),
           )
-          const tools = yield* Tool.bind(toolkit, { known: { replay: 'safe' } }).pipe(
+          const tools = yield* ToolRegistration.bind(toolkit, { known: { replay: 'safe' } }).pipe(
             Effect.provide(
               toolkit.toLayer({
                 known: ({ text }) =>
@@ -143,7 +191,7 @@ describe('GenerationParity', () => {
               }),
             ),
           )
-          const native = yield* NativeModel.make({
+          const native = yield* LanguageModel.make({
             generateText: () => Effect.succeed([]),
             streamText: ({ prompt }) => {
               requests.push(prompt)
@@ -237,7 +285,7 @@ describe('GenerationParity', () => {
                 Conversation.layerConfiguration({
                   settings: {
                     compaction: { enabled: false },
-                    retry: { enabled: outcome !== 'later-input', maxRetries: 1, baseDelayMs: 0 },
+                    retry: { enabled: outcome !== 'later-input', maxRetries: 1, baseDelay: 0 },
                   },
                 }),
               ),
@@ -254,7 +302,7 @@ describe('GenerationParity', () => {
         let recovering = false
         let renders = 0
         const requested: Prompt.Prompt[] = []
-        const native = yield* NativeModel.make({
+        const native = yield* LanguageModel.make({
           generateText: () => Effect.succeed([]),
           streamText: (options) => {
             requested.push(options.prompt)
@@ -281,7 +329,7 @@ describe('GenerationParity', () => {
         const config = Conversation.layerConfiguration({
           settings: { compaction: { enabled: false } },
         })
-        const underlying = yield* Memory.make
+        const underlying = yield* Store.makeMemory
         const original = yield* Session.make.pipe(
           Effect.provideService(Store.Store, underlying),
           Effect.provide(
@@ -292,9 +340,9 @@ describe('GenerationParity', () => {
         yield* selectModel(original)
         // This observes a real domain commit and then withholds the native Activity reply.
         // The second normal memory engine deliberately has no first-engine Activity cache.
-        const transaction = <A extends Record.Json | void, E, R>(
+        const transaction = <A extends Schema.Json | void, E, R>(
           change: (tx: Session.Transaction) => Effect.Effect<A, E, R>,
-          options: Store.CommitOptions = {},
+          options: Store.Store.CommitOptions = {},
         ) =>
           original
             .transaction(change, options)
@@ -311,10 +359,10 @@ describe('GenerationParity', () => {
         })
         const common = yield* Layer.build(
           Layer.mergeAll(
-            Directory.layer.pipe(
+            SessionDirectory.layer.pipe(
               Layer.provide(
                 Layer.succeed(
-                  Directory.Registrations,
+                  SessionDirectory.Registrations,
                   new Map([[Identity.SessionId.make('parity'), intercepted]]),
                 ),
               ),
@@ -368,14 +416,14 @@ describe('GenerationParity', () => {
 
   for (const failure of ['typed', 'eof'] as const) {
     it.effect(
-      `descriptor classifier retries ${failure} generation and repairs legacy affinity before requests`,
+      `descriptor classifier retries ${failure} generation and initializes missing provider affinity before requests`,
       () =>
         Effect.gen(function* () {
           const calls = yield* Ref.make(0)
           const classifications: unknown[] = []
           const affinities: string[] = []
-          let session: Session.Service | undefined
-          const native = yield* NativeModel.make({
+          let session: Session.Session.Service | undefined
+          const native = yield* LanguageModel.make({
             generateText: () => Effect.succeed([]),
             streamText: () =>
               Stream.unwrap(
@@ -428,7 +476,7 @@ describe('GenerationParity', () => {
             if (receipt.status !== 'done') return yield* Effect.die('Expected completed input')
             const fork = yield* session.transaction((tx) =>
               tx.forkConversation(Record.ROOT_CONVERSATION_ID, receipt.answer!, {
-                ownership: { _tag: 'ownerless' as const, kind: 'ownerless' },
+                ownership: { _tag: 'ownerless' as const },
               }),
             )
             assert.notStrictEqual(
@@ -447,7 +495,7 @@ describe('GenerationParity', () => {
       Effect.gen(function* () {
         const calls = yield* Ref.make(0)
         let settings: Conversation.Configuration['Service'] | undefined
-        const native = yield* NativeModel.make({
+        const native = yield* LanguageModel.make({
           generateText: () => Effect.succeed([]),
           streamText: () =>
             Stream.unwrap(
@@ -472,8 +520,11 @@ describe('GenerationParity', () => {
           const invalid = yield* Effect.result(
             settings.updateSettings({ retry: { maxRetries: -1 } }),
           )
-          assert.strictEqual(invalid._tag, 'Failure')
-          assert.strictEqual(settings.settings.retry.enabled, false)
+          assertFailure(
+            Result.mapError(invalid, (error) => error.message),
+            'Expected a value greater than or equal to 0\n  at ["retry"]["maxRetries"]',
+          )
+          assert.strictEqual((yield* settings.settings).retry.enabled, false)
         }).pipe(
           Effect.provide(
             runtime(
@@ -485,14 +536,14 @@ describe('GenerationParity', () => {
       }),
   )
   it.effect(
-    'legacy compaction commits affinity before its first request and uses its custom retry classifier',
+    'compaction commits provider affinity before its first request and uses its custom retry classifier',
     () =>
       Effect.gen(function* () {
         const calls = yield* Ref.make(0)
         const ids: string[] = []
         const classifications: unknown[] = []
-        let session: Session.Service | undefined
-        const native = yield* NativeModel.make({
+        let session: Session.Session.Service | undefined
+        const native = yield* LanguageModel.make({
           generateText: () =>
             Effect.gen(function* () {
               const call = yield* Ref.updateAndGet(calls, (n) => n + 1)
@@ -520,7 +571,7 @@ describe('GenerationParity', () => {
         }
         const config = Conversation.layerConfiguration({
           settings: {
-            retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 },
+            retry: { enabled: true, maxRetries: 1, baseDelay: 0 },
             compaction: { enabled: true, keepRecentTokens: 0 },
           },
         })
@@ -552,12 +603,11 @@ describe('GenerationParity', () => {
             }),
           )
           const payload = yield* session.transaction((tx) =>
-            CompactionExecutor.make(
-              tx,
-              Identity.SessionId.make('parity'),
-              Record.ROOT_CONVERSATION_ID,
-              'manual',
-            ),
+            CompactionExecutor.make(tx, {
+              sessionId: Identity.SessionId.make('parity'),
+              conversationId: Record.ROOT_CONVERSATION_ID,
+              reason: 'manual',
+            }),
           )
           const result = yield* awaitTransition(Compaction.execute(payload))
           assert.ok(
@@ -583,16 +633,16 @@ describe('GenerationParity', () => {
         const file = Prompt.filePart({ mediaType: 'image/png', data: new Uint8Array([1, 2, 3]) })
         const tools = Toolkit.make(
           ...['slow', 'fast', 'broken'].map((name) =>
-            AiTool.make(name, {
+            Tool.make(name, {
               parameters: Schema.Struct({}),
               success: Invocation.Result,
               failure: ToolError,
             }),
           ),
         )
-        const bound = yield* Tool.bind(tools, {
-          slow: { project: (value) => Tool.decodeResult('fixture', value) },
-          fast: { project: (value) => Tool.decodeResult('fixture', value) },
+        const bound = yield* ToolRegistration.bind(tools, {
+          slow: { project: (value) => ToolRegistration.decodeResult('fixture', value) },
+          fast: { project: (value) => ToolRegistration.decodeResult('fixture', value) },
         }).pipe(
           Effect.provide(
             tools.toLayer({
@@ -621,7 +671,7 @@ describe('GenerationParity', () => {
               broken: () =>
                 Effect.fail(
                   new ToolError({
-                    reason: new ToolExecution({ name: 'broken', message: 'broken handler' }),
+                    reason: new ToolExecutionError({ name: 'broken', message: 'broken handler' }),
                   }),
                 ),
             }),
@@ -648,14 +698,14 @@ describe('GenerationParity', () => {
                 Effect.mapError(
                   (error) =>
                     new HookError({
-                      reason: new HookFailure({ message: error.message, cause: error }),
+                      reason: new HookFailureError({ message: error.message, cause: error }),
                     }),
                 ),
               ),
           },
           [Ownership.Current],
         )
-        const native = yield* NativeModel.make({
+        const native = yield* LanguageModel.make({
           generateText: () => Effect.succeed([]),
           streamText: () =>
             Stream.unwrap(
@@ -724,7 +774,7 @@ describe('GenerationParity', () => {
               : [],
           )[0]
           assert.ok(modelResult?.type === 'tool-result')
-          const content = yield* ToolContent.decode(modelResult.result)
+          const content = yield* ToolResult.decode(modelResult.result)
           assert.deepStrictEqual(
             content.content.map((part) => part.type),
             ['text', 'file', 'text', 'text'],
@@ -758,19 +808,19 @@ describe('GenerationParity', () => {
         const seen = yield* Ref.make<ReadonlyArray<string>>([])
         const toolkit = Toolkit.make(
           ...names.map((name) =>
-            AiTool.make(name, {
+            Tool.make(name, {
               parameters: Schema.Struct({}),
               success: Invocation.Result,
               failure: ToolError,
             }),
           ),
         )
-        const bound = yield* Tool.bind(
+        const bound = yield* ToolRegistration.bind(
           toolkit,
           Object.fromEntries(
             names.map((name) => [
               name,
-              { project: (value: unknown) => Tool.decodeResult(name, value) },
+              { project: (value: unknown) => ToolRegistration.decodeResult(name, value) },
             ]),
           ),
         ).pipe(
@@ -800,7 +850,7 @@ describe('GenerationParity', () => {
               results.map((result) => result.id),
             ),
         })
-        const native = yield* NativeModel.make({
+        const native = yield* LanguageModel.make({
           generateText: () => Effect.succeed([]),
           streamText: () =>
             Stream.unwrap(
@@ -863,18 +913,20 @@ describe('GenerationParity', () => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const path = yield* Path.Path
-        const host = yield* fs.makeTempDirectoryScoped()
-        const current = yield* fs.makeTempDirectoryScoped()
+        const host = yield* DirectoryFixture.make()
+        const current = yield* DirectoryFixture.make()
         yield* fs.writeFileString(path.join(host, 'file.txt'), 'wrong host')
         yield* fs.writeFileString(path.join(current, 'file.txt'), 'current conversation')
         const calls = yield* Ref.make(0)
-        const read = AiTool.make('read-current', {
+        const read = Tool.make('read-current', {
           parameters: Schema.Struct({ path: Schema.String }),
           success: Schema.String,
           failure: ToolError,
         }).addDependency(Invocation.Invocation)
         const toolkit = Toolkit.make(read)
-        const bound = yield* Tool.bind(toolkit, { 'read-current': { replay: 'safe' } }).pipe(
+        const bound = yield* ToolRegistration.bind(toolkit, {
+          'read-current': { replay: 'safe' },
+        }).pipe(
           Effect.provide(
             toolkit.toLayer({
               'read-current': ({ path: relative }) =>
@@ -885,7 +937,7 @@ describe('GenerationParity', () => {
                     Effect.mapError(
                       (error) =>
                         new ToolError({
-                          reason: new ToolExecution({
+                          reason: new ToolExecutionError({
                             name: 'read-current',
                             message: error.message,
                             cause: error,
@@ -897,7 +949,7 @@ describe('GenerationParity', () => {
             }),
           ),
         )
-        const native = yield* NativeModel.make({
+        const native = yield* LanguageModel.make({
           generateText: () => Effect.succeed([]),
           streamText: () => Stream.empty,
         })
@@ -926,7 +978,6 @@ describe('GenerationParity', () => {
               }
               yield* tx.write({
                 _tag: 'task' as const,
-                type: 'task',
                 value: {
                   id: taskId,
                   conversationId: payload.conversationId,
@@ -967,7 +1018,7 @@ describe('GenerationParity', () => {
           )[0]
           assert.ok(toolResult?.type === 'tool-result')
           assert.deepStrictEqual(
-            (yield* ToolContent.decode(toolResult.result)).content.map((part) =>
+            (yield* ToolResult.decode(toolResult.result)).content.map((part) =>
               part.type === 'text' ? part.text : '',
             ),
             ['current conversation'],
@@ -985,60 +1036,38 @@ describe('GenerationParity', () => {
         )
       }).pipe(Effect.provide(NodeServices.layer)),
   )
-})
 
-it.effect('preserves terminal projection failure instead of settling an interrupted tool', () =>
-  Effect.gen(function* () {
-    const native = yield* NativeModel.make({
-      generateText: () => Effect.succeed([]),
-      streamText: () => Stream.empty,
-    })
-    const toolkit = Toolkit.make(
-      AiTool.make('invalid-projection', {
-        parameters: Schema.Struct({}),
-        success: Schema.String,
-        failure: ToolError,
-      }),
-    )
-    const tools = yield* Tool.bind(toolkit, {
-      'invalid-projection': {
-        replay: 'safe',
-        project: () => Tool.decodeResult('invalid-projection', { isError: 'invalid' }),
-      },
-    }).pipe(
-      Effect.provide(
-        toolkit.toLayer({ 'invalid-projection': () => Effect.succeed('valid native success') }),
-      ),
-    )
-    yield* Effect.gen(function* () {
-      const session = yield* Session.Session
-      const root = yield* session.root()
-      const payload = yield* session.transaction(
-        Effect.fnUntraced(function* (tx) {
-          const assistant = yield* tx.appendEntry(root.id, { kind: 'test.assistant' })
-          const taskId = yield* tx.createTask({
-            conversationId: root.id,
-            kind: 'harness.tool',
-            version: 1,
-            input: null,
-            background: false,
-            abortRequested: false,
-            state: { status: 'pending' },
-          })
-          const payload = {
-            sessionId: Identity.SessionId.make('parity'),
-            conversationId: root.id,
-            taskId,
-            generationTaskId: taskId,
-            assistantId: assistant.id,
-            callId: 'invalid-call',
-            name: 'invalid-projection',
-            arguments: {},
-          }
-          yield* Structured.bind(
-            tx,
-            {
-              id: taskId,
+  it.effect('preserves terminal projection failure instead of settling an interrupted tool', () =>
+    Effect.gen(function* () {
+      const native = yield* LanguageModel.make({
+        generateText: () => Effect.succeed([]),
+        streamText: () => Stream.empty,
+      })
+      const toolkit = Toolkit.make(
+        Tool.make('invalid-projection', {
+          parameters: Schema.Struct({}),
+          success: Schema.String,
+          failure: ToolError,
+        }),
+      )
+      const tools = yield* ToolRegistration.bind(toolkit, {
+        'invalid-projection': {
+          replay: 'safe',
+          project: () =>
+            ToolRegistration.decodeResult('invalid-projection', { isError: 'invalid' }),
+        },
+      }).pipe(
+        Effect.provide(
+          toolkit.toLayer({ 'invalid-projection': () => Effect.succeed('valid native success') }),
+        ),
+      )
+      yield* Effect.gen(function* () {
+        const session = yield* Session.Session
+        const root = yield* session.root()
+        const payload = yield* session.transaction(
+          Effect.fnUntraced(function* (tx) {
+            const assistant = yield* tx.appendEntry(root.id, { kind: 'test.assistant' })
+            const taskId = yield* tx.createTask({
               conversationId: root.id,
               kind: 'harness.tool',
               version: 1,
@@ -1046,28 +1075,52 @@ it.effect('preserves terminal projection failure instead of settling an interrup
               background: false,
               abortRequested: false,
               state: { status: 'pending' },
-            },
-            ToolCall,
-            payload,
-          )
-          return payload
-        }),
+            })
+            const payload = {
+              sessionId: Identity.SessionId.make('parity'),
+              conversationId: root.id,
+              taskId,
+              generationTaskId: taskId,
+              assistantId: assistant.id,
+              callId: 'invalid-call',
+              name: 'invalid-projection',
+              arguments: {},
+            }
+            yield* Structured.bind(
+              tx,
+              {
+                id: taskId,
+                conversationId: root.id,
+                kind: 'harness.tool',
+                version: 1,
+                input: null,
+                background: false,
+                abortRequested: false,
+                state: { status: 'pending' },
+              },
+              ToolCall,
+              payload,
+            )
+            return payload
+          }),
+        )
+        const failure = yield* awaitTransition(ToolCall.execute(payload)).pipe(Effect.flip)
+        assert.strictEqual(failure.reason._tag, 'InvalidStateError')
+        assert.strictEqual(failure.message, 'Tool terminal projection failed')
+        assert.strictEqual(
+          (yield* session.task(payload.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+            .status,
+          'running',
+        )
+        assert.isUndefined(
+          (yield* session.task(payload.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
+            .outcome,
+        )
+      }).pipe(
+        Effect.provide(
+          runtime(descriptor(native), Registry.layer([{ name: 'invalid-projection', tools }])),
+        ),
       )
-      const failure = yield* awaitTransition(ToolCall.execute(payload)).pipe(Effect.flip)
-      assert.strictEqual(failure.reason._tag, 'InvalidState')
-      assert.strictEqual(failure.message, 'Tool terminal projection failed')
-      assert.strictEqual(
-        (yield* session.task(payload.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state.status,
-        'running',
-      )
-      assert.isUndefined(
-        (yield* session.task(payload.taskId).pipe(Effect.map(Option.getOrUndefined)))?.state
-          .outcome,
-      )
-    }).pipe(
-      Effect.provide(
-        runtime(descriptor(native), Registry.layer([{ name: 'invalid-projection', tools }])),
-      ),
-    )
-  }),
-)
+    }),
+  )
+})

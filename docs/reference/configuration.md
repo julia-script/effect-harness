@@ -22,14 +22,14 @@ Invalid construction or `Configuration.updateSettings(input)` fails with SchemaE
 | `stream`                      | Empty options object                  |
 | `retry.enabled`               | `true`                                |
 | `retry.maxRetries`            | `3`                                   |
-| `retry.baseDelayMs`           | `2 seconds`                           |
-| `retry.maxAgentDelayMs`       | `1 minute`                            |
+| `retry.baseDelay`             | `2 seconds`                           |
+| `retry.maxAgentDelay`         | `1 minute`                            |
 | `compaction.enabled`          | `true`                                |
 | `compaction.reserveTokens`    | `16384`                               |
 | `compaction.keepRecentTokens` | `20000`                               |
 | `compaction.backgroundTokens` | `32768`                               |
-| `progress.partialIntervalMs`  | `100 millis`                          |
-| `progress.outputIntervalMs`   | `100 millis`                          |
+| `progress.partialInterval`    | `100 millis`                          |
+| `progress.outputInterval`     | `100 millis`                          |
 | `toolExecution`               | `'parallel'`                          |
 | `steeringMode`                | `'one-at-a-time'`                     |
 | `followUpMode`                | `'one-at-a-time'`                     |
@@ -50,7 +50,7 @@ Conversation creation/fork inherits agent configuration according to its documen
 
 ## Tool policy
 
-`Tool.bind(toolkit, metadata?, requestServices?)` merges native Tool.Metadata annotations with per-name overrides. Explicit binding metadata wins. It captures handlers and host dependencies; Invocation and ToolCall remain dynamic. Missing declared request services fail at invocation with ToolUnavailable.
+`ToolRegistration.bind(toolkit, metadata?, requestServices?)` merges native Tool.Metadata annotations with per-name overrides. Explicit binding metadata wins. It captures handlers and host dependencies; Invocation and ToolCall remain dynamic. Missing declared request services fail at invocation with ToolUnavailableError.
 
 | Metadata field | Default / contract                                                                                                            |
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------- |

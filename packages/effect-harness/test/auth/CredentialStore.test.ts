@@ -15,12 +15,9 @@ import * as Option from 'effect/Option'
 import * as PlatformError from 'effect/PlatformError'
 import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
-import {
-  AuthIdentityError,
-  AuthNetworkError,
-  AuthError,
-  Credential,
-} from 'effect-harness/auth/Credential'
+import * as TestSchema from 'effect/testing/TestSchema'
+import { AuthIdentityError, AuthNetworkError, AuthError } from 'effect-harness/auth/AuthError'
+import { Credential } from 'effect-harness/auth/Credential'
 import * as CredentialStore from 'effect-harness/auth/CredentialStore'
 
 describe('CredentialStore', () => {
@@ -73,19 +70,21 @@ describe('CredentialStore', () => {
     'fractional domain instants retain exact numeric credential bytes across fresh stores',
     () =>
       Effect.gen(function* () {
+        const instants = new TestSchema.Asserts(Time.EpochMillis)
         for (const millis of [0.25, -0.5, 1700000000000.125]) {
-          const instant = yield* Schema.decodeEffect(Time.EpochMillis)(millis)
+          const instant = Time.fromEpochMillis(millis)
+          yield* instants.decoding().succeedEffect(millis, instant)
           assert.isTrue(DateTime.isUtc(instant))
           assert.strictEqual(DateTime.toEpochMillis(instant), millis)
-          assert.strictEqual(yield* Schema.encodeEffect(Time.EpochMillis)(instant), millis)
+          yield* instants.encoding().succeedEffect(instant, millis)
         }
         for (const millis of [NaN, Infinity, -Infinity])
-          assert.isTrue(Option.isNone(Schema.decodeOption(Time.EpochMillis)(millis)))
+          yield* instants.decoding().failEffect(millis, 'Expected a finite number')
         const fs = yield* FileSystem.FileSystem
         const directory = yield* fs.makeTempDirectoryScoped()
         const path = `${directory}/private/credentials.json`
         const wire = {
-          kind: 'opaqueOAuth' as const,
+          _tag: 'opaqueOAuth' as const,
           provider: 'anthropic',
           authorizationServer: 'https://issuer.test',
           clientId: 'client',
@@ -94,6 +93,7 @@ describe('CredentialStore', () => {
           scopes: [],
           expiresAt: 1700000000000.125,
         }
+        // effect-nit-allow P8-testschema-asserts: decoding only prepares the credential persisted by the protected-store integration test.
         const credential = yield* Schema.decodeEffect(Credential)(wire)
         const first = Context.get(
           yield* Layer.build(CredentialStore.layerProtectedFile({ path })),
@@ -101,6 +101,7 @@ describe('CredentialStore', () => {
         )
         yield* first.set('account', credential)
         const bytes = yield* fs.readFileString(path)
+        // effect-nit-allow P8-testschema-asserts: persisted bytes must retain the fractional number exactly across fresh store layers.
         assert.include(bytes, '1700000000000.125')
         const second = Context.get(
           yield* Layer.build(CredentialStore.layerProtectedFile({ path })),
@@ -111,7 +112,7 @@ describe('CredentialStore', () => {
         if (value.value._tag === 'opaqueOAuth') {
           assert.isTrue(DateTime.isUtc(value.value.expiresAt))
           assert.strictEqual(DateTime.toEpochMillis(value.value.expiresAt), wire.expiresAt)
-          assert.deepStrictEqual(yield* Schema.encodeEffect(Credential)(value.value), wire)
+          yield* new TestSchema.Asserts(Credential).encoding().succeedEffect(value.value, wire)
         }
       }).pipe(Effect.provide(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer))),
   )
@@ -132,7 +133,7 @@ describe('CredentialStore', () => {
             Effect.fail(new AuthError({ reason: new AuthNetworkError({ message: 'test' }) })),
           )
           .pipe(Effect.flip)
-        assert.strictEqual(failure.code, 'network')
+        assert.strictEqual(failure.reason._tag, 'AuthNetworkError')
         assert.deepStrictEqual(yield* store.get('key'), Option.some(value))
         yield* store.remove('key')
         assertNone(yield* store.get('key'))
@@ -171,7 +172,10 @@ describe('CredentialStore', () => {
         .pipe(Effect.flip)
       assert.deepStrictEqual(yield* reopened.get('key'), read)
       yield* fs.chmod(path, 0o644)
-      assert.strictEqual((yield* reopened.get('key').pipe(Effect.flip)).code, 'storage')
+      assert.strictEqual(
+        (yield* reopened.get('key').pipe(Effect.flip)).reason._tag,
+        'AuthStorageError',
+      )
     }).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer, BunCrypto.layer))),
   )
   it.effect(
@@ -373,8 +377,8 @@ describe('CredentialStore', () => {
         assert.strictEqual(
           (yield* second
             .set('key', { ...previous, apiKey: Redacted.make('contender') })
-            .pipe(Effect.flip)).code,
-          'busy',
+            .pipe(Effect.flip)).reason._tag,
+          'AuthBusyError',
         )
         yield* Fiber.interrupt(owner)
         assert.isFalse(yield* fs.exists(`${path}.lock`))
@@ -399,18 +403,21 @@ describe('CredentialStore', () => {
         )
         yield* fs.writeFileString(path, 'private malformed document', { mode: 0o600 })
         const corrupt = yield* store.get('key').pipe(Effect.flip)
-        assert.strictEqual(corrupt.code, 'storage')
+        assert.strictEqual(corrupt.reason._tag, 'AuthStorageError')
         assert.isFalse(JSON.stringify(corrupt).includes('private malformed document'))
         yield* fs.remove(path)
         yield* fs.symlink(`${directory}/missing-target`, path)
-        assert.strictEqual((yield* store.get('key').pipe(Effect.flip)).code, 'storage')
+        assert.strictEqual(
+          (yield* store.get('key').pipe(Effect.flip)).reason._tag,
+          'AuthStorageError',
+        )
         const publicDirectory = `${directory}/public`
         yield* fs.makeDirectory(publicDirectory, { mode: 0o755 })
         assert.strictEqual(
           (yield* Layer.build(
             CredentialStore.layerProtectedFile({ path: `${publicDirectory}/credentials.json` }),
-          ).pipe(Effect.flip)).code,
-          'storage',
+          ).pipe(Effect.flip)).reason._tag,
+          'AuthStorageError',
         )
         assert.strictEqual((yield* fs.stat(publicDirectory)).mode & 0o777, 0o755)
         const link = `${directory}/linked-directory`
@@ -418,8 +425,8 @@ describe('CredentialStore', () => {
         assert.strictEqual(
           (yield* Layer.build(
             CredentialStore.layerProtectedFile({ path: `${link}/credentials.json` }),
-          ).pipe(Effect.flip)).code,
-          'storage',
+          ).pipe(Effect.flip)).reason._tag,
+          'AuthStorageError',
         )
       }).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer, BunCrypto.layer))),
   )

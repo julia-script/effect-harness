@@ -1,12 +1,7 @@
+import { Effect, Schema, Stream } from 'effect'
+import { LanguageModel, Prompt, type Response, Tool, Toolkit } from 'effect/ai'
 import { assert, describe, it } from '@effect/vitest'
-import * as Effect from 'effect/Effect'
-import * as Schema from 'effect/Schema'
-import * as Stream from 'effect/Stream'
-import * as LanguageModel from 'effect/ai/LanguageModel'
-import * as Prompt from 'effect/ai/Prompt'
-import * as Response from 'effect/ai/Response'
-import * as Tool from 'effect/ai/Tool'
-import * as Toolkit from 'effect/ai/Toolkit'
+
 import { finish } from '../dist/DemoModel.js'
 
 const call: Response.ToolCallPartEncoded = {

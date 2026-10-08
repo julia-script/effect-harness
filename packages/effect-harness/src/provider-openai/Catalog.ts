@@ -1,18 +1,23 @@
+const DescriptorTypeId = '~effect-harness/provider-openai/Catalog/Descriptor'
+
 /**
  * Validated model catalogues with pinned request configuration and usage accounting.
  */
+import * as Pipeable from 'effect/Pipeable'
+import * as Inspectable from 'effect/Inspectable'
+import * as Predicate from 'effect/Predicate'
 import { dual } from 'effect/Function'
-import * as Arr from 'effect/Array'
+import * as Array from 'effect/Array'
 import * as HashMap from 'effect/HashMap'
 import * as Option from 'effect/Option'
 import type * as HttpClient from 'effect/http/HttpClient'
 import type { ChatGpt } from './ChatGpt.ts'
 import * as Config from 'effect/Config'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
-import * as OpenAiLanguageModel from '@effect/ai-openai/OpenAiLanguageModel'
+
 import * as OpenAiSchema from '@effect/ai-openai/OpenAiSchema'
 import * as Model from 'effect-harness/Model'
-import { ModelError, ModelNoModel, ModelUnsupported } from 'effect-harness/ModelError'
+import { ModelError, ModelNoModelError, ModelUnsupportedError } from 'effect-harness/ModelError'
 import * as Usage from 'effect-harness/Usage'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -20,13 +25,13 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import type * as Response from 'effect/ai/Response'
 import type * as Redacted from 'effect/Redacted'
-// effect-review-allow P9-namespace-alias-equals-module: @effect/ai-openai/OpenAiLanguageModel and ./OpenAiLanguageModel.ts both bind OpenAiLanguageModel; openAiLanguageModel distinguishes the owned model constructor.
-import * as openAiLanguageModel from './OpenAiLanguageModel.ts'
+import * as OpenAiLanguageModel from './OpenAiLanguageModel.ts'
 import * as ChatGptClient from './ChatGptClient.ts'
+import * as ChatGptLanguageModel from './ChatGptLanguageModel.ts'
 
 const fail = (message: string, cause?: unknown) =>
   new ModelError({
-    reason: new ModelUnsupported({ message, ...(cause === undefined ? {} : { cause }) }),
+    reason: new ModelUnsupportedError({ message, ...(cause === undefined ? {} : { cause }) }),
   })
 const fields = OpenAiSchema.CreateResponse.fields
 const Options = Schema.Struct({
@@ -177,10 +182,16 @@ const priced = (value: Response.Usage, prices?: Prices): Usage.Usage => {
  * Native model with validated provider configuration, usage accounting and error
  * classification.
  *
+ * **Details**
+ *
+ * This owned handle supports piping and bounded inspection. `toJSON` is a diagnostic
+ * projection; use the original fields for protocol values and resource references.
+ *
  * @category models
  */
-export interface Descriptor {
-  readonly ref: { provider: string; modelId: string }
+export interface Descriptor extends Pipeable.Pipeable, Inspectable.Inspectable {
+  readonly [DescriptorTypeId]: typeof DescriptorTypeId
+  readonly ref: Model.Descriptor['ref']
   readonly model: Model.Descriptor['model']
   readonly contextWindow: number
   readonly maxOutputTokens: number
@@ -189,6 +200,52 @@ export interface Descriptor {
   ) => Effect.Effect<Context.Context<OpenAiLanguageModel.Config>, ModelError>
   readonly usage: NonNullable<Model.Descriptor['usage']>
   readonly classify: NonNullable<Model.Descriptor['classify']>
+}
+
+/**
+ * Checks the established nominal `Descriptor` marker; it does not validate arbitrary payload fields.
+ *
+ * @category guards
+ */
+export const isDescriptor = (u: unknown): u is Descriptor =>
+  Predicate.hasProperty(u, DescriptorTypeId) && u[DescriptorTypeId] === DescriptorTypeId
+
+/**
+ * Owns a `Descriptor` handle while preserving payload descriptors and exact resource references.
+ *
+ * **Details**
+ *
+ * Construction and diagnostics do not evaluate payload accessors. Inspection is a bounded
+ * diagnostic projection; read the original fields for protocol values.
+ *
+ * @category constructors
+ */
+export const makeDescriptor = (
+  input: Omit<
+    Descriptor,
+    typeof DescriptorTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
+  >,
+): Descriptor => {
+  const handle: Descriptor = Object.create(DescriptorProto)
+  const descriptors = Object.getOwnPropertyDescriptors(input)
+  // The owned protocol cannot be replaced by extra runtime payload keys.
+  for (const key of [DescriptorTypeId, 'pipe', 'toJSON', 'toString', Inspectable.NodeInspectSymbol])
+    Reflect.deleteProperty(descriptors, key)
+  Object.defineProperties(handle, descriptors)
+  Object.defineProperty(handle, DescriptorTypeId, { value: DescriptorTypeId, enumerable: false })
+  return handle
+}
+
+const DescriptorProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  toJSON(): unknown {
+    return {
+      _id: 'effect-harness/provider-openai/Catalog/Descriptor',
+      model: '<LanguageModel>',
+      configure: '<function>',
+    }
+  },
 }
 
 /** Captures the native client now; configuration pins each request to this exact model ID. */
@@ -200,7 +257,7 @@ const descriptorImpl = Effect.fnUntraced(function* (
   const account = options?.account === true
   if (account && defaults.store === true)
     return yield* fail('ChatGPT account Responses require store:false')
-  const model = yield* openAiLanguageModel.make({
+  const model = yield* (account ? ChatGptLanguageModel.make : OpenAiLanguageModel.make)({
     model: self.modelId,
     config: {
       ...defaults,
@@ -264,9 +321,12 @@ const descriptorImpl = Effect.fnUntraced(function* (
         request.cache === 'none' ? undefined : (request.sessionId ?? merged.prompt_cache_key),
       ...(account ? { store: false, useItemReferences: false } : {}),
     })
-    return Context.make(OpenAiLanguageModel.Config, { ...config, model: self.modelId })
+    return Context.make(
+      OpenAiLanguageModel.Config,
+      OpenAiLanguageModel.Config.of({ ...config, model: self.modelId }),
+    )
   })
-  return {
+  return makeDescriptor({
     ref: {
       provider: options?.provider ?? (account ? 'openai-chatgpt' : 'openai'),
       modelId: self.modelId,
@@ -277,7 +337,7 @@ const descriptorImpl = Effect.fnUntraced(function* (
     configure,
     usage: (value, _metadata) => priced(value, self.prices),
     classify: (error) => Model.classify(error, 'openai'),
-  } satisfies Model.Descriptor
+  }) satisfies Model.Descriptor
 })
 
 /**
@@ -303,16 +363,27 @@ export const descriptor: {
   // Empty objects are malformed subjects, not meaningful curried options.
   // The data-last form requires a known supplied option key, or no argument for defaults.
 } = dual(
-  (args) =>
-    args.length >= 2 ||
-    (args.length === 1 &&
-      args[0] !== undefined &&
-      !(
-        typeof args[0] === 'object' &&
-        args[0] !== null &&
-        !('modelId' in args[0]) &&
-        ('provider' in args[0] || 'account' in args[0])
-      )),
+  Predicate.or(
+    (args: IArguments) => args.length >= 2,
+    Predicate.and(
+      (args: IArguments) => args.length === 1,
+      Predicate.mapInput(
+        Predicate.and(
+          Predicate.isNotUndefined,
+          Predicate.not(
+            Predicate.and(
+              Predicate.isObjectOrArray,
+              Predicate.and(
+                Predicate.not(Predicate.hasProperty('modelId')),
+                Predicate.or(Predicate.hasProperty('provider'), Predicate.hasProperty('account')),
+              ),
+            ),
+          ),
+        ),
+        (args: IArguments) => args[0],
+      ),
+    ),
+  ),
   descriptorImpl,
 )
 
@@ -322,7 +393,7 @@ export const descriptor: {
  * **Details**
  *
  * Validates entries and resolves only the registered provider/model pairs. Duplicate model
- * IDs are rejected; unknown references fail with ModelNoModel.
+ * IDs are rejected; unknown references fail with ModelNoModelError.
  *
  * **Gotchas**
  *
@@ -338,7 +409,9 @@ export const layer = (options: {
 }): Layer.Layer<Model.Catalog, ModelError, OpenAiClient.OpenAiClient> =>
   Layer.effect(Model.Catalog)(
     Effect.gen(function* () {
-      if (Arr.dedupe(options.models.map((entry) => entry.modelId)).length !== options.models.length)
+      if (
+        Array.dedupe(options.models.map((entry) => entry.modelId)).length !== options.models.length
+      )
         return yield* fail('Duplicate OpenAI catalogue model IDs')
       const entries = yield* Effect.forEach(options.models, (entry) => descriptor(entry, options))
       const byId = HashMap.fromIterable(entries.map((entry) => [entry.ref.modelId, entry]))
@@ -349,7 +422,7 @@ export const layer = (options: {
             Option.filter(found, (self) => self.ref.provider === ref.provider),
             () =>
               new ModelError({
-                reason: new ModelNoModel({
+                reason: new ModelNoModelError({
                   message: 'OpenAI model is not available in this catalogue',
                 }),
               }),
@@ -358,7 +431,7 @@ export const layer = (options: {
       })
     }),
   )
-// effect-review-allow P4-layer-provide-vs-provideMerge: the public catalogue
+// effect-nit-allow P3-provide-vs-provideMerge: the public catalogue
 // exposes the exact captured native client alongside its descriptors, so callers
 // share one transport lifecycle and retain per-request native Config injection.
 /**
@@ -379,7 +452,7 @@ export const layerApiKey = (
   },
 ): Layer.Layer<Model.Catalog | OpenAiClient.OpenAiClient, ModelError, HttpClient.HttpClient> =>
   layer(options).pipe(Layer.provideMerge(OpenAiClient.layer(options)))
-// effect-review-allow P4-layer-provide-vs-provideMerge: catalogue descriptors and callers share the exact native account client and its lifecycle; per-call Config remains open.
+// effect-nit-allow P3-provide-vs-provideMerge: catalogue descriptors and callers share the exact native account client and its lifecycle; per-call Config remains open.
 /**
  * Provides a declared catalogue through an authorized ChatGPT account.
  *
@@ -453,3 +526,13 @@ export const layerChatGptConfig = (
       return layerChatGpt(yield* Config.unwrap(config))
     }),
   )
+
+/** Checks the decoded Prices contract without decoding or coercing input.
+ * @category guards
+ */
+export const isPrices: (u: unknown) => u is Prices = Schema.is(Schema.toType(Prices))
+
+/** Checks the decoded Entry contract without decoding or coercing input.
+ * @category guards
+ */
+export const isEntry: (u: unknown) => u is Entry = Schema.is(Schema.toType(Entry))

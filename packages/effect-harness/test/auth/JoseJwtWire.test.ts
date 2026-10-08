@@ -1,6 +1,6 @@
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
-import * as Option from 'effect/Option'
+import * as TestSchema from 'effect/testing/TestSchema'
 import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
@@ -8,32 +8,34 @@ import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import * as JoseJwt from 'effect-harness/auth/JoseJwt'
 
 describe('JoseJwtWire', () => {
-  it('moved JWT and JWKS optional wire keys reject explicit undefined', () => {
-    for (const key of ['kid', 'alg', 'use', 'n', 'e', 'crv', 'x', 'y'])
-      assert.isTrue(
-        Option.isNone(
-          Schema.decodeOption(JoseJwt.KeySet)({ keys: [{ kty: 'RSA', [key]: undefined }] }),
-        ),
-        key,
-      )
-    for (const key of ['nonce', 'email'])
-      assert.isTrue(
-        Option.isNone(
-          Schema.decodeOption(JoseJwt.Claims)({
-            sub: 'subject',
-            iss: 'issuer',
-            exp: 0.5,
-            [key]: undefined,
-          }),
-        ),
-        key,
-      )
-    assert.isTrue(
-      Option.isSome(
-        Schema.decodeOption(JoseJwt.Claims)({ sub: 'subject', iss: 'issuer', exp: 0.5 }),
-      ),
-    )
-  })
+  it.effect('moved JWT and JWKS optional wire keys reject explicit undefined', () =>
+    Effect.gen(function* () {
+      const keySets = new TestSchema.Asserts(JoseJwt.KeySet)
+      for (const key of ['kid', 'alg', 'use', 'n', 'e', 'crv', 'x', 'y']) {
+        yield* keySets
+          .decoding()
+          .failEffect(
+            { keys: [{ kty: 'RSA', [key]: undefined }] },
+            `Expected string\n  at ["keys"][0]["${key}"]`,
+          )
+      }
+      const claims = new TestSchema.Asserts(JoseJwt.Claims)
+      for (const key of ['nonce', 'email']) {
+        yield* claims
+          .decoding()
+          .failEffect(
+            { sub: 'subject', iss: 'issuer', exp: 0.5, [key]: undefined },
+            `Expected string\n  at ["${key}"]`,
+          )
+      }
+      yield* claims
+        .decoding()
+        .succeedEffect(
+          { sub: 'subject', iss: 'issuer', exp: 0.5 },
+          { sub: 'subject', iss: 'issuer', exp: 0.5 },
+        )
+    }),
+  )
   it.effect(
     'moved Jose JWT implementation rejects malformed JWKS wire fields before verification',
     () =>

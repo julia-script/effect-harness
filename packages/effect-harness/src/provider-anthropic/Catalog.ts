@@ -1,34 +1,36 @@
+const DescriptorTypeId = '~effect-harness/provider-anthropic/Catalog/Descriptor'
+
 /**
  * Validated model catalogues with pinned request configuration and usage accounting.
  */
+import * as Pipeable from 'effect/Pipeable'
+import * as Inspectable from 'effect/Inspectable'
+import * as Predicate from 'effect/Predicate'
 import { dual, constUndefined } from 'effect/Function'
 import * as HashMap from 'effect/HashMap'
 import * as Option from 'effect/Option'
 import type * as HttpClient from 'effect/http/HttpClient'
 import * as Config from 'effect/Config'
 import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
-import * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
+
 import * as Generated from '@effect/ai-anthropic/Generated'
 import * as Model from 'effect-harness/Model'
-import { ModelError, ModelNoModel, ModelUnsupported } from 'effect-harness/ModelError'
+import { ModelError, ModelNoModelError, ModelUnsupportedError } from 'effect-harness/ModelError'
 import * as Usage from 'effect-harness/Usage'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Result from 'effect/Result'
-import * as Predicate from 'effect/Predicate'
 import * as Schema from 'effect/Schema'
-import * as SchemaGetter from 'effect/SchemaGetter'
 import * as Record from 'effect/Record'
-import * as Arr from 'effect/Array'
+import * as Array from 'effect/Array'
 import type * as Response from 'effect/ai/Response'
 import type * as Redacted from 'effect/Redacted'
-// effect-review-allow P9-namespace-alias-equals-module: @effect/ai-anthropic/AnthropicLanguageModel and ./AnthropicLanguageModel.ts both bind AnthropicLanguageModel; anthropicLanguageModel distinguishes the owned model constructor.
-import * as anthropicLanguageModel from './AnthropicLanguageModel.ts'
+import * as AnthropicLanguageModel from './AnthropicLanguageModel.ts'
 
 const fail = (message: string, cause?: unknown) =>
   new ModelError({
-    reason: new ModelUnsupported({ message, ...(cause === undefined ? {} : { cause }) }),
+    reason: new ModelUnsupportedError({ message, ...(cause === undefined ? {} : { cause }) }),
   })
 const fields = Generated.BetaCreateMessageParams.fields
 const Options = Schema.Struct({
@@ -109,32 +111,10 @@ export const Entry = Schema.Struct({
   maxOutputTokens: Limit,
   thinking: Schema.optional(
     Schema.Union([
-      Schema.Struct({ mode: Schema.tag('adaptive') }).pipe(
-        Schema.decodeTo(Schema.TaggedStruct('adaptive', {}), {
-          decode: SchemaGetter.transform(() => ({ _tag: 'adaptive' as const })),
-          encode: SchemaGetter.transform(() => ({ mode: 'adaptive' as const })),
-        }),
-      ),
-      Schema.Struct({
-        mode: Schema.tag('budget'),
+      Schema.TaggedStruct('adaptive', {}),
+      Schema.TaggedStruct('budget', {
         budgets: Schema.Record(Schema.String, Limit.check(Schema.isGreaterThanOrEqualTo(1024))),
-      }).pipe(
-        Schema.decodeTo(
-          Schema.TaggedStruct('budget', {
-            budgets: Schema.Record(Schema.String, Limit.check(Schema.isGreaterThanOrEqualTo(1024))),
-          }),
-          {
-            decode: SchemaGetter.transform((self) => ({
-              _tag: 'budget' as const,
-              budgets: self.budgets,
-            })),
-            encode: SchemaGetter.transform((self) => ({
-              mode: 'budget' as const,
-              budgets: self.budgets,
-            })),
-          },
-        ),
-      ),
+      }),
     ]),
   ),
   efforts: Schema.optional(Schema.Array(Schema.Literals(['low', 'medium', 'high']))),
@@ -153,7 +133,7 @@ export const Entry = Schema.Struct({
   Schema.makeFilter(
     (entry) =>
       entry.thinking?._tag !== 'budget' ||
-      Object.values(entry.thinking.budgets).every((budget) => budget < entry.maxOutputTokens),
+      Record.values(entry.thinking.budgets).every((budget) => budget < entry.maxOutputTokens),
   ),
 )
 /**
@@ -241,10 +221,16 @@ const usage = (
  * Native model with validated provider configuration, usage accounting and error
  * classification.
  *
+ * **Details**
+ *
+ * This owned handle supports piping and bounded inspection. `toJSON` is a diagnostic
+ * projection; use the original fields for protocol values and resource references.
+ *
  * @category models
  */
-export interface Descriptor {
-  readonly ref: { provider: string; modelId: string }
+export interface Descriptor extends Pipeable.Pipeable, Inspectable.Inspectable {
+  readonly [DescriptorTypeId]: typeof DescriptorTypeId
+  readonly ref: Model.Descriptor['ref']
   readonly model: Model.Descriptor['model']
   readonly contextWindow: number
   readonly maxOutputTokens: number
@@ -253,6 +239,52 @@ export interface Descriptor {
   ) => Effect.Effect<Context.Context<AnthropicLanguageModel.Config>, ModelError>
   readonly usage: NonNullable<Model.Descriptor['usage']>
   readonly classify: NonNullable<Model.Descriptor['classify']>
+}
+
+/**
+ * Checks the established nominal `Descriptor` marker; it does not validate arbitrary payload fields.
+ *
+ * @category guards
+ */
+export const isDescriptor = (u: unknown): u is Descriptor =>
+  Predicate.hasProperty(u, DescriptorTypeId) && u[DescriptorTypeId] === DescriptorTypeId
+
+/**
+ * Owns a `Descriptor` handle while preserving payload descriptors and exact resource references.
+ *
+ * **Details**
+ *
+ * Construction and diagnostics do not evaluate payload accessors. Inspection is a bounded
+ * diagnostic projection; read the original fields for protocol values.
+ *
+ * @category constructors
+ */
+export const makeDescriptor = (
+  input: Omit<
+    Descriptor,
+    typeof DescriptorTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
+  >,
+): Descriptor => {
+  const handle: Descriptor = Object.create(DescriptorProto)
+  const descriptors = Object.getOwnPropertyDescriptors(input)
+  // The owned protocol cannot be replaced by extra runtime payload keys.
+  for (const key of [DescriptorTypeId, 'pipe', 'toJSON', 'toString', Inspectable.NodeInspectSymbol])
+    Reflect.deleteProperty(descriptors, key)
+  Object.defineProperties(handle, descriptors)
+  Object.defineProperty(handle, DescriptorTypeId, { value: DescriptorTypeId, enumerable: false })
+  return handle
+}
+
+const DescriptorProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  toJSON(): unknown {
+    return {
+      _id: 'effect-harness/provider-anthropic/Catalog/Descriptor',
+      model: '<LanguageModel>',
+      configure: '<function>',
+    }
+  },
 }
 
 /** Captures the standard native client; public user metadata correlates UUID7 requests without private affinity headers. */
@@ -271,7 +303,7 @@ const descriptorImpl = Effect.fnUntraced(function* (
       fail('Invalid Anthropic catalogue entry, defaults or thinking budget', cause),
     ),
   )
-  const model = yield* anthropicLanguageModel.make({
+  const model = yield* AnthropicLanguageModel.make({
     model: self.modelId,
     config: { ...defaults, max_tokens: defaults.max_tokens ?? self.maxOutputTokens },
   })
@@ -359,13 +391,16 @@ const descriptorImpl = Effect.fnUntraced(function* (
           ? merged.metadata
           : { ...merged.metadata, user_id: request.sessionId },
     })
-    return Context.make(AnthropicLanguageModel.Config, {
-      ...config,
-      model: self.modelId,
-      max_tokens: max,
-    })
+    return Context.make(
+      AnthropicLanguageModel.Config,
+      AnthropicLanguageModel.Config.of({
+        ...config,
+        model: self.modelId,
+        max_tokens: max,
+      }),
+    )
   })
-  return {
+  return makeDescriptor({
     ref: { provider, modelId: self.modelId },
     model,
     contextWindow: self.contextWindow,
@@ -373,7 +408,7 @@ const descriptorImpl = Effect.fnUntraced(function* (
     configure,
     usage: (value, metadata) => usage(value, metadata, self.prices),
     classify: (error) => Model.classify(error, 'anthropic'),
-  } satisfies Model.Descriptor
+  }) satisfies Model.Descriptor
 })
 /**
  * Creates a model descriptor from a validated catalogue entry.
@@ -388,7 +423,10 @@ const descriptorImpl = Effect.fnUntraced(function* (
 export const descriptor: {
   (provider?: string): (self: Entry) => ReturnType<typeof descriptorImpl>
   (self: Entry, provider?: string): ReturnType<typeof descriptorImpl>
-} = dual((args) => typeof args[0] === 'object' && args[0] !== null, descriptorImpl)
+} = dual(
+  Predicate.mapInput(Predicate.isObjectOrArray, (args: IArguments) => args[0]),
+  descriptorImpl,
+)
 
 /**
  * Provides a Model.Catalog from declared provider model entries.
@@ -396,7 +434,7 @@ export const descriptor: {
  * **Details**
  *
  * Validates entries and resolves only the registered provider/model pairs. Duplicate model
- * IDs are rejected; unknown references fail with ModelNoModel.
+ * IDs are rejected; unknown references fail with ModelNoModelError.
  *
  * **Gotchas**
  *
@@ -411,7 +449,9 @@ export const layer = (options: {
 }): Layer.Layer<Model.Catalog, ModelError, AnthropicClient.AnthropicClient> =>
   Layer.effect(Model.Catalog)(
     Effect.gen(function* () {
-      if (Arr.dedupe(options.models.map((entry) => entry.modelId)).length !== options.models.length)
+      if (
+        Array.dedupe(options.models.map((entry) => entry.modelId)).length !== options.models.length
+      )
         return yield* fail('Duplicate Anthropic catalogue model IDs')
       const entries = yield* Effect.forEach(options.models, (entry) =>
         descriptor(entry, options.provider),
@@ -424,7 +464,7 @@ export const layer = (options: {
             Option.filter(found, (self) => self.ref.provider === ref.provider),
             () =>
               new ModelError({
-                reason: new ModelNoModel({
+                reason: new ModelNoModelError({
                   message: 'Anthropic model is not available in this catalogue',
                 }),
               }),
@@ -433,7 +473,7 @@ export const layer = (options: {
       })
     }),
   )
-// effect-review-allow P4-layer-provide-vs-provideMerge: the public catalogue
+// effect-nit-allow P3-provide-vs-provideMerge: the public catalogue
 // exposes the exact captured native client alongside its descriptors, so callers
 // share one transport lifecycle and retain per-request native Config injection.
 /**
@@ -489,3 +529,13 @@ export const layerApiKeyConfig = (
       return layerApiKey(yield* Config.unwrap(config))
     }),
   )
+
+/** Checks the decoded Prices contract without decoding or coercing input.
+ * @category guards
+ */
+export const isPrices: (u: unknown) => u is Prices = Schema.is(Schema.toType(Prices))
+
+/** Checks the decoded Entry contract without decoding or coercing input.
+ * @category guards
+ */
+export const isEntry: (u: unknown) => u is Entry = Schema.is(Schema.toType(Entry))

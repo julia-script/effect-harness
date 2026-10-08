@@ -1,5 +1,7 @@
-import { vi } from 'vitest'
-vi.mock('effect/ai/LanguageModel', { spy: true })
+import * as TestSchema from 'effect/testing/TestSchema'
+// effect-nit-allow P8-tests-import-public-specifiers: the native factory is a null-exported owned dependency; no Effect module is replaced.
+// effect-nit-allow P9-no-internal-cross-import: the native factory is a null-exported owned dependency; no Effect module is replaced.
+import * as NativeLanguageModel from '../../src/internal/NativeLanguageModel.ts'
 import * as Config from 'effect/Config'
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Context from 'effect/Context'
@@ -16,13 +18,11 @@ import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
 import * as Cli from 'effect-harness/provider-claude-code/Cli'
 import * as IntentServer from 'effect-harness/provider-claude-code/IntentServer'
-// effect-review-allow P9-namespace-alias-equals-module: effect-harness/provider-claude-code/LanguageModel and packages/effect-harness/test/provider-claude-code/LanguageModel.test.ts both bind LanguageModel; Provider distinguishes the concepts.
-import * as Provider from 'effect-harness/provider-claude-code/LanguageModel'
+import * as ClaudeCodeLanguageModel from 'effect-harness/provider-claude-code/ClaudeCodeLanguageModel'
 import * as Protocol from 'effect-harness/provider-claude-code/Protocol'
-// effect-review-allow P9-namespace-alias-equals-module: effect-harness/provider-claude-code/Prompt and effect/ai/Prompt both bind Prompt; AdapterPrompt distinguishes the concepts.
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/provider-claude-code/Prompt and effect/ai/Prompt both bind Prompt; AdapterPrompt distinguishes the concepts.
 import * as AdapterPrompt from 'effect-harness/provider-claude-code/Prompt'
 import * as Turn from 'effect-harness/provider-claude-code/Turn'
-import * as Option from 'effect/Option'
 
 const init = (tools: ReadonlyArray<string> = []) => ({
   type: 'system',
@@ -72,32 +72,41 @@ const nativeTool = Tool.make('write.document', {
   success: Schema.String,
 })
 const toolkit = Toolkit.make(nativeTool)
-const fixture = (events: ReadonlyArray<unknown> = textFrames, options?: Provider.Options) => {
+const fixture = (
+  events: ReadonlyArray<unknown> = textFrames,
+  options?: ClaudeCodeLanguageModel.ClaudeCodeLanguageModel.Options,
+) => {
   const requests: Array<Cli.Request> = []
   let closed = 0
   let opened = 0
-  const cli = Layer.succeed(Cli.Cli, {
-    status: Effect.succeed({ loggedIn: true, account: true }),
-    run: (request) => {
-      requests.push(request)
-      return decode(events)
-    },
-  })
-  const server = Layer.succeed(IntentServer.IntentServer, {
-    open: () =>
-      Effect.gen(function* () {
-        opened++
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            closed++
-          }),
-        )
-        return {
-          url: 'http://127.0.0.1:1/mcp/test',
-          aliases: new Map([['mcp__harness__tool_0', nativeTool.name]]),
-        }
-      }),
-  })
+  const cli = Layer.succeed(
+    Cli.Cli,
+    Cli.Cli.of({
+      status: Effect.succeed({ loggedIn: true, account: true }),
+      run: (request) => {
+        requests.push(request)
+        return decode(events)
+      },
+    }),
+  )
+  const server = Layer.succeed(
+    IntentServer.IntentServer,
+    IntentServer.IntentServer.of({
+      open: () =>
+        Effect.gen(function* () {
+          opened++
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              closed++
+            }),
+          )
+          return IntentServer.makeSession({
+            url: 'http://127.0.0.1:1/mcp/test',
+            aliases: new Map([['mcp__harness__tool_0', nativeTool.name]]),
+          })
+        }),
+    }),
+  )
   return {
     requests,
     get closed() {
@@ -106,7 +115,7 @@ const fixture = (events: ReadonlyArray<unknown> = textFrames, options?: Provider
     get opened() {
       return opened
     },
-    layer: Provider.layer(options ?? { model: 'requested-model' }).pipe(
+    layer: ClaudeCodeLanguageModel.layer(options ?? { model: 'requested-model' }).pipe(
       Layer.provide(Layer.merge(cli, server)),
     ),
   }
@@ -143,7 +152,7 @@ const toolFrames = (count = 2): Array<unknown> => {
   return events
 }
 
-describe('LanguageModel', () => {
+describe('LanguageModel', { concurrent: false }, () => {
   describe('native Claude Code LanguageModel', () => {
     it.effect('complete translates text, response metadata, usage and cost', () =>
       Effect.gen(function* () {
@@ -394,36 +403,42 @@ describe('LanguageModel', () => {
         const started = yield* Deferred.make<void>()
         let stopped = false
         let closed = false
-        const cli = Layer.succeed(Cli.Cli, {
-          status: Effect.succeed({ loggedIn: true, account: true }),
-          run: () =>
-            Stream.unwrap(
+        const cli = Layer.succeed(
+          Cli.Cli,
+          Cli.Cli.of({
+            status: Effect.succeed({ loggedIn: true, account: true }),
+            run: () =>
+              Stream.unwrap(
+                Effect.gen(function* () {
+                  yield* Effect.addFinalizer(() =>
+                    Effect.sync(() => {
+                      stopped = true
+                    }),
+                  )
+                  yield* Deferred.succeed(started, undefined)
+                  return Stream.never
+                }),
+              ),
+          }),
+        )
+        const server = Layer.succeed(
+          IntentServer.IntentServer,
+          IntentServer.IntentServer.of({
+            open: () =>
               Effect.gen(function* () {
                 yield* Effect.addFinalizer(() =>
                   Effect.sync(() => {
-                    stopped = true
+                    closed = true
                   }),
                 )
-                yield* Deferred.succeed(started, undefined)
-                return Stream.never
+                return IntentServer.makeSession({
+                  url: 'http://127.0.0.1:1/mcp/test',
+                  aliases: new Map([['mcp__harness__tool_0', nativeTool.name]]),
+                })
               }),
-            ),
-        })
-        const server = Layer.succeed(IntentServer.IntentServer, {
-          open: () =>
-            Effect.gen(function* () {
-              yield* Effect.addFinalizer(() =>
-                Effect.sync(() => {
-                  closed = true
-                }),
-              )
-              return {
-                url: 'http://127.0.0.1:1/mcp/test',
-                aliases: new Map([['mcp__harness__tool_0', nativeTool.name]]),
-              }
-            }),
-        })
-        const layer = Provider.layer({ model: 'model' }).pipe(
+          }),
+        )
+        const layer = ClaudeCodeLanguageModel.layer({ model: 'model' }).pipe(
           Layer.provide(Layer.merge(cli, server)),
         )
         const fiber = yield* Effect.forkChild(
@@ -602,14 +617,25 @@ describe('LanguageModel', () => {
               return decode(textFrames)
             },
           })
-          const spy = vi.mocked(LanguageModel.make)
-          spy.mockClear()
-          const layer = Provider.layerConfig({
+          let constructions = 0
+          const nativeLayer = Layer.succeed(
+            NativeLanguageModel.NativeLanguageModel,
+            NativeLanguageModel.NativeLanguageModel.of({
+              make: (options) =>
+                Effect.suspend(() => {
+                  constructions++
+                  return LanguageModel.make(options)
+                }),
+            }),
+          )
+          const layer = ClaudeCodeLanguageModel.layerConfig({
             model: Config.String('MODEL'),
             cwd: Config.String('CWD'),
             effort: Config.succeed('high'),
           }).pipe(
-            Layer.provide(Layer.merge(Layer.succeed(Cli.Cli, cli), IntentServer.layerDisabled)),
+            Layer.provide(
+              Layer.mergeAll(Layer.succeed(Cli.Cli, cli), IntentServer.layerDisabled, nativeLayer),
+            ),
           )
           yield* Effect.gen(function* () {
             const context = yield* Layer.build(layer).pipe(
@@ -625,32 +651,42 @@ describe('LanguageModel', () => {
             assert.strictEqual(requests[0]?.model, 'configured-cli')
             assert.strictEqual(requests[0]?.cwd, '/caller/workspace')
             assert.strictEqual(requests[0]?.effort, 'high')
-            assert.strictEqual(spy.mock.calls.length, 1)
+            assert.strictEqual(constructions, 1)
           })
         }),
     )
   })
 
   describe('CLI adapter schema envelopes', () => {
-    it('wire optional fields reject explicit undefined while nullable fields retain null', () => {
-      const decode = Schema.decodeUnknownOption(Protocol.Event)
-      assert.isTrue(
-        Option.isSome(
-          decode({
+    it.effect(
+      'wire optional fields reject explicit undefined while nullable fields retain null',
+      () =>
+        Effect.gen(function* () {
+          const event = {
             type: 'assistant',
             message: { id: 'message', model: 'model', content: [], usage: {}, stop_reason: null },
             parent_tool_use_id: null,
-          }),
-        ),
-      )
-      for (const key of ['tools', 'model', 'session_id'])
-        assert.isTrue(
-          Option.isNone(decode({ type: 'system', subtype: 'init', [key]: undefined })),
-          key,
-        )
-      const decodeUsage = Schema.decodeUnknownOption(Protocol.Usage)
-      assert.isTrue(Option.isNone(decodeUsage({ input_tokens: undefined })))
-    })
+          } as const
+          const events = new TestSchema.Asserts(Protocol.Event)
+          yield* events.decoding().succeedEffect(event, {
+            type: 'assistant',
+            message: { id: 'message', model: 'model', content: [], usage: {}, stop_reason: null },
+            parent_tool_use_id: null,
+          })
+          for (const [key, issue] of [
+            ['tools', 'Expected array\n  at ["tools"]'],
+            ['model', 'Expected string\n  at ["model"]'],
+            ['session_id', 'Expected string\n  at ["session_id"]'],
+          ] as const) {
+            yield* events
+              .decoding()
+              .failEffect({ type: 'system', subtype: 'init', [key]: undefined }, issue)
+          }
+          yield* new TestSchema.Asserts(Protocol.Usage)
+            .decoding()
+            .failEffect({ input_tokens: undefined }, 'Expected number\n  at ["input_tokens"]')
+        }),
+    )
     it.effect(
       'transcript wrappers preserve already encoded native options and opaque tool payloads with ordered attachment bytes',
       () =>
@@ -771,22 +807,23 @@ describe('LanguageModel', () => {
         }),
     )
     it.effect('malformed constructed user frame fails at schema encoding', () =>
-      Effect.gen(function* () {
-        const error = yield* Schema.encodeUnknownEffect(
-          Schema.fromJsonString(AdapterPrompt.UserFrame),
-        )({
+      new TestSchema.Asserts(Schema.fromJsonString(AdapterPrompt.UserFrame)).encoding().failEffect(
+        {
           type: 'user',
           session_id: '',
           parent_tool_use_id: null,
           message: {
             role: 'user',
             content: [
-              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: null } },
+              {
+                type: 'image',
+                source: { type: 'base64', media_type: 'image/png', data: null },
+              },
             ],
           },
-        }).pipe(Effect.flip)
-        assert.isTrue(Schema.isSchemaError(error))
-      }),
+        },
+        'Expected string\n  at ["message"]["content"][0]["source"]["data"]',
+      ),
     )
   })
 
@@ -850,9 +887,12 @@ describe('LanguageModel', () => {
       const translated = Turn.translate(source, new Map())
       const collected = Turn.collect(translated)
       const error = yield* collected.pipe(
-        Effect.provideService(CallerService, {
-          event: { type: 'system', subtype: 'init', tools: [] },
-        }),
+        Effect.provideService(
+          CallerService,
+          CallerService.of({
+            event: { type: 'system', subtype: 'init', tools: [] },
+          }),
+        ),
         Effect.flip,
       )
       assert.strictEqual(error, callerFailure)

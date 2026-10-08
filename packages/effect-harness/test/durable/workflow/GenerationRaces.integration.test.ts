@@ -5,14 +5,16 @@ import * as Option from 'effect/Option'
 import * as Identity from 'effect-harness/durable/Identity'
 import { assert, describe, it } from '@effect/vitest'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/Executor and effect-harness/durable/Executor both own Executor; Harness keeps their distinct native/harness APIs available together for these constructor, service and declaration assertions.
 import * as Harness from 'effect-harness/Executor'
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/Compaction and effect-harness/durable/workflow/Compaction both own Compaction; HarnessCompaction keeps their distinct native/harness APIs available together for these constructor, service and declaration assertions.
 import * as HarnessCompaction from 'effect-harness/Compaction'
 import { ToolError } from 'effect-harness/ToolError'
-import { type RegistryError } from 'effect-harness/RegistryError'
+import { type RegistryError } from 'effect-harness/Registry'
 import * as Invocation from 'effect-harness/Invocation'
 import * as Model from 'effect-harness/Model'
 import * as Registry from 'effect-harness/Registry'
-import * as Tool from 'effect-harness/Tool'
+import * as ToolRegistration from 'effect-harness/ToolRegistration'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -21,10 +23,10 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as AiError from 'effect/ai/AiError'
-import * as NativeModel from 'effect/ai/LanguageModel'
+import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Prompt from 'effect/ai/Prompt'
-import * as Response from 'effect/ai/Response'
-import * as AiTool from 'effect/ai/Tool'
+import type * as Response from 'effect/ai/Response'
+import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
 import * as Workflow from 'effect/workflow/Workflow'
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
@@ -35,16 +37,16 @@ import * as Ownership from 'effect-harness/durable/Ownership'
 import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
 import * as Store from 'effect-harness/durable/Store'
-import * as Directory from 'effect-harness/durable/SessionDirectory'
+import * as SessionDirectory from 'effect-harness/durable/SessionDirectory'
 import * as Usage from 'effect-harness/durable/Usage'
-import * as Memory from 'effect-harness/durable/storage/Memory'
+
 import { Abort } from 'effect-harness/durable/workflow/Abort'
 import { Compaction } from 'effect-harness/durable/workflow/Compaction'
 import * as CompactionExecutor from 'effect-harness/durable/workflow/CompactionExecutor'
 import * as Cancellation from 'effect-harness/durable/workflow/Cancellation'
 import { Submission } from 'effect-harness/durable/workflow/Submission'
 import * as Structured from 'effect-harness/durable/workflow/Structured'
-import { ExecutionError, Storage } from 'effect-harness/durable/workflow/ExecutionError'
+import { ExecutionError, StorageError } from 'effect-harness/durable/workflow/ExecutionError'
 
 const modelRef = { provider: 'race', modelId: 'model' }
 const finish = (reason: Response.FinishReason = 'stop'): Response.FinishPartEncoded => ({
@@ -74,7 +76,6 @@ const input = (requestId: string) => ({
   requestId: Identity.RequestId.make(requestId),
   submission: {
     _tag: 'input' as const,
-    type: 'input' as const,
     whenBusy: 'followUp' as const,
     message: Prompt.userMessage({ content: [Prompt.textPart({ text: requestId })] }),
   },
@@ -100,11 +101,11 @@ const Node = Workflow.make('race/custom/v1', {
   error: ExecutionError,
   idempotencyKey: ({ taskId }) => String(taskId),
 })
-type Behavior = (name: string) => Effect.Effect<Record.Json, ExecutionError>
+type Behavior = (name: string) => Effect.Effect<Schema.Json, ExecutionError>
 const runtime = (
   model: Model.Descriptor,
   registry: Layer.Layer<Registry.Registry, RegistryError> = Registry.layer([]),
-  options: Conversation.Options = {},
+  options: Conversation.Conversation.Options = {},
   behavior: Behavior = () => Effect.succeed({ done: true }),
   clockRegistered?: Deferred.Deferred<void>,
 ) => {
@@ -136,19 +137,21 @@ const runtime = (
           }),
         ).pipe(Layer.provide(WorkflowEngine.layerMemory))
   const session = Session.layer.pipe(
-    Layer.provideMerge(Memory.layer),
+    Layer.provideMerge(Store.layerMemory),
     Layer.provide(
       Conversation.layerCreation.pipe(Layer.provide(config), Layer.provide(BunCrypto.layer)),
     ),
   )
   const node = Node.toLayer((identity) =>
     Effect.gen(function* () {
-      const session = yield* (yield* Directory.SessionDirectory).resolve(identity.sessionId)
+      const session = yield* (yield* SessionDirectory.SessionDirectory).resolve(identity.sessionId)
       return yield* Structured.evaluate(identity, session, behavior(identity.name))
     }).pipe(
       Effect.mapError((error) =>
         error._tag === 'StorageError'
-          ? new ExecutionError({ reason: new Storage({ message: error.message, cause: error }) })
+          ? new ExecutionError({
+              reason: new StorageError({ message: error.message, cause: error }),
+            })
           : error,
       ),
     ),
@@ -156,7 +159,9 @@ const runtime = (
   return Layer.mergeAll(Executor.layerExecutors, node.pipe(Layer.provide(Cancellation.layer))).pipe(
     Layer.provideMerge(engine),
     Layer.provideMerge(
-      Directory.layerSingle(Identity.SessionId.make('race')).pipe(Layer.provideMerge(session)),
+      SessionDirectory.layerSingle(Identity.SessionId.make('race')).pipe(
+        Layer.provideMerge(session),
+      ),
     ),
     Layer.provideMerge(config),
     Layer.provide(catalogue),
@@ -164,7 +169,7 @@ const runtime = (
     Layer.provideMerge(Ownership.layerDeclarations([...Executor.workflows, Node])),
   )
 }
-const descriptor = (model: NativeModel.LanguageModel): Model.Descriptor => ({
+const descriptor = (model: LanguageModel.LanguageModel): Model.Descriptor => ({
   ref: modelRef,
   model,
   estimate: () => 100,
@@ -172,7 +177,7 @@ const descriptor = (model: NativeModel.LanguageModel): Model.Descriptor => ({
   maxOutputTokens: 1000,
   configure: () => Effect.succeed(Context.empty()),
 })
-const initialize = Effect.fnUntraced(function* (session: Session.Service, history = false) {
+const initialize = Effect.fnUntraced(function* (session: Session.Session.Service, history = false) {
   yield* session.root()
   return yield* session.transaction(
     Effect.fnUntraced(function* (tx) {
@@ -198,7 +203,7 @@ const initialize = Effect.fnUntraced(function* (session: Session.Service, histor
     }),
   )
 })
-const reserve = (session: Session.Service, name: string, background = false) =>
+const reserve = (session: Session.Session.Service, name: string, background = false) =>
   session.transaction(
     Effect.fnUntraced(function* (tx) {
       const task = {
@@ -243,7 +248,7 @@ describe('GenerationRaces', () => {
               return yield* failure()
             }
           })
-          const native = yield* NativeModel.make({
+          const native = yield* LanguageModel.make({
             generateText: () =>
               firstFailure.pipe(Effect.as([{ type: 'text' as const, text: 'summary' }, finish()])),
             streamText: () =>
@@ -271,7 +276,7 @@ describe('GenerationRaces', () => {
             retry: {
               enabled,
               maxRetries: 1,
-              baseDelayMs: change === 'disable after timer admission' ? 1000 : 0,
+              baseDelay: change === 'disable after timer admission' ? 1000 : 0,
             },
           })
           yield* Effect.gen(function* () {
@@ -285,12 +290,11 @@ describe('GenerationRaces', () => {
                   )
                 : Compaction.execute(
                     yield* session.transaction((tx) =>
-                      CompactionExecutor.make(
-                        tx,
-                        Identity.SessionId.make('race'),
-                        Record.ROOT_CONVERSATION_ID,
-                        'manual',
-                      ),
+                      CompactionExecutor.make(tx, {
+                        sessionId: Identity.SessionId.make('race'),
+                        conversationId: Record.ROOT_CONVERSATION_ID,
+                        reason: 'manual',
+                      }),
                     ),
                   ).pipe(
                     Effect.result,
@@ -353,7 +357,7 @@ describe('GenerationRaces', () => {
           const release = yield* Deferred.make<void>()
           let calls = 0
           let summaries = 0
-          const native = yield* NativeModel.make({
+          const native = yield* LanguageModel.make({
             generateText: () =>
               Effect.sync(() => {
                 summaries++
@@ -380,7 +384,7 @@ describe('GenerationRaces', () => {
             yield* Deferred.await(entered)
             yield* config.updateSettings({
               compaction: { enabled: enable, keepRecentTokens: 150, reserveTokens: 100 },
-              retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 },
+              retry: { enabled: true, maxRetries: 1, baseDelay: 0 },
             })
             yield* Deferred.succeed(release, undefined)
             assert.strictEqual(
@@ -403,7 +407,7 @@ describe('GenerationRaces', () => {
                 {
                   settings: {
                     compaction: { enabled: !enable, keepRecentTokens: 150, reserveTokens: 100 },
-                    retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 },
+                    retry: { enabled: true, maxRetries: 1, baseDelay: 0 },
                   },
                 },
               ),
@@ -455,7 +459,7 @@ describe('GenerationRaces', () => {
         const firstRelease = yield* Deferred.make<void>()
         const secondRelease = yield* Deferred.make<void>()
         let summaries = 0
-        const native = yield* NativeModel.make({
+        const native = yield* LanguageModel.make({
           generateText: () =>
             Effect.gen(function* () {
               const first = ++summaries === 1
@@ -488,12 +492,11 @@ describe('GenerationRaces', () => {
           assert.isDefined(firstCut)
           assert.isDefined(secondCut)
           const firstPayload = yield* session.transaction((tx) =>
-            CompactionExecutor.make(
-              tx,
-              Identity.SessionId.make('race'),
-              Record.ROOT_CONVERSATION_ID,
-              'manual',
-            ),
+            CompactionExecutor.make(tx, {
+              sessionId: Identity.SessionId.make('race'),
+              conversationId: Record.ROOT_CONVERSATION_ID,
+              reason: 'manual',
+            }),
           )
           const first = yield* Compaction.execute(firstPayload).pipe(Effect.forkScoped)
           yield* Deferred.await(firstEntered)
@@ -502,12 +505,11 @@ describe('GenerationRaces', () => {
             retry: { enabled: false },
           })
           const secondPayload = yield* session.transaction((tx) =>
-            CompactionExecutor.make(
-              tx,
-              Identity.SessionId.make('race'),
-              Record.ROOT_CONVERSATION_ID,
-              'manual',
-            ),
+            CompactionExecutor.make(tx, {
+              sessionId: Identity.SessionId.make('race'),
+              conversationId: Record.ROOT_CONVERSATION_ID,
+              reason: 'manual',
+            }),
           )
           const second = yield* Compaction.execute(secondPayload).pipe(Effect.forkScoped)
           yield* Deferred.await(secondEntered)
@@ -619,7 +621,7 @@ describe('GenerationRaces', () => {
               Deferred.succeed(finalizing, undefined).pipe(Effect.andThen(Deferred.await(release))),
             ),
           )
-          const native = yield* NativeModel.make({
+          const native = yield* LanguageModel.make({
             generateText: () => Effect.succeed([]),
             streamText: () =>
               blocked === 'tool'
@@ -636,16 +638,16 @@ describe('GenerationRaces', () => {
                 : Stream.fromEffect(blocked === 'provider' ? stop : Effect.never),
           })
           const toolkit = Toolkit.make(
-            AiTool.make('work', {
+            Tool.make('work', {
               parameters: Schema.Struct({}),
               success: Invocation.Result,
               failure: ToolError,
             }),
           )
-          const tools = yield* Tool.bind(toolkit, {
+          const tools = yield* ToolRegistration.bind(toolkit, {
             work: {
               replay: 'safe',
-              project: (value) => Tool.decodeResult('fixture', value),
+              project: (value) => ToolRegistration.decodeResult('fixture', value),
             },
           }).pipe(Effect.provide(toolkit.toLayer({ work: () => stop })))
           const behavior: Behavior = (name) =>
@@ -690,7 +692,6 @@ describe('GenerationRaces', () => {
               requestId: Identity.RequestId.make('abort'),
               target: {
                 _tag: 'conversation' as const,
-                type: 'conversation',
                 id: Record.ROOT_CONVERSATION_ID,
               },
               background: false,
@@ -713,7 +714,7 @@ describe('GenerationRaces', () => {
             const frame = journal.frames.find((item) => item.seq === markReceipt?.seq)
             const marked =
               frame?.writes.flatMap((write) =>
-                write.type === 'task' && write.value.abortRequested ? [write.value.id] : [],
+                write._tag === 'task' && write.value.abortRequested ? [write.value.id] : [],
               ) ?? []
             assert.deepStrictEqual(
               marked.toSorted((left, right) => left - right),
@@ -722,7 +723,7 @@ describe('GenerationRaces', () => {
             assert.isTrue(
               frame?.writes.some(
                 (write) =>
-                  write.type === 'submission' &&
+                  write._tag === 'submission' &&
                   write.value.requestId === 'queued' &&
                   write.value.status === 'unanswered',
               ) ?? false,
@@ -772,7 +773,7 @@ describe('GenerationRaces', () => {
         const release = yield* Deferred.make<void>()
         let calls = 0
         let finalized = 0
-        const native = yield* NativeModel.make({
+        const native = yield* LanguageModel.make({
           generateText: () => Effect.succeed([]),
           streamText: () =>
             Stream.fromEffect(
@@ -800,17 +801,20 @@ describe('GenerationRaces', () => {
           const engine = yield* WorkflowEngine.WorkflowEngine
           const joined = yield* Deferred.make<void>()
           const waiting = yield* Conversation.awaitIdle(session).pipe(
-            Effect.provideService(WorkflowEngine.WorkflowEngine, {
-              ...engine,
-              execute: (workflow, options) =>
-                Effect.gen(function* () {
-                  const client = yield* engine
-                    .execute(workflow, options)
-                    .pipe(Effect.forkScoped({ startImmediately: true }))
-                  yield* Deferred.succeed(joined, undefined)
-                  return yield* awaitTransition(Fiber.join(client))
-                }).pipe(Effect.scoped),
-            }),
+            Effect.provideService(
+              WorkflowEngine.WorkflowEngine,
+              WorkflowEngine.WorkflowEngine.of({
+                ...engine,
+                execute: (workflow, options) =>
+                  Effect.gen(function* () {
+                    const client = yield* engine
+                      .execute(workflow, options)
+                      .pipe(Effect.forkScoped({ startImmediately: true }))
+                    yield* Deferred.succeed(joined, undefined)
+                    return yield* awaitTransition(Fiber.join(client))
+                  }).pipe(Effect.scoped),
+              }),
+            ),
             Effect.forkScoped,
           )
           yield* Deferred.await(joined)

@@ -8,7 +8,7 @@ import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
 import { createLocalJWKSet, jwtVerify } from 'jose'
-import { AuthIdentityError, AuthNetworkError, AuthError } from './Credential.ts'
+import { AuthIdentityError, AuthNetworkError, AuthError } from './AuthError.ts'
 import { Identity, Jwt } from './Jwt.ts'
 /**
  * Supported public JSON Web Keys fetched for signature verification.
@@ -155,7 +155,7 @@ export const make: Effect.Effect<typeof Jwt.Service, never, HttpClient.HttpClien
               audience: options.audience,
               algorithms: [...(options.algorithms ?? ['RS256', 'ES256'])],
               requiredClaims: ['sub', 'iss', 'aud', 'exp'],
-              // effect-review-allow P5-clock-not-date-now: jose requires a Date at its verification boundary; the value comes from the injected Effect clock.
+              // effect-nit-allow P5-clock-not-date-now: jose requires a Date at its verification boundary; the value comes from the injected Effect clock.
               currentDate: DateTime.toDateUtc(now),
             }),
           catch: (cause) =>

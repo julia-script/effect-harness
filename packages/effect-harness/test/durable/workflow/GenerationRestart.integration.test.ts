@@ -57,7 +57,7 @@ describe('GenerationRestart', () => {
         }).pipe(
           Effect.provide(
             RestartWorker.layer({
-              fixture: new URL('../restart/fixture.ts', import.meta.url).pathname,
+              fixture: new URL('../restart/GenerationRestartFixture.ts', import.meta.url).pathname,
               databaseEnv: 'DURABLE_TEST_DB',
               phaseEnv: 'DURABLE_TEST_PHASE',
               extraEnv: { DURABLE_TEST_WINDOW: String(faultWindow) },

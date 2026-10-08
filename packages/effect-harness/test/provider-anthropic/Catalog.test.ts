@@ -1,5 +1,6 @@
 import * as TestSchema from 'effect/testing/TestSchema'
 import { vi } from 'vitest'
+// effect-nit-allow P8-test-doubles-are-layers: this external npm SDK factory is the adapter construction-count subject; native HTTP/service layer wiring remains real.
 vi.mock('@effect/ai-anthropic/AnthropicLanguageModel', { spy: true })
 import * as Context from 'effect/Context'
 import { assert, describe, it } from '@effect/vitest'
@@ -17,7 +18,6 @@ import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import * as Catalog from 'effect-harness/provider-anthropic/Catalog'
-import * as Anthropic from 'effect-harness/provider-anthropic/Anthropic'
 
 const sessionId = '019a08e0-7c00-7000-8000-000000000001'
 const entry: Catalog.Entry = {
@@ -46,7 +46,7 @@ const message = {
     service_tier: 'standard',
   },
 }
-const body = (request: HttpClientRequest.HttpClientRequest) => {
+const bodyUnsafe = (request: HttpClientRequest.HttpClientRequest) => {
   if (request.body._tag !== 'Uint8Array') throw new Error('Expected native JSON body')
   return Schema.decodeUnknownSync(Schema.JsonObject)(
     JSON.parse(new TextDecoder().decode(request.body.body)),
@@ -75,8 +75,8 @@ const fixture = () => {
 const resolve = () =>
   Model.Catalog.use((catalog) => catalog.resolve({ provider: 'anthropic', modelId: entry.modelId }))
 
-describe('Catalog', () => {
-  it.effect('owned thinking uses domain tags while the catalogue wire retains mode', () =>
+describe('Catalog', { concurrent: false }, () => {
+  it.effect('thinking uses canonical tags in domain and encoded catalogues', () =>
     Effect.gen(function* () {
       const self = {
         modelId: 'declared',
@@ -84,7 +84,7 @@ describe('Catalog', () => {
         maxOutputTokens: 32000,
         thinking: { _tag: 'budget' as const, budgets: { high: 8192 } },
       }
-      const wire = { ...self, thinking: { mode: 'budget' as const, budgets: { high: 8192 } } }
+      const wire = { ...self, thinking: { _tag: 'budget' as const, budgets: { high: 8192 } } }
       const checks = new TestSchema.Asserts(Catalog.Entry)
       yield* checks.decoding().succeedEffect(wire, self)
       yield* checks.encoding().succeedEffect(self, wire)
@@ -119,7 +119,7 @@ describe('Catalog', () => {
             assert.strictEqual(request.headers['x-api-key'], 'fake-api-key')
             assert.strictEqual(request.headers['anthropic-version'], 'custom-version')
             assert.strictEqual(request.headers['x-transform'], 'applied')
-            const sent = body(request)
+            const sent = bodyUnsafe(request)
             assert.strictEqual(sent.model, entry.modelId)
             assert.strictEqual(sent.max_tokens, 12000)
             assert.deepStrictEqual(sent.metadata, { user_id: sessionId })
@@ -159,11 +159,14 @@ describe('Catalog', () => {
               .generateText({ prompt: 'Hi' })
               .pipe(
                 Effect.provideContext(context),
-                Effect.provideService(AnthropicLanguageModel.Config, { model: 'other' }),
+                Effect.provideService(
+                  AnthropicLanguageModel.Config,
+                  AnthropicLanguageModel.Config.of({ model: 'other' }),
+                ),
               )
             const request = f.requests[0]
             if (request === undefined) return yield* Effect.die('No captured request')
-            const sent = body(request)
+            const sent = bodyUnsafe(request)
             assert.strictEqual(sent.model, entry.modelId)
             assert.deepStrictEqual(sent.thinking, { type: 'enabled', budget_tokens: 1024 })
             assert.deepStrictEqual(sent.cache_control, { type: 'ephemeral', ttl: '5m' })
@@ -176,8 +179,8 @@ describe('Catalog', () => {
             yield* descriptor.model.generateText({ prompt: 'Hi' }).pipe(Effect.provideContext(off))
             const second = f.requests[1]
             if (second === undefined) return yield* Effect.die('No second request')
-            assert.deepStrictEqual(body(second).thinking, { type: 'disabled' })
-            assert.strictEqual(body(second).cache_control, null)
+            assert.deepStrictEqual(bodyUnsafe(second).thinking, { type: 'disabled' })
+            assert.strictEqual(bodyUnsafe(second).cache_control, null)
           }).pipe(Effect.provide(f.layer))
         }),
     )
@@ -204,7 +207,7 @@ describe('Catalog', () => {
             for (const request of negatives)
               assert.strictEqual(
                 (yield* descriptor.configure(request).pipe(Effect.flip)).reason._tag,
-                'ModelUnsupported',
+                'ModelUnsupportedError',
               )
             assert.strictEqual(f.requests.length, 0)
             const budget = yield* Catalog.descriptor({
@@ -215,7 +218,7 @@ describe('Catalog', () => {
               (yield* budget
                 .configure({ thinking: 'high', options: {}, maxTokens: 8000 })
                 .pipe(Effect.flip)).reason._tag,
-              'ModelUnsupported',
+              'ModelUnsupportedError',
             )
           }).pipe(Effect.provide(f.layer))
         }),
@@ -225,7 +228,7 @@ describe('Catalog', () => {
       () =>
         Effect.gen(function* () {
           const f = fixture()
-          const layer = Anthropic.layerConfig({
+          const layer = HarnessAnthropicLanguageModel.layerApiKeyConfig({
             apiKey: Config.succeed(Redacted.make('config-key')),
             apiUrl: Config.succeed('https://config.example'),
             apiVersion: Config.succeed('configured-version'),
@@ -241,7 +244,10 @@ describe('Catalog', () => {
           }).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, f.client)))
           return yield* Effect.gen(function* () {
             yield* LanguageModel.generateText({ prompt: 'Hi' }).pipe(
-              Anthropic.withConfigOverride({ max_tokens: 2000, temperature: 0.5 }),
+              HarnessAnthropicLanguageModel.withConfigOverride({
+                max_tokens: 2000,
+                temperature: 0.5,
+              }),
             )
             const request = f.requests[0]
             if (request === undefined) return yield* Effect.die('No captured native request')
@@ -249,8 +255,8 @@ describe('Catalog', () => {
             assert.strictEqual(request.headers['x-api-key'], 'config-key')
             assert.strictEqual(request.headers['anthropic-version'], 'configured-version')
             assert.strictEqual(request.headers['x-transform'], 'config')
-            assert.strictEqual(body(request).max_tokens, 2000)
-            assert.strictEqual(body(request).temperature, 0.5)
+            assert.strictEqual(bodyUnsafe(request).max_tokens, 2000)
+            assert.strictEqual(bodyUnsafe(request).temperature, 0.5)
           }).pipe(Effect.provide(layer))
         }),
     )
@@ -309,7 +315,7 @@ describe('Catalog', () => {
               (yield* Catalog.descriptor({ ...entry, config: { max_tokens: 32001 } }).pipe(
                 Effect.flip,
               )).reason._tag,
-              'ModelUnsupported',
+              'ModelUnsupportedError',
             )
           }).pipe(Effect.provide(f.layer))
         }),
@@ -337,7 +343,7 @@ describe('Catalog', () => {
             ]
             for (const value of invalid) {
               const error = yield* Catalog.descriptor(value).pipe(Effect.flip)
-              assert.strictEqual(error.reason._tag, 'ModelUnsupported')
+              assert.strictEqual(error.reason._tag, 'ModelUnsupportedError')
               assert.isTrue(Schema.isSchemaError(error.cause))
             }
             assert.strictEqual(
@@ -364,10 +370,13 @@ describe('Catalog', () => {
             midConversationSystemMessages: undefined,
           },
         })
-        const decoded = yield* Schema.decodeEffect(Schema.toType(Catalog.Entry))({
-          ...entry,
-          config: { output_config: { effort: null } },
-        })
+        const decoded = { ...entry, config: { output_config: { effort: null } } }
+        yield* new TestSchema.Asserts(Schema.toType(Catalog.Entry))
+          .decoding()
+          .succeedEffect(decoded, {
+            ...entry,
+            config: { output_config: { effort: null } },
+          })
         assert.strictEqual(decoded.config?.output_config?.effort, null)
         const context = yield* model.configure({
           thinking: 'high',
@@ -394,7 +403,7 @@ describe('Catalog', () => {
           const constructions = vi.mocked(AnthropicLanguageModel.make).mock.calls.length
           const malformed = { ...entry, prices: { input: 1 } } as Catalog.Entry
           const error = yield* Catalog.descriptor(malformed).pipe(Effect.flip)
-          assert.strictEqual(error.reason._tag, 'ModelUnsupported')
+          assert.strictEqual(error.reason._tag, 'ModelUnsupportedError')
           assert.isTrue(Schema.isSchemaError(error.cause))
           assert.strictEqual(
             vi.mocked(AnthropicLanguageModel.make).mock.calls.length,
@@ -417,7 +426,7 @@ describe('Catalog', () => {
             { ...entry, config: { max_tokens: entry.maxOutputTokens + 1 } },
           ] as ReadonlyArray<Catalog.Entry>) {
             const error = yield* Catalog.descriptor(value).pipe(Effect.flip)
-            assert.strictEqual(error.reason._tag, 'ModelUnsupported')
+            assert.strictEqual(error.reason._tag, 'ModelUnsupportedError')
             assert.isTrue(Schema.isSchemaError(error.cause))
           }
           assert.strictEqual(f.requests.length, 0)
@@ -425,3 +434,5 @@ describe('Catalog', () => {
       }),
   )
 })
+
+import * as HarnessAnthropicLanguageModel from 'effect-harness/provider-anthropic/AnthropicLanguageModel'

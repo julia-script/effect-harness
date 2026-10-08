@@ -1,8 +1,10 @@
 /**
  * Locked in-memory and protected-file credential transactions with scoped atomic persistence.
  */
-import * as Arr from 'effect/Array'
-import * as Ref from 'effect/Ref'
+import * as Array from 'effect/Array'
+import * as Function from 'effect/Function'
+import { HostId } from './HostId.ts'
+import * as SynchronizedRef from 'effect/SynchronizedRef'
 import * as Config from 'effect/Config'
 import * as Context from 'effect/Context'
 import * as Crypto from 'effect/Crypto'
@@ -16,18 +18,11 @@ import * as Schedule from 'effect/Schedule'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
-import {
-  AuthBusyError,
-  AuthConfigurationError,
-  AuthStorageError,
-  AuthError,
-  Credential,
-} from './Credential.ts'
+import { Credential } from './Credential.ts'
+import { AuthBusyError, AuthConfigurationError, AuthStorageError, AuthError } from './AuthError.ts'
 
 /**
  * Type-level contracts for `CredentialStore`.
- *
- * @category utility types
  */
 export declare namespace CredentialStore {
   /**
@@ -43,7 +38,7 @@ export declare namespace CredentialStore {
     /**
      * Returns saved account keys and their credentials; secrets remain Redacted.
      */
-    readonly list: Effect.Effect<ReadonlyArray<readonly [string, Credential]>, AuthError>
+    readonly list: Effect.Effect<Array<readonly [string, Credential]>, AuthError>
     /**
      * Replaces a credential under the store’s update lock.
      */
@@ -55,22 +50,15 @@ export declare namespace CredentialStore {
     /**
      * Returns or persists a stable host UUID for this provider.
      */
-    readonly hostId: (provider: string) => Effect.Effect<string, AuthError>
+    readonly hostId: (provider: string) => Effect.Effect<HostId, AuthError>
     /** Holds the per-store lock over read, callback and atomic replacement. Callback failure preserves credentials. */
-    readonly modify: <R>(
+    readonly modify: <A extends Credential | undefined, E, R>(
       key: string,
-      update: (
-        current: Option.Option<Credential>,
-      ) => Effect.Effect<Credential | undefined, AuthError, R>,
-    ) => Effect.Effect<Credential | undefined, AuthError, R>
+      update: (current: Option.Option<Credential>) => Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | AuthError, R>
   }
 }
-/**
- * Credential lookup and serialized updates for application-owned accounts.
- *
- * @category models
- */
-export type Service = CredentialStore.Service
+
 /**
  * Service for application-owned credentials and serialized token updates.
  *
@@ -87,77 +75,85 @@ export type Service = CredentialStore.Service
  *
  * @category services
  */
-export class CredentialStore extends Context.Service<CredentialStore, Service>()(
-  '@effect-harness/auth/CredentialStore',
+export class CredentialStore extends Context.Service<CredentialStore, CredentialStore.Service>()(
+  'effect-harness/auth/CredentialStore',
 ) {}
 
 const Snapshot = Schema.Struct({
   version: Schema.Literal(1),
   entries: Schema.Array(Schema.Struct({ key: Schema.String, value: Credential })),
-  hosts: Schema.Array(Schema.Struct({ provider: Schema.String, id: Schema.String })),
+  hosts: Schema.Array(Schema.Struct({ provider: Schema.String, id: HostId })),
 })
 type Snapshot = typeof Snapshot.Type
+const SnapshotJson = Schema.fromJsonString(Snapshot)
 const empty: Snapshot = { version: 1, entries: [], hosts: [] }
 const find = (snapshot: Snapshot, key: string) =>
-  Arr.findFirst(snapshot.entries, (entry) => entry.key === key).pipe(
+  Array.findFirst(snapshot.entries, (entry) => entry.key === key).pipe(
     Option.map((entry) => entry.value),
   )
 const replace = (snapshot: Snapshot, key: string, value: Credential | undefined): Snapshot => ({
   ...snapshot,
   entries: [
-    ...snapshot.entries.filter((entry) => entry.key !== key),
+    ...Array.filter(snapshot.entries, (entry) => entry.key !== key),
     ...(value === undefined ? [] : [{ key, value }]),
   ],
 })
 const storageError = (cause?: unknown) =>
-  new AuthError({
-    reason: new AuthStorageError({
+  AuthError.make({
+    reason: AuthStorageError.make({
       message: 'Protected credential storage failed',
       ...(cause === undefined ? {} : { cause }),
     }),
   })
 
+interface Backend {
+  readonly read: Effect.Effect<Snapshot, AuthError>
+  readonly modify: <A>(
+    update: (snapshot: Snapshot) => readonly [A, Snapshot],
+  ) => Effect.Effect<A, AuthError>
+  readonly modifyEffect: <A, E, R>(
+    update: (snapshot: Snapshot) => Effect.Effect<readonly [A, Snapshot], E, R>,
+  ) => Effect.Effect<A, E | AuthError, R>
+}
+
 const makeService = (
-  read: Effect.Effect<Snapshot, AuthError>,
-  write: (snapshot: Snapshot) => Effect.Effect<void, AuthError>,
-  lock: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | AuthError, R>,
+  backend: Backend,
   uuid: Effect.Effect<string, AuthError>,
-): Effect.Effect<Service> =>
-  Effect.sync(() => {
-    const modify: Service['modify'] = Effect.fnUntraced(function* (key, update) {
-      const snapshot = yield* read
-      const value = yield* update(find(snapshot, key))
-      yield* write(replace(snapshot, key, value))
-      return value
-    }, lock)
-    return CredentialStore.of({
-      get: (key) => read.pipe(Effect.map((snapshot) => find(snapshot, key))),
-      list: read.pipe(
-        Effect.map((snapshot) => snapshot.entries.map(({ key, value }) => [key, value] as const)),
-        Effect.withSpan('CredentialStore.list'),
+): CredentialStore.Service => {
+  const modify = <A extends Credential | undefined, E, R>(
+    key: string,
+    update: (current: Option.Option<Credential>) => Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E | AuthError, R> =>
+    backend.modifyEffect((snapshot) =>
+      Effect.map(
+        update(find(snapshot, key)),
+        (value) => [value, replace(snapshot, key, value)] as const,
       ),
-      set: Effect.fnUntraced(function* (key, value) {
-        const snapshot = yield* read
-        yield* write(replace(snapshot, key, value))
-      }, lock),
-      remove: (key) =>
-        lock(Effect.flatMap(read, (snapshot) => write(replace(snapshot, key, undefined)))),
-      modify,
-      hostId: Effect.fnUntraced(function* (provider) {
-        const snapshot = yield* read
-        const existing = Arr.findFirst(snapshot.hosts, (host) => host.provider === provider)
-        return yield* Option.match(existing, {
-          onSome: (host) => Effect.succeed(host.id),
-          onNone: () =>
-            Effect.gen(function* () {
-              const id = `urn:uuid:${yield* uuid}`
-              yield* write({ ...snapshot, hosts: [...snapshot.hosts, { provider, id }] })
-              return id
-            }),
-        })
-      }, lock),
-    })
+    )
+  return CredentialStore.of({
+    get: (key) => backend.read.pipe(Effect.map((snapshot) => find(snapshot, key))),
+    list: backend.read.pipe(
+      Effect.map((snapshot) =>
+        Array.map(snapshot.entries, ({ key, value }) => [key, value] as const),
+      ),
+      Effect.withSpan('CredentialStore.list'),
+    ),
+    set: (key, value) => backend.modify((snapshot) => [undefined, replace(snapshot, key, value)]),
+    remove: (key) => backend.modify((snapshot) => [undefined, replace(snapshot, key, undefined)]),
+    modify,
+    hostId: (provider) =>
+      backend.modifyEffect(
+        Effect.fnUntraced(function* (snapshot) {
+          const existing = Array.findFirst(snapshot.hosts, (host) => host.provider === provider)
+          if (Option.isSome(existing)) return [existing.value.id, snapshot] as const
+          const id = yield* Schema.decodeEffect(HostId)(`urn:uuid:${yield* uuid}`).pipe(
+            Effect.mapError(storageError),
+          )
+          return [id, { ...snapshot, hosts: [...snapshot.hosts, { provider, id }] }] as const
+        }),
+      ),
   })
+}
 
 /**
  * Provides empty process-local credential storage with serialized updates.
@@ -177,12 +173,13 @@ export const layerMemory: Layer.Layer<CredentialStore, never, Crypto.Crypto> = L
 )(
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto
-    const mutex = yield* Semaphore.make(1)
-    const snapshot = yield* Ref.make(empty)
-    return yield* makeService(
-      Ref.get(snapshot),
-      (next) => Ref.set(snapshot, next),
-      (effect) => mutex.withPermit(effect),
+    const snapshot = yield* SynchronizedRef.make(empty)
+    return makeService(
+      {
+        read: SynchronizedRef.get(snapshot),
+        modify: (update) => SynchronizedRef.modify(snapshot, update),
+        modifyEffect: (update) => SynchronizedRef.modifyEffect(snapshot, update),
+      },
       crypto.randomUUIDv4.pipe(Effect.mapError(storageError)),
     )
   }),
@@ -217,8 +214,8 @@ export const layerProtectedFile = (options: {
       const file = path.resolve(options.path)
       const directory = path.dirname(file)
       if (file === directory)
-        return yield* new AuthError({
-          reason: new AuthConfigurationError({
+        return yield* AuthError.make({
+          reason: AuthConfigurationError.make({
             message: 'Credential path must name a file',
           }),
         })
@@ -226,14 +223,14 @@ export const layerProtectedFile = (options: {
         options.lockRetries !== undefined &&
         (!Number.isSafeInteger(options.lockRetries) || options.lockRetries < 0)
       )
-        return yield* new AuthError({
-          reason: new AuthConfigurationError({
+        return yield* AuthError.make({
+          reason: AuthConfigurationError.make({
             message: 'Lock retries must be a nonnegative integer',
           }),
         })
       if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option)))
-        return yield* new AuthError({
-          reason: new AuthStorageError({
+        return yield* AuthError.make({
+          reason: AuthStorageError.make({
             message: 'Credential directory must not be a symbolic link',
           }),
         })
@@ -242,8 +239,8 @@ export const layerProtectedFile = (options: {
         .pipe(Effect.mapError(storageError))
       const directoryStat = yield* fs.stat(directory).pipe(Effect.mapError(storageError))
       if (directoryStat.type !== 'Directory' || (directoryStat.mode & 0o077) !== 0)
-        return yield* new AuthError({
-          reason: new AuthStorageError({
+        return yield* AuthError.make({
+          reason: AuthStorageError.make({
             message: 'Credential directory must be owner-only',
           }),
         })
@@ -255,8 +252,8 @@ export const layerProtectedFile = (options: {
             Effect.flatMap((exists) =>
               Effect.fail(
                 exists
-                  ? new AuthError({
-                      reason: new AuthBusyError({
+                  ? AuthError.make({
+                      reason: AuthBusyError.make({
                         message: 'Credential store is locked by another process',
                         cause,
                       }),
@@ -276,36 +273,30 @@ export const layerProtectedFile = (options: {
         effect: Effect.Effect<A, E, R>,
       ): Effect.Effect<A, E | AuthError, R> =>
         mutex.withPermit(
-          Effect.acquireUseRelease(
-            acquire,
-            () => effect,
-            () => fs.remove(lockDirectory, { recursive: true }).pipe(Effect.orDie),
+          Effect.acquireUseRelease(acquire, Function.constant(effect), () =>
+            fs.remove(lockDirectory, { recursive: true }).pipe(Effect.orDie),
           ),
         )
       const read = Effect.gen(function* () {
         if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option)))
-          return yield* new AuthError({
-            reason: new AuthStorageError({
+          return yield* AuthError.make({
+            reason: AuthStorageError.make({
               message: 'Credential file must not be a symbolic link',
             }),
           })
         if (!(yield* fs.exists(file).pipe(Effect.mapError(storageError)))) return empty
         const stat = yield* fs.stat(file).pipe(Effect.mapError(storageError))
         if ((stat.mode & 0o077) !== 0 || stat.type !== 'File')
-          return yield* new AuthError({
-            reason: new AuthStorageError({
+          return yield* AuthError.make({
+            reason: AuthStorageError.make({
               message: 'Credential file must be a regular owner-only file',
             }),
           })
         const text = yield* fs.readFileString(file).pipe(Effect.mapError(storageError))
-        const json: unknown = yield* Effect.try({
-          try: () => JSON.parse(text),
-          catch: storageError,
-        })
-        return yield* Schema.decodeUnknownEffect(Snapshot)(json).pipe(Effect.mapError(storageError))
+        return yield* Schema.decodeEffect(SnapshotJson)(text).pipe(Effect.mapError(storageError))
       })
       const write = Effect.fnUntraced(function* (snapshot: Snapshot) {
-        const encoded = yield* Schema.encodeEffect(Snapshot)(snapshot).pipe(
+        const encoded = yield* Schema.encodeEffect(SnapshotJson)(snapshot).pipe(
           Effect.mapError(storageError),
         )
         const uuid = yield* crypto.randomUUIDv4.pipe(Effect.mapError(storageError))
@@ -326,7 +317,7 @@ export const layerProtectedFile = (options: {
                 ),
             )
             yield* handle
-              .writeAll(new TextEncoder().encode(JSON.stringify(encoded)))
+              .writeAll(new TextEncoder().encode(encoded))
               .pipe(Effect.mapError(storageError))
             yield* handle.sync.pipe(Effect.mapError(storageError))
             yield* Scope.close(stagingScope, Exit.void)
@@ -336,10 +327,23 @@ export const layerProtectedFile = (options: {
           }),
         )
       })
-      return yield* makeService(
-        read,
-        write,
-        diskLock,
+      const modifyEffect = <A, E, R>(
+        update: (snapshot: Snapshot) => Effect.Effect<readonly [A, Snapshot], E, R>,
+      ): Effect.Effect<A, E | AuthError, R> =>
+        diskLock(
+          Effect.gen(function* () {
+            const snapshot = yield* read
+            const [value, next] = yield* update(snapshot)
+            if (next !== snapshot) yield* write(next)
+            return value
+          }),
+        )
+      return makeService(
+        {
+          read,
+          modify: (update) => modifyEffect((snapshot) => Effect.sync(() => update(snapshot))),
+          modifyEffect,
+        },
         crypto.randomUUIDv4.pipe(Effect.mapError(storageError)),
       )
     }),

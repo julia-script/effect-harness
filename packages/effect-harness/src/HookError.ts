@@ -8,15 +8,15 @@ import * as Schema from 'effect/Schema'
  *
  * @category errors
  */
-export class HookFailure extends Schema.TaggedError<HookFailure>(
-  '@effect-harness/harness/HookError/HookFailure',
-)('HookFailure', { message: Schema.String, cause: SchemaField.optional(Schema.Defect()) }) {}
+export class HookFailureError extends Schema.TaggedError<HookFailureError>(
+  '@effect-harness/harness/HookError/HookFailureError',
+)('HookFailureError', { message: Schema.String, cause: SchemaField.optional(Schema.Defect()) }) {}
 /**
  * Schema for hook error reason.
  *
  * @category schemas
  */
-export const HookErrorReason = Schema.Union([HookFailure])
+export const HookErrorReason = Schema.Union([HookFailureError])
 /**
  * Decoded value validated by the `HookErrorReason` schema.
  *

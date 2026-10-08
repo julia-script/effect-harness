@@ -10,10 +10,9 @@ import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Prompt from 'effect/ai/Prompt'
 import * as HttpClient from 'effect/http/HttpClient'
-import * as HttpClientRequest from 'effect/http/HttpClientRequest'
+import type * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
-import * as Account from 'effect-harness/provider-anthropic/Account'
-import * as Anthropic from 'effect-harness/provider-anthropic/Anthropic'
+
 import * as Catalog from 'effect-harness/provider-anthropic/Catalog'
 import * as OAuth from 'effect-harness/provider-anthropic/OAuth'
 
@@ -51,7 +50,7 @@ const frames = [
   },
   { type: 'message_stop' },
 ]
-const body = (request: HttpClientRequest.HttpClientRequest) => {
+const bodyUnsafe = (request: HttpClientRequest.HttpClientRequest) => {
   assert.strictEqual(request.body._tag, 'Uint8Array')
   if (request.body._tag !== 'Uint8Array') throw new Error('Expected native JSON body')
   return JSON.parse(new TextDecoder().decode(request.body.body)) as {
@@ -104,8 +103,8 @@ const fixture = (flow: 'apiKey' | 'account', streaming = false) => {
   }
   const layer = (
     flow === 'apiKey'
-      ? Anthropic.layer({ ...options, apiKey: Redacted.make('api-key') })
-      : Account.layer({ ...options, account: 'account' })
+      ? AnthropicLanguageModel.layerApiKey({ ...options, apiKey: Redacted.make('api-key') })
+      : AnthropicAccountLanguageModel.layer({ ...options, account: 'account' })
   ).pipe(Layer.provide(dependencies))
   return { requests, layer }
 }
@@ -157,12 +156,12 @@ const mixed = () =>
       Prompt.textPart({ text: 'last' }),
     ],
     details: { secret: 'private-details' },
-    usage: { ...Usage.zero(), input: 987654321 },
+    usage: { ...Usage.make(), input: 987654321 },
     control: { addTools: ['private-control'] },
     diagnostics: [{ kind: 'truncated', message: 'visible warning', severity: 'warning' }],
   })
-const toolResult = (request: HttpClientRequest.HttpClientRequest) => {
-  const found = body(request)
+const toolResultUnsafe = (request: HttpClientRequest.HttpClientRequest) => {
+  const found = bodyUnsafe(request)
     .messages.flatMap((message) => message.content)
     .find((block) => block.type === 'tool_result')
   assert.isDefined(found)
@@ -197,7 +196,7 @@ describe('ToolResult', () => {
             yield* (yield* LanguageModel.LanguageModel).generateText({ prompt: history(result) })
             const request = f.requests[0]
             if (request === undefined) return yield* Effect.die('Missing request')
-            assert.deepStrictEqual(toolResult(request).content, [
+            assert.deepStrictEqual(toolResultUnsafe(request).content, [
               {
                 type: 'image',
                 source: { type: 'url', url: 'https://files.invalid/image.jpg' },
@@ -245,7 +244,7 @@ describe('ToolResult', () => {
               const request = f.requests[0]
               assert.isDefined(request)
               if (request === undefined) return yield* Effect.die('Missing request')
-              const result = toolResult(request)
+              const result = toolResultUnsafe(request)
               assert.strictEqual(result.tool_use_id, 'call-1')
               assert.strictEqual(result.is_error, true)
               assert.deepStrictEqual(result.cache_control, { type: 'ephemeral', ttl: '1h' })
@@ -278,7 +277,7 @@ describe('ToolResult', () => {
                   cache_control: null,
                 },
               ])
-              const encoded = JSON.stringify(body(request))
+              const encoded = JSON.stringify(bodyUnsafe(request))
               assert.notInclude(encoded, 'private-details')
               assert.notInclude(encoded, 'private-control')
               assert.notInclude(encoded, '987654321')
@@ -304,7 +303,7 @@ describe('ToolResult', () => {
               yield* model.generateText({ prompt: history(result) })
               const request = f.requests.at(-1)
               if (request === undefined) return yield* Effect.die('Missing request')
-              assert.strictEqual(toolResult(request).content, JSON.stringify(result))
+              assert.strictEqual(toolResultUnsafe(request).content, JSON.stringify(result))
             }
           }).pipe(Effect.provide(f.layer))
         }),
@@ -357,7 +356,7 @@ describe('ToolResult', () => {
           yield* descriptor.model.generateText({ prompt: history(yield* mixed()) })
           const request = f.requests[0]
           if (request === undefined) return yield* Effect.die('Missing request')
-          assert.isArray(toolResult(request).content)
+          assert.isArray(toolResultUnsafe(request).content)
         }).pipe(
           Effect.provide(
             Catalog.layer({
@@ -369,3 +368,6 @@ describe('ToolResult', () => {
     )
   })
 })
+
+import * as AnthropicLanguageModel from 'effect-harness/provider-anthropic/AnthropicLanguageModel'
+import * as AnthropicAccountLanguageModel from 'effect-harness/provider-anthropic/AnthropicAccountLanguageModel'

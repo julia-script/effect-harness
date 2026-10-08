@@ -1,3 +1,4 @@
+import * as Predicate from 'effect/Predicate'
 /**
  * Conversation cut selection and native summarization prompts.
  */
@@ -11,18 +12,19 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as ToolResult from './ToolResult.ts'
 import type * as Agent from './Agent.ts'
-import * as Context from './Context.ts'
+import * as Transcript from './Transcript.ts'
 import * as Serialization from './Serialization.ts'
 
 function selectCutImpl(
-  self: Context.View,
+  self: Transcript.View,
   keepRecentTokens: number,
-  tokenize = Context.estimateMessage,
+  tokenize = Transcript.estimateMessage,
 ): Option.Option<number> {
   const start = self.head === undefined ? 0 : 1
   const candidates: Array<number> = []
   for (let index = start; index < self.contributions.length; index++)
     if (candidate(self.contributions, index)) candidates.push(index)
+  // effect-nit-allow P1-stdlib-collection-replacements: public View contributions may be sparse; native reduce skips absent slots, reads inherited numeric slots in encounter order, and invokes tokenize once per present message. Number.sumAll over a mapped sparse array sums undefined holes.
   let kept = 0
   let cut = Option.none<number>()
   for (let index = self.contributions.length - 1; index >= start; index--) {
@@ -57,17 +59,20 @@ export const selectCut: {
   (
     keepRecentTokens: number,
     tokenize?: (message: import('effect/ai/Prompt').Message) => number,
-  ): (self: Context.View) => Option.Option<number>
+  ): (self: Transcript.View) => Option.Option<number>
   (
-    self: Context.View,
+    self: Transcript.View,
     keepRecentTokens: number,
     tokenize?: (message: import('effect/ai/Prompt').Message) => number,
   ): Option.Option<number>
 } = dual(
-  (args) => args[0] != null && typeof args[0] === 'object' && 'contributions' in args[0],
+  Predicate.mapInput(
+    Predicate.and(Predicate.isObjectOrArray, Predicate.hasProperty('contributions')),
+    (args: IArguments) => args[0],
+  ),
   selectCutImpl,
 )
-function candidate(self: Context.View['contributions'], index: number): boolean {
+function candidate(self: Transcript.View['contributions'], index: number): boolean {
   const first = Arr.get(self, index).pipe(Option.flatMap(Arr.head))
   const role = Option.map(first, (self) => self.role)
   if (Option.contains(role, 'assistant')) return true
@@ -104,16 +109,16 @@ function candidate(self: Context.View['contributions'], index: number): boolean 
   return true
 }
 
-const summarizedMessagesImpl = (self: Context.View, cut: number): Array<Prompt.Message> =>
-  Context.orderToolResults(Arr.flatten(self.contributions.slice(0, cut)))
+const summarizedMessagesImpl = (self: Transcript.View, cut: number): Array<Prompt.Message> =>
+  Transcript.orderToolResults(Arr.flatten(self.contributions.slice(0, cut)))
 /**
  * Returns call-ordered native messages before the selected cut.
  *
  * @category combinators
  */
 export const summarizedMessages: {
-  (cut: number): (self: Context.View) => Array<Prompt.Message>
-  (self: Context.View, cut: number): Array<Prompt.Message>
+  (cut: number): (self: Transcript.View) => Array<Prompt.Message>
+  (self: Transcript.View, cut: number): Array<Prompt.Message>
 } = dual(2, summarizedMessagesImpl)
 function thresholdImpl(
   self: number,
@@ -185,8 +190,10 @@ export function serializeConversation(self: ReadonlyArray<Prompt.Message>): stri
   return lines.join('\n\n')
 }
 const jsonText = (self: unknown): string =>
-  Result.getOrElse(Serialization.stringify(self), () => Serialization.unencodable)
+  Result.getOrElse(Serialization.stringify(self), constant(Serialization.unencodable))
 function serializeArgs(self: unknown): string {
+  // effect-nit-allow P1-stdlib-collection-replacements: this public record may have accessors that delete or change later own keys. Native reflective enumeration rechecks each descriptor before reading; Record.collect snapshots keys and can read a newly inherited value instead.
+
   return Serialization.textOrMarker(() => {
     if (self === null || typeof self !== 'object' || Arr.isArray(self)) return jsonText(self)
     return Object.entries(self)

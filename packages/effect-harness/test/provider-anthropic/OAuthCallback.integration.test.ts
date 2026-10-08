@@ -8,8 +8,8 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Redacted from 'effect/Redacted'
 import * as HttpClient from 'effect/http/HttpClient'
-import * as HttpClientError from 'effect/http/HttpClientError'
-import * as HttpClientRequest from 'effect/http/HttpClientRequest'
+import type * as HttpClientError from 'effect/http/HttpClientError'
+import type * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import * as OAuth from 'effect-harness/provider-anthropic/OAuth'
 const token = { access_token: 'secret-access', refresh_token: 'secret-refresh', expires_in: 3600 }
@@ -26,7 +26,7 @@ const fixture = (
     requests.push(request)
     return reply(request, signal)
   })
-  const layer = OAuth.layer({ authorizationLifetimeMs: 10000, refreshSkewMs: 0 }).pipe(
+  const layer = OAuth.layer({ authorizationLifetime: 10000, refreshSkew: 0 }).pipe(
     Layer.provideMerge(layerMemory),
     Layer.provideMerge(Layer.merge(BunCrypto.layer, Layer.succeed(HttpClient.HttpClient, client))),
   )

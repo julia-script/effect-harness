@@ -11,7 +11,7 @@ import * as SchemaIssue from 'effect/SchemaIssue'
 
 const origin = DateTime.fromEpochSeconds(0)
 /**
- * Native finite epoch milliseconds retain submillisecond precision.
+ * Creates a native UTC instant retaining finite fractional epoch milliseconds.
  *
  * @category combinators
  */
@@ -22,7 +22,7 @@ export const fromEpochMillis = (millis: number): DateTime.Utc =>
  *
  * @category schemas
  */
-export const EpochMillis = Schema.Finite.pipe(
+export const DateTimeUtcFromEpochMillis = Schema.Finite.pipe(
   Schema.decodeTo(Schema.DateTimeUtc, {
     decode: SchemaGetter.transform(fromEpochMillis),
     encode: SchemaGetter.transform(DateTime.toEpochMillis),
@@ -36,7 +36,7 @@ const finiteSpan = Schema.Duration.check(
  *
  * @category schemas
  */
-export const DurationMillis = Schema.Finite.pipe(
+export const DurationFromMillis = Schema.Finite.pipe(
   Schema.decodeTo(finiteSpan, {
     decode: SchemaGetter.transform(Duration.millis),
     encode: SchemaGetter.transform(Duration.toMillis),
@@ -47,7 +47,7 @@ export const DurationMillis = Schema.Finite.pipe(
  *
  * @category schemas
  */
-export const DurationSeconds = Schema.Finite.pipe(
+export const DurationFromSeconds = Schema.Finite.pipe(
   Schema.decodeTo(finiteSpan, {
     decode: SchemaGetter.transform(Duration.seconds),
     encode: SchemaGetter.transform(Duration.toSeconds),
@@ -67,7 +67,7 @@ const nonnegativeSpan = finiteSpan.check(
  *
  * @category schemas
  */
-export const NonnegativeMillis = Schema.Natural.pipe(
+export const NonnegativeDurationFromMillis = Schema.Natural.pipe(
   Schema.decodeTo(nonnegativeSpan, {
     decode: SchemaGetter.transform(Duration.millis),
     encode: SchemaGetter.transform(Duration.toMillis),
@@ -87,7 +87,7 @@ const commandSpan = finiteSpan.check(
  *
  * @category schemas
  */
-export const CommandTimeout = Schema.Finite.check(
+export const CommandTimeoutFromSeconds = Schema.Finite.check(
   Schema.isGreaterThan(0),
   Schema.isLessThanOrEqualTo(2147483.647),
 ).pipe(
@@ -101,10 +101,10 @@ export const CommandTimeout = Schema.Finite.check(
  *
  * @category schemas
  */
-export const DurationInput = Schema.Unknown.pipe(
+export const DurationFromUnknown = Schema.Unknown.pipe(
   Schema.decodeTo(finiteSpan, {
-    decode: SchemaGetter.transformEffect((input, options) =>
-      Effect.gen(function* () {
+    decode: SchemaGetter.transformEffect(
+      Effect.fnUntraced(function* (input, options) {
         if (typeof input === 'number' && !Number.isFinite(input))
           return yield* Effect.fail(
             new SchemaIssue.InvalidValue(
@@ -135,11 +135,10 @@ export const DurationInput = Schema.Unknown.pipe(
               options,
             ),
         })
-        return Option.isSome(decoded)
-          ? decoded.value
-          : yield* Effect.fail(
-              new SchemaIssue.InvalidValue({ message: 'Invalid duration input' }, input, options),
-            )
+        return yield* Effect.fromOption(
+          decoded,
+          () => new SchemaIssue.InvalidValue({ message: 'Invalid duration input' }, input, options),
+        )
       }),
     ),
     encode: SchemaGetter.passthroughSubtype<unknown, Duration.Duration>(),
@@ -154,4 +153,34 @@ export const duration: (
   input: unknown,
   options?: import('effect/SchemaAST').ParseOptions,
 ) => Effect.Effect<Duration.Duration, Schema.SchemaError> =
-  Schema.decodeUnknownEffect(DurationInput)
+  Schema.decodeUnknownEffect(DurationFromUnknown)
+
+/** Decoded value of DateTimeUtcFromEpochMillis.
+ * @category models
+ */
+export type DateTimeUtcFromEpochMillis = typeof DateTimeUtcFromEpochMillis.Type
+
+/** Decoded value of DurationFromMillis.
+ * @category models
+ */
+export type DurationFromMillis = typeof DurationFromMillis.Type
+
+/** Decoded value of DurationFromSeconds.
+ * @category models
+ */
+export type DurationFromSeconds = typeof DurationFromSeconds.Type
+
+/** Decoded value of NonnegativeDurationFromMillis.
+ * @category models
+ */
+export type NonnegativeDurationFromMillis = typeof NonnegativeDurationFromMillis.Type
+
+/** Decoded value of CommandTimeoutFromSeconds.
+ * @category models
+ */
+export type CommandTimeoutFromSeconds = typeof CommandTimeoutFromSeconds.Type
+
+/** Decoded value of DurationFromUnknown.
+ * @category models
+ */
+export type DurationFromUnknown = typeof DurationFromUnknown.Type

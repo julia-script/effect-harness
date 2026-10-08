@@ -160,7 +160,7 @@ export const Event = Schema.Union([
     stop_reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
     usage: Usage,
     total_cost_usd: Schema.optionalKey(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
-    // effect-review-allow B-no-lazy-unknown: native CLI modelUsage extension objects
+    // effect-nit-allow B-no-lazy-unknown: native CLI modelUsage extension objects
     // remain unchanged in provider metadata; Turn decodes accounting fields once
     // with Schema.Record(Schema.String, Protocol.ModelUsage) before accounting
     // and never uses unchecked provider extension fields for totals.
@@ -214,3 +214,8 @@ export const decode = Effect.fnUntraced(function* (
     Effect.mapError(() => protocol('Unsupported or malformed Claude Code frame')),
   )
 })
+
+/** Checks the decoded ModelUsage contract without decoding or coercing input.
+ * @category guards
+ */
+export const isModelUsage: (u: unknown) => u is ModelUsage = Schema.is(Schema.toType(ModelUsage))

@@ -4,9 +4,10 @@
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
+import * as Predicate from 'effect/Predicate'
 
 /**
- * Optional domain fields admit undefined and omit it from their encoded object.
+ * Creates an optional domain-field codec accepting undefined and omitting it from encoded objects.
  *
  * @category combinators
  */
@@ -16,6 +17,6 @@ export const optional = <S extends Schema.Constraint>(
   Schema.optional(schema).pipe(
     Schema.decodeTo(Schema.optional(Schema.toType(schema)), {
       decode: SchemaGetter.passthrough(),
-      encode: SchemaGetter.transformOptional(Option.filter((value) => value !== undefined)),
+      encode: SchemaGetter.transformOptional(Option.filter(Predicate.isNotUndefined)),
     }),
   )

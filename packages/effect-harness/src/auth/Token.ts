@@ -1,18 +1,15 @@
 /**
  * Redacted OAuth token and revocation HTTP boundaries.
  */
-import * as Redacted from 'effect/Redacted'
+import * as Option from 'effect/Option'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
+import * as SchemaGetter from 'effect/SchemaGetter'
+import * as Record from 'effect/Record'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
-import {
-  AuthNetworkError,
-  AuthProtocolError,
-  AuthTokenError,
-  AuthError,
-  Secret,
-} from './Credential.ts'
+import { Secret } from './Credential.ts'
+import { AuthNetworkError, AuthProtocolError, AuthTokenError, AuthError } from './AuthError.ts'
 /**
  * Token endpoint grant with Redacted tokens and lifetime metadata.
  *
@@ -44,20 +41,70 @@ export type TokenResponse = typeof TokenResponse.Type
  * @category guards
  */
 export const isTokenResponse: (u: unknown) => u is TokenResponse = Schema.is(TokenResponse)
+const FieldSecret = Schema.RedactedFromValue(Schema.String)
+const FieldValue = Schema.Union([Schema.String, FieldSecret, Schema.Undefined])
+const FieldMap = Schema.Record(Schema.String, FieldValue)
+const FieldWire = Schema.Record(Schema.String, Schema.String)
+const omitUndefinedFields = {
+  decode: SchemaGetter.passthrough<typeof FieldWire.Type>(),
+  encode: SchemaGetter.transform((fields: Readonly<Record<string, string | undefined>>) =>
+    Record.filter(fields, (value): value is string => value !== undefined),
+  ),
+}
 /**
- * Sensitive protocol fields stay wrapped until the final HTTP body serialization.
+ * Extensible token request fields whose six sensitive keys require Redacted strings.
+ *
+ * **Details**
+ *
+ * Empty strings are valid, including redacted empty strings. Unknown string keys retain
+ * string, Redacted<string> and explicit undefined values; encoding omits undefined entries.
  *
  * @category models
  */
-export interface Fields {
-  readonly [key: string]: string | Redacted.Redacted<string> | undefined
-  readonly refresh_token?: Redacted.Redacted<string> | undefined
-  readonly access_token?: Redacted.Redacted<string> | undefined
-  readonly token?: Redacted.Redacted<string> | undefined
-  readonly code?: Redacted.Redacted<string> | undefined
-  readonly code_verifier?: Redacted.Redacted<string> | undefined
-  readonly state?: Redacted.Redacted<string> | undefined
-}
+export const Fields = Schema.StructWithRest(
+  Schema.Struct({
+    refresh_token: Schema.optional(FieldSecret),
+    access_token: Schema.optional(FieldSecret),
+    token: Schema.optional(FieldSecret),
+    code: Schema.optional(FieldSecret),
+    code_verifier: Schema.optional(FieldSecret),
+    state: Schema.optional(FieldSecret),
+  }),
+  [FieldMap],
+).pipe(Schema.encodeTo(FieldWire, omitUndefinedFields))
+/**
+ * Extensible token request fields with Redacted sensitive values.
+ *
+ * @category models
+ */
+export type Fields = typeof Fields.Type
+
+// The native Record codec visits caller keys in order instead of fixed Struct keys first.
+// Named sensitive-key validation still comes from the schema-derived Fields model above.
+const FieldsCodec = FieldMap.pipe(Schema.encodeTo(FieldWire, omitUndefinedFields))
+const invalidFields = () =>
+  new AuthError({ reason: new AuthProtocolError({ message: 'Invalid token request fields' }) })
+/**
+ * Encodes token fields once at the final transport boundary, retaining caller key order.
+ *
+ * **Details**
+ *
+ * Capture own enumerable string fields once so accessor values are not sampled twice.
+ * Validate the sensitive-key policy before native schema encoding unwraps Redacted values.
+ * Diagnostics omit both request values and schema issues that could contain secrets.
+ *
+ * @category combinators
+ */
+export const encodeFields = Effect.fnUntraced(function* (
+  fields: Fields,
+): Effect.fn.Return<typeof FieldWire.Type, AuthError> {
+  const snapshot = yield* Effect.try({
+    try: () => Object.fromEntries(Object.entries(fields)),
+    catch: invalidFields,
+  })
+  yield* Schema.decodeEffect(Schema.toType(Fields))(snapshot).pipe(Effect.mapError(invalidFields))
+  return yield* Schema.encodeEffect(FieldsCodec)(snapshot).pipe(Effect.mapError(invalidFields))
+})
 
 /**
  * Requests an OAuth token using the protocol form-encoded endpoint.
@@ -76,15 +123,7 @@ export const request = Effect.fnUntraced(function* (
   const response = yield* client
     .execute(
       HttpClientRequest.post(endpoint).pipe(
-        HttpClientRequest.bodyUrlParams(
-          Object.fromEntries(
-            Object.entries(fields).flatMap(([key, value]) =>
-              value === undefined
-                ? []
-                : [[key, Redacted.isRedacted(value) ? Redacted.value(value) : value]],
-            ),
-          ),
-        ),
+        HttpClientRequest.bodyUrlParams(yield* encodeFields(fields)),
       ),
     )
     .pipe(
@@ -95,13 +134,27 @@ export const request = Effect.fnUntraced(function* (
           }),
       ),
     )
-  if (response.status !== 200)
+  if (response.status !== 200) {
+    // Read only a recognized rejection discriminator; never retain the response body.
+    // JSON/codec failures stay reportable as the original token rejection, while defects
+    // and interruption propagate through Effect.option.
+    const rejection =
+      response.status === 400 || response.status === 401
+        ? yield* response.json.pipe(
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(Schema.Struct({ error: Schema.Literal('invalid_grant') })),
+            ),
+            Effect.option,
+          )
+        : Option.none()
     return yield* new AuthError({
       reason: new AuthTokenError({
         message: 'Token endpoint rejected the grant',
         status: response.status,
+        ...(Option.isSome(rejection) ? { grantRejection: rejection.value.error } : {}),
       }),
     })
+  }
   const body = yield* response.json.pipe(
     Effect.mapError(
       (cause) =>
@@ -143,15 +196,7 @@ export const revoke = Effect.fnUntraced(function* (
   const response = yield* client
     .execute(
       HttpClientRequest.post(endpoint).pipe(
-        HttpClientRequest.bodyUrlParams(
-          Object.fromEntries(
-            Object.entries(fields).flatMap(([key, value]) =>
-              value === undefined
-                ? []
-                : [[key, Redacted.isRedacted(value) ? Redacted.value(value) : value]],
-            ),
-          ),
-        ),
+        HttpClientRequest.bodyUrlParams(yield* encodeFields(fields)),
       ),
     )
     .pipe(

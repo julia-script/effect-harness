@@ -3,8 +3,13 @@
  */
 // @barrel
 /**
- * Typed authentication failures and redacted credential codecs with compatible persisted
- * wire representations.
+ * Shared typed authentication failures with redacted diagnostics.
+ *
+ * @category re-exports
+ */
+export * as AuthError from './AuthError.ts'
+/**
+ * Redacted credential codecs for API keys and OAuth accounts.
  *
  * @category re-exports
  */
@@ -52,3 +57,9 @@ export * as Time from './Time.ts'
  * @category re-exports
  */
 export * as Token from './Token.ts'
+/**
+ * Nominal host identities owned by credential storage.
+ *
+ * @category re-exports
+ */
+export * as HostId from './HostId.ts'

@@ -1,6 +1,7 @@
 /**
  * Cross-backend durable storage conformance cases.
  */
+import * as MutableHashMap from 'effect/MutableHashMap'
 import * as Option from 'effect/Option'
 import * as Identity from '../Identity.ts'
 import * as Effect from 'effect/Effect'
@@ -17,16 +18,16 @@ import { rejected, type StorageError } from '../StorageError.ts'
 import type { Assertions, Case } from './Storage.ts'
 
 const root = Record.ROOT_CONVERSATION_ID
-// effect-review-allow P4-decode-effect-at-boundary: all fixture IDs are decoded once
+// effect-nit-allow P4-decode-effect-at-boundary: all fixture IDs are decoded once
 // at module initialization. Cases use the fixed 1..1000 literals and the last-safe
 // sentinel; deliberately malformed IDs still enter the actual Store boundary.
 const fixtureIdsUnsafe = <A extends number>(schema: Schema.Codec<A, number>) => {
   const decodeUnsafe = Schema.decodeSync(schema)
-  const values = new Map<number, A>()
+  const values = MutableHashMap.empty<number, A>()
   for (const value of [...Arr.range(1, 1000), Number.MAX_SAFE_INTEGER])
-    values.set(value, decodeUnsafe(value))
+    MutableHashMap.set(values, value, decodeUnsafe(value))
   return (value: number): A => {
-    const decoded = values.get(value)
+    const decoded = Option.getOrUndefined(MutableHashMap.get(values, value))
     if (decoded === undefined) throw new TypeError('Unknown literal fixture ID')
     return decoded
   }
@@ -53,7 +54,7 @@ const documentUnsafe = (
 ): Record.DocumentCreate => ({
   id: didUnsafe(id),
   kind: 'doc',
-  scope: { _tag: 'conversation', kind: 'conversation', conversationId: root },
+  scope: { _tag: 'conversation', conversationId: root },
   history: 'rewindable',
   fork: 'asOf',
   ...extra,
@@ -86,7 +87,7 @@ const initial = Document.defineUnsafe({
 const failure = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.flip, Effect.orDie)
 
 /**
- * Storage semantics shared by every backend, independent from the selected test runner.
+ * Creates storage conformance cases shared by every backend and test runner.
  *
  * @category constructors
  */
@@ -123,7 +124,6 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
           store.commit([
             {
               _tag: 'entry',
-              type: 'entry',
               value: { id: eidUnsafe(1), conversationId: root, kind: 'bad' },
             },
           ]),
@@ -139,10 +139,9 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       const session = yield* Session.Session
       yield* session.root()
       yield* store.commit([
-        { _tag: 'task', type: 'task', value: pending(tidUnsafe(2)) },
+        { _tag: 'task', value: pending(tidUnsafe(2)) },
         {
           _tag: 'submission',
-          type: 'submission',
           value: {
             _tag: 'InputQueued' as const,
             id: sidUnsafe(3),
@@ -158,15 +157,13 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         store.commit([
           {
             _tag: 'task',
-            type: 'task',
             value: { ...pending(tidUnsafe(2)), state: { status: 'running' } },
           },
           {
             _tag: 'entry',
-            type: 'entry',
             value: { id: eidUnsafe(4), conversationId: root, kind: 'transient' },
           },
-          { _tag: 'conversation', type: 'conversation', value: { id: root } },
+          { _tag: 'conversation', value: { id: root } },
         ]),
       )
       assert.deepStrictEqual(yield* store.read, before)
@@ -181,15 +178,20 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       const session = yield* Session.Session
       yield* session.root()
       const fixture = '{"__proto__":{"bad":1},"constructor":[1,2],"prototype":"ok"}'
-      const parse = Effect.try({
-        try: () => JSON.parse(fixture),
-        catch: (cause) => rejected('Invalid conformance JSON fixture', undefined, cause),
-      })
+      const fixtureSchema = Schema.fromJsonString(
+        Schema.Struct({
+          ['__proto__']: Schema.Struct({ bad: Schema.Finite }),
+          constructor: Schema.mutable(Schema.Array(Schema.Finite)),
+          prototype: Schema.String,
+        }),
+      )
+      const parse = Schema.decodeEffect(fixtureSchema)(fixture).pipe(
+        Effect.mapError((cause) => rejected('Invalid conformance JSON fixture', undefined, cause)),
+      )
       const data = yield* parse
       yield* store.commit([
         {
           _tag: 'entry',
-          type: 'entry',
           value: { id: eidUnsafe(2), conversationId: root, kind: 'data', data },
         },
       ])
@@ -215,7 +217,6 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       yield* store.commit(
         [8, 3, 6, 2].map((id) => ({
           _tag: 'entry' as const,
-          type: 'entry' as const,
           value: {
             id: eidUnsafe(id),
             conversationId: root,
@@ -232,7 +233,6 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       yield* store.commit([
         {
           _tag: 'entry',
-          type: 'entry',
           value: { id: eidUnsafe(9), conversationId: root, kind: 'new' },
         },
       ])
@@ -276,10 +276,9 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       const session = yield* Session.Session
       yield* session.root()
       yield* store.commit([
-        { _tag: 'task', type: 'task', value: pending(tidUnsafe(2)) },
+        { _tag: 'task', value: pending(tidUnsafe(2)) },
         ...[8, 5, 3].map((id) => ({
           _tag: 'conversation' as const,
-          type: 'conversation' as const,
           value: {
             id: cidUnsafe(id),
             ...(id === 5 ? {} : { owner: { conversationId: root, taskId: tidUnsafe(2) } }),
@@ -313,39 +312,32 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       const first = yield* store.commit([
         {
           _tag: 'entry',
-          type: 'entry',
           value: { id: eidUnsafe(2), conversationId: root, kind: 'a' },
         },
         {
           _tag: 'entry',
-          type: 'entry',
           value: { id: eidUnsafe(3), conversationId: root, kind: 'hidden' },
         },
       ])
       yield* store.commit([
         {
           _tag: 'conversation',
-          type: 'conversation',
           value: { id: cidUnsafe(4), parent: { conversationId: root, at: eidUnsafe(2) } },
         },
         {
           _tag: 'entry',
-          type: 'entry',
           value: { id: eidUnsafe(5), conversationId: cidUnsafe(4), kind: 'b' },
         },
         {
           _tag: 'entry',
-          type: 'entry',
           value: { id: eidUnsafe(6), conversationId: cidUnsafe(4), kind: 'hidden' },
         },
         {
           _tag: 'conversation',
-          type: 'conversation',
           value: { id: cidUnsafe(7), parent: { conversationId: cidUnsafe(4), at: eidUnsafe(5) } },
         },
         {
           _tag: 'entry',
-          type: 'entry',
           value: { id: eidUnsafe(8), conversationId: cidUnsafe(7), kind: 'c' },
         },
       ])
@@ -373,7 +365,6 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       yield* store.commit(
         [2, 3, 4].map((id) => ({
           _tag: 'task' as const,
-          type: 'task' as const,
           value: {
             ...pending(tidUnsafe(id)),
             background: id === 3,
@@ -392,7 +383,7 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         (yield* session.scanTasks({ abortRequested: true, status: 'completing' }, 10)).items[0]?.id,
         4,
       )
-      yield* store.commit([{ _tag: 'task', type: 'task', value: pending(tidUnsafe(2)) }])
+      yield* store.commit([{ _tag: 'task', value: pending(tidUnsafe(2)) }])
       assert.strictEqual(
         (yield* session.task(tidUnsafe(2)).pipe(Effect.map(Option.getOrThrow)))?.owner,
         undefined,
@@ -432,7 +423,12 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
           return [input.id, write.id]
         }),
       )
-      assert.strictEqual((yield* session.scanSubmissions({ status: 'done' }, 10)).items.length, 2)
+      const settled = (yield* session.scanSubmissions({ status: 'done' }, 10)).items
+      assert.strictEqual(settled.length, 2)
+      assert.deepStrictEqual(
+        settled.map((submission) => submission._tag),
+        ['InputDone', 'WriteDone'],
+      )
       assert.strictEqual(
         Option.getOrUndefined(
           Option.map(
@@ -472,10 +468,9 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       const session = yield* Session.Session
       yield* session.root()
       yield* store.commit([
-        { _tag: 'conversation', type: 'conversation', value: { id: cidUnsafe(2) } },
+        { _tag: 'conversation', value: { id: cidUnsafe(2) } },
         {
           _tag: 'submission',
-          type: 'submission',
           value: {
             _tag: 'InputQueued' as const,
             id: sidUnsafe(3),
@@ -487,7 +482,6 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         },
         {
           _tag: 'submission',
-          type: 'submission',
           value: {
             _tag: 'WriteQueued' as const,
             id: sidUnsafe(4),
@@ -526,7 +520,6 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         // Deliberate JavaScript boundary misuse must still be rejected by the public Store.
         const write: unknown = {
           _tag: 'submission',
-          type: 'submission',
           value: { id: sidUnsafe(5), conversationId: root, ...invalid },
         }
         yield* failure(store.commit([write as Record.Write]))
@@ -535,7 +528,6 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       yield* store.commit([
         {
           _tag: 'submission',
-          type: 'submission',
           value: {
             _tag: 'InputPlaced' as const,
             id: sidUnsafe(3),
@@ -578,35 +570,33 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       const creation = yield* store.commit([
         {
           _tag: 'document.create',
-          type: 'document.create',
           record: documentUnsafe(2),
-          content: { _tag: 'base', kind: 'base', version: 1, value: { n: 0 } },
+          content: { _tag: 'base', version: 1, value: { n: 0 } },
         },
       ])
       const update = yield* store.commit([
         {
           _tag: 'document.change',
-          type: 'document.change',
           id: didUnsafe(2),
-          content: { _tag: 'delta', kind: 'delta', version: 1, ops: [['set', ['n'], 1]] },
+          content: { _tag: 'delta', version: 1, ops: [['set', ['n'], 1]] },
         },
       ])
       const replacement = yield* store.commit([
         {
           _tag: 'document.change',
-          type: 'document.change',
           id: didUnsafe(2),
-          content: { _tag: 'base', kind: 'base', version: 2, value: { n: 2 } },
+          content: { _tag: 'base', version: 2, value: { n: 2 } },
         },
       ])
       assert.strictEqual(
-        (yield* session.document(didUnsafe(2), creation).pipe(Effect.map(Option.getOrThrow)))?.value
-          .n,
+        (yield* session.document(didUnsafe(2), creation).pipe(Effect.map(Option.getOrThrow)))
+          ?.value['n'],
         0,
       )
       assert.strictEqual(
-        (yield* session.document(didUnsafe(2), update).pipe(Effect.map(Option.getOrThrow)))?.value
-          .n,
+        (yield* session.document(didUnsafe(2), update).pipe(Effect.map(Option.getOrThrow)))?.value[
+          'n'
+        ],
         1,
       )
       assert.strictEqual(
@@ -615,12 +605,11 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         2,
       )
       const retired = yield* store.commit([
-        { _tag: 'document.retire', type: 'document.retire', id: didUnsafe(2) },
+        { _tag: 'document.retire', id: didUnsafe(2) },
         {
           _tag: 'document.create',
-          type: 'document.create',
           record: documentUnsafe(3),
-          content: { _tag: 'base', kind: 'base', version: 2, value: { n: 3 } },
+          content: { _tag: 'base', version: 2, value: { n: 3 } },
         },
       ])
       assert.strictEqual(
@@ -647,32 +636,29 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       yield* store.commit([
         {
           _tag: 'document.create',
-          type: 'document.create',
           record: documentUnsafe(2),
-          content: { _tag: 'base', kind: 'base', version: 1, value: { n: 0 } },
+          content: { _tag: 'base', version: 1, value: { n: 0 } },
         },
       ])
       for (let n = 1; n <= 110; n++)
         yield* store.commit([
           {
             _tag: 'document.change',
-            type: 'document.change',
             id: didUnsafe(2),
             content: {
               _tag: 'delta',
-              kind: 'delta',
               version: 1,
               ops: n === 50 ? [['replace', { n }]] : [['set', ['n'], n]],
             },
           },
         ])
       assert.strictEqual(
-        (yield* session.document(didUnsafe(2)).pipe(Effect.map(Option.getOrThrow)))?.value.n,
+        (yield* session.document(didUnsafe(2)).pipe(Effect.map(Option.getOrThrow)))?.value['n'],
         110,
       )
       assert.strictEqual(
         (yield* session.document(didUnsafe(2), seqUnsafe(2)).pipe(Effect.map(Option.getOrThrow)))
-          ?.value.n,
+          ?.value['n'],
         0,
       )
     }),
@@ -688,24 +674,22 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         {
           id: didUnsafe(3),
           kind: 'sessiondoc',
-          scope: { _tag: 'session' as const, kind: 'session' as const },
+          scope: { _tag: 'session' as const },
         },
       ]) {
         yield* store.commit([
           {
             _tag: 'document.create',
-            type: 'document.create',
             record,
-            content: { _tag: 'base', kind: 'base', version: 1, value: { n: 1 } },
+            content: { _tag: 'base', version: 1, value: { n: 1 } },
           },
         ])
         yield* failure(session.document(record.id, seqUnsafe(2)))
         yield* store.commit([
           {
             _tag: 'document.change',
-            type: 'document.change',
             id: record.id,
-            content: { _tag: 'base', kind: 'base', version: 1, value: { n: 2 } },
+            content: { _tag: 'base', version: 1, value: { n: 2 } },
           },
         ])
         assert.strictEqual(
@@ -720,7 +704,7 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
           ),
           1,
         )
-        yield* store.commit([{ _tag: 'document.retire', type: 'document.retire', id: record.id }])
+        yield* store.commit([{ _tag: 'document.retire', id: record.id }])
         assert.strictEqual(
           Option.getOrUndefined(
             Option.map(
@@ -746,9 +730,8 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         store.commit([
           {
             _tag: 'document.create',
-            type: 'document.create',
             record: documentUnsafe(2, { history: 'latest', fork: 'asOf' }),
-            content: { _tag: 'base', kind: 'base', version: 1, value: {} },
+            content: { _tag: 'base', version: 1, value: {} },
           },
         ]),
       )
@@ -756,18 +739,16 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         store.commit([
           {
             _tag: 'document.create',
-            type: 'document.create',
             record: documentUnsafe(2),
-            content: { _tag: 'delta', kind: 'delta', version: 1, ops: [] },
+            content: { _tag: 'delta', version: 1, ops: [] },
           },
         ]),
       )
       yield* store.commit([
         {
           _tag: 'document.create',
-          type: 'document.create',
           record: documentUnsafe(2),
-          content: { _tag: 'base', kind: 'base', version: 1, value: { n: 0 } },
+          content: { _tag: 'base', version: 1, value: { n: 0 } },
         },
       ])
       const before = yield* store.read
@@ -775,9 +756,8 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         store.commit([
           {
             _tag: 'document.change',
-            type: 'document.change',
             id: didUnsafe(2),
-            content: { _tag: 'delta', kind: 'delta', version: 2, ops: [] },
+            content: { _tag: 'delta', version: 2, ops: [] },
           },
         ]),
       )
@@ -785,26 +765,23 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         store.commit([
           {
             _tag: 'document.copy',
-            type: 'document.copy',
             record: documentUnsafe(3),
             source: { id: didUnsafe(2), at: 'current' },
           },
-          { _tag: 'document.retire', type: 'document.retire', id: didUnsafe(2) },
+          { _tag: 'document.retire', id: didUnsafe(2) },
         ]),
       )
       yield* failure(
         store.commit([
           {
             _tag: 'document.change',
-            type: 'document.change',
             id: didUnsafe(2),
-            content: { _tag: 'base', kind: 'base', version: 1, value: {} },
+            content: { _tag: 'base', version: 1, value: {} },
           },
           {
             _tag: 'document.change',
-            type: 'document.change',
             id: didUnsafe(2),
-            content: { _tag: 'base', kind: 'base', version: 1, value: {} },
+            content: { _tag: 'base', version: 1, value: {} },
           },
         ]),
       )
@@ -812,9 +789,8 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         store.commit([
           {
             _tag: 'document.create',
-            type: 'document.create',
             record: documentUnsafe(3),
-            content: { _tag: 'base', kind: 'base', version: 1, value: {} },
+            content: { _tag: 'base', version: 1, value: {} },
           },
         ]),
       )
@@ -834,17 +810,15 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         documentUnsafe(5, { key: '\ud800' }),
         documentUnsafe(6, { key: '\ud801' }),
         documentUnsafe(7, {
-          scope: { _tag: 'conversation', kind: 'conversation', conversationId: cidUnsafe(100) },
+          scope: { _tag: 'conversation', conversationId: cidUnsafe(100) },
         }),
       ]
       yield* store.commit(
         records.map((record) => ({
           _tag: 'document.create' as const,
-          type: 'document.create' as const,
           record,
           content: {
             _tag: 'base' as const,
-            kind: 'base' as const,
             version: 1,
             value: { id: record.id },
           },
@@ -853,7 +827,7 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       assert.deepStrictEqual(
         (yield* session.scanDocuments(
           {
-            scope: { _tag: 'conversation', kind: 'conversation', conversationId: root },
+            scope: { _tag: 'conversation', conversationId: root },
             at: 'current',
           },
           10,
@@ -869,7 +843,7 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         yield* session
           .findDocument({
             kind: 'doc',
-            scope: { _tag: 'conversation', kind: 'conversation', conversationId: root },
+            scope: { _tag: 'conversation', conversationId: root },
           })
           .pipe(Effect.map(Option.isNone)),
         true,
@@ -885,31 +859,28 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       const created = yield* store.commit([
         {
           _tag: 'document.create',
-          type: 'document.create',
           record: documentUnsafe(2),
-          content: { _tag: 'base', kind: 'base', version: 1, value: { n: 1 } },
+          content: { _tag: 'base', version: 1, value: { n: 1 } },
         },
       ])
       yield* store.commit([
         {
           _tag: 'document.change',
-          type: 'document.change',
           id: didUnsafe(2),
-          content: { _tag: 'delta', kind: 'delta', version: 1, ops: [['set', ['n'], 2]] },
+          content: { _tag: 'delta', version: 1, ops: [['set', ['n'], 2]] },
         },
       ])
       yield* store.commit([
         {
           _tag: 'document.copy',
-          type: 'document.copy',
           record: documentUnsafe(3, {
-            scope: { _tag: 'conversation', kind: 'conversation', conversationId: cidUnsafe(100) },
+            scope: { _tag: 'conversation', conversationId: cidUnsafe(100) },
           }),
           source: { id: didUnsafe(2), at: created },
         },
       ])
       assert.strictEqual(
-        (yield* session.document(didUnsafe(3)).pipe(Effect.map(Option.getOrThrow)))?.value.n,
+        (yield* session.document(didUnsafe(3)).pipe(Effect.map(Option.getOrThrow)))?.value['n'],
         1,
       )
       assert.strictEqual(
@@ -927,16 +898,14 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       yield* store.commit([
         {
           _tag: 'entry',
-          type: 'entry',
           value: { id: eidUnsafe(100), conversationId: root, kind: 'explicit' },
         },
       ])
       assert.strictEqual(yield* mintId(Record.TaskId), 101)
-      yield* failure(store.commit([{ _tag: 'task', type: 'task', value: pending(tidUnsafe(100)) }]))
+      yield* failure(store.commit([{ _tag: 'task', value: pending(tidUnsafe(100)) }]))
       yield* store.commit([
         {
           _tag: 'entry',
-          type: 'entry',
           value: { id: eidUnsafe(Number.MAX_SAFE_INTEGER), conversationId: root, kind: 'last' },
         },
       ])
@@ -972,7 +941,7 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
           }),
         ),
       )
-      assert.strictEqual(error.reason._tag, 'ReadAfterWrite')
+      assert.strictEqual(error.reason._tag, 'ReadAfterWriteError')
       assert.strictEqual((yield* session.scanEntries({ conversationId: root }, 10)).items.length, 0)
     }),
   )
@@ -1004,7 +973,7 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
             fingerprint: 'other',
           }),
         )).reason._tag,
-        'Conflict',
+        'ConflictError',
       )
       assert.strictEqual(
         (yield* session.snapshot(counter).pipe(Effect.map(Option.getOrThrow)))?.value.count,
@@ -1021,7 +990,7 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       const newer = Document.defineUnsafe({
         ...counter.definition,
         version: 2,
-        migrate: (value) => ({ count: Number(value.count) + 1 }),
+        migrate: (value) => ({ count: Number(value['count']) + 1 }),
       })
       assert.strictEqual(
         (yield* session.snapshot(newer).pipe(Effect.map(Option.getOrThrow)))?.value.count,
@@ -1029,7 +998,7 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       )
       assert.strictEqual((yield* store.read).documents[0]?.revisions[0]?.content.version, 1)
       yield* session.transaction((tx) => tx.doc(newer).pipe(Effect.as(null)))
-      assert.strictEqual((yield* store.read).documents[0]?.revisions.at(-1)?.content.kind, 'base')
+      assert.strictEqual((yield* store.read).documents[0]?.revisions.at(-1)?.content._tag, 'base')
       assert.strictEqual((yield* store.read).documents[0]?.revisions.at(-1)?.content.version, 2)
       yield* failure(session.snapshot(counter))
     }),
@@ -1082,7 +1051,7 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
       )
       const fork = yield* session.transaction((tx) =>
         tx.forkConversation(root, entry.id, {
-          ownership: { _tag: 'ownerless', kind: 'ownerless' },
+          ownership: { _tag: 'ownerless' },
         }),
       )
       assert.strictEqual(
@@ -1121,11 +1090,10 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         session.transaction(
           Effect.fnUntraced(function* (tx) {
             yield* tx.createConversation({
-              ownership: { _tag: 'task', kind: 'task', taskId: task },
+              ownership: { _tag: 'task', taskId: task },
             })
             yield* tx.write({
               _tag: 'task',
-              type: 'task',
               value: { ...pending(task), state: { status: 'terminal' } },
             })
             return null
@@ -1140,7 +1108,6 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         tx
           .write({
             _tag: 'task',
-            type: 'task',
             value: { ...pending(task), state: { status: 'completing' } },
           })
           .pipe(Effect.as(null)),
@@ -1150,7 +1117,6 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         tx
           .write({
             _tag: 'task',
-            type: 'task',
             value: { ...pending(task), state: { status: 'terminal' } },
           })
           .pipe(Effect.as(null)),
@@ -1182,7 +1148,7 @@ export const makeStorageConformance = (assert: Assertions): Array<Case> => {
         session.conversation(root).pipe(Effect.map(Option.getOrThrow), Effect.as(null)),
         store.journal(0).pipe(Effect.as(null)),
       ])
-        assert.strictEqual((yield* failure(operation)).reason._tag, 'Closed')
+        assert.strictEqual((yield* failure(operation)).reason._tag, 'ClosedError')
     }),
   )
   return cases

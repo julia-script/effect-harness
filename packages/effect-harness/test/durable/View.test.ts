@@ -1,28 +1,45 @@
 import * as TestClock from 'effect/testing/TestClock'
-import { ResourceScope, withLayer } from 'effect-harness/durable/testing/Storage'
-import * as Exit from 'effect/Exit'
-import * as Cause from 'effect/Cause'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
-import { assert, describe, it } from '@effect/vitest'
-import * as Deferred from 'effect/Deferred'
-import * as Effect from 'effect/Effect'
-import * as Fiber from 'effect/Fiber'
-import * as Layer from 'effect/Layer'
-import * as Scope from 'effect/Scope'
-import * as Schema from 'effect/Schema'
-import * as Stream from 'effect/Stream'
-import * as SqlClient from 'effect/sql/SqlClient'
-import * as Conversation from 'effect-harness/durable/Conversation'
-import * as Document from 'effect-harness/durable/Document'
-import * as Inbox from 'effect-harness/durable/Inbox'
-import * as Record from 'effect-harness/durable/Record'
-import * as Session from 'effect-harness/durable/Session'
-import * as View from 'effect-harness/durable/View'
-import * as Usage from 'effect-harness/durable/Usage'
-import * as Memory from 'effect-harness/durable/storage/Memory'
-import * as Sqlite from './storage/TestStore.ts'
 
-const layers = Layer.mergeAll(Session.layer, View.layer).pipe(Layer.provideMerge(Memory.layer))
+import { ResourceScope } from 'effect-harness/durable/testing/Storage'
+
+import { withLayer } from './StorageFixture.ts'
+
+import * as Exit from 'effect/Exit'
+
+import { assert, describe, it } from '@effect/vitest'
+
+import * as Deferred from 'effect/Deferred'
+
+import * as Effect from 'effect/Effect'
+
+import * as Fiber from 'effect/Fiber'
+
+import * as Layer from 'effect/Layer'
+
+import * as Scope from 'effect/Scope'
+
+import * as Schema from 'effect/Schema'
+
+import * as Stream from 'effect/Stream'
+
+import * as Conversation from 'effect-harness/durable/Conversation'
+
+import * as Document from 'effect-harness/durable/Document'
+
+import * as Inbox from 'effect-harness/durable/Inbox'
+
+import * as Record from 'effect-harness/durable/Record'
+
+import * as Session from 'effect-harness/durable/Session'
+
+import * as View from 'effect-harness/durable/View'
+
+import * as Usage from 'effect-harness/durable/Usage'
+
+import * as Store from 'effect-harness/durable/Store'
+
+const layers = Layer.mergeAll(Session.layer, View.layer).pipe(Layer.provideMerge(Store.layerMemory))
+
 const initialize = Effect.gen(function* () {
   const session = yield* Session.Session
   const views = yield* View.View
@@ -40,7 +57,8 @@ const initialize = Effect.gen(function* () {
   )
   return { session, views, root }
 })
-const collect = (watch: View.Watch, count: number) =>
+
+const collect = (watch: View.View.Watch, count: number) =>
   Effect.gen(function* () {
     const consumer = yield* Stream.runCollect(watch.changes.pipe(Stream.take(count))).pipe(
       Effect.timeout('2 seconds'),
@@ -50,14 +68,37 @@ const collect = (watch: View.Watch, count: number) =>
     yield* TestClock.adjust('100 millis')
     return yield* Fiber.join(consumer)
   })
-const append = (session: Session.Service, id: Record.ConversationId, kind: string) =>
+
+const append = (session: Session.Session.Service, id: Record.ConversationId, kind: string) =>
   session.transaction((tx) => tx.appendEntry(id, { kind }))
+
 const settle = TestClock.adjust('65 millis')
-// SQL publication and rollback are native-driver callbacks; virtual time cannot drive their settlement.
-const settleSql = Effect.sleep('65 millis')
-const collectSql = (watch: View.Watch, count: number) =>
-  Stream.runCollect(watch.changes.pipe(Stream.take(count))).pipe(Effect.timeout('2 seconds'))
+
 describe('View', () => {
+  it.effect('rejects operations whose completed value violates the view schema', () =>
+    Effect.gen(function* () {
+      const { views, root } = yield* initialize
+      const value = (yield* views.watch(root.id)).value
+      for (const ops of [
+        [['set', ['conversation'], 'invalid']],
+        [['delete', ['conversation']]],
+        [['set', ['entries'], ['invalid']]],
+      ] satisfies Array<Array<View.Op>>) {
+        const error = yield* Effect.fromResult(View.apply(value, ops)).pipe(Effect.flip)
+        assert.instanceOf(error, View.ViewOperationError)
+      }
+      const restored = yield* Effect.fromResult(
+        View.apply(value, [
+          ['set', ['conversation'], 'temporary invalid value'],
+          ['set', ['conversation'], value.conversation],
+        ]),
+      )
+      assert.strictEqual(restored.entries, value.entries)
+      assert.strictEqual(restored.docs, value.docs)
+      assert.deepStrictEqual(restored, value)
+    }).pipe(Effect.provide(layers)),
+  )
+
   it.effect(
     'rehydrates a complete snapshot when retained early document frames hide a later journal gap',
     () =>
@@ -149,7 +190,7 @@ describe('View', () => {
       const b = yield* append(session, root.id, 'b')
       const child = yield* session.transaction((tx) =>
         tx.forkConversation(root.id, b.id, {
-          ownership: { _tag: 'ownerless' as const, kind: 'ownerless' },
+          ownership: { _tag: 'ownerless' as const },
         }),
       )
       const watch = yield* views.watch(child.id)
@@ -226,7 +267,7 @@ describe('View', () => {
     Effect.gen(function* () {
       const { session, views, root } = yield* initialize
       const other = yield* session.transaction((tx) =>
-        tx.createConversation({ ownership: { _tag: 'ownerless' as const, kind: 'ownerless' } }),
+        tx.createConversation({ ownership: { _tag: 'ownerless' as const } }),
       )
       const watch = yield* views.watch(root.id)
       yield* append(session, root.id, 'exact')
@@ -320,100 +361,8 @@ describe('View', () => {
       }).pipe((effect) =>
         withLayer(
           effect.pipe(Effect.provide(View.layer)),
-          Session.layer.pipe(Layer.provideMerge(Memory.layer)),
+          Session.layer.pipe(Layer.provideMerge(Store.layerMemory)),
         ),
       ),
-  )
-
-  // Native SQL worker acquisition and transaction notifications progress outside TestClock.
-  it.live(
-    'owns acquisitions by Scope and permits cancellation while waiting for physical SQL settlement',
-    () =>
-      Effect.gen(function* () {
-        const { session, views, root } = yield* initialize
-        const scope = yield* Scope.make()
-        const watch = yield* views.watch(root.id).pipe(Scope.provide(scope))
-        yield* Scope.close(scope, yield* Effect.exit(Effect.void))
-        assert.strictEqual(yield* watch.closed, 'cancelled')
-        const sql = yield* SqlClient.SqlClient
-        const entered = yield* Deferred.make<void>()
-        const release = yield* Deferred.make<void>()
-        const transaction = yield* sql
-          .withTransaction(
-            Effect.gen(function* () {
-              yield* append(session, root.id, 'physical')
-              yield* Deferred.succeed(entered, undefined)
-              yield* Deferred.await(release)
-            }),
-          )
-          .pipe(Effect.forkScoped)
-        yield* Deferred.await(entered)
-        const acquiring = yield* views.watch(root.id).pipe(Effect.forkScoped)
-        // SQLite acquisition is blocked by the admitted physical transaction; this negative window admits the waiting reader before cancellation.
-        yield* Effect.sleep('30 millis')
-        const interrupting = yield* Fiber.interrupt(acquiring).pipe(Effect.forkScoped)
-        yield* Effect.yieldNow
-        yield* Deferred.succeed(release, undefined)
-        yield* Fiber.join(transaction)
-        yield* Fiber.join(interrupting)
-        const cancelled = yield* Fiber.await(acquiring)
-        assert.isTrue(Exit.isFailure(cancelled))
-        // The interrupted SQL waiter must not fail for another reason; fiber IDs are runtime assigned.
-        if (Exit.isFailure(cancelled)) assert.isTrue(Cause.hasInterruptsOnly(cancelled.cause))
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(Session.layer, View.layer).pipe(
-            Layer.provideMerge(Sqlite.layer),
-            Layer.provideMerge(SqliteClient.layer({ filename: ':memory:' })),
-          ),
-        ),
-      ),
-  )
-
-  // Native SQL worker acquisition and transaction notifications progress outside TestClock.
-  it.live('publishes neither rolled-back SQL frames nor paused outer transaction writes', () =>
-    Effect.gen(function* () {
-      const { session, views, root } = yield* initialize
-      const watch = yield* views.watch(root.id)
-      const state = yield* views.state(root.id)
-      const sql = yield* SqlClient.SqlClient
-      const entered = yield* Deferred.make<void>()
-      const release = yield* Deferred.make<void>()
-      const write = yield* sql
-        .withTransaction(
-          Effect.gen(function* () {
-            yield* append(session, root.id, 'commit')
-            yield* Deferred.succeed(entered, undefined)
-            yield* Deferred.await(release)
-          }),
-        )
-        .pipe(Effect.forkScoped)
-      yield* Deferred.await(entered)
-      yield* settleSql
-      assert.strictEqual(state.value.entries.length, 0)
-      yield* Deferred.succeed(release, undefined)
-      yield* Fiber.join(write)
-      assert.deepStrictEqual(
-        (yield* collectSql(watch, 1))[0]?.value.entries.map((entry) => entry.kind),
-        ['commit'],
-      )
-      yield* sql
-        .withTransaction(
-          append(session, root.id, 'rollback').pipe(Effect.andThen(Effect.fail('rollback'))),
-        )
-        .pipe(Effect.ignore)
-      yield* settleSql
-      assert.deepStrictEqual(
-        state.value.entries.map((entry) => entry.kind),
-        ['commit'],
-      )
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(Session.layer, View.layer).pipe(
-          Layer.provideMerge(Sqlite.layer),
-          Layer.provideMerge(SqliteClient.layer({ filename: ':memory:' })),
-        ),
-      ),
-    ),
   )
 })

@@ -6,13 +6,13 @@ import * as Schema from 'effect/Schema'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Entry from 'effect-harness/durable/Entry'
 import * as Session from 'effect-harness/durable/Session'
-import * as Memory from 'effect-harness/durable/storage/Memory'
+import * as Store from 'effect-harness/durable/Store'
 import * as ToolExecutor from 'effect-harness/durable/workflow/ToolExecutor'
 import * as GenerationExecutor from 'effect-harness/durable/workflow/GenerationExecutor'
 import * as Inbox from 'effect-harness/durable/Inbox'
 import * as Document from 'effect-harness/durable/Document'
 
-const sessionLayer = Session.layer.pipe(Layer.provideMerge(Memory.layer))
+const sessionLayer = Session.layer.pipe(Layer.provideMerge(Store.layerMemory))
 const user = Prompt.userMessage({ content: [Prompt.textPart({ text: 'stored' })] })
 const encodeUser = Schema.encodeEffect(Schema.toCodecJson(Prompt.UserMessage))
 

@@ -2,6 +2,10 @@
  * Scoped backend fixtures and conformance case contracts.
  */
 import { dual } from 'effect/Function'
+import * as handle from '../internal/handle.ts'
+import type * as Pipeable from 'effect/Pipeable'
+import type * as Inspectable from 'effect/Inspectable'
+import * as Predicate from 'effect/Predicate'
 import { identity } from 'effect/Function'
 import type * as Types from 'effect/Types'
 import * as Effect from 'effect/Effect'
@@ -9,7 +13,7 @@ import * as Context from 'effect/Context'
 import * as Scope from 'effect/Scope'
 import * as Layer from 'effect/Layer'
 import * as Session from '../Session.ts'
-import { Store } from '../Store.ts'
+import type { Store } from '../Store.ts'
 import type { StorageError } from '../StorageError.ts'
 
 /**
@@ -27,7 +31,7 @@ export const sessionLayer = <E, R>(
  * @category services
  */
 export class ResourceScope extends Context.Service<ResourceScope, Scope.Closeable>()(
-  '@effect-harness/durable/testing/ResourceScope',
+  'effect-harness/durable/testing/Storage/ResourceScope',
 ) {}
 
 /**
@@ -53,13 +57,18 @@ export const withLayer = <A, E, R, O, E2, R2>(
   )
 
 /** Runner independent conformance cases keep the native Effect environment visible. */
+const CaseProto = handle.prototype({
+  id: '@effect-harness/durable/testing/Storage/Case',
+  fields: ['name'],
+})
 const CaseTypeId = '~@effect-harness/durable/testing/Storage/Case'
 /**
  * Named Effect-based storage conformance case.
  *
  * @category models
  */
-export interface Case<out R = Store | Session.Session | ResourceScope> {
+export interface Case<out R = Store | Session.Session | ResourceScope>
+  extends Pipeable.Pipeable, Inspectable.Inspectable {
   readonly [CaseTypeId]: { readonly _R: Types.Covariant<R> }
   readonly name: string
   readonly run: Effect.Effect<void, StorageError, R>
@@ -78,7 +87,7 @@ export interface Assertions {
 }
 
 /**
- * Every case gets its own resource scope and backend instance.
+ * Runs an effect with its own scoped storage backend and Session.
  *
  * @category combinators
  */
@@ -113,8 +122,13 @@ export const withStorage: {
  *
  * @category constructors
  */
-export const makeCase = <R>(input: Omit<Case<R>, typeof CaseTypeId>): Case<R> => {
-  const value: Case<R> = { ...input, [CaseTypeId]: { _R: identity } }
+export const makeCase = <R>(input: handle.Input<Case<R>, typeof CaseTypeId>): Case<R> => {
+  const value = handle.make(CaseProto, { ...input, [CaseTypeId]: { _R: identity } })
   Object.defineProperty(value, CaseTypeId, { enumerable: false })
   return value
 }
+
+/** Checks the case identity without recovering its covariant service requirement.
+ * @category guards
+ */
+export const isCase = (u: unknown): u is Case<unknown> => Predicate.hasProperty(u, CaseTypeId)

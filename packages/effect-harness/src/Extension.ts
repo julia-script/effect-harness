@@ -4,35 +4,10 @@
 import { identity } from 'effect/Function'
 import type { HookError } from './HookError.ts'
 import type * as Effect from 'effect/Effect'
-import type * as Context from './Context.ts'
+import type * as Transcript from './Transcript.ts'
 import type * as Hook from './Hook.ts'
 import type { Invocation } from './Invocation.ts'
-import type * as Tool from './Tool.ts'
-
-/**
- * Conversation and agent inputs supplied to an extension prompt section.
- *
- * @category models
- */
-export type PromptInput = Extension.PromptInput
-/**
- * Named prompt section with effectful rendering.
- *
- * @category models
- */
-export type Section = Extension.Section
-/**
- * Wrapper around a registered tool invocation.
- *
- * @category models
- */
-export type ToolWrap = Extension.ToolWrap
-/**
- * Wrapper around a prompt section renderer.
- *
- * @category models
- */
-export type SectionWrap = Extension.SectionWrap
+import type * as ToolRegistration from './ToolRegistration.ts'
 /**
  * Immutable executable code; install it again after restart.
  *
@@ -44,23 +19,22 @@ export type SectionWrap = Extension.SectionWrap
  */
 export interface Extension {
   readonly name: string
-  readonly tools?: ReadonlyArray<Tool.Registration> | undefined
-  readonly sections?: ReadonlyArray<Section> | undefined
+  readonly tools?: ReadonlyArray<ToolRegistration.Registration> | undefined
+  readonly sections?: ReadonlyArray<Extension.Section> | undefined
   readonly hooks?: ReadonlyArray<Hook.Registration> | undefined
-  readonly toolWraps?: ReadonlyArray<ToolWrap> | undefined
-  readonly sectionWraps?: ReadonlyArray<SectionWrap> | undefined
+  readonly toolWraps?: ReadonlyArray<Extension.ToolWrap> | undefined
+  readonly sectionWraps?: ReadonlyArray<Extension.SectionWrap> | undefined
 }
 /**
  * Returns the executable extension declaration with its inferred callback requirements.
  *
  * @category constructors
  */
-export const make = identity<Extension>
+export const make: (input: Extension) => Extension = identity
 
 /**
  * Type-level contracts for `Extension`.
  *
- * @category utility types
  */
 export declare namespace Extension {
   /**
@@ -69,8 +43,8 @@ export declare namespace Extension {
    * @category models
    */
   interface PromptInput {
-    readonly view: Context.View
-    readonly tools: ReadonlyArray<Tool.Registration>
+    readonly view: Transcript.View
+    readonly tools: ReadonlyArray<ToolRegistration.Registration>
     readonly cwd: string
   }
   /**
@@ -93,8 +67,8 @@ export declare namespace Extension {
   interface ToolWrap {
     readonly name: string
     readonly wrap: (
-      tool: Tool.Registration,
-    ) => Effect.Effect<Tool.Registration, HookError, Invocation>
+      tool: ToolRegistration.Registration,
+    ) => Effect.Effect<ToolRegistration.Registration, HookError, Invocation>
   }
   /**
    * Wrapper around a prompt section renderer.

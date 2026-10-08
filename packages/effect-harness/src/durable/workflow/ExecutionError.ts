@@ -16,9 +16,9 @@ const fields = {
  *
  * @category errors
  */
-export class NoModel extends Schema.TaggedError<NoModel>(
-  '@effect-harness/durable/workflow/ExecutionError/NoModel',
-)('NoModel', fields) {
+export class NoModelError extends Schema.TaggedError<NoModelError>(
+  '@effect-harness/durable/workflow/ExecutionError/NoModelError',
+)('NoModelError', fields) {
   get isRetryable(): boolean {
     return false
   }
@@ -29,9 +29,9 @@ export class NoModel extends Schema.TaggedError<NoModel>(
  *
  * @category errors
  */
-export class ConversationBusy extends Schema.TaggedError<ConversationBusy>(
-  '@effect-harness/durable/workflow/ExecutionError/ConversationBusy',
-)('ConversationBusy', fields) {
+export class ConversationBusyError extends Schema.TaggedError<ConversationBusyError>(
+  '@effect-harness/durable/workflow/ExecutionError/ConversationBusyError',
+)('ConversationBusyError', fields) {
   get isRetryable(): boolean {
     return false
   }
@@ -42,9 +42,9 @@ export class ConversationBusy extends Schema.TaggedError<ConversationBusy>(
  *
  * @category errors
  */
-export class RequestConflict extends Schema.TaggedError<RequestConflict>(
-  '@effect-harness/durable/workflow/ExecutionError/RequestConflict',
-)('RequestConflict', fields) {
+export class RequestConflictError extends Schema.TaggedError<RequestConflictError>(
+  '@effect-harness/durable/workflow/ExecutionError/RequestConflictError',
+)('RequestConflictError', fields) {
   get isRetryable(): boolean {
     return false
   }
@@ -55,9 +55,9 @@ export class RequestConflict extends Schema.TaggedError<RequestConflict>(
  *
  * @category errors
  */
-export class ToolUnavailable extends Schema.TaggedError<ToolUnavailable>(
-  '@effect-harness/durable/workflow/ExecutionError/ToolUnavailable',
-)('ToolUnavailable', fields) {
+export class ToolUnavailableError extends Schema.TaggedError<ToolUnavailableError>(
+  '@effect-harness/durable/workflow/ExecutionError/ToolUnavailableError',
+)('ToolUnavailableError', fields) {
   get isRetryable(): boolean {
     return false
   }
@@ -68,9 +68,9 @@ export class ToolUnavailable extends Schema.TaggedError<ToolUnavailable>(
  *
  * @category errors
  */
-export class InvalidArguments extends Schema.TaggedError<InvalidArguments>(
-  '@effect-harness/durable/workflow/ExecutionError/InvalidArguments',
-)('InvalidArguments', fields) {
+export class InvalidArgumentsError extends Schema.TaggedError<InvalidArgumentsError>(
+  '@effect-harness/durable/workflow/ExecutionError/InvalidArgumentsError',
+)('InvalidArgumentsError', fields) {
   get isRetryable(): boolean {
     return false
   }
@@ -94,9 +94,9 @@ export class ModelError extends Schema.TaggedError<ModelError>(
  *
  * @category errors
  */
-export class ContextOverflow extends Schema.TaggedError<ContextOverflow>(
-  '@effect-harness/durable/workflow/ExecutionError/ContextOverflow',
-)('ContextOverflow', fields) {
+export class ContextOverflowError extends Schema.TaggedError<ContextOverflowError>(
+  '@effect-harness/durable/workflow/ExecutionError/ContextOverflowError',
+)('ContextOverflowError', fields) {
   get isRetryable(): boolean {
     return false
   }
@@ -107,9 +107,9 @@ export class ContextOverflow extends Schema.TaggedError<ContextOverflow>(
  *
  * @category errors
  */
-export class Aborted extends Schema.TaggedError<Aborted>(
-  '@effect-harness/durable/workflow/ExecutionError/Aborted',
-)('Aborted', fields) {
+export class AbortedError extends Schema.TaggedError<AbortedError>(
+  '@effect-harness/durable/workflow/ExecutionError/AbortedError',
+)('AbortedError', fields) {
   get isRetryable(): boolean {
     return false
   }
@@ -120,9 +120,9 @@ export class Aborted extends Schema.TaggedError<Aborted>(
  *
  * @category errors
  */
-export class Closed extends Schema.TaggedError<Closed>(
+export class ClosedError extends Schema.TaggedError<ClosedError>(
   '@effect-harness/durable/workflow/ExecutionError/Closed',
-)('Closed', fields) {
+)('ClosedError', fields) {
   get isRetryable(): boolean {
     return false
   }
@@ -133,9 +133,9 @@ export class Closed extends Schema.TaggedError<Closed>(
  *
  * @category errors
  */
-export class Storage extends Schema.TaggedError<Storage>(
-  '@effect-harness/durable/workflow/ExecutionError/Storage',
-)('Storage', fields) {
+export class StorageError extends Schema.TaggedError<StorageError>(
+  '@effect-harness/durable/workflow/ExecutionError/StorageError',
+)('StorageError', fields) {
   get isRetryable(): boolean {
     return false
   }
@@ -146,9 +146,9 @@ export class Storage extends Schema.TaggedError<Storage>(
  *
  * @category errors
  */
-export class InvalidState extends Schema.TaggedError<InvalidState>(
-  '@effect-harness/durable/workflow/ExecutionError/InvalidState',
-)('InvalidState', fields) {
+export class InvalidStateError extends Schema.TaggedError<InvalidStateError>(
+  '@effect-harness/durable/workflow/ExecutionError/InvalidStateError',
+)('InvalidStateError', fields) {
   get isRetryable(): boolean {
     return false
   }
@@ -160,17 +160,17 @@ export class InvalidState extends Schema.TaggedError<InvalidState>(
  * @category schemas
  */
 export const ExecutionErrorReason = Schema.Union([
-  NoModel,
-  ConversationBusy,
-  RequestConflict,
-  ToolUnavailable,
-  InvalidArguments,
+  NoModelError,
+  ConversationBusyError,
+  RequestConflictError,
+  ToolUnavailableError,
+  InvalidArgumentsError,
   ModelError,
-  ContextOverflow,
-  Aborted,
-  Closed,
-  Storage,
-  InvalidState,
+  ContextOverflowError,
+  AbortedError,
+  ClosedError,
+  StorageError,
+  InvalidStateError,
 ])
 /**
  * Decoded value validated by the `ExecutionErrorReason` schema.
@@ -206,8 +206,91 @@ export class ExecutionError extends Schema.TaggedError<ExecutionError>(
   get detail(): Schema.Json | undefined {
     return this.reason.detail
   }
-  /** A workflow failure is not itself permission to repeat a side effect. */
+  /**
+   * Automatic retry eligibility of the structured reason; a workflow failure alone does not authorize repeating a side effect.
+   */
   get isRetryable(): boolean {
     return this.reason.isRetryable
   }
 }
+
+/** Checks the decoded NoModel contract without decoding or coercing input.
+ * @category guards
+ */
+export const isNoModel: (u: unknown) => u is NoModelError = Schema.is(Schema.toType(NoModelError))
+
+/** Checks the decoded ConversationBusy contract without decoding or coercing input.
+ * @category guards
+ */
+export const isConversationBusy: (u: unknown) => u is ConversationBusyError = Schema.is(
+  Schema.toType(ConversationBusyError),
+)
+
+/** Checks the decoded RequestConflict contract without decoding or coercing input.
+ * @category guards
+ */
+export const isRequestConflict: (u: unknown) => u is RequestConflictError = Schema.is(
+  Schema.toType(RequestConflictError),
+)
+
+/** Checks the decoded ToolUnavailable contract without decoding or coercing input.
+ * @category guards
+ */
+export const isToolUnavailable: (u: unknown) => u is ToolUnavailableError = Schema.is(
+  Schema.toType(ToolUnavailableError),
+)
+
+/** Checks the decoded InvalidArguments contract without decoding or coercing input.
+ * @category guards
+ */
+export const isInvalidArguments: (u: unknown) => u is InvalidArgumentsError = Schema.is(
+  Schema.toType(InvalidArgumentsError),
+)
+
+/** Checks the decoded ModelError contract without decoding or coercing input.
+ * @category guards
+ */
+export const isModelError: (u: unknown) => u is ModelError = Schema.is(Schema.toType(ModelError))
+
+/** Checks the decoded ContextOverflow contract without decoding or coercing input.
+ * @category guards
+ */
+export const isContextOverflow: (u: unknown) => u is ContextOverflowError = Schema.is(
+  Schema.toType(ContextOverflowError),
+)
+
+/** Checks the decoded Aborted contract without decoding or coercing input.
+ * @category guards
+ */
+export const isAborted: (u: unknown) => u is AbortedError = Schema.is(Schema.toType(AbortedError))
+
+/** Checks the decoded Closed contract without decoding or coercing input.
+ * @category guards
+ */
+export const isClosed: (u: unknown) => u is ClosedError = Schema.is(Schema.toType(ClosedError))
+
+/** Checks the decoded Storage contract without decoding or coercing input.
+ * @category guards
+ */
+export const isStorage: (u: unknown) => u is StorageError = Schema.is(Schema.toType(StorageError))
+
+/** Checks the decoded InvalidState contract without decoding or coercing input.
+ * @category guards
+ */
+export const isInvalidState: (u: unknown) => u is InvalidStateError = Schema.is(
+  Schema.toType(InvalidStateError),
+)
+
+/** Checks the decoded ExecutionError contract without decoding or coercing input.
+ * @category guards
+ */
+export const isExecutionError: (u: unknown) => u is ExecutionError = Schema.is(
+  Schema.toType(ExecutionError),
+)
+
+/** Checks the decoded ExecutionErrorReason contract without decoding or coercing input.
+ * @category guards
+ */
+export const isExecutionErrorReason: (u: unknown) => u is ExecutionErrorReason = Schema.is(
+  Schema.toType(ExecutionErrorReason),
+)

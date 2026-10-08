@@ -5,31 +5,14 @@ import type { Assertions as EnvAssertions } from './EnvConformance.ts'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
-
-/**
- * Assertion operations used by adapter conformance cases.
- *
- * @category models
- */
-export type Expectation = makeExpectAssertions.Expectation
-/**
- * Test-runner expectation factory accepted by the assertion adapter.
- *
- * @category models
- */
-export type ExpectLike = makeExpectAssertions.ExpectLike
-/**
- * Assertions required by environment adapter conformance cases.
- *
- * @category models
- */
-export type ConformanceAssertions = makeExpectAssertions.Assertions
 /**
  * Adapts synchronous assertions without running effects or hiding adapter failures.
  *
  * @category constructors
  */
-export const makeExpectAssertions = (expect: ExpectLike): ConformanceAssertions => ({
+export const makeExpectAssertions = (
+  expect: makeExpectAssertions.ExpectLike,
+): makeExpectAssertions.Assertions => ({
   strictEqual: (actual, expected) => expect(actual).toBe(expected),
   deepStrictEqual: (actual, expected) => expect(actual).toEqual(expected),
   ok: (condition) => expect(condition).toBeTruthy(),
@@ -47,7 +30,6 @@ export const makeExpectAssertions = (expect: ExpectLike): ConformanceAssertions 
 /**
  * Type-level contracts for `makeExpectAssertions`.
  *
- * @category utility types
  */
 export declare namespace makeExpectAssertions {
   /**

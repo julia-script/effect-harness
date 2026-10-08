@@ -1,6 +1,7 @@
 /**
  * Authenticated native Anthropic clients with account protocol adaptation.
  */
+import * as Function from 'effect/Function'
 import * as Arr from 'effect/Array'
 import * as Predicate from 'effect/Predicate'
 import * as String from 'effect/String'
@@ -9,7 +10,7 @@ import * as Option from 'effect/Option'
 import * as Config from 'effect/Config'
 import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import * as Generated from '@effect/ai-anthropic/Generated'
-import type { AuthError } from 'effect-harness/auth/Credential'
+import type { AuthError } from 'effect-harness/auth/AuthError'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import type * as Redacted from 'effect/Redacted'
@@ -64,7 +65,7 @@ const canonicalByLower = HashMap.fromIterable(
   canonicalTools.map((name) => [name.toLowerCase(), name]),
 )
 const alias = (name: string) =>
-  Option.getOrElse(HashMap.get(canonicalByLower, name.toLowerCase()), () => name)
+  Option.getOrElse(HashMap.get(canonicalByLower, name.toLowerCase()), Function.constant(name))
 const invalid = (description: string) =>
   new AiError.AiError({
     module: 'AnthropicAccount',
@@ -94,10 +95,7 @@ const mergeBetas = (value?: string) =>
   [
     ...Arr.dedupe([
       ...betas,
-      ...(value ?? '')
-        .split(',')
-        .map((item) => item.trim())
-        .filter(String.isNonEmpty),
+      ...Arr.filter(Arr.map(String.split(value ?? '', ','), String.trim), String.isNonEmpty),
     ]),
   ].join(',')
 
@@ -174,14 +172,13 @@ const prepare = Effect.fnUntraced(function* (
   return {
     payload: transformed,
     reverse: (name: string) =>
-      Option.getOrElse(HashMap.get(aliases, name.toLowerCase()), () => name),
+      Option.getOrElse(HashMap.get(aliases, name.toLowerCase()), Function.constant(name)),
   }
 })
 
 /**
  * Type-level contracts for `AnthropicAccountClient`.
  *
- * @category utility types
  */
 export declare namespace AnthropicAccountClient {
   /**
@@ -198,12 +195,6 @@ export declare namespace AnthropicAccountClient {
   }
 }
 /**
- * Selected credential account and native Anthropic transport overrides.
- *
- * @category models
- */
-export type ClientOptions = AnthropicAccountClient.ClientOptions
-/**
  * Provides the native Anthropic client using a selected OAuth account.
  *
  * **Details**
@@ -219,7 +210,7 @@ export type ClientOptions = AnthropicAccountClient.ClientOptions
  * @category layers
  */
 export const layer = (
-  options: ClientOptions,
+  options: AnthropicAccountClient.ClientOptions,
 ): Layer.Layer<AnthropicClient.AnthropicClient, AiError.AiError, HttpClient.HttpClient | OAuth> =>
   Layer.effect(AnthropicClient.AnthropicClient)(
     Effect.gen(function* () {
@@ -287,10 +278,13 @@ export const layer = (
           return request.params
         return {
           ...request.params,
-          'anthropic-beta': [request.params?.['anthropic-beta'], 'interleaved-thinking-2025-05-14']
-            .filter(Predicate.isNotUndefined)
-            .filter(String.isNonEmpty)
-            .join(','),
+          'anthropic-beta': Arr.filter(
+            Arr.filter(
+              [request.params?.['anthropic-beta'], 'interleaved-thinking-2025-05-14'],
+              Predicate.isNotUndefined,
+            ),
+            String.isNonEmpty,
+          ).join(','),
         }
       }
       const redacted = Effect.updateService(Headers.CurrentRedactedNames, (names) => [

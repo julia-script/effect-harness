@@ -6,4 +6,15 @@
  *
  * @category re-exports
  */
-export * from '@effect/ai-openai/OpenAiClient'
+export {
+  type Service,
+  OpenAiClient,
+  type Options,
+  make,
+  layer,
+  layerConfig,
+  type ResponseStreamEvent,
+  OpenAiSocket,
+  withWebSocketMode,
+  layerWebSocketMode,
+} from '@effect/ai-openai/OpenAiClient'

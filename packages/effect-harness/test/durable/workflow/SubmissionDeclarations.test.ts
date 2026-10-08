@@ -18,6 +18,7 @@ import { Compaction } from 'effect-harness/durable/workflow/Compaction'
 import { Abort } from 'effect-harness/durable/workflow/Abort'
 
 const receipt = Schema.decodeSync(Result)({
+  _tag: 'WriteDone',
   id: 2,
   conversationId: 1,
   type: 'write',
@@ -30,7 +31,6 @@ const payload = {
   requestId: Identity.RequestId.make('request-1'),
   submission: {
     _tag: 'write' as const,
-    type: 'write' as const,
     entry: { kind: 'example', data: { text: 'first' } },
   },
 }
@@ -49,7 +49,6 @@ describe('SubmissionDeclarations', () => {
           ...payload,
           submission: {
             _tag: 'write' as const,
-            type: 'write',
             entry: { kind: 'example', data: { text: 'changed' } },
           },
         })
@@ -70,7 +69,6 @@ describe('SubmissionDeclarations', () => {
         ...payload,
         submission: {
           _tag: 'input' as const,
-          type: 'input',
           message: Prompt.userMessage({ content: [Prompt.textPart({ text: 'Hello' })] }),
         },
       })
@@ -90,12 +88,12 @@ describe('SubmissionDeclarations', () => {
       yield* codec
         .decoding()
         .succeedEffect(
-          { ...payload, submission: { type: 'write', entry: payload.submission.entry } },
+          { ...payload, submission: { _tag: 'write', entry: payload.submission.entry } },
           payload,
         )
       yield* codec.encoding().succeedEffect(payload, {
         ...payload,
-        submission: { type: 'write', entry: payload.submission.entry },
+        submission: { _tag: 'write', entry: payload.submission.entry },
       })
       yield* codec
         .decoding()
@@ -106,7 +104,7 @@ describe('SubmissionDeclarations', () => {
       yield* codec
         .decoding()
         .failEffect(
-          { ...payload, submission: { type: 'input', message: 'unvalidated string' } },
+          { ...payload, submission: { _tag: 'input', message: 'unvalidated string' } },
           'Expected UserMessage\n  at ["submission"]["message"]',
         )
       for (const workflow of [Submission, Generation, ToolCall, Compaction, Abort]) {

@@ -3,13 +3,13 @@
  */
 import type * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Config from 'effect/Config'
-import * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
+import type * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import * as AnthropicLanguageModel from './AnthropicLanguageModel.ts'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
-import * as AiError from 'effect/ai/AiError'
-import * as HttpClient from 'effect/http/HttpClient'
-import { OAuth } from './OAuth.ts'
+import type * as AiError from 'effect/ai/AiError'
+import type * as HttpClient from 'effect/http/HttpClient'
+import type { OAuth } from './OAuth.ts'
 
 import * as AnthropicAccountClient from './AnthropicAccountClient.ts'
 /**
@@ -18,7 +18,7 @@ import * as AnthropicAccountClient from './AnthropicAccountClient.ts'
  * @category layers
  */
 export const layer = (
-  options: AnthropicAccountClient.ClientOptions & {
+  options: AnthropicAccountClient.AnthropicAccountClient.ClientOptions & {
     readonly model: string
     readonly config?: Omit<typeof AnthropicLanguageModel.Config.Service, 'model'> | undefined
   },

@@ -4,6 +4,12 @@
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
 
+const Payload = Schema.Struct({
+  message: Schema.String,
+  cause: SchemaField.optional(Schema.Defect()),
+  path: SchemaField.optional(Schema.String),
+})
+
 /**
  * Schema for file error code.
  *
@@ -30,13 +36,9 @@ export type FileErrorCode = typeof FileErrorCode.Type
  *
  * @category errors
  */
-export class FileAborted extends Schema.TaggedError<FileAborted>(
-  '@effect-harness/harness/FileError/FileAborted',
-)('FileAborted', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  path: SchemaField.optional(Schema.String),
-}) {
+export class FileAbortedError extends Schema.TaggedError<FileAbortedError>(
+  '@effect-harness/harness/FileError/FileAbortedError',
+)('FileAbortedError', Payload.fields) {
   get code(): 'aborted' {
     return 'aborted'
   }
@@ -46,13 +48,9 @@ export class FileAborted extends Schema.TaggedError<FileAborted>(
  *
  * @category errors
  */
-export class FileNotFound extends Schema.TaggedError<FileNotFound>(
-  '@effect-harness/harness/FileError/FileNotFound',
-)('FileNotFound', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  path: SchemaField.optional(Schema.String),
-}) {
+export class FileNotFoundError extends Schema.TaggedError<FileNotFoundError>(
+  '@effect-harness/harness/FileError/FileNotFoundError',
+)('FileNotFoundError', Payload.fields) {
   get code(): 'not_found' {
     return 'not_found'
   }
@@ -62,13 +60,9 @@ export class FileNotFound extends Schema.TaggedError<FileNotFound>(
  *
  * @category errors
  */
-export class FilePermissionDenied extends Schema.TaggedError<FilePermissionDenied>(
-  '@effect-harness/harness/FileError/FilePermissionDenied',
-)('FilePermissionDenied', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  path: SchemaField.optional(Schema.String),
-}) {
+export class FilePermissionDeniedError extends Schema.TaggedError<FilePermissionDeniedError>(
+  '@effect-harness/harness/FileError/FilePermissionDeniedError',
+)('FilePermissionDeniedError', Payload.fields) {
   get code(): 'permission_denied' {
     return 'permission_denied'
   }
@@ -78,13 +72,9 @@ export class FilePermissionDenied extends Schema.TaggedError<FilePermissionDenie
  *
  * @category errors
  */
-export class FileNotDirectory extends Schema.TaggedError<FileNotDirectory>(
-  '@effect-harness/harness/FileError/FileNotDirectory',
-)('FileNotDirectory', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  path: SchemaField.optional(Schema.String),
-}) {
+export class FileNotDirectoryError extends Schema.TaggedError<FileNotDirectoryError>(
+  '@effect-harness/harness/FileError/FileNotDirectoryError',
+)('FileNotDirectoryError', Payload.fields) {
   get code(): 'not_directory' {
     return 'not_directory'
   }
@@ -94,13 +84,9 @@ export class FileNotDirectory extends Schema.TaggedError<FileNotDirectory>(
  *
  * @category errors
  */
-export class FileIsDirectory extends Schema.TaggedError<FileIsDirectory>(
-  '@effect-harness/harness/FileError/FileIsDirectory',
-)('FileIsDirectory', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  path: SchemaField.optional(Schema.String),
-}) {
+export class FileIsDirectoryError extends Schema.TaggedError<FileIsDirectoryError>(
+  '@effect-harness/harness/FileError/FileIsDirectoryError',
+)('FileIsDirectoryError', Payload.fields) {
   get code(): 'is_directory' {
     return 'is_directory'
   }
@@ -110,13 +96,9 @@ export class FileIsDirectory extends Schema.TaggedError<FileIsDirectory>(
  *
  * @category errors
  */
-export class FileInvalid extends Schema.TaggedError<FileInvalid>(
-  '@effect-harness/harness/FileError/FileInvalid',
-)('FileInvalid', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  path: SchemaField.optional(Schema.String),
-}) {
+export class FileInvalidError extends Schema.TaggedError<FileInvalidError>(
+  '@effect-harness/harness/FileError/FileInvalidError',
+)('FileInvalidError', Payload.fields) {
   get code(): 'invalid' {
     return 'invalid'
   }
@@ -126,13 +108,9 @@ export class FileInvalid extends Schema.TaggedError<FileInvalid>(
  *
  * @category errors
  */
-export class FileNotSupported extends Schema.TaggedError<FileNotSupported>(
-  '@effect-harness/harness/FileError/FileNotSupported',
-)('FileNotSupported', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  path: SchemaField.optional(Schema.String),
-}) {
+export class FileNotSupportedError extends Schema.TaggedError<FileNotSupportedError>(
+  '@effect-harness/harness/FileError/FileNotSupportedError',
+)('FileNotSupportedError', Payload.fields) {
   get code(): 'not_supported' {
     return 'not_supported'
   }
@@ -142,13 +120,9 @@ export class FileNotSupported extends Schema.TaggedError<FileNotSupported>(
  *
  * @category errors
  */
-export class FileUnknown extends Schema.TaggedError<FileUnknown>(
-  '@effect-harness/harness/FileError/FileUnknown',
-)('FileUnknown', {
-  message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  path: SchemaField.optional(Schema.String),
-}) {
+export class FileUnknownError extends Schema.TaggedError<FileUnknownError>(
+  '@effect-harness/harness/FileError/FileUnknownError',
+)('FileUnknownError', Payload.fields) {
   get code(): 'unknown' {
     return 'unknown'
   }
@@ -159,14 +133,14 @@ export class FileUnknown extends Schema.TaggedError<FileUnknown>(
  * @category schemas
  */
 export const FileErrorReason = Schema.Union([
-  FileAborted,
-  FileNotFound,
-  FilePermissionDenied,
-  FileNotDirectory,
-  FileIsDirectory,
-  FileInvalid,
-  FileNotSupported,
-  FileUnknown,
+  FileAbortedError,
+  FileNotFoundError,
+  FilePermissionDeniedError,
+  FileNotDirectoryError,
+  FileIsDirectoryError,
+  FileInvalidError,
+  FileNotSupportedError,
+  FileUnknownError,
 ])
 /**
  * Decoded value validated by the `FileErrorReason` schema.
@@ -211,20 +185,20 @@ export const fileReason = (
 ): FileErrorReason => {
   switch (code) {
     case 'aborted':
-      return new FileAborted(fields)
+      return new FileAbortedError(fields)
     case 'not_found':
-      return new FileNotFound(fields)
+      return new FileNotFoundError(fields)
     case 'permission_denied':
-      return new FilePermissionDenied(fields)
+      return new FilePermissionDeniedError(fields)
     case 'not_directory':
-      return new FileNotDirectory(fields)
+      return new FileNotDirectoryError(fields)
     case 'is_directory':
-      return new FileIsDirectory(fields)
+      return new FileIsDirectoryError(fields)
     case 'invalid':
-      return new FileInvalid(fields)
+      return new FileInvalidError(fields)
     case 'not_supported':
-      return new FileNotSupported(fields)
+      return new FileNotSupportedError(fields)
     case 'unknown':
-      return new FileUnknown(fields)
+      return new FileUnknownError(fields)
   }
 }

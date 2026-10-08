@@ -41,7 +41,7 @@ Create `Tools.ts`:
 
 ```ts
 import * as Registry from 'effect-harness/Registry'
-import * as ToolBinding from 'effect-harness/Tool'
+import * as ToolRegistration from 'effect-harness/ToolRegistration'
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -61,7 +61,7 @@ const handlers = toolkit.toLayer({
 })
 
 export const layer = Layer.unwrap(
-  ToolBinding.bind(toolkit, { uppercase: { replay: 'safe' } }).pipe(
+  ToolRegistration.bind(toolkit, { uppercase: { replay: 'safe' } }).pipe(
     Effect.map((tools) => Registry.layer([{ name: 'text-tools', tools }])),
   ),
 ).pipe(Layer.provide(handlers))

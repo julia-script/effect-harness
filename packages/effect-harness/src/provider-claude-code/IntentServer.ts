@@ -1,6 +1,11 @@
+const SessionTypeId = '~effect-harness/provider-claude-code/IntentServer/Session'
+
 /**
  * Scoped intent-only MCP sessions with tool execution blocked at the provider boundary.
  */
+import * as Pipeable from 'effect/Pipeable'
+import * as Inspectable from 'effect/Inspectable'
+import * as Predicate from 'effect/Predicate'
 import * as Arr from 'effect/Array'
 import * as Ref from 'effect/Ref'
 import * as HashMap from 'effect/HashMap'
@@ -25,13 +30,66 @@ import { processError, unsupported } from './ClaudeCodeError.ts'
 /**
  * Scoped MCP endpoint and CLI-alias mapping for offered native tools.
  *
+ * **Details**
+ *
+ * This owned handle supports piping and bounded inspection. `toJSON` is a diagnostic
+ * projection; use the original fields for protocol values and resource references.
+ *
  * @category models
  */
-export interface Session {
+export interface Session extends Pipeable.Pipeable, Inspectable.Inspectable {
+  readonly [SessionTypeId]: typeof SessionTypeId
   readonly url: string
   /** CLI alias -> original native Effect Tool name. */
   readonly aliases: ReadonlyMap<string, string>
 }
+
+/**
+ * Checks the established nominal `Session` marker; it does not validate arbitrary payload fields.
+ *
+ * @category guards
+ */
+export const isSession = (u: unknown): u is Session =>
+  Predicate.hasProperty(u, SessionTypeId) && u[SessionTypeId] === SessionTypeId
+
+/**
+ * Owns a `Session` handle while preserving payload descriptors and exact resource references.
+ *
+ * **Details**
+ *
+ * Construction and diagnostics do not evaluate payload accessors. Inspection is a bounded
+ * diagnostic projection; read the original fields for protocol values.
+ *
+ * @category constructors
+ */
+export const makeSession = (
+  input: Omit<
+    Session,
+    typeof SessionTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
+  >,
+): Session => {
+  const handle: Session = Object.create(SessionProto)
+  const descriptors = Object.getOwnPropertyDescriptors(input)
+  // The owned protocol cannot be replaced by extra runtime payload keys.
+  for (const key of [SessionTypeId, 'pipe', 'toJSON', 'toString', Inspectable.NodeInspectSymbol])
+    Reflect.deleteProperty(descriptors, key)
+  Object.defineProperties(handle, descriptors)
+  Object.defineProperty(handle, SessionTypeId, { value: SessionTypeId, enumerable: false })
+  return handle
+}
+
+const SessionProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  toJSON(): unknown {
+    return {
+      _id: 'effect-harness/provider-claude-code/IntentServer/Session',
+      url: '<scoped endpoint>',
+      aliases: '<ReadonlyMap>',
+    }
+  },
+}
+
 /**
  * Service opening a scoped MCP endpoint that captures native tool intents.
  *
@@ -49,7 +107,7 @@ export class IntentServer extends Context.Service<
       tools: ReadonlyArray<Tool.Any>,
     ) => Effect.Effect<Session, AiError.AiError, Scope.Scope>
   }
->()('@effect-harness/provider-claude-code/IntentServer') {}
+>()('effect-harness/provider-claude-code/IntentServer') {}
 
 /**
  * Provides an intent server that rejects requests offering tools.
@@ -60,7 +118,7 @@ export class IntentServer extends Context.Service<
  *
  * @category layers
  */
-export const layerDisabled: Layer.Layer<IntentServer, never, never> = Layer.succeed(
+export const layerDisabled: Layer.Layer<IntentServer> = Layer.succeed(
   IntentServer,
   IntentServer.of({
     open: () => Effect.fail(unsupported('tools without a scoped loopback IntentServer Layer')),
@@ -108,12 +166,15 @@ export const layer: Layer.Layer<
           Option.fromNullishOr(/^\/mcp\/([a-f0-9-]+)(?:\?|$)/.exec(request.url)),
           (match) => Arr.get(match, 1),
         )
-        const handler = Option.isNone(token)
-          ? Option.none<Handler>()
-          : HashMap.get(yield* Ref.get(sessions), token.value)
-        return Option.isNone(handler)
-          ? HttpServerResponse.empty({ status: 404 })
-          : yield* handler.value
+        const handler = yield* Option.match(token, {
+          onNone: () => Effect.succeedNone,
+          onSome: (token) =>
+            Ref.get(sessions).pipe(Effect.map((sessions) => HashMap.get(sessions, token))),
+        })
+        return yield* Option.match(handler, {
+          onNone: () => Effect.succeed(HttpServerResponse.empty({ status: 404 })),
+          onSome: (handler) => handler,
+        })
       }),
     )
     return IntentServer.of({
@@ -178,7 +239,7 @@ export const layer: Layer.Layer<
           ),
           () => Ref.update(sessions, HashMap.remove(id)),
         )
-        return { url: `http://127.0.0.1:${port}${path}`, aliases }
+        return makeSession({ url: `http://127.0.0.1:${port}${path}`, aliases })
       }),
     })
   }),

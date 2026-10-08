@@ -1,8 +1,8 @@
+import { assertExitFailure } from '@effect/vitest/utils'
+import * as Cause from 'effect/Cause'
+import * as TestSchema from 'effect/testing/TestSchema'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
-import * as Cause from 'effect/Cause'
-import * as Exit from 'effect/Exit'
-import * as Result from 'effect/Result'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as StorageError from 'effect-harness/durable/StorageError'
@@ -24,11 +24,20 @@ describe('ExecutionError', () => {
         executionId: 'malformed-binding',
         payload: { invalid: true },
       }).pipe(Effect.exit)
-      assert.ok(Exit.isFailure(exit))
-      const error = Result.getOrThrow(Cause.findError(exit.cause))
-      assert.strictEqual(error.reason._tag, 'InvalidState')
-      assert.strictEqual(error.message, `Native workflow ${Generation._tag} failed`)
-      assert.ok(error.cause instanceof Schema.SchemaError)
+      const decoderFailure = yield* Schema.decodeUnknownEffect(Generation.payloadSchema)({
+        invalid: true,
+      }).pipe(Effect.flip)
+      assertExitFailure(
+        exit,
+        Cause.fail(
+          new ExecutionError.ExecutionError({
+            reason: new ExecutionError.InvalidStateError({
+              message: `Native workflow ${Generation._tag} failed`,
+              cause: decoderFailure,
+            }),
+          }),
+        ),
+      )
     }).pipe(
       Effect.provide(
         Layer.merge(Ownership.layerDeclarations([Generation]), WorkflowEngine.layerMemory),
@@ -47,8 +56,32 @@ describe('ExecutionError', () => {
         }),
       })
       assert.strictEqual(error.cause, cause)
-      const encoded = yield* Schema.encodeEffect(codec)(error)
-      const decoded = yield* Schema.decodeEffect(codec)(encoded)
+      const wire = {
+        _tag: 'ExecutionError',
+        reason: {
+          _tag: 'ModelError',
+          message: 'model failed',
+          detail: { retained: true },
+          cause: {
+            name: 'TypeError',
+            message: 'provider parsing failed',
+            cause: { name: 'Error', message: 'upstream' },
+          },
+        },
+      }
+      const expectedCause = new Error('provider parsing failed', { cause: new Error('upstream') })
+      expectedCause.name = 'TypeError'
+      const expected = new ExecutionError.ExecutionError({
+        reason: new ExecutionError.ModelError({
+          message: 'model failed',
+          detail: { retained: true },
+          cause: expectedCause,
+        }),
+      })
+      const assertions = new TestSchema.Asserts(codec)
+      yield* assertions.encoding().succeedEffect(error, wire)
+      yield* assertions.decoding().succeedEffect(wire, expected)
+      const decoded = yield* Schema.decodeEffect(codec)(wire)
       assert.ok(decoded instanceof ExecutionError.ExecutionError)
       assert.ok(decoded.reason instanceof ExecutionError.ModelError)
       assert.strictEqual(decoded.reason._tag, 'ModelError')
@@ -65,27 +98,26 @@ describe('ExecutionError', () => {
     () =>
       Effect.gen(function* () {
         const error = new ExecutionError.ExecutionError({
-          reason: new ExecutionError.Aborted({ message: 'Activity aborted' }),
+          reason: new ExecutionError.AbortedError({ message: 'Activity aborted' }),
         })
         const encoded = {
           _tag: 'ExecutionError',
-          reason: { _tag: 'Aborted', message: 'Activity aborted' },
+          reason: { _tag: 'AbortedError', message: 'Activity aborted' },
         }
         for (const declaration of [Generation, Submission]) {
           const errorSchema: Schema.Codec<ExecutionError.ExecutionError, unknown> =
             declaration.errorSchema
-          const persisted = yield* Schema.encodeEffect(errorSchema)(error)
-          assert.deepStrictEqual(persisted, encoded)
-          const decoded = yield* Schema.decodeEffect(errorSchema)(persisted)
-          assert.ok(decoded.reason instanceof ExecutionError.Aborted)
-          assert.strictEqual(decoded.reason._tag, 'Aborted')
-          assert.strictEqual(decoded.message, 'Activity aborted')
+          const asserts = new TestSchema.Asserts(errorSchema)
+          yield* asserts.encoding().succeedEffect(error, encoded)
+          yield* asserts.decoding().succeedEffect(encoded, error)
         }
-        const invalid = yield* Schema.decodeUnknownEffect(codec)({
-          ...encoded,
-          reason: { ...encoded.reason, detail: undefined },
-        }).pipe(Effect.flip)
-        assert.ok(invalid instanceof Schema.SchemaError)
+        yield* new TestSchema.Asserts(codec).decoding().failEffect(
+          {
+            ...encoded,
+            reason: { ...encoded.reason, detail: undefined },
+          },
+          'Expected JSON value\n  at ["reason"]["detail"]',
+        )
       }),
   )
 
@@ -94,15 +126,42 @@ describe('ExecutionError', () => {
       const cause = new Error('write settlement lost')
       const storage = StorageError.uncertain('commit uncertain', cause)
       const wrapped = storageError(storage)
-      assert.strictEqual(wrapped.reason._tag, 'Storage')
+      assert.strictEqual(wrapped.reason._tag, 'StorageError')
       assert.strictEqual(wrapped.cause, storage)
       assert.ok(wrapped.cause instanceof StorageError.StorageError)
       assert.strictEqual(wrapped.cause.cause, cause)
-      assert.deepStrictEqual(wrapped.detail, { reason: 'io', certainty: 'uncertain' })
+      assert.deepStrictEqual(wrapped.detail, { reason: 'IoError', certainty: 'uncertain' })
       assert.strictEqual(storage.certainty, 'uncertain')
       assert.strictEqual(storage.isRetryable, false)
       assert.strictEqual(wrapped.isRetryable, false)
-      const decoded = yield* Schema.decodeEffect(codec)(yield* Schema.encodeEffect(codec)(wrapped))
+      const wire = {
+        _tag: 'ExecutionError',
+        reason: {
+          _tag: 'StorageError',
+          message: 'commit uncertain',
+          detail: { reason: 'IoError', certainty: 'uncertain' },
+          cause: {
+            name: '@effect-harness/durable/StorageError',
+            message: 'commit uncertain',
+            cause: { name: 'Error', message: 'write settlement lost' },
+          },
+        },
+      }
+      const expectedCause = new Error('commit uncertain', {
+        cause: new Error('write settlement lost'),
+      })
+      expectedCause.name = '@effect-harness/durable/StorageError'
+      const expected = new ExecutionError.ExecutionError({
+        reason: new ExecutionError.StorageError({
+          message: 'commit uncertain',
+          detail: { reason: 'IoError', certainty: 'uncertain' },
+          cause: expectedCause,
+        }),
+      })
+      const assertions = new TestSchema.Asserts(codec)
+      yield* assertions.encoding().succeedEffect(wrapped, wire)
+      yield* assertions.decoding().succeedEffect(wire, expected)
+      const decoded = yield* Schema.decodeEffect(codec)(wire)
       assert.deepStrictEqual(decoded.detail, wrapped.detail)
       assert.ok(decoded.cause instanceof Error)
       assert.strictEqual(decoded.cause.message, 'commit uncertain')

@@ -24,14 +24,19 @@ export const PresentCode = Schema.Struct({
 })
 const decode = Schema.decodeUnknownOption(PresentCode)
 /**
- * Getter/coercion defects make a code unavailable while callers retain the original foreign cause.
+ * Returns a readable foreign error code or undefined when access or coercion fails.
  *
  * @category combinators
  */
-export const code = (value: unknown): string | undefined =>
+export const codeOrUndefined = (self: unknown): string | undefined =>
   Result.getOrElse(
     Serialization.attempt(() =>
-      Predicate.hasProperty(value, 'code') ? Option.getOrUndefined(decode(value))?.code : undefined,
+      Predicate.hasProperty(self, 'code') ? Option.getOrUndefined(decode(self))?.code : undefined,
     ),
     constUndefined,
   )
+
+/** Decoded value of the PresentCode schema.
+ * @category models
+ */
+export type PresentCode = typeof PresentCode.Type

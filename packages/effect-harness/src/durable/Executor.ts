@@ -1,8 +1,9 @@
+import * as Predicate from 'effect/Predicate'
+import { rejected } from './StorageError.ts'
 /**
  * Native Workflow executor Layer composition.
  */
 import * as Arr from 'effect/Array'
-import type * as Record from './Record.ts'
 import type * as Model from 'effect-harness/Model'
 import type * as Executor from 'effect-harness/Executor'
 import type { SessionDirectory } from './SessionDirectory.ts'
@@ -21,7 +22,7 @@ import * as AbortExecutor from './workflow/AbortExecutor.ts'
 import * as Cancellation from './workflow/Cancellation.ts'
 import { Compaction } from './workflow/Compaction.ts'
 import * as CompactionExecutor from './workflow/CompactionExecutor.ts'
-import { ExecutionError, InvalidState } from './workflow/ExecutionError.ts'
+import { ExecutionError, InvalidStateError } from './workflow/ExecutionError.ts'
 import { Generation } from './workflow/Generation.ts'
 import * as GenerationExecutor from './workflow/GenerationExecutor.ts'
 import * as Structured from './workflow/Structured.ts'
@@ -58,33 +59,39 @@ export const layerConversationDrain: Layer.Layer<
     const config = yield* Conversation.Configuration
     const engine = yield* WorkflowEngine.WorkflowEngine
     return Structured.DrainConversations.of({
+      // effect-nit-allow B-no-service-arguments: DrainConversations invokes this callback with its exact selected scoped Session; capture host config/engine at registration and preserve per-invocation resource identity.
       drain: Effect.fnUntraced(function* (session, owner, conversation, _submissions, sessionId) {
         if (Structured.isFailed(owner.state.outcome))
           yield* Abort.execute({
             sessionId,
             requestId: Identity.RequestId.make(`owned-drain:${owner.id}:${conversation.id}`),
-            target: { _tag: 'conversation', type: 'conversation', id: conversation.id },
+            target: { _tag: 'conversation', id: conversation.id },
             background: false,
           }).pipe(Effect.provideService(WorkflowEngine.WorkflowEngine, engine))
         const boundary = yield* session.transaction(
           Effect.fnUntraced(function* (tx) {
-            const prepared = yield* Inbox.prepare(tx, conversation.id, config.settings)
+            const prepared = yield* Inbox.prepare(
+              tx,
+              conversation.id,
+              yield* config.settings.pipe(
+                Effect.mapError((cause) => rejected('Invalid host settings', undefined, cause)),
+              ),
+            )
             const live = yield* tx.doc(Inbox.LiveDoc, { owner: conversation.id })
             const running = Option.fromUndefinedOr(live.run?.taskId)
             const task = yield* Option.match(running, {
-              onNone: () => Effect.succeed(Option.none<Record.Task>()),
+              onNone: () => Effect.succeedNone,
               onSome: (id) => tx.task(id),
             })
             if (Option.isSome(task) && task.value.state.status !== 'terminal')
               return { binding: task.value.input, notify: [] }
             const selected = yield* Inbox.apply(tx, prepared, 'final', yield* DateTime.now)
             const generation = Arr.isReadonlyArrayNonEmpty(selected.users)
-              ? yield* SubmissionExecutor.makeGeneration(
-                  tx,
-                  sessionId,
-                  conversation.id,
-                  selected.users,
-                )
+              ? yield* SubmissionExecutor.makeGeneration(tx, {
+                  sessionId: sessionId,
+                  conversationId: conversation.id,
+                  inputs: selected.users,
+                })
               : undefined
             return { ...(generation === undefined ? {} : { generation }), notify: selected.settled }
           }),
@@ -92,14 +99,14 @@ export const layerConversationDrain: Layer.Layer<
         yield* SubmissionExecutor.notify(session, boundary.notify).pipe(
           Effect.provideService(WorkflowEngine.WorkflowEngine, engine),
         )
-        if ('binding' in boundary) {
+        if (Predicate.hasProperty(boundary, 'binding')) {
           const binding = yield* Schema.decodeUnknownEffect(Ownership.Binding)(
             boundary.binding,
           ).pipe(
             Effect.mapError(
               (cause) =>
                 new ExecutionError({
-                  reason: new InvalidState({
+                  reason: new InvalidStateError({
                     message: 'Owned conversation generation has no binding',
                     cause,
                   }),
@@ -112,7 +119,7 @@ export const layerConversationDrain: Layer.Layer<
             Effect.mapError(
               (cause) =>
                 new ExecutionError({
-                  reason: new InvalidState({
+                  reason: new InvalidStateError({
                     message: 'Owned conversation generation input is invalid',
                     cause,
                   }),

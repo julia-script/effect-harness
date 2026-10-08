@@ -1,3 +1,4 @@
+import * as Predicate from 'effect/Predicate'
 /**
  * Canonical tool-media translation at the captured native client boundary.
  */
@@ -154,7 +155,7 @@ export const request: {
     prefixes?: ReadonlyArray<string>,
   ): ReturnType<typeof requestImpl>
 } = dual(
-  (args) => typeof args[0] === 'object' && args[0] !== null && !Array.isArray(args[0]),
+  Predicate.mapInput(Predicate.isObject, (args: IArguments) => args[0]),
   requestImpl,
 )
 /**
@@ -171,6 +172,9 @@ export const client: {
     defaults?: Pick<typeof OpenAiLanguageModel.Config.Service, 'fileIdPrefixes'>,
   ): OpenAiClient.Service
 } = dual(
-  (args) => typeof args[0] === 'object' && args[0] !== null && 'createResponseStream' in args[0],
+  Predicate.mapInput(
+    Predicate.and(Predicate.isObjectOrArray, Predicate.hasProperty('createResponseStream')),
+    (args: IArguments) => args[0],
+  ),
   clientImpl,
 )

@@ -6,4 +6,12 @@
  *
  * @category re-exports
  */
-export * from '@effect/ai-anthropic/AnthropicClient'
+export {
+  type Service,
+  type MessageStreamEvent,
+  AnthropicClient,
+  type Options,
+  make,
+  layer,
+  layerConfig,
+} from '@effect/ai-anthropic/AnthropicClient'

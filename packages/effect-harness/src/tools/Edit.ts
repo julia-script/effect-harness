@@ -6,14 +6,12 @@ import * as Option from 'effect/Option'
 import { MutationLocks } from '../MutationLocks.ts'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as AiTool from 'effect/ai/Tool'
-// effect-review-allow P9-namespace-alias-equals-module: effect/ai/Tool and ../Tool.ts both bind Tool; AiTool preserves the checked imported-name collision.
+import * as Tool from 'effect/ai/Tool'
 import * as Prompt from 'effect/ai/Prompt'
 import { Env } from '../Env.ts'
-import { ToolError, ToolExecution, ToolInvalidParameters } from '../ToolError.ts'
+import { ToolError, ToolExecutionError, ToolInvalidParametersError } from '../ToolError.ts'
 import { Invocation, Result } from '../Invocation.ts'
-import * as Metadata from '../Tool.ts'
-// effect-review-allow P9-namespace-alias-equals-module: ../Tool.ts and effect/ai/Tool both bind Tool; Metadata preserves the checked imported-name collision.
+import * as ToolRegistration from '../ToolRegistration.ts'
 import * as EditDiff from './EditDiff.ts'
 import * as mutation from './internal/mutation.ts'
 import * as path from './internal/path.ts'
@@ -26,24 +24,13 @@ export const Parameters = Schema.Struct({
   path: Schema.String,
   edits: Schema.Array(Schema.Struct({ oldText: Schema.String, newText: Schema.String })),
 })
-/**
- * Decoded parameters passed to the coding-tool handler.
- *
- * @category models
- */
-export type Input = Parameters
 const isEdit = Schema.is(Parameters.fields.edits.value)
 const RepairObject = Schema.Record(Schema.String, Schema.Unknown)
 const isRepairObject = Schema.is(RepairObject)
 const isString = Schema.is(Schema.String)
 const isArray = Schema.is(Schema.Array(Schema.Unknown))
-const LegacyEdit = Schema.Struct({
-  oldText: Parameters.fields.edits.value.fields.oldText,
-  newText: Parameters.fields.edits.value.fields.newText,
-})
-const isLegacyEdit = Schema.is(LegacyEdit)
 /**
- * Repairs supported legacy argument shapes without discarding unknown keys.
+ * Repairs JSON-encoded and singleton edit arrays without discarding unknown keys.
  *
  * @category combinators
  */
@@ -61,15 +48,6 @@ export const repair = Effect.fnUntraced(function* (input: unknown): Effect.fn.Re
       },
     })
   } else if (isEdit(args['edits'])) args['edits'] = [args['edits']]
-  const oldText = args['oldText']
-  const newText = args['newText']
-  if (isLegacyEdit({ oldText, newText })) {
-    const edits = isArray(args['edits']) ? [...args['edits']] : []
-    edits.push({ oldText, newText })
-    delete args['oldText']
-    delete args['newText']
-    args['edits'] = edits
-  }
   return args
 })
 /**
@@ -87,7 +65,7 @@ export const repair = Effect.fnUntraced(function* (input: unknown): Effect.fn.Re
  *
  * @category constants
  */
-export const tool = AiTool.make('edit', {
+export const tool = Tool.make('edit', {
   description:
     'Replace unique disjoint text targets in one file. Every oldText matches the original file; merge overlapping changes.',
   parameters: Parameters,
@@ -97,40 +75,61 @@ export const tool = AiTool.make('edit', {
   .addDependency(Env)
   .addDependency(MutationLocks)
   .addDependency(Invocation)
-  .annotate(Metadata.Metadata, {
+  .annotate(ToolRegistration.Metadata, {
     replay: 'unsafe',
     repair,
-    project: (result) => Metadata.decodeResult('edit', result),
+    project: (result) => ToolRegistration.decodeResult('edit', result),
   })
+/**
+ * Readonly diff metadata; omitted firstChangedLine remains absent from JSON.
+ *
+ * @category models
+ */
+export interface Details {
+  readonly diff: string
+  readonly patch: string
+  readonly firstChangedLine?: number
+}
+
+/**
+ * Edit result with a readonly payload and freshly owned mutable content array.
+ *
+ * @category models
+ */
+export interface Output {
+  readonly content: Array<Prompt.TextPart>
+  // The mapped readonly view retains structural compatibility with the native JSON result payload.
+  readonly details: Readonly<Details>
+}
+
 /**
  * Applies validated edits under canonical mutation admission and reports the resulting diff.
  *
  * @category combinators
  */
-export const handler = Effect.fnUntraced(function* (input: Input): Effect.fn.Return<
-  {
-    content: Array<Prompt.TextPart>
-    details: { diff: string; patch: string; firstChangedLine?: number }
-  },
-  ToolError,
-  Env | Invocation | MutationLocks
-> {
-  const env = yield* Env
-  const absolute = yield* path.resolve(input.path).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ToolError({
-          reason: new ToolExecution({ name: 'edit', message: cause.message, cause: cause }),
-        }),
-    ),
-  )
-  return yield* mutation
-    .withFile(
+export const handler = Effect.fnUntraced(
+  function* (
+    input: Parameters,
+  ): Effect.fn.Return<
+    Output,
+    ToolError | import('../FileError.ts').FileError,
+    Env | Invocation | MutationLocks
+  > {
+    const env = yield* Env
+    const absolute = yield* path.resolve(input.path).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ToolError({
+            reason: new ToolExecutionError({ name: 'edit', message: cause.message, cause: cause }),
+          }),
+      ),
+    )
+    return yield* mutation.withFile(
       absolute,
       Effect.gen(function* () {
         if (input.edits.length === 0)
           return yield* new ToolError({
-            reason: new ToolInvalidParameters({
+            reason: new ToolInvalidParametersError({
               name: 'edit',
               message: 'edits must contain at least one replacement',
             }),
@@ -138,7 +137,7 @@ export const handler = Effect.fnUntraced(function* (input: Input): Effect.fn.Ret
         const info = yield* env.fileInfo(absolute)
         if (info.kind !== 'file' && info.kind !== 'symlink')
           return yield* new ToolError({
-            reason: new ToolExecution({
+            reason: new ToolExecutionError({
               name: 'edit',
               message: `Could not edit file: ${input.path}. Path is not a file.`,
             }),
@@ -156,7 +155,11 @@ export const handler = Effect.fnUntraced(function* (input: Input): Effect.fn.Ret
           Effect.mapError(
             (cause) =>
               new ToolError({
-                reason: new ToolExecution({ name: 'edit', message: cause.message, cause: cause }),
+                reason: new ToolExecutionError({
+                  name: 'edit',
+                  message: cause.message,
+                  cause: cause,
+                }),
               }),
           ),
         )
@@ -185,20 +188,22 @@ export const handler = Effect.fnUntraced(function* (input: Input): Effect.fn.Ret
         }
       }),
     )
-    .pipe(
+  },
+  (effect, input) =>
+    effect.pipe(
       Effect.mapError((cause) =>
         cause instanceof ToolError
           ? cause
           : new ToolError({
-              reason: new ToolExecution({
+              reason: new ToolExecutionError({
                 name: 'edit',
-                message: `Could not edit file: ${input.path}. Error code: ${cause.code}. ${cause.message}`,
-                cause: cause,
+                message: `Could not edit file: ${input.path}. Error code: ${cause.reason._tag}. ${cause.message}`,
+                cause,
               }),
             }),
       ),
-    )
-})
+    ),
+)
 
 /**
  * Checks whether a value satisfies the decoded `Parameters` schema.
@@ -210,7 +215,7 @@ export const handler = Effect.fnUntraced(function* (input: Input): Effect.fn.Ret
  *
  * @category guards
  */
-export const isInput: (u: unknown) => u is Parameters = Schema.is(Parameters)
+export const isParameters: (u: unknown) => u is Parameters = Schema.is(Parameters)
 
 /**
  * File path and unique old/new text replacement.

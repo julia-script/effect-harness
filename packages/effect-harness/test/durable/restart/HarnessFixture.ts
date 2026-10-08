@@ -6,12 +6,13 @@ import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 import * as FileSystem from 'effect/FileSystem'
 import * as BunRuntime from '@effect/platform-bun/BunRuntime'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/Executor and effect-harness/durable/Executor both own Executor; Harness keeps their distinct native/harness APIs available together for these constructor, service and declaration assertions.
 import * as Harness from 'effect-harness/Executor'
-import { ToolError, ToolExecution } from 'effect-harness/ToolError'
+import { ToolError, ToolExecutionError } from 'effect-harness/ToolError'
 import * as Invocation from 'effect-harness/Invocation'
 import * as Model from 'effect-harness/Model'
 import * as Registry from 'effect-harness/Registry'
-import * as Tool from 'effect-harness/Tool'
+import * as ToolRegistration from 'effect-harness/ToolRegistration'
 import * as Hook from 'effect-harness/Hook'
 import * as Context from 'effect/Context'
 import * as Console from 'effect/Console'
@@ -19,13 +20,13 @@ import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/sql/SqlClient'
+import type * as SqlClient from 'effect/sql/SqlClient'
 import * as Option from 'effect/Option'
-import * as NativeModel from 'effect/ai/LanguageModel'
+import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as AiError from 'effect/ai/AiError'
 import * as Prompt from 'effect/ai/Prompt'
-import * as Response from 'effect/ai/Response'
-import * as AiTool from 'effect/ai/Tool'
+import type * as Response from 'effect/ai/Response'
+import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
 import * as Stream from 'effect/Stream'
 import * as ClusterWorkflowEngine from 'effect/cluster/ClusterWorkflowEngine'
@@ -39,8 +40,9 @@ import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
 import * as Store from 'effect-harness/durable/Store'
 import type { StorageError } from 'effect-harness/durable/StorageError'
-import * as Directory from 'effect-harness/durable/SessionDirectory'
-import * as SqlStore from '../storage/TestStore.ts'
+import * as SessionDirectory from 'effect-harness/durable/SessionDirectory'
+import * as TestStore from '../storage/TestStore.ts'
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/durable/Executor and effect-harness/Executor both own Executor; DurableExecutor keeps their distinct native/harness APIs available together for these constructor, service and declaration assertions.
 import * as DurableExecutor from 'effect-harness/durable/Executor'
 import * as CompactionExecutor from 'effect-harness/durable/workflow/CompactionExecutor'
 import * as SubmissionExecutor from 'effect-harness/durable/workflow/SubmissionExecutor'
@@ -82,7 +84,6 @@ const input = (key: string, whenBusy?: 'steer' | 'followUp') => ({
   requestId: Identity.RequestId.make(key),
   submission: {
     _tag: 'input' as const,
-    type: 'input' as const,
     message: Prompt.userMessage({ content: [Prompt.textPart({ text: key })] }),
     ...(whenBusy === undefined ? {} : { whenBusy }),
   },
@@ -125,7 +126,7 @@ const main = Effect.gen(function* () {
       readAudit.pipe(Effect.map((rows) => rows.filter((row) => row.kind === kind).length))
     const first = phase === 'start'
     const toolScenario = scenario.startsWith('tool-') || scenario === 'hold' || scenario === 'abort'
-    const native = yield* NativeModel.make({
+    const native = yield* LanguageModel.make({
       generateText: (options) =>
         Effect.gen(function* () {
           yield* audit('summary', options.prompt)
@@ -180,7 +181,7 @@ const main = Effect.gen(function* () {
           }),
         ),
     })
-    const fetchModel = yield* NativeModel.make({
+    const fetchModel = yield* LanguageModel.make({
       generateText: () => Effect.succeed([]),
       streamText: () => Stream.fromIterable(answer('fetched answer')),
     })
@@ -195,7 +196,12 @@ const main = Effect.gen(function* () {
           first &&
           (base === 'deferred' || scenario === 'abort-deferred') &&
           parts.some((part) => part.type === 'finish')
-            ? Option.some({ handle: { job: 'pinned-job' }, pollAfterMs: Duration.millis(1200) })
+            ? Option.some({
+                handle: { job: 'pinned-job' },
+                // Abort witnesses the persisted handle before provider polling; host scheduling must not race a short physical deadline.
+                pollAfterMs:
+                  scenario === 'abort-deferred' ? Duration.hours(1) : Duration.millis(1200),
+              })
             : Option.none(),
         fetch: (handle, options) =>
           Stream.unwrap(
@@ -207,7 +213,7 @@ const main = Effect.gen(function* () {
       },
     }
     const catalogue = Model.layer(!first && scenario.endsWith('missing-model') ? [] : [descriptor])
-    const declaration = AiTool.make('work', {
+    const declaration = Tool.make('work', {
       parameters: Schema.Struct({ text: Schema.String }),
       success: Invocation.Result,
       failure: ToolError,
@@ -221,12 +227,12 @@ const main = Effect.gen(function* () {
       scenario !== 'tool-safe-unsafe' &&
       !(first && scenario === 'tool-unsafe-safe')
     const storedSafe = scenario !== 'tool-unsafe' && scenario !== 'tool-unsafe-safe'
-    const bound = yield* Tool.bind(
+    const bound = yield* ToolRegistration.bind(
       toolkit,
       {
         work: {
           replay: (first ? storedSafe : currentSafe) ? 'safe' : 'unsafe',
-          project: (result) => Tool.decodeResult('fixture', result),
+          project: (result) => ToolRegistration.decodeResult('fixture', result),
           output: { maxBytes: 32, maxLines: 2, retain: 'tail' },
           repair: (args) => audit('repair').pipe(Effect.as(args)),
         },
@@ -263,7 +269,7 @@ const main = Effect.gen(function* () {
                 error instanceof ToolError
                   ? error
                   : new ToolError({
-                      reason: new ToolExecution({
+                      reason: new ToolExecutionError({
                         name: 'work',
                         message: error.message,
                         cause: error,
@@ -334,8 +340,8 @@ const main = Effect.gen(function* () {
       cwd: first ? '/before' : '/after',
       settings: {
         stream: { timeoutMs: first ? 1234 : 999 },
-        progress: { partialIntervalMs: 0, outputIntervalMs: 0 },
-        retry: { enabled: true, maxRetries: 1, baseDelayMs: 1200 },
+        progress: { partialInterval: 0, outputInterval: 0 },
+        retry: { enabled: true, maxRetries: 1, baseDelay: 1200 },
         compaction: {
           enabled: scenario === 'compaction-blocking',
           keepRecentTokens: 0,
@@ -355,15 +361,15 @@ const main = Effect.gen(function* () {
     const storage = Layer.effect(
       Store.Store,
       Effect.gen(function* () {
-        const store = yield* SqlStore.make
+        const store = yield* TestStore.make
         // The wrapper forwards both Store overloads without changing their results.
         const original = store.transact as <A, E, R>(
-          change: (state: Record.State) => Effect.Effect<Store.Candidate<A>, E, R>,
-          options?: Store.CommitOptions,
+          change: (state: Record.State) => Effect.Effect<Store.Store.Candidate<A>, E, R>,
+          options?: Store.Store.CommitOptions,
         ) => Effect.Effect<A, StorageError | E, R>
         const transact: typeof store.transact = <A, E, R>(
-          change: (state: Record.State) => Effect.Effect<Store.Candidate<A>, E, R>,
-          options?: Store.CommitOptions,
+          change: (state: Record.State) => Effect.Effect<Store.Store.Candidate<A>, E, R>,
+          options?: Store.Store.CommitOptions,
         ) =>
           original(change, options).pipe(
             Effect.tap(() =>
@@ -382,7 +388,7 @@ const main = Effect.gen(function* () {
       Layer.provideMerge(storage),
       Layer.provideMerge(creation.pipe(Layer.provide(BunCrypto.layer))),
     )
-    const directory = Directory.layerSingle(Identity.SessionId.make('restart')).pipe(
+    const directory = SessionDirectory.layerSingle(Identity.SessionId.make('restart')).pipe(
       Layer.provideMerge(sessionLayer),
     )
     // Finish host admission before the engine can replay an unfinished SQL
@@ -421,7 +427,7 @@ const main = Effect.gen(function* () {
     const engine = ClusterWorkflowEngine.layer.pipe(Layer.provideMerge(cluster))
     const child = Child.toLayer((payload) =>
       Effect.gen(function* () {
-        const session = yield* (yield* Directory.SessionDirectory).resolve(payload.sessionId)
+        const session = yield* (yield* SessionDirectory.SessionDirectory).resolve(payload.sessionId)
         const exit = yield* Cancellation.run(
           payload,
           session,
@@ -474,14 +480,13 @@ const main = Effect.gen(function* () {
               const payload =
                 existing === undefined
                   ? yield* session.transaction((tx) =>
-                      CompactionExecutor.make(
-                        tx,
-                        Identity.SessionId.make('restart'),
-                        Record.ROOT_CONVERSATION_ID,
-                        'manual',
-                        undefined,
-                        'pinned instruction',
-                      ),
+                      CompactionExecutor.make(tx, {
+                        sessionId: Identity.SessionId.make('restart'),
+                        conversationId: Record.ROOT_CONVERSATION_ID,
+                        reason: 'manual',
+                        owner: undefined,
+                        instructions: 'pinned instruction',
+                      }),
                     )
                   : yield* Schema.decodeUnknownEffect(Compaction.payloadSchema)(
                       (yield* Schema.decodeUnknownEffect(Ownership.Binding)(existing.input))
@@ -499,7 +504,6 @@ const main = Effect.gen(function* () {
           requestId: Identity.RequestId.make('abort-reconcile'),
           target: {
             _tag: 'conversation' as const,
-            type: 'conversation',
             id: Record.ROOT_CONVERSATION_ID,
           },
           background: false,
@@ -515,12 +519,11 @@ const main = Effect.gen(function* () {
             ),
           )
           const payload = yield* session.transaction((tx) =>
-            CompactionExecutor.make(
-              tx,
-              Identity.SessionId.make('restart'),
-              Record.ROOT_CONVERSATION_ID,
-              'manual',
-            ),
+            CompactionExecutor.make(tx, {
+              sessionId: Identity.SessionId.make('restart'),
+              conversationId: Record.ROOT_CONVERSATION_ID,
+              reason: 'manual',
+            }),
           )
           yield* Compaction.execute(payload)
         }
@@ -576,7 +579,6 @@ const main = Effect.gen(function* () {
         if (scenario.startsWith('abort'))
           yield* Cancellation.mark(session, {
             _tag: 'conversation' as const,
-            kind: 'conversation',
             id: Record.ROOT_CONVERSATION_ID,
           })
         yield* Console.log('HARNESS_READY')
@@ -607,10 +609,9 @@ const main = Effect.gen(function* () {
             submission.type === 'input'
               ? {
                   _tag: 'input' as const,
-                  type: 'input',
                   message: Prompt.userMessage({ content: [] }),
                 }
-              : { _tag: 'write' as const, type: 'write', entry: { kind: 'poll-identity-only' } },
+              : { _tag: 'write' as const, entry: { kind: 'poll-identity-only' } },
         })
         yield* waitFor(
           Submission.poll(executionId).pipe(

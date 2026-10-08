@@ -1,12 +1,20 @@
+import * as PendingAuthorization from '../internal/PendingAuthorization.ts'
+const AuthorizationTypeId = '~effect-harness/provider-openai/ChatGpt/Authorization'
+
 /**
  * Single-use ChatGPT OAuth authorization and persisted account credentials.
  */
+import * as Pipeable from 'effect/Pipeable'
+import * as Inspectable from 'effect/Inspectable'
+import * as Predicate from 'effect/Predicate'
+import type { HostId } from '../auth/HostId.ts'
 import * as Arr from 'effect/Array'
 import * as String from 'effect/String'
 import * as Time from 'effect-harness/auth/Time'
-// effect-review-allow P9-namespace-alias-equals-module: effect-harness/auth/Duration and effect/Duration both bind Duration; AuthDuration distinguishes the concepts.
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/auth/Duration and effect/Duration both bind Duration; AuthDuration distinguishes the concepts.
 import * as AuthDuration from 'effect-harness/auth/Duration'
 import * as Config from 'effect/Config'
+import { accountKey, type OAuth, type Registration } from 'effect-harness/auth/Credential'
 import {
   AuthBusyError,
   AuthCallbackError,
@@ -19,17 +27,13 @@ import {
   AuthPermissionError,
   AuthProtocolError,
   AuthError,
-  accountKey,
-  OAuth,
-  type Registration,
-} from 'effect-harness/auth/Credential'
+} from 'effect-harness/auth/AuthError'
 import { CredentialStore } from 'effect-harness/auth/CredentialStore'
 import { Jwt } from 'effect-harness/auth/Jwt'
 import * as Pkce from 'effect-harness/auth/Pkce'
 import * as Token from 'effect-harness/auth/Token'
 import * as DateTime from 'effect/DateTime'
 import * as Duration from 'effect/Duration'
-import * as Ref from 'effect/Ref'
 import * as HashMap from 'effect/HashMap'
 import * as Context from 'effect/Context'
 import type * as Crypto from 'effect/Crypto'
@@ -73,18 +77,81 @@ const requestedScopes = [
 /**
  * Pending browser authorization URL, state, redirect and expiry.
  *
+ * **Details**
+ *
+ * This owned handle supports piping and bounded inspection. `toJSON` is a diagnostic
+ * projection; use the original fields for protocol values and resource references.
+ *
  * @category models
  */
-export interface Authorization {
+export interface Authorization extends Pipeable.Pipeable, Inspectable.Inspectable {
+  readonly [AuthorizationTypeId]: typeof AuthorizationTypeId
   readonly url: Redacted.Redacted<string>
   readonly state: string
   readonly redirectUri: string
   readonly expiresAt: DateTime.Utc
 }
+
+/**
+ * Checks the established nominal `Authorization` marker; it does not validate arbitrary payload fields.
+ *
+ * @category guards
+ */
+export const isAuthorization = (u: unknown): u is Authorization =>
+  Predicate.hasProperty(u, AuthorizationTypeId) && u[AuthorizationTypeId] === AuthorizationTypeId
+
+/**
+ * Owns a `Authorization` handle while preserving payload descriptors and exact resource references.
+ *
+ * **Details**
+ *
+ * Construction and diagnostics do not evaluate payload accessors. Inspection is a bounded
+ * diagnostic projection; read the original fields for protocol values.
+ *
+ * @category constructors
+ */
+export const makeAuthorization = (
+  input: Omit<
+    Authorization,
+    typeof AuthorizationTypeId | keyof Pipeable.Pipeable | keyof Inspectable.Inspectable
+  >,
+): Authorization => {
+  const handle: Authorization = Object.create(AuthorizationProto)
+  const descriptors = Object.getOwnPropertyDescriptors(input)
+  // The owned protocol cannot be replaced by extra runtime payload keys.
+  for (const key of [
+    AuthorizationTypeId,
+    'pipe',
+    'toJSON',
+    'toString',
+    Inspectable.NodeInspectSymbol,
+  ])
+    Reflect.deleteProperty(descriptors, key)
+  Object.defineProperties(handle, descriptors)
+  Object.defineProperty(handle, AuthorizationTypeId, {
+    value: AuthorizationTypeId,
+    enumerable: false,
+  })
+  return handle
+}
+
+const AuthorizationProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  toJSON(): unknown {
+    return {
+      _id: 'effect-harness/provider-openai/ChatGpt/Authorization',
+      url: '<redacted>',
+      state: '<redacted>',
+      expiresAt: '<DateTime.Utc>',
+    }
+  },
+}
+
 interface Pending {
   readonly authorization: Authorization
   readonly challenge: Pkce.Challenge
-  readonly hostId: string
+  readonly hostId: HostId
   readonly returning?: OAuth | Registration | undefined
 }
 /**
@@ -119,7 +186,6 @@ const ModelList = Schema.Struct({ models: Schema.Array(Model) })
 /**
  * Type-level contracts for `ChatGpt`.
  *
- * @category utility types
  */
 export declare namespace ChatGpt {
   /**
@@ -156,7 +222,7 @@ export declare namespace ChatGpt {
      * Discovers model visibility for the authorized account; capabilities and prices still need
      * host declarations.
      */
-    readonly models: (account: string) => Effect.Effect<ReadonlyArray<Model>, AuthError>
+    readonly models: (account: string) => Effect.Effect<Array<Model>, AuthError>
     /**
      * Revokes the account refresh token while retaining client registration for later consent.
      */
@@ -167,12 +233,6 @@ export declare namespace ChatGpt {
     readonly cancel: (state: string) => Effect.Effect<void>
   }
 }
-/**
- * Explicit ChatGPT sign-in, token refresh and account-model discovery.
- *
- * @category models
- */
-export type Service = ChatGpt.Service
 /**
  * Service for explicit ChatGPT account authorization and token refresh.
  *
@@ -189,8 +249,8 @@ export type Service = ChatGpt.Service
  *
  * @category services
  */
-export class ChatGpt extends Context.Service<ChatGpt, Service>()(
-  '@effect-harness/provider-openai/ChatGpt',
+export class ChatGpt extends Context.Service<ChatGpt, ChatGpt.Service>()(
+  'effect-harness/provider-openai/ChatGpt',
 ) {}
 
 const parseUrl = (input: string) =>
@@ -199,8 +259,8 @@ const parseUrl = (input: string) =>
     catch: (cause) =>
       new AuthError({ reason: new AuthCallbackError({ cause, message: 'Invalid callback URL' }) }),
   })
-const scopeList = (scope: string): ReadonlyArray<string> => [
-  ...Arr.dedupe(scope.split(/\s+/).filter(String.isNonEmpty)),
+const scopeList = (scope: string): Array<string> => [
+  ...Arr.dedupe(Arr.filter(String.split(scope, /\s+/), String.isNonEmpty)),
 ]
 const requireDirect = (scopes: ReadonlyArray<string>) =>
   scopes.includes(directScope)
@@ -260,8 +320,8 @@ const deadlines = (
  */
 export const layer = (options: {
   readonly appName: string
-  readonly authorizationLifetimeMs?: Duration.Input | undefined
-  readonly refreshSkewMs?: Duration.Input | undefined
+  readonly authorizationLifetime?: Duration.Input | undefined
+  readonly refreshSkew?: Duration.Input | undefined
 }): Layer.Layer<
   ChatGpt,
   AuthError,
@@ -277,10 +337,10 @@ export const layer = (options: {
         })
       const message = 'Authorization lifetime and refresh skew must be finite valid durations'
       const lifetime = yield* AuthDuration.fromInput(
-        options.authorizationLifetimeMs ?? '10 minutes',
+        options.authorizationLifetime ?? '10 minutes',
         message,
       )
-      const skew = yield* AuthDuration.fromInput(options.refreshSkewMs ?? '1 minute', message)
+      const skew = yield* AuthDuration.fromInput(options.refreshSkew ?? '1 minute', message)
       if (
         !Number.isFinite(Duration.toMillis(lifetime)) ||
         Duration.toMillis(lifetime) <= 0 ||
@@ -292,8 +352,8 @@ export const layer = (options: {
       const jwt = yield* Jwt
       const client = yield* HttpClient.HttpClient
       const cryptoContext = yield* Effect.context<Crypto.Crypto>()
-      const pending = yield* Ref.make(HashMap.empty<string, Pending>())
-      yield* Effect.addFinalizer(() => Ref.set(pending, HashMap.empty()))
+      const pending = yield* PendingAuthorization.make<string, Pending>()
+      yield* Effect.addFinalizer(() => pending.set(HashMap.empty()))
       const load = Effect.fnUntraced(function* (key: string) {
         const current = yield* store.get(key)
         const credential = yield* Effect.fromOption(
@@ -317,95 +377,97 @@ export const layer = (options: {
           })
         return credential
       })
-      const refresh: Service['refresh'] = Effect.fnUntraced(function* (key, refreshOptions) {
-        const updated = yield* store.modify(
-          key,
-          Effect.fnUntraced(function* (current) {
-            const credential = yield* Effect.fromOption(
-              current,
-              () =>
-                new AuthError({
+      const refresh: ChatGpt.Service['refresh'] = Effect.fnUntraced(
+        function* (key, refreshOptions) {
+          const updated = yield* store.modify(
+            key,
+            Effect.fnUntraced(function* (current) {
+              const credential = yield* Effect.fromOption(
+                current,
+                () =>
+                  new AuthError({
+                    reason: new AuthMissingError({
+                      message: 'ChatGPT account is signed out',
+                    }),
+                  }),
+              )
+              if (
+                credential._tag !== 'oauth' ||
+                credential.provider !== 'openai' ||
+                credential.issuer !== issuer
+              )
+                return yield* new AuthError({
                   reason: new AuthMissingError({
                     message: 'ChatGPT account is signed out',
                   }),
-                }),
-            )
-            if (
-              credential._tag !== 'oauth' ||
-              credential.provider !== 'openai' ||
-              credential.issuer !== issuer
-            )
-              return yield* new AuthError({
-                reason: new AuthMissingError({
-                  message: 'ChatGPT account is signed out',
-                }),
-              })
+                })
 
-            if (credential.clientId === 'dynamic_agent_client')
-              return yield* new AuthError({
-                reason: new AuthProtocolError({
-                  message: 'An issued account client ID is required',
-                }),
-              })
-            yield* requireDirect(credential.scopes)
-            const now = yield* DateTime.now
-            if (
-              !refreshOptions?.force &&
-              DateTime.isGreaterThan(credential.expiresAt, DateTime.addDuration(now, skew))
-            )
-              return credential
-            if (
-              credential.earliestRefreshAt !== undefined &&
-              DateTime.isLessThan(now, credential.earliestRefreshAt)
-            ) {
-              if (DateTime.isGreaterThan(credential.expiresAt, now)) return credential
-              return yield* new AuthError({
-                reason: new AuthExpiredError({
-                  message: 'Credential cannot yet be refreshed',
-                }),
-              })
-            }
-            const token = yield* Token.request(tokenEndpoint, {
-              grant_type: 'refresh_token',
-              client_id: credential.clientId,
-              refresh_token: credential.refreshToken,
-              resource,
-            }).pipe(Effect.provideService(HttpClient.HttpClient, client))
-            const scopes = token.scope === undefined ? credential.scopes : scopeList(token.scope)
-            yield* requireDirect(scopes)
-            if (token.id_token !== undefined) {
-              const identity = yield* jwt.verify(token.id_token, {
-                issuer,
-                audience: credential.clientId,
-                jwksUrl,
-                algorithms: ['RS256'],
-              })
-              if (identity.sub !== credential.subject)
+              if (credential.clientId === 'dynamic_agent_client')
                 return yield* new AuthError({
-                  reason: new AuthIdentityError({
-                    message: 'Refreshed credential belongs to another account',
+                  reason: new AuthProtocolError({
+                    message: 'An issued account client ID is required',
                   }),
                 })
-            }
-            return {
-              ...credential,
-              accessToken: token.access_token,
-              refreshToken: token.refresh_token,
-              idToken: token.id_token ?? credential.idToken,
-              scopes,
-              ...(yield* deadlines(now, token)),
-            }
-          }),
-        )
-        if (updated?._tag !== 'oauth')
-          return yield* new AuthError({
-            reason: new AuthMissingError({
-              message: 'ChatGPT account is signed out',
+              yield* requireDirect(credential.scopes)
+              const now = yield* DateTime.now
+              if (
+                !refreshOptions?.force &&
+                DateTime.isGreaterThan(credential.expiresAt, DateTime.addDuration(now, skew))
+              )
+                return credential
+              if (
+                credential.earliestRefreshAt !== undefined &&
+                DateTime.isLessThan(now, credential.earliestRefreshAt)
+              ) {
+                if (DateTime.isGreaterThan(credential.expiresAt, now)) return credential
+                return yield* new AuthError({
+                  reason: new AuthExpiredError({
+                    message: 'Credential cannot yet be refreshed',
+                  }),
+                })
+              }
+              const token = yield* Token.request(tokenEndpoint, {
+                grant_type: 'refresh_token',
+                client_id: credential.clientId,
+                refresh_token: credential.refreshToken,
+                resource,
+              }).pipe(Effect.provideService(HttpClient.HttpClient, client))
+              const scopes = token.scope === undefined ? credential.scopes : scopeList(token.scope)
+              yield* requireDirect(scopes)
+              if (token.id_token !== undefined) {
+                const identity = yield* jwt.verify(token.id_token, {
+                  issuer,
+                  audience: credential.clientId,
+                  jwksUrl,
+                  algorithms: ['RS256'],
+                })
+                if (identity.sub !== credential.subject)
+                  return yield* new AuthError({
+                    reason: new AuthIdentityError({
+                      message: 'Refreshed credential belongs to another account',
+                    }),
+                  })
+              }
+              return {
+                ...credential,
+                accessToken: token.access_token,
+                refreshToken: token.refresh_token,
+                idToken: token.id_token ?? credential.idToken,
+                scopes,
+                ...(yield* deadlines(now, token)),
+              }
             }),
-          })
-        return updated
-      })
-      const accessToken: Service['accessToken'] = Effect.fnUntraced(function* (account) {
+          )
+          if (updated?._tag !== 'oauth')
+            return yield* new AuthError({
+              reason: new AuthMissingError({
+                message: 'ChatGPT account is signed out',
+              }),
+            })
+          return updated
+        },
+      )
+      const accessToken: ChatGpt.Service['accessToken'] = Effect.fnUntraced(function* (account) {
         const credential = yield* refresh(account)
         return credential.accessToken
       })
@@ -477,13 +539,13 @@ export const layer = (options: {
               query.set('id_token_hint', Redacted.value(returning.idToken))
             if (returning.email !== undefined) query.set('login_hint', returning.email)
           }
-          const authorization = {
+          const authorization = makeAuthorization({
             url: Redacted.make(`${issuer}/api/accounts/authorize?${query.toString()}`),
             state: challenge.state,
             redirectUri: beginOptions.redirectUri,
             expiresAt: DateTime.addDuration(now, lifetime),
-          }
-          const admitted = yield* Ref.modify(pending, (attempts) => {
+          })
+          const admitted = yield* pending.modify((attempts) => {
             const fresh = HashMap.filter(attempts, (attempt) =>
               DateTime.isGreaterThan(attempt.authorization.expiresAt, now),
             )
@@ -509,7 +571,7 @@ export const layer = (options: {
           const callback = yield* parseUrl(callbackUrl)
           const state = callback.searchParams.get('state')
           const current =
-            state === null ? Option.none<Pending>() : HashMap.get(yield* Ref.get(pending), state)
+            state === null ? Option.none<Pending>() : HashMap.get(yield* pending.read, state)
           const attempt = yield* Effect.fromOption(
             current,
             () =>
@@ -546,7 +608,7 @@ export const layer = (options: {
                   message: 'Duplicate authorization callback parameter',
                 }),
               })
-          const consumed = yield* Ref.modify(pending, (attempts) =>
+          const consumed = yield* pending.modify((attempts) =>
             Option.exists(HashMap.get(attempts, state), (current) => current === attempt)
               ? ([true, HashMap.remove(attempts, state)] as const)
               : ([false, attempts] as const),
@@ -567,6 +629,10 @@ export const layer = (options: {
             return yield* new AuthError({
               reason: new AuthDeniedError({
                 message: 'Authorization was declined or failed',
+                ...(callback.searchParams.getAll('error').length === 1 &&
+                callback.searchParams.get('error') === 'access_denied'
+                  ? { authorizationError: 'access_denied' as const }
+                  : {}),
               }),
             })
           const code = callback.searchParams.get('code')
@@ -687,7 +753,7 @@ export const layer = (options: {
                 }),
             ),
           )
-          return catalog.models.filter((model) => model.visibility === 'list')
+          return Arr.filter(catalog.models, (model) => model.visibility === 'list')
         }),
         signOut: Effect.fnUntraced(function* (account) {
           yield* store.modify(
@@ -734,7 +800,7 @@ export const layer = (options: {
             }),
           )
         }),
-        cancel: (state) => Ref.update(pending, HashMap.remove(state)),
+        cancel: (state) => pending.update(HashMap.remove(state)),
       })
     }),
   )

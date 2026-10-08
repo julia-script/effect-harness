@@ -12,8 +12,8 @@ From the repository root:
 
 ```sh
 bun install
-bun run --cwd apps/example typecheck
-bun run --cwd apps/example build
+bun run typecheck
+bun run build
 bun run --cwd apps/example test
 ```
 
@@ -25,11 +25,11 @@ HELLO
 native-workflow-example-ok
 ```
 
-No account, remote inference or model download is needed. Typecheck and build compile the library dependencies first, checking their public declarations. Tests import the compiled application through package exports, then run its compiled entrypoint. Effect dependencies are unmodified; see [Effect compatibility](../../docs/reference/compatibility.md) for validation and recovery behavior.
+No account, remote inference or model download is needed. The workspace build graph compiles library dependencies before the example and checks their public declarations. Tests import the compiled application through package exports, then run its compiled entrypoint. Effect dependencies are unmodified; see [Effect compatibility](../../docs/reference/compatibility.md) for validation and recovery behavior.
 
 ## Reproduce an unknown tool response
 
-[src/reproduceUnknownTool.ts](src/reproduceUnknownTool.ts) submits a conversation through the public API with a local model that calls `upper_case`, while only `uppercase` is registered. Run it from the repository root:
+[src/ReproduceUnknownTool.ts](src/ReproduceUnknownTool.ts) submits a conversation through the public API with a local model that calls `upper_case`, while only `uppercase` is registered. Run it from the repository root:
 
 ```sh
 bun run --cwd apps/example reproduce:unknown-tool

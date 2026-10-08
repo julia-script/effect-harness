@@ -15,12 +15,6 @@ export * as Agent from './Agent.ts'
  */
 export * as Compaction from './Compaction.ts'
 /**
- * Committed transcript projection, compatible edit codecs and token estimates.
- *
- * @category re-exports
- */
-export * as Context from './Context.ts'
-/**
  * Portable scoped file, directory, watch and process capabilities.
  *
  * @category re-exports
@@ -105,29 +99,11 @@ export * as OutputError from './OutputError.ts'
  */
 export * as Progress from './Progress.ts'
 /**
- * Managed section and tool deltas for native model prompts.
- *
- * @category re-exports
- */
-export * as Prompt from './Prompt.ts'
-/**
  * Extension installation, snapshot resolution and prompt rendering.
  *
  * @category re-exports
  */
 export * as Registry from './Registry.ts'
-/**
- * Extension registry failures with their original causes.
- *
- * @category re-exports
- */
-export * as RegistryError from './RegistryError.ts'
-/**
- * Immutable native response accumulation and ordered partial publication.
- *
- * @category re-exports
- */
-export * as Response from './Response.ts'
 /**
  * Compatible optional domain fields with encoded omission semantics.
  *
@@ -153,12 +129,6 @@ export * as SystemPatch from './SystemPatch.ts'
  */
 export * as Time from './Time.ts'
 /**
- * Native tool binding, validated projections and replay intent codecs.
- *
- * @category re-exports
- */
-export * as Tool from './Tool.ts'
-/**
  * Semantic tool failure reasons with preserved caught causes.
  *
  * @category re-exports
@@ -176,7 +146,7 @@ export * as ToolResult from './ToolResult.ts'
  * @category re-exports
  */
 export * as Usage from './Usage.ts'
-// effect-review-allow P9-barrel-namespace-only: NodeEnv and NodeNativeFiles are optional Node host adapters. They remain explicit public leaf imports so the portable root does not eagerly load host-only dependencies.
+// effect-nit-allow P9-barrel-namespace-only: NodeEnv and NodeNativeFiles are optional Node host adapters. They remain explicit public leaf imports so the portable root does not eagerly load host-only dependencies.
 
 /**
  * Public namespaces for the retained sibling concepts.
@@ -203,3 +173,28 @@ export * as FileError from './FileError.ts'
  * @category re-exports
  */
 export * as ExecutionError from './ExecutionError.ts'
+
+/** Portable filesystem capabilities used by environment adapters.
+ * @category re-exports
+ */
+export * as NativeFiles from './NativeFiles.ts'
+
+/** Transcript canonical concept namespace.
+ * @category re-exports
+ */
+export * as Transcript from './Transcript.ts'
+
+/** PromptPreparation canonical concept namespace.
+ * @category re-exports
+ */
+export * as PromptPreparation from './PromptPreparation.ts'
+
+/** ResponseAccumulator canonical concept namespace.
+ * @category re-exports
+ */
+export * as ResponseAccumulator from './ResponseAccumulator.ts'
+
+/** ToolRegistration canonical concept namespace.
+ * @category re-exports
+ */
+export * as ToolRegistration from './ToolRegistration.ts'

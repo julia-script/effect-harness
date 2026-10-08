@@ -14,7 +14,7 @@ export class IntentServerFixture extends Context.Service<
     readonly server: typeof IntentServer.IntentServer.Service
     readonly client: HttpClient.HttpClient
   }
->()('test/IntentServerFixture') {
+>()('effect-harness/test/provider-claude-code/IntentServerFixture/IntentServerFixture') {
   static readonly layer = Layer.effect(IntentServerFixture)(
     Effect.gen(function* () {
       return { server: yield* IntentServer.IntentServer, client: yield* HttpClient.HttpClient }

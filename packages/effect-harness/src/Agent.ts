@@ -8,6 +8,7 @@ import * as Effect from 'effect/Effect'
 import * as Time from './Time.ts'
 import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
+import * as Record from 'effect/Record'
 
 /**
  * Schema for provider name and model ID selected from a Model.Catalog.
@@ -78,12 +79,6 @@ export const State = Schema.Struct({
  */
 export type State = typeof State.Type
 /**
- * Partial replacement of conversation agent overrides.
- *
- * @category models
- */
-export type Change = State.Change
-/**
  * Retry enablement, maximum attempts and delay bounds.
  *
  * @category models
@@ -109,8 +104,8 @@ export type ProgressPolicy = typeof ProgressPolicy.Type
 export const defaultRetry: RetryPolicy = {
   enabled: true,
   maxRetries: 3,
-  baseDelayMs: Duration.seconds(2),
-  maxAgentDelayMs: Duration.minutes(1),
+  baseDelay: Duration.seconds(2),
+  maxAgentDelay: Duration.minutes(1),
 }
 /**
  * Default context compaction token budgets.
@@ -129,8 +124,8 @@ export const defaultCompaction: CompactionPolicy = {
  * @category constants
  */
 export const defaultProgress: ProgressPolicy = {
-  partialIntervalMs: Duration.millis(100),
-  outputIntervalMs: Duration.millis(100),
+  partialInterval: Duration.millis(100),
+  outputInterval: Duration.millis(100),
 }
 /**
  * Host settings for extensions, streams, retry, compaction and tool execution.
@@ -138,25 +133,17 @@ export const defaultProgress: ProgressPolicy = {
  * @category models
  */
 export type Settings = typeof Settings.Type
-/**
- * Partial host settings expanded through library defaults.
- *
- * @category models
- */
-export type SettingsInput = Settings.Input
 /** Configuration fields replace wholesale; null clears and undefined preserves. */
-function configureImpl(self: State, change: Change): State {
+function configureImpl(self: State, change: State.Change): State {
+  // effect-nit-allow P1-stdlib-collection-replacements: this public record admits accessors that delete later own keys. Native enumeration rechecks descriptors before reading; Record.collect can instead read a newly inherited value.
   const next: State = { ...self }
+  // Stage own data without inherited setters; restore the ordinary public prototype after assignment.
+  Object.setPrototypeOf(next, null)
   for (const [key, value] of Object.entries(change)) {
     if (value === null) Reflect.deleteProperty(next, key)
-    else if (value !== undefined)
-      Object.defineProperty(next, key, {
-        value,
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      })
+    else if (value !== undefined) Record.assignProperty(next, key, value)
   }
+  Object.setPrototypeOf(next, Object.prototype)
   return next
 }
 /**
@@ -165,8 +152,8 @@ function configureImpl(self: State, change: Change): State {
  * @category combinators
  */
 export const configure: {
-  (change: Change): (self: State) => State
-  (self: State, change: Change): State
+  (change: State.Change): (self: State) => State
+  (self: State, change: State.Change): State
 } = dual(2, configureImpl)
 const defaults = (): Settings => ({
   stream: {},
@@ -189,7 +176,7 @@ export const defaultSettings: Settings = defaults()
  * @category constructors
  */
 export const settings = Effect.fnUntraced(function* (
-  input: SettingsInput = {},
+  input: Settings.Input = {},
 ): Effect.fn.Return<Settings, Schema.SchemaError> {
   const progress = { ...defaultProgress, ...input.progress }
   return yield* Schema.decodeEffect(Schema.toType(Settings))({
@@ -199,10 +186,8 @@ export const settings = Effect.fnUntraced(function* (
     retry: {
       enabled: input.retry?.enabled ?? defaultRetry.enabled,
       maxRetries: input.retry?.maxRetries ?? defaultRetry.maxRetries,
-      baseDelayMs: yield* Time.duration(input.retry?.baseDelayMs ?? defaultRetry.baseDelayMs),
-      maxAgentDelayMs: yield* Time.duration(
-        input.retry?.maxAgentDelayMs ?? defaultRetry.maxAgentDelayMs,
-      ),
+      baseDelay: yield* Time.duration(input.retry?.baseDelay ?? defaultRetry.baseDelay),
+      maxAgentDelay: yield* Time.duration(input.retry?.maxAgentDelay ?? defaultRetry.maxAgentDelay),
     },
     compaction: {
       enabled: input.compaction?.enabled ?? defaultCompaction.enabled,
@@ -211,11 +196,11 @@ export const settings = Effect.fnUntraced(function* (
       backgroundTokens: input.compaction?.backgroundTokens ?? defaultCompaction.backgroundTokens,
     },
     progress: {
-      partialIntervalMs: yield* Time.duration(
-        progress.partialIntervalMs ?? defaultProgress.partialIntervalMs,
+      partialInterval: yield* Time.duration(
+        progress.partialInterval ?? defaultProgress.partialInterval,
       ),
-      outputIntervalMs: yield* Time.duration(
-        progress.outputIntervalMs ?? defaultProgress.outputIntervalMs,
+      outputInterval: yield* Time.duration(
+        progress.outputInterval ?? defaultProgress.outputInterval,
       ),
     },
     toolExecution: input.toolExecution ?? defaultSettings.toolExecution,
@@ -230,7 +215,7 @@ function selectImpl(self: Selection | undefined, defaults: ReadonlyArray<string>
   // Array.isArray does not narrow readonly arrays.
   const edit = self as SelectionEdit
   const removed = new Set(edit.remove)
-  return Arr.union(defaults, edit.add ?? []).filter((name) => !removed.has(name))
+  return Arr.filter(Arr.union(defaults, edit.add ?? []), (name) => !removed.has(name))
 }
 /**
  * Applies ordered selection edits to host defaults, with removal winning.
@@ -243,8 +228,8 @@ export const select: {
 } = dual(2, selectImpl)
 function retryDelayImpl(self: RetryPolicy, attempt: number): Duration.Duration {
   return Duration.min(
-    Duration.times(self.baseDelayMs, 2 ** (Math.max(1, attempt) - 1)),
-    self.maxAgentDelayMs,
+    Duration.times(self.baseDelay, 2 ** (Math.max(1, attempt) - 1)),
+    self.maxAgentDelay,
   )
 }
 /**
@@ -256,8 +241,8 @@ export const retryDelay: {
   (attempt: number): (self: RetryPolicy) => Duration.Duration
   (self: RetryPolicy, attempt: number): Duration.Duration
 } = dual(2, retryDelayImpl)
-function isRetryAllowedImpl(u: RetryPolicy, attempt: number, retryable: boolean): boolean {
-  return retryable && u.enabled && attempt <= u.maxRetries
+function isRetryAllowedImpl(self: RetryPolicy, attempt: number, retryable: boolean): boolean {
+  return retryable && self.enabled && attempt <= self.maxRetries
 }
 /**
  * Checks whether the retry policy permits another attempt.
@@ -271,6 +256,8 @@ export const isRetryAllowed: {
 
 /** Tool controls append exact-list offers or remove names from an exclusion list; an unset list already offers everything. */
 function addToolsImpl(self: State, names: ReadonlyArray<string>): State {
+  // effect-nit-allow P1-stdlib-collection-replacements: this public/native array may contain missing indices or inherited numeric accessors; native filter preserves HasProperty/Get and callback order, skips holes, and keeps explicit undefined distinct. Effect Array.filter visits missing slots.
+
   if (self.tools === undefined || Arr.isReadonlyArrayEmpty(names)) return self
   if (Array.isArray(self.tools)) return { ...self, tools: Arr.union(self.tools, names) }
   const selection = self.tools as { readonly remove: ReadonlyArray<string> }
@@ -297,8 +284,8 @@ const nonnegative = Schema.Natural
 export const RetryPolicy = Schema.Struct({
   enabled: Schema.Boolean,
   maxRetries: nonnegative,
-  baseDelayMs: Time.NonnegativeMillis,
-  maxAgentDelayMs: Time.NonnegativeMillis,
+  baseDelay: Time.NonnegativeDurationFromMillis,
+  maxAgentDelay: Time.NonnegativeDurationFromMillis,
 })
 /**
  * Schema for context reservation and recent-history retention policy.
@@ -317,8 +304,8 @@ export const CompactionPolicy = Schema.Struct({
  * @category schemas
  */
 export const ProgressPolicy = Schema.Struct({
-  partialIntervalMs: Time.NonnegativeMillis,
-  outputIntervalMs: Time.NonnegativeMillis,
+  partialInterval: Time.NonnegativeDurationFromMillis,
+  outputInterval: Time.NonnegativeDurationFromMillis,
 })
 /**
  * Schema for host settings for extensions, streams, retry, compaction and tool execution.
@@ -454,7 +441,6 @@ export type SelectionEdit = typeof SelectionEdit.Type
 /**
  * Type-level contracts for `State`.
  *
- * @category utility types
  */
 export declare namespace State {
   /**
@@ -468,7 +454,6 @@ export declare namespace State {
 /**
  * Type-level contracts for `Settings`.
  *
- * @category utility types
  */
 export declare namespace Settings {
   /**

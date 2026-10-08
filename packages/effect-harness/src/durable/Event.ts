@@ -1,11 +1,11 @@
 /**
  * Committed agent event projections and bounded observation streams.
  */
+import * as MutableHashMap from 'effect/MutableHashMap'
 import * as Order from 'effect/Order'
 import * as Arr from 'effect/Array'
 import * as Predicate from 'effect/Predicate'
 import { dual } from 'effect/Function'
-import { tagged } from './internal/legacyTag.ts'
 import * as Time from 'effect-harness/Time'
 import * as DateTime from 'effect/DateTime'
 import * as Outcome from './workflow/Outcome.ts'
@@ -26,7 +26,7 @@ import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
 import * as Inbox from './Inbox.ts'
 import * as Record from './Record.ts'
-import { rejected, type StorageError, Corrupt } from './StorageError.ts'
+import { rejected, type StorageError, CorruptError } from './StorageError.ts'
 import * as View from './View.ts'
 
 /**
@@ -43,64 +43,56 @@ export const QueuedItem = Schema.Struct({
  *
  * @category models
  */
-export type QueuedItem = Event.QueuedItem
+export type QueuedItem = typeof QueuedItem.Type
 /**
  * Schema for incremental change to committed model-visible message content.
  *
  * @category schemas
  */
 export const MessageChange = Schema.Union([
-  tagged('text_start', {
-    type: Schema.tag('text_start'),
+  Schema.TaggedStruct('text_start', {
     contentIndex: Schema.Int,
     block: Prompt.AssistantMessagePart,
   }),
-  tagged('thinking_start', {
-    type: Schema.tag('thinking_start'),
+  Schema.TaggedStruct('thinking_start', {
     contentIndex: Schema.Int,
     block: Prompt.AssistantMessagePart,
   }),
-  tagged('toolcall_start', {
-    type: Schema.tag('toolcall_start'),
+  Schema.TaggedStruct('toolcall_start', {
     contentIndex: Schema.Int,
     block: Prompt.AssistantMessagePart,
   }),
-  tagged('block', {
-    type: Schema.tag('block'),
+  Schema.TaggedStruct('block', {
     contentIndex: Schema.Int,
     block: Prompt.AssistantMessagePart,
   }),
-  tagged('text_delta', {
-    type: Schema.tag('text_delta'),
+  Schema.TaggedStruct('text_delta', {
     contentIndex: Schema.Int,
     delta: Schema.String,
   }),
-  tagged('thinking_delta', {
-    type: Schema.tag('thinking_delta'),
+  Schema.TaggedStruct('thinking_delta', {
     contentIndex: Schema.Int,
     delta: Schema.String,
   }),
-  tagged('toolcall_delta', {
-    type: Schema.tag('toolcall_delta'),
+  Schema.TaggedStruct('toolcall_delta', {
     contentIndex: Schema.Int,
     path: View.Path,
     delta: Schema.String,
   }),
-  tagged('message', { type: Schema.tag('message'), message: Prompt.AssistantMessage }),
+  Schema.TaggedStruct('message', { message: Prompt.AssistantMessage }),
 ])
 /**
  * Incremental change to committed model-visible message content.
  *
  * @category models
  */
-export type MessageChange = Event.MessageChange
+export type MessageChange = typeof MessageChange.Type
 /**
  * Schema for committed conversation execution, queue, usage and entry snapshot.
  *
  * @category schemas
  */
-export const Snapshot = tagged('snapshot', {
-  type: Schema.tag('snapshot'),
+export const Snapshot = Schema.TaggedStruct('snapshot', {
   entries: Schema.Array(Record.Entry),
   run: Schema.optionalKey(Schema.Struct({ inputs: Schema.Array(Record.SubmissionId) })),
   generation: Schema.optionalKey(
@@ -124,7 +116,7 @@ export const Snapshot = tagged('snapshot', {
  *
  * @category models
  */
-export type Snapshot = Event.Snapshot
+export type Snapshot = typeof Snapshot.Type
 const toolIdentity = { toolCallId: Schema.String, toolName: Schema.String }
 const compactionIdentity = {
   taskId: Record.TaskId,
@@ -137,31 +129,26 @@ const compactionIdentity = {
  */
 export const AgentEvent = Schema.Union([
   Snapshot,
-  tagged('run_start', {
-    type: Schema.tag('run_start'),
+  Schema.TaggedStruct('run_start', {
     inputs: Schema.Array(Record.SubmissionId),
   }),
-  tagged('run_end', {
-    type: Schema.tag('run_end'),
+  Schema.TaggedStruct('run_end', {
     inputs: Schema.Array(Record.SubmissionId),
   }),
-  tagged('turn_start', { type: Schema.tag('turn_start') }),
-  tagged('turn_end', { type: Schema.tag('turn_end') }),
-  tagged('message_start', { type: Schema.tag('message_start'), message: Prompt.Message }),
-  tagged('message_update', {
-    type: Schema.tag('message_update'),
+  Schema.TaggedStruct('turn_start', {}),
+  Schema.TaggedStruct('turn_end', {}),
+  Schema.TaggedStruct('message_start', { message: Prompt.Message }),
+  Schema.TaggedStruct('message_update', {
     usage: Usage.Usage,
     changes: Schema.Array(MessageChange),
   }),
-  tagged('message_end', { type: Schema.tag('message_end'), entry: Record.Entry }),
-  tagged('entry_appended', { type: Schema.tag('entry_appended'), entry: Record.Entry }),
-  tagged('tool_execution_start', {
-    type: Schema.tag('tool_execution_start'),
+  Schema.TaggedStruct('message_end', { entry: Record.Entry }),
+  Schema.TaggedStruct('entry_appended', { entry: Record.Entry }),
+  Schema.TaggedStruct('tool_execution_start', {
     ...toolIdentity,
     args: Schema.Json,
   }),
-  tagged('tool_execution_update', {
-    type: Schema.tag('tool_execution_update'),
+  Schema.TaggedStruct('tool_execution_update', {
     ...toolIdentity,
     output: Schema.optionalKey(
       Schema.Union([
@@ -175,35 +162,31 @@ export const AgentEvent = Schema.Union([
     details: Schema.optionalKey(Schema.Json),
     diagnostics: Schema.optionalKey(Schema.Array(Invocation.Diagnostic)),
   }),
-  tagged('tool_execution_end', {
-    type: Schema.tag('tool_execution_end'),
+  Schema.TaggedStruct('tool_execution_end', {
     ...toolIdentity,
     entry: Schema.optionalKey(Record.Entry),
   }),
-  tagged('inbox_update', { type: Schema.tag('inbox_update'), items: Schema.Array(QueuedItem) }),
-  tagged('submission', { type: Schema.tag('submission'), record: Record.Submission }),
-  tagged('auto_retry_start', {
-    type: Schema.tag('auto_retry_start'),
+  Schema.TaggedStruct('inbox_update', { items: Schema.Array(QueuedItem) }),
+  Schema.TaggedStruct('submission', { record: Record.Submission }),
+  Schema.TaggedStruct('auto_retry_start', {
     attempt: Schema.Int,
-    at: Time.EpochMillis,
+    at: Time.DateTimeUtcFromEpochMillis,
     errorMessage: Schema.String,
   }),
-  tagged('auto_retry_end', { type: Schema.tag('auto_retry_end'), attempt: Schema.Int }),
-  tagged('deferred_poll', { type: Schema.tag('deferred_poll'), pollAt: Time.EpochMillis }),
-  tagged('agent_changed', { type: Schema.tag('agent_changed'), agent: Agent.State }),
-  tagged('usage_changed', { type: Schema.tag('usage_changed'), usage: Usage.State }),
-  tagged('task_failed', {
-    type: Schema.tag('task_failed'),
+  Schema.TaggedStruct('auto_retry_end', { attempt: Schema.Int }),
+  Schema.TaggedStruct('deferred_poll', { pollAt: Time.DateTimeUtcFromEpochMillis }),
+  Schema.TaggedStruct('agent_changed', { agent: Agent.State }),
+  Schema.TaggedStruct('usage_changed', { usage: Usage.State }),
+  Schema.TaggedStruct('task_failed', {
     taskId: Record.TaskId,
     kind: Schema.String,
     message: Schema.String,
   }),
-  tagged('compaction_start', {
-    type: Schema.tag('compaction_start'),
+  Schema.TaggedStruct('compaction_start', {
     ...compactionIdentity,
     blocking: Schema.Boolean,
   }),
-  tagged('compaction_end', { type: Schema.tag('compaction_end'), ...compactionIdentity }),
+  Schema.TaggedStruct('compaction_end', { ...compactionIdentity }),
 ])
 /**
  * Semantic event derived from a committed conversation update.
@@ -222,25 +205,13 @@ export const Batch = Schema.Array(AgentEvent)
  *
  * @category models
  */
-export type Batch = Event.Batch
+export type Batch = typeof Batch.Type
 /**
  * JSON codec for an ordered batch of committed semantic events.
  *
  * @category schemas
  */
 export const BatchJson = Schema.toCodecJson(Batch)
-/**
- * Scoped initial semantic snapshot and subsequent event batches.
- *
- * @category models
- */
-export type Watch = Event.Watch
-/**
- * Semantic observation operations built on committed View projections.
- *
- * @category models
- */
-export type Service = Event.Service
 /**
  * Service deriving semantic conversation events from committed views.
  *
@@ -256,16 +227,21 @@ export type Service = Event.Service
  *
  * @category services
  */
-export class Event extends Context.Service<Event, Service>()('@effect-harness/durable/Event') {}
+export class Event extends Context.Service<Event, Event.Service>()(
+  'effect-harness/durable/Event',
+) {}
 
 const decode = <S extends Schema.Constraint>(schema: S, value: unknown) =>
   Schema.decodeUnknownEffect(schema)(value).pipe(
-    Effect.mapError((cause) => rejected('Invalid committed event payload', Corrupt, cause)),
+    Effect.mapError((cause) => rejected('Invalid committed event payload', CorruptError, cause)),
   )
 const messageCodec = Schema.toCodecJson(Prompt.Message)
 const assistantCodec = Schema.toCodecJson(Prompt.AssistantMessage)
-const queued = (inbox: Inbox.State | undefined): ReadonlyArray<QueuedItem> =>
-  (inbox?.items ?? []).map(({ id, mode }) => ({ id, mode }))
+const queued = (inbox: Inbox.State | undefined): Array<QueuedItem> =>
+  (inbox?.items ?? []).map((item) => ({
+    id: item.id,
+    mode: item._tag === 'write' ? ('write' as const) : item.mode,
+  }))
 const parts = Effect.fnUntraced(function* (view: View.Value) {
   const live = Inbox.domain(view.docs['harness.live'] ?? {})
   const inbox = view.docs['harness.inbox']
@@ -290,7 +266,6 @@ export const snapshot = Effect.fnUntraced(function* (
   const generation = live.generation
   return {
     _tag: 'snapshot',
-    type: 'snapshot',
     entries: self.entries,
     ...(live.run === undefined ? {} : { run: { inputs: live.run.inputs } }),
     ...(generation === undefined
@@ -308,7 +283,7 @@ export const snapshot = Effect.fnUntraced(function* (
     compactions: live.compactions ?? [],
     inbox: queued(inbox),
     agent: agent ?? {},
-    usage: usage ?? Usage.empty(),
+    usage: usage ?? Usage.makeState(),
   }
 })
 const samePart = Schema.toEquivalence(Prompt.AssistantMessagePart)
@@ -329,27 +304,27 @@ function messageChangesImpl(
 ): Array<MessageChange> {
   // Coalesce paths against the complete committed values. Keep the first-touch
   // order, but decide every block fallback before publishing any narrow delta.
-  const touched = new Map<number, Map<string, View.Path>>()
+  const touched = MutableHashMap.empty<number, MutableHashMap.MutableHashMap<string, View.Path>>()
   const whole = new Set<number>()
   const starts = new Set<number>()
   for (const op of self) {
-    if (op[0] === 'replace') return [{ _tag: 'message', type: 'message', message }]
+    if (op[0] === 'replace') return [{ _tag: 'message', message }]
     const path = op[1]
     if (!startsWith(path, partialPath)) {
-      if (startsWith(partialPath, path)) return [{ _tag: 'message', type: 'message', message }]
+      if (startsWith(partialPath, path)) return [{ _tag: 'message', message }]
       continue
     }
     const rest = path.slice(partialPath.length)
     if (rest[0] === 'usage' || rest[0] === 'options') continue
-    if (rest[0] !== 'content') return [{ _tag: 'message', type: 'message', message }]
+    if (rest[0] !== 'content') return [{ _tag: 'message', message }]
     if (rest.length === 1) {
-      if (message.content.length < before.content.length)
-        return [{ _tag: 'message', type: 'message', message }]
+      if (message.content.length < before.content.length) return [{ _tag: 'message', message }]
       for (let index = 0; index < message.content.length; index++) {
         const block = message.content[index]
         const previous = before.content[index]
         if (block === undefined || (previous !== undefined && samePart(block, previous))) continue
-        if (!touched.has(index)) touched.set(index, new Map())
+        if (!MutableHashMap.has(touched, index))
+          MutableHashMap.set(touched, index, MutableHashMap.empty())
         whole.add(index)
         if (index >= before.content.length) starts.add(index)
       }
@@ -357,14 +332,14 @@ function messageChangesImpl(
     }
     const index = rest[1]
     if (!Predicate.isNumber(index)) continue
-    if (message.content[index] === undefined) return [{ _tag: 'message', type: 'message', message }]
-    let paths = touched.get(index)
+    if (message.content[index] === undefined) return [{ _tag: 'message', message }]
+    let paths = Option.getOrUndefined(MutableHashMap.get(touched, index))
     if (paths === undefined) {
-      paths = new Map()
-      touched.set(index, paths)
+      paths = MutableHashMap.empty()
+      MutableHashMap.set(touched, index, paths)
     }
     const tail = rest.slice(2)
-    paths.set(JSON.stringify(tail), tail)
+    MutableHashMap.set(paths, JSON.stringify(tail), tail)
     if (op[0] !== 'set') whole.add(index)
   }
   const changes: Array<MessageChange> = []
@@ -379,9 +354,9 @@ function messageChangesImpl(
   for (const [index, paths] of touched) {
     const block = message.content[index]
     const previous = before.content[index]
-    if (block === undefined) return [{ _tag: 'message', type: 'message', message }]
+    if (block === undefined) return [{ _tag: 'message', message }]
     const deltas: Array<MessageChange> = []
-    for (const path of paths.values()) {
+    for (const path of MutableHashMap.values(paths)) {
       if (
         path.length === 1 &&
         path[0] === 'text' &&
@@ -394,13 +369,11 @@ function messageChangesImpl(
           block.type === 'reasoning'
             ? {
                 _tag: 'thinking_delta',
-                type: 'thinking_delta',
                 contentIndex: index,
                 delta: block.text.slice(previous.text.length),
               }
             : {
                 _tag: 'text_delta',
-                type: 'text_delta',
                 contentIndex: index,
                 delta: block.text.slice(previous.text.length),
               },
@@ -420,7 +393,6 @@ function messageChangesImpl(
         )
           deltas.push({
             _tag: 'toolcall_delta',
-            type: 'toolcall_delta',
             contentIndex: index,
             path: paramPath,
             delta: finalValue.slice(previousValue.length),
@@ -436,24 +408,23 @@ function messageChangesImpl(
         !starts.has(index) ||
         (block.type !== 'text' && block.type !== 'reasoning' && block.type !== 'tool-call')
       )
-        changes.push({ _tag: 'block', type: 'block', contentIndex: index, block })
+        changes.push({ _tag: 'block', contentIndex: index, block })
       else if (type === 'text_start')
-        changes.push({ _tag: 'text_start', type: 'text_start', contentIndex: index, block })
+        changes.push({ _tag: 'text_start', contentIndex: index, block })
       else if (type === 'thinking_start')
-        changes.push({ _tag: 'thinking_start', type: 'thinking_start', contentIndex: index, block })
-      else
-        changes.push({ _tag: 'toolcall_start', type: 'toolcall_start', contentIndex: index, block })
+        changes.push({ _tag: 'thinking_start', contentIndex: index, block })
+      else changes.push({ _tag: 'toolcall_start', contentIndex: index, block })
     } else changes.push(...deltas)
   }
   return Arr.isArrayEmpty(changes) && !sameParts(before.content, message.content)
-    ? [{ _tag: 'message', type: 'message', message }]
+    ? [{ _tag: 'message', message }]
     : changes
 }
 /** A retained output window is a front trim followed by an append when its overlap is known. */
 function outputChangeImpl(
   self: string | undefined,
   that: string | undefined,
-): Option.Option<NonNullable<Extract<AgentEvent, { type: 'tool_execution_update' }>['output']>> {
+): Option.Option<NonNullable<Extract<AgentEvent, { _tag: 'tool_execution_update' }>['output']>> {
   if (self === that) return Option.none()
   if (self === undefined || that === undefined) return Option.some({ set: that ?? '' })
   const prefix = new Uint32Array(that.length)
@@ -491,16 +462,16 @@ export const translate = Effect.fnUntraced(function* (
   const frame = change.publication
   if (frame === undefined) return [yield* snapshot(change.value)]
   const entries: Array<Record.Entry> = []
-  const tasks = new Map<Record.TaskId, Record.Task>()
-  const submissions = new Map<Record.SubmissionId, Record.Submission>()
+  const tasks = MutableHashMap.empty<Record.TaskId, Record.Task>()
+  const submissions = MutableHashMap.empty<Record.SubmissionId, Record.Submission>()
   for (const write of frame.writes) {
-    if (write.type === 'entry' && write.value.conversationId === id) entries.push(write.value)
-    if (write.type === 'task' && write.value.conversationId === id)
-      tasks.set(write.value.id, write.value)
-    if (write.type === 'submission' && write.value.conversationId === id)
-      submissions.set(write.value.id, write.value)
+    if (write._tag === 'entry' && write.value.conversationId === id) entries.push(write.value)
+    if (write._tag === 'task' && write.value.conversationId === id)
+      MutableHashMap.set(tasks, write.value.id, write.value)
+    if (write._tag === 'submission' && write.value.conversationId === id)
+      MutableHashMap.set(submissions, write.value.id, write.value)
   }
-  // effect-review-allow P1-order-equivalence-params: entries is a newly allocated local buffer; its ordering is updated before event publication.
+  // effect-nit-allow P1-order-equivalence-params: entries is a newly allocated local buffer; its ordering is updated before event publication.
   entries.sort(Order.mapInput(Order.Number, (item: Record.Entry) => item.id))
   const touchedPartial =
     !change.rebased ||
@@ -529,30 +500,38 @@ export const translate = Effect.fnUntraced(function* (
   const was = yield* parts(change.before)
   const now = yield* parts(change.value)
   const events: Array<AgentEvent> = []
-  const previousSlots = new Map((was.live.tools ?? []).map((slot) => [slot.callId, slot]))
+  const previousSlots = MutableHashMap.fromIterable(
+    (was.live.tools ?? []).map((slot) => [slot.callId, slot]),
+  )
   const slots = now.live.tools ?? []
   for (const slot of slots) {
-    if (slot.status !== 'running' || previousSlots.get(slot.callId)?.status === 'running') continue
-    const task = slot.taskId === undefined ? undefined : tasks.get(slot.taskId)
+    if (
+      slot.status !== 'running' ||
+      Option.getOrUndefined(MutableHashMap.get(previousSlots, slot.callId))?.status === 'running'
+    )
+      continue
+    const task =
+      slot.taskId === undefined
+        ? undefined
+        : Option.getOrUndefined(MutableHashMap.get(tasks, slot.taskId))
     const binding = Schema.decodeUnknownOption(Ownership.Binding)(task?.input)
     const payload =
       Option.isSome(binding) && binding.value.workflow === ToolCall._tag
         ? Schema.decodeUnknownOption(ToolCall.payloadSchema)(binding.value.payload)
         : Option.none()
     const checkpoint = Schema.decodeUnknownOption(Outcome.ToolCheckpoint)(task?.state.checkpoint)
-    let args: Record.Json = {}
+    let args: Schema.Json = {}
     if (Option.isSome(payload))
       args = Option.isSome(checkpoint) ? checkpoint.value.arguments : payload.value.arguments
     events.push({
       _tag: 'tool_execution_start',
-      type: 'tool_execution_start',
       toolCallId: slot.callId,
       toolName: slot.name,
       args,
     })
   }
   if (touchedPartial && now.partial !== undefined && was.partial === undefined)
-    events.push({ _tag: 'message_start', type: 'message_start', message: now.partial })
+    events.push({ _tag: 'message_start', message: now.partial })
   else if (
     now.partial !== undefined &&
     was.partial !== undefined &&
@@ -561,13 +540,12 @@ export const translate = Effect.fnUntraced(function* (
   ) {
     events.push({
       _tag: 'message_update',
-      type: 'message_update',
-      usage: now.currentUsage ?? Usage.zero(),
+      usage: now.currentUsage ?? Usage.make(),
       changes: messageChanges(change.ops, was.partial, now.partial),
     })
   }
   for (const slot of slots) {
-    const previous = previousSlots.get(slot.callId)
+    const previous = Option.getOrUndefined(MutableHashMap.get(previousSlots, slot.callId))
     if (slot.status !== 'running' || previous?.status !== 'running') continue
     const output = outputChange(previous.output, slot.output)
     const detailsChanged = previous.details !== slot.details
@@ -575,7 +553,6 @@ export const translate = Effect.fnUntraced(function* (
     if (Option.isNone(output) && !detailsChanged && !diagnosticsChanged) continue
     events.push({
       _tag: 'tool_execution_update',
-      type: 'tool_execution_update',
       toolCallId: slot.callId,
       toolName: slot.name,
       ...Option.match(output, { onNone: () => ({}), onSome: (output) => ({ output }) }),
@@ -588,7 +565,6 @@ export const translate = Effect.fnUntraced(function* (
   if (generation?.retry !== undefined && generationBefore?.retry === undefined)
     events.push({
       _tag: 'auto_retry_start',
-      type: 'auto_retry_start',
       attempt: generation.attempt,
       at: generation.retry.at,
       errorMessage: generation.retry.error,
@@ -596,7 +572,6 @@ export const translate = Effect.fnUntraced(function* (
   if (generationBefore?.retry !== undefined && generation?.retry === undefined)
     events.push({
       _tag: 'auto_retry_end',
-      type: 'auto_retry_end',
       attempt: generationBefore.attempt,
     })
   if (
@@ -606,7 +581,6 @@ export const translate = Effect.fnUntraced(function* (
   )
     events.push({
       _tag: 'deferred_poll',
-      type: 'deferred_poll',
       pollAt: generation.deferred.pollAt,
     })
   const decodedEntries = yield* Effect.forEach(
@@ -619,18 +593,17 @@ export const translate = Effect.fnUntraced(function* (
       }
     }),
   )
-  const ends: Array<Extract<AgentEvent, { type: 'tool_execution_end' }>> = []
+  const ends: Array<Extract<AgentEvent, { _tag: 'tool_execution_end' }>> = []
   const end = (callId: string, name: string, entryId?: Record.EntryId) => {
     const entry = Arr.findFirst(entries, (item) => item.id === entryId)
     ends.push({
       _tag: 'tool_execution_end',
-      type: 'tool_execution_end',
       toolCallId: callId,
       toolName: name,
       ...(Option.isNone(entry) ? {} : { entry: entry.value }),
     })
   }
-  for (const previous of previousSlots.values()) {
+  for (const previous of MutableHashMap.values(previousSlots)) {
     if (previous.status === 'done') continue
     const slot = Arr.findFirst(slots, (item) => item.callId === previous.callId)
     if (Option.isSome(slot) && slot.value.status === 'done')
@@ -652,78 +625,82 @@ export const translate = Effect.fnUntraced(function* (
     }
   }
   for (const slot of slots)
-    if (slot.status === 'done' && !previousSlots.has(slot.callId))
+    if (slot.status === 'done' && !MutableHashMap.has(previousSlots, slot.callId))
       end(slot.callId, slot.name, slot.entry)
   let assistantAppended = false
   for (const { entry, message } of decodedEntries) {
     events.push(...Arr.filter(ends, (item) => item.entry === entry))
     if (message === undefined) {
-      events.push({ _tag: 'entry_appended', type: 'entry_appended', entry })
+      events.push({ _tag: 'entry_appended', entry })
       continue
     }
     const streamed = message.role === 'assistant' && was.partial !== undefined && !assistantAppended
     if (message.role === 'assistant') assistantAppended = true
-    if (!streamed) events.push({ _tag: 'message_start', type: 'message_start', message })
-    events.push({ _tag: 'message_end', type: 'message_end', entry })
+    if (!streamed) events.push({ _tag: 'message_start', message })
+    events.push({ _tag: 'message_end', entry })
   }
   events.push(...Arr.filter(ends, (item) => item.entry === undefined))
   const compactionsBefore = was.live.compactions ?? []
   const compactions = now.live.compactions ?? []
   for (const { taskId, reason } of compactionsBefore)
     if (!compactions.some((item) => item.taskId === taskId))
-      events.push({ _tag: 'compaction_end', type: 'compaction_end', taskId, reason })
+      events.push({ _tag: 'compaction_end', taskId, reason })
   let turnEnded = false
-  for (const task of tasks.values()) {
-    if (
-      generationKind(task.kind) &&
-      task.state.status === 'completing' &&
-      !HashSet.has(yield* Ref.get(held), task.id)
-    ) {
-      yield* Ref.update(held, HashSet.add(task.id))
-      turnEnded = true
+  for (const task of MutableHashMap.values(tasks)) {
+    if (generationKind(task.kind) && task.state.status === 'completing') {
+      const newlyHeld = yield* Ref.modify(held, (ids) => [
+        !HashSet.has(ids, task.id),
+        HashSet.add(ids, task.id),
+      ])
+      if (newlyHeld) turnEnded = true
     }
     if (task.state.status !== 'terminal') continue
     if (generationKind(task.kind)) {
-      if (!HashSet.has(yield* Ref.get(held), task.id)) turnEnded = true
-      yield* Ref.update(held, HashSet.remove(task.id))
+      const previouslyHeld = yield* Ref.modify(held, (ids) => [
+        HashSet.has(ids, task.id),
+        HashSet.remove(ids, task.id),
+      ])
+      if (!previouslyHeld) turnEnded = true
     }
-    const outcome = Outcome.classifyTask(task)
+    const outcome = Outcome.classifyTaskOrUndefined(task)
     const status = outcome?.directStatus
     if (status === 'faulted' || status === 'orphaned') {
       events.push({
         _tag: 'task_failed',
-        type: 'task_failed',
         taskId: task.id,
         kind: task.kind,
         message: outcome?.message ?? 'Task failed',
       })
     }
   }
-  if (turnEnded) events.push({ _tag: 'turn_end', type: 'turn_end' })
+  if (turnEnded) events.push({ _tag: 'turn_end' })
   const run = now.live.run
   const runBefore = was.live.run
   const runChanged = run?.inputs[0] !== runBefore?.inputs[0]
   if (runBefore !== undefined && runChanged)
-    events.push({ _tag: 'run_end', type: 'run_end', inputs: runBefore.inputs })
-  for (const record of Arr.sortWith([...submissions.values()], (item) => item.id, Order.Number))
-    events.push({ _tag: 'submission', type: 'submission', record })
+    events.push({ _tag: 'run_end', inputs: runBefore.inputs })
+  for (const record of Arr.sortWith(
+    [...MutableHashMap.values(submissions)],
+    (item) => item.id,
+    Order.Number,
+  ))
+    events.push({ _tag: 'submission', record })
   if (change.value.docs['harness.inbox'] !== change.before.docs['harness.inbox'])
-    events.push({ _tag: 'inbox_update', type: 'inbox_update', items: queued(now.inbox) })
+    events.push({ _tag: 'inbox_update', items: queued(now.inbox) })
   if (change.value.docs['harness.agent'] !== change.before.docs['harness.agent'])
-    events.push({ _tag: 'agent_changed', type: 'agent_changed', agent: now.agent ?? {} })
+    events.push({ _tag: 'agent_changed', agent: now.agent ?? {} })
   if (change.value.docs['harness.usage'] !== change.before.docs['harness.usage'])
-    events.push({ _tag: 'usage_changed', type: 'usage_changed', usage: now.usage ?? Usage.empty() })
+    events.push({ _tag: 'usage_changed', usage: now.usage ?? Usage.makeState() })
   for (const { taskId, reason, blocking } of compactions)
     if (!compactionsBefore.some((item) => item.taskId === taskId))
-      events.push({ _tag: 'compaction_start', type: 'compaction_start', taskId, reason, blocking })
-  if (run !== undefined && runChanged)
-    events.push({ _tag: 'run_start', type: 'run_start', inputs: run.inputs })
+      events.push({ _tag: 'compaction_start', taskId, reason, blocking })
+  if (run !== undefined && runChanged) events.push({ _tag: 'run_start', inputs: run.inputs })
   if (
     run !== undefined &&
     run.taskId !== runBefore?.taskId &&
-    generationKind(tasks.get(run.taskId)?.kind ?? '')
+    generationKind(Option.getOrUndefined(MutableHashMap.get(tasks, run.taskId))?.kind ?? '')
   )
-    events.push({ _tag: 'turn_start', type: 'turn_start' })
+    events.push({ _tag: 'turn_start' })
   return events
 })
 /**
@@ -731,7 +708,7 @@ export const translate = Effect.fnUntraced(function* (
  *
  * @category constructors
  */
-export const make: Effect.Effect<Service, never, View.View> = Effect.gen(function* () {
+export const make: Effect.Effect<Event.Service, never, View.View> = Effect.gen(function* () {
   const views = yield* View.View
   return Event.of({
     watch: Effect.fnUntraced(function* (id) {
@@ -766,7 +743,7 @@ export const make: Effect.Effect<Service, never, View.View> = Effect.gen(functio
         }),
       )
       if (initial === undefined)
-        return yield* rejected('Event snapshot was not initialized', Corrupt)
+        return yield* rejected('Event snapshot was not initialized', CorruptError)
       return Object.assign(
         View.makeProjectionWatch({
           get value() {
@@ -820,17 +797,16 @@ export const outputChange: {
     that: string | undefined,
   ): (
     self: string | undefined,
-  ) => Option.Option<NonNullable<Extract<AgentEvent, { type: 'tool_execution_update' }>['output']>>
+  ) => Option.Option<NonNullable<Extract<AgentEvent, { _tag: 'tool_execution_update' }>['output']>>
   (
     self: string | undefined,
     that: string | undefined,
-  ): Option.Option<NonNullable<Extract<AgentEvent, { type: 'tool_execution_update' }>['output']>>
+  ): Option.Option<NonNullable<Extract<AgentEvent, { _tag: 'tool_execution_update' }>['output']>>
 } = dual(2, outputChangeImpl)
 
 /**
  * Type-level contracts for `Event`.
  *
- * @category utility types
  */
 export declare namespace Event {
   /**
@@ -838,34 +814,13 @@ export declare namespace Event {
    *
    * @category models
    */
-  export interface QueuedItem {
-    readonly id: Record.SubmissionId
-    readonly mode: Inbox.Item['mode']
-  }
-  /**
-   * Incremental change to committed model-visible message content.
-   *
-   * @category models
-   */
-  export type MessageChange = typeof MessageChange.Type
-  /**
-   * Committed conversation execution, queue, usage and entry snapshot.
-   *
-   * @category models
-   */
-  export type Snapshot = typeof Snapshot.Type
-  /**
-   * Ordered semantic events emitted for one committed update.
-   *
-   * @category models
-   */
-  export type Batch = typeof Batch.Type
+  export type QueuedItem = typeof QueuedItem.Type
   /**
    * Scoped initial semantic snapshot and subsequent event batches.
    *
    * @category models
    */
-  export interface Watch extends View.ProjectionWatch<Batch> {
+  export interface Watch extends View.View.ProjectionWatch<Batch> {
     readonly snapshot: Snapshot
   }
   /**
@@ -881,3 +836,35 @@ export declare namespace Event {
     readonly watch: (id: Record.ConversationId) => Effect.Effect<Watch, StorageError, Scope.Scope>
   }
 }
+
+/** Decoded value of the BatchJson schema.
+ * @category models
+ */
+export type BatchJson = typeof BatchJson.Type
+
+/** Checks the decoded QueuedItem contract without decoding or coercing input.
+ * @category guards
+ */
+export const isQueuedItem: (u: unknown) => u is QueuedItem = Schema.is(Schema.toType(QueuedItem))
+
+/** Checks the decoded AgentEvent contract without decoding or coercing input.
+ * @category guards
+ */
+export const isAgentEvent: (u: unknown) => u is AgentEvent = Schema.is(Schema.toType(AgentEvent))
+
+/** Checks the decoded BatchJson contract without decoding or coercing input.
+ * @category guards
+ */
+export const isBatchJson: (u: unknown) => u is BatchJson = Schema.is(Schema.toType(BatchJson))
+
+/** Checks the decoded MessageChange contract without decoding or coercion.
+ * @category guards
+ */
+export const isMessageChange: (u: unknown) => u is MessageChange = Schema.is(
+  Schema.toType(MessageChange),
+)
+
+/** Checks the decoded Snapshot contract without decoding or coercion.
+ * @category guards
+ */
+export const isSnapshot: (u: unknown) => u is Snapshot = Schema.is(Schema.toType(Snapshot))

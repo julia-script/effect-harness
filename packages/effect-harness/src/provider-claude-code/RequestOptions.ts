@@ -24,6 +24,6 @@ export interface Values {
  * @category services
  */
 export const Current = Context.Reference<Values>(
-  '@effect-harness/provider-claude-code/RequestOptions',
+  'effect-harness/provider-claude-code/RequestOptions/Current',
   { defaultValue: () => ({}) },
 )

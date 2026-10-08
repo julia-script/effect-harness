@@ -26,4 +26,3 @@ export * as LineScan from './LineScan.ts'
  * @category re-exports
  */
 export * as NativeError from './NativeError.ts'
-// effect-review-allow P9-barrel-namespace-only: the Node compatibility facade is host-specific and remains an explicit leaf import; portable decoding and scanning concepts are exported here.

@@ -9,12 +9,13 @@ import * as Duration from 'effect/Duration'
 import * as Identity from 'effect-harness/durable/Identity'
 import { assert, describe, it } from '@effect/vitest'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
+// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/Executor and effect-harness/durable/Executor both own Executor; Harness keeps their distinct native/harness APIs available together for these constructor, service and declaration assertions.
 import * as Harness from 'effect-harness/Executor'
 import { ToolError } from 'effect-harness/ToolError'
 import * as Invocation from 'effect-harness/Invocation'
 import * as Model from 'effect-harness/Model'
 import * as Registry from 'effect-harness/Registry'
-import * as Tool from 'effect-harness/Tool'
+import * as ToolRegistration from 'effect-harness/ToolRegistration'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -23,10 +24,10 @@ import * as Layer from 'effect/Layer'
 import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
 import * as Prompt from 'effect/ai/Prompt'
-import * as NativeModel from 'effect/ai/LanguageModel'
-import * as NativeResponse from 'effect/ai/Response'
+import * as LanguageModel from 'effect/ai/LanguageModel'
+import * as Response from 'effect/ai/Response'
 import * as Stream from 'effect/Stream'
-import * as AiTool from 'effect/ai/Tool'
+import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
 import * as Activity from 'effect/workflow/Activity'
 import * as WorkflowEngine from 'effect/workflow/WorkflowEngine'
@@ -35,13 +36,13 @@ import * as Inbox from 'effect-harness/durable/Inbox'
 import * as Ownership from 'effect-harness/durable/Ownership'
 import * as Record from 'effect-harness/durable/Record'
 import * as Session from 'effect-harness/durable/Session'
-import * as DurableUsage from 'effect-harness/durable/Usage'
-import * as Directory from 'effect-harness/durable/SessionDirectory'
-import * as Memory from 'effect-harness/durable/storage/Memory'
+import * as Usage from 'effect-harness/durable/Usage'
+import * as SessionDirectory from 'effect-harness/durable/SessionDirectory'
+import * as Store from 'effect-harness/durable/Store'
 import { Generation } from 'effect-harness/durable/workflow/Generation'
 import { Submission } from 'effect-harness/durable/workflow/Submission'
 import * as SubmissionExecutor from 'effect-harness/durable/workflow/SubmissionExecutor'
-import { ExecutionError, InvalidState } from 'effect-harness/durable/workflow/ExecutionError'
+import { ExecutionError, InvalidStateError } from 'effect-harness/durable/workflow/ExecutionError'
 import { ToolCall } from 'effect-harness/durable/workflow/ToolCall'
 import * as ToolExecutor from 'effect-harness/durable/workflow/ToolExecutor'
 import * as GenerationExecutor from 'effect-harness/durable/workflow/GenerationExecutor'
@@ -59,12 +60,12 @@ const workflowSupport: Layer.Layer<Cancellation.Cancellation | Ownership.Declara
 
 const config = Conversation.layerConfiguration()
 const services = Session.layer.pipe(
-  Layer.provideMerge(Memory.layer),
+  Layer.provideMerge(Store.layerMemory),
   Layer.provide(
     Conversation.layerCreation.pipe(Layer.provide(config), Layer.provide(BunCrypto.layer)),
   ),
 )
-const directory = Directory.layerSingle(Identity.SessionId.make('native')).pipe(
+const directory = SessionDirectory.layerSingle(Identity.SessionId.make('native')).pipe(
   Layer.provideMerge(services),
 )
 const input = (requestId: string) => ({
@@ -73,7 +74,6 @@ const input = (requestId: string) => ({
   requestId: Identity.RequestId.make(requestId),
   submission: {
     _tag: 'input' as const,
-    type: 'input' as const,
     message: Prompt.userMessage({ content: [Prompt.textPart({ text: requestId })] }),
   },
 })
@@ -83,7 +83,6 @@ const write = (requestId: string, text = 'original') => ({
   requestId: Identity.RequestId.make(requestId),
   submission: {
     _tag: 'write' as const,
-    type: 'write' as const,
     entry: { kind: 'passive', data: { text } },
   },
 })
@@ -97,7 +96,7 @@ const fakeGeneration = (
     Effect.fnUntraced(function* (payload) {
       yield* started
       yield* proceed
-      const session = yield* (yield* Directory.SessionDirectory)
+      const session = yield* (yield* SessionDirectory.SessionDirectory)
         .resolve(payload.sessionId)
         .pipe(Effect.mapError(SubmissionExecutor.storageError))
       const settlement = yield* Activity.make({
@@ -113,7 +112,7 @@ const fakeGeneration = (
               const task = yield* tx.task(payload.taskId).pipe(Effect.map(Option.getOrUndefined))
               if (task === undefined)
                 return yield* new ExecutionError({
-                  reason: new InvalidState({ message: 'Missing generation' }),
+                  reason: new InvalidStateError({ message: 'Missing generation' }),
                 })
               const live = yield* tx.doc(Inbox.LiveDoc, { owner: payload.conversationId })
               const answer = yield* tx.appendEntry(payload.conversationId, {
@@ -126,7 +125,6 @@ const fakeGeneration = (
               })
               yield* tx.write({
                 _tag: 'task' as const,
-                type: 'task',
                 value: {
                   ...task,
                   state: { status: 'terminal', outcome: { status: 'answered', answer: answer.id } },
@@ -164,13 +162,13 @@ describe('GenerationNative', () => {
             const fetches = yield* Ref.make(0)
             const cancels = yield* Ref.make(0)
             const finished = yield* Ref.make(false)
-            const native = yield* NativeModel.make({
+            const native = yield* LanguageModel.make({
               generateText: () => Effect.succeed([]),
               streamText: () =>
                 Stream.unwrap(
                   Ref.update(sends, (n) => n + 1).pipe(
                     Effect.as(
-                      Stream.fromIterable<NativeResponse.StreamPartEncoded>([
+                      Stream.fromIterable<Response.StreamPartEncoded>([
                         {
                           type: 'finish',
                           reason: 'other',
@@ -190,7 +188,7 @@ describe('GenerationNative', () => {
                   ),
                 ),
             })
-            const response = NativeResponse.makePart('finish', {
+            const response = Response.makePart('finish', {
               reason: 'stop',
               usage: {
                 inputTokens: { uncached: 1, total: 1, cacheRead: undefined, cacheWrite: undefined },
@@ -221,12 +219,12 @@ describe('GenerationNative', () => {
                         yield* Ref.update(fetches, (n) => n + 1)
                         yield* Ref.set(finished, true)
                         return Stream.fromIterable([
-                          NativeResponse.makePart('text-start', { id: 'fetched' }),
-                          NativeResponse.makePart('text-delta', {
+                          Response.makePart('text-start', { id: 'fetched' }),
+                          Response.makePart('text-delta', {
                             id: 'fetched',
                             delta: 'fetched',
                           }),
-                          NativeResponse.makePart('text-end', { id: 'fetched' }),
+                          Response.makePart('text-end', { id: 'fetched' }),
                           response,
                         ])
                       }),
@@ -277,7 +275,6 @@ describe('GenerationNative', () => {
                     requestId: Identity.RequestId.make('deferred-abort'),
                     target: {
                       _tag: 'conversation' as const,
-                      type: 'conversation',
                       id: Record.ROOT_CONVERSATION_ID,
                     },
                     background: false,
@@ -315,9 +312,7 @@ describe('GenerationNative', () => {
           const calls = yield* Ref.make(0)
           const summaries = yield* Ref.make(0)
           const yielded = yield* Ref.make<string[]>([])
-          const finish = (
-            reason: NativeResponse.FinishReason,
-          ): NativeResponse.FinishPartEncoded => ({
+          const finish = (reason: Response.FinishReason): Response.FinishPartEncoded => ({
             type: 'finish',
             reason,
             usage: {
@@ -326,7 +321,7 @@ describe('GenerationNative', () => {
             },
             response: undefined,
           })
-          const native = yield* NativeModel.make({
+          const native = yield* LanguageModel.make({
             generateText: () =>
               Ref.update(summaries, (n) => n + 1).pipe(
                 Effect.as([
@@ -342,16 +337,16 @@ describe('GenerationNative', () => {
                     (call === 1 && scenario === 'eof-retry') ||
                     (call <= 2 && scenario === 'eof-exhaustion')
                   )
-                    return Stream.fromIterable<NativeResponse.StreamPartEncoded>([
+                    return Stream.fromIterable<Response.StreamPartEncoded>([
                       { type: 'text-start', id: 'text' },
                       { type: 'text-delta', id: 'text', delta: 'partial' },
                     ])
                   if (call === 1 && scenario.startsWith('overflow'))
-                    return Stream.fromIterable<NativeResponse.StreamPartEncoded>([
+                    return Stream.fromIterable<Response.StreamPartEncoded>([
                       { type: 'error', error: 'prompt too long' },
                       finish('error'),
                     ])
-                  return Stream.fromIterable<NativeResponse.StreamPartEncoded>([
+                  return Stream.fromIterable<Response.StreamPartEncoded>([
                     { type: 'text-start', id: 'text' },
                     { type: 'text-delta', id: 'text', delta: `answer-${call}` },
                     { type: 'text-end', id: 'text' },
@@ -395,7 +390,7 @@ describe('GenerationNative', () => {
           ])
           const settings = Conversation.layerConfiguration({
             settings: {
-              retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 },
+              retry: { enabled: true, maxRetries: 1, baseDelay: 0 },
               compaction: {
                 enabled: scenario === 'threshold' || scenario.startsWith('overflow'),
                 keepRecentTokens: 0,
@@ -494,7 +489,7 @@ describe('GenerationNative', () => {
           Effect.gen(function* () {
             const requests = yield* Ref.make<Model.RequestOptions[]>([])
             const calls = yield* Ref.make(0)
-            const native = yield* NativeModel.make({
+            const native = yield* LanguageModel.make({
               generateText: () =>
                 Ref.update(calls, (n) => n + 1).pipe(
                   Effect.as([
@@ -558,12 +553,11 @@ describe('GenerationNative', () => {
                   )
                   yield* tx.appendEntry(root.id, { kind: 'harness.user', model: [first] })
                   yield* tx.appendEntry(root.id, { kind: 'harness.user', model: [last] })
-                  return yield* CompactionExecutor.make(
-                    tx,
-                    Identity.SessionId.make('native'),
-                    root.id,
-                    'manual',
-                  )
+                  return yield* CompactionExecutor.make(tx, {
+                    sessionId: Identity.SessionId.make('native'),
+                    conversationId: root.id,
+                    reason: 'manual',
+                  })
                 }),
               )
               const result = yield* Effect.result(awaitTransition(Compaction.execute(payload)))
@@ -573,7 +567,7 @@ describe('GenerationNative', () => {
               assert.strictEqual(options?.cache, 'none')
               assert.match(options?.sessionId ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-7/)
               const ledger = yield* session
-                .snapshot(DurableUsage.UsageDoc, { owner: root.id })
+                .snapshot(Usage.UsageDoc, { owner: root.id })
                 .pipe(Effect.map(Option.getOrUndefined))
               assert.strictEqual(ledger?.value.models['test/summary']?.totalTokens, 13)
               assert.strictEqual(
@@ -612,9 +606,7 @@ describe('GenerationNative', () => {
           const calls = yield* Ref.make(0)
           const tools = yield* Ref.make(0)
           const requestAffinity = yield* Ref.make<string[]>([])
-          const finish = (
-            reason: NativeResponse.FinishReason,
-          ): NativeResponse.FinishPartEncoded => ({
+          const finish = (reason: Response.FinishReason): Response.FinishPartEncoded => ({
             type: 'finish',
             reason,
             usage: {
@@ -623,14 +615,14 @@ describe('GenerationNative', () => {
             },
             response: undefined,
           })
-          const nativeModel = yield* NativeModel.make({
+          const nativeModel = yield* LanguageModel.make({
             generateText: () => Effect.succeed([{ type: 'text', text: 'unused' }, finish('stop')]),
             streamText: () =>
               Stream.unwrap(
                 Effect.gen(function* () {
                   const call = yield* Ref.updateAndGet(calls, (n) => n + 1)
                   if (call === 1)
-                    return Stream.fromIterable<NativeResponse.StreamPartEncoded>([
+                    return Stream.fromIterable<Response.StreamPartEncoded>([
                       {
                         type: 'tool-call',
                         id: 'call',
@@ -640,7 +632,7 @@ describe('GenerationNative', () => {
                       },
                       finish('tool-calls'),
                     ])
-                  return Stream.fromIterable<NativeResponse.StreamPartEncoded>([
+                  return Stream.fromIterable<Response.StreamPartEncoded>([
                     { type: 'text-start', id: 'text' },
                     { type: 'text-delta', id: 'text', delta: 'answer' },
                     { type: 'text-end', id: 'text' },
@@ -649,12 +641,12 @@ describe('GenerationNative', () => {
                 }),
               ),
           })
-          const declaration = AiTool.make('echo', {
+          const declaration = Tool.make('echo', {
             parameters: Schema.Struct({ text: Schema.String }),
             success: Schema.String,
           })
           const toolkit = Toolkit.make(declaration)
-          const bound = yield* Tool.bind(toolkit, { echo: { replay: 'safe' } }).pipe(
+          const bound = yield* ToolRegistration.bind(toolkit, { echo: { replay: 'safe' } }).pipe(
             Effect.provide(
               toolkit.toLayer({
                 echo: ({ text }) => Ref.update(tools, (n) => n + 1).pipe(Effect.as(text)),
@@ -723,7 +715,7 @@ describe('GenerationNative', () => {
             assert.strictEqual(ids[0], ids[1])
             assert.match(ids[0] ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-7/)
             const ledger = yield* session
-              .snapshot(DurableUsage.UsageDoc, {
+              .snapshot(Usage.UsageDoc, {
                 owner: Record.ROOT_CONVERSATION_ID,
               })
               .pipe(Effect.map(Option.getOrUndefined))
@@ -737,13 +729,13 @@ describe('GenerationNative', () => {
         Effect.gen(function* () {
           const calls = yield* Ref.make(0)
           const hooks = yield* Ref.make(0)
-          const declaration = AiTool.make('echo', {
+          const declaration = Tool.make('echo', {
             parameters: Schema.Struct({ text: Schema.String }),
             success: Schema.String,
             failure: ToolError,
           }).addDependency(Invocation.ToolCall)
           const toolkit = Toolkit.make(declaration)
-          const bound = yield* Tool.bind(toolkit, {
+          const bound = yield* ToolRegistration.bind(toolkit, {
             echo: { replay: mode === 'unsafe-recovery' ? 'unsafe' : 'safe' },
           }).pipe(
             Effect.provide(
@@ -881,7 +873,7 @@ describe('GenerationNative', () => {
           const conflict = yield* awaitTransition(Submission.execute(input('same'))).pipe(
             Effect.flip,
           )
-          assert.strictEqual(conflict.reason._tag, 'RequestConflict')
+          assert.strictEqual(conflict.reason._tag, 'RequestConflictError')
           assert.strictEqual((yield* session.scanSubmissions({}, 10)).items.length, 1)
           const polled = yield* Submission.poll(yield* Submission.executionId(write('same')))
           assertSome(polled, new Workflow.Complete({ exit: Exit.succeed(first) }))
@@ -918,12 +910,11 @@ describe('GenerationNative', () => {
         const previous = yield* awaitTransition(Submission.execute(write('previous')))
         const session = yield* Session.Session
         yield* session.transaction((tx) =>
-          SubmissionExecutor.makeGeneration(
-            tx,
-            Identity.SessionId.make('native'),
-            previous.conversationId,
-            [],
-          ),
+          SubmissionExecutor.makeGeneration(tx, {
+            sessionId: Identity.SessionId.make('native'),
+            conversationId: previous.conversationId,
+            inputs: [],
+          }),
         )
         const rejected = yield* awaitTransition(
           Submission.execute({
@@ -931,7 +922,7 @@ describe('GenerationNative', () => {
             submission: { ...input('reject').submission, whenBusy: 'reject' },
           }),
         ).pipe(Effect.flip)
-        assert.strictEqual(rejected.reason._tag, 'ConversationBusy')
+        assert.strictEqual(rejected.reason._tag, 'ConversationBusyError')
         assert.strictEqual((yield* session.scanSubmissions({}, 10)).items.length, 1)
         assert.deepStrictEqual(
           yield* awaitTransition(Submission.execute(write('previous', 'changed'))),
@@ -969,7 +960,7 @@ describe('GenerationNative', () => {
     )
   })
 
-  const task = (
+  const taskUnsafe = (
     id: number,
     options: {
       readonly owner?: number
@@ -1000,18 +991,17 @@ describe('GenerationNative', () => {
           }),
         ],
         tasks: [
-          task(2),
-          task(3, { owner: 2 }),
-          task(4, { owner: 2, background: true }),
-          task(5, { owner: 4 }),
-          task(7, { conversation: 6 }),
+          taskUnsafe(2),
+          taskUnsafe(3, { owner: 2 }),
+          taskUnsafe(4, { owner: 2, background: true }),
+          taskUnsafe(5, { owner: 4 }),
+          taskUnsafe(7, { conversation: 6 }),
         ],
       }
       assert.deepStrictEqual(
         Option.getOrUndefined(
           Ownership.reach(graph, {
             _tag: 'conversation' as const,
-            kind: 'conversation',
             id: Record.ROOT_CONVERSATION_ID,
           }),
         )?.tasks.map((value) => value.id),
@@ -1021,7 +1011,6 @@ describe('GenerationNative', () => {
         Option.getOrUndefined(
           Ownership.reach(graph, {
             _tag: 'task' as const,
-            kind: 'task',
             id: Schema.decodeSync(Record.TaskId)(4),
           }),
         )?.tasks.map((value) => value.id),
@@ -1033,7 +1022,6 @@ describe('GenerationNative', () => {
             graph,
             {
               _tag: 'conversation' as const,
-              kind: 'conversation',
               id: Record.ROOT_CONVERSATION_ID,
             },
             true,

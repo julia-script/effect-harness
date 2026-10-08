@@ -8,7 +8,7 @@ import {
   AuthStorageError,
   AuthTokenError,
   AuthError,
-} from 'effect-harness/auth/Credential'
+} from 'effect-harness/auth/AuthError'
 import * as Model from 'effect-harness/Model'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -23,7 +23,7 @@ import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientError from 'effect/http/HttpClientError'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
-import * as Account from 'effect-harness/provider-anthropic/Account'
+
 import * as OAuth from 'effect-harness/provider-anthropic/OAuth'
 import * as Catalog from 'effect-harness/provider-anthropic/Catalog'
 
@@ -93,7 +93,7 @@ const history = Prompt.fromMessages([
     content: [Prompt.textPart({ text: 'Continue from saved context' })],
   }),
 ])
-const body = (request: HttpClientRequest.HttpClientRequest) => {
+const bodyUnsafe = (request: HttpClientRequest.HttpClientRequest) => {
   if (request.body._tag !== 'Uint8Array') throw new Error('Expected JSON body')
   return Schema.decodeUnknownSync(Schema.JsonObject)(
     JSON.parse(new TextDecoder().decode(request.body.body)),
@@ -102,26 +102,29 @@ const body = (request: HttpClientRequest.HttpClientRequest) => {
 const fixture = (stream = false, denied: boolean | AuthError = false) => {
   const requests: Array<HttpClientRequest.HttpClientRequest> = []
   let credentials = 0
-  const auth = Layer.succeed(OAuth.OAuth, {
-    begin: () => Effect.die('No login permitted'),
-    complete: () => Effect.die('No callback permitted'),
-    refresh: () => Effect.die('No refresh permitted'),
-    signOut: () => Effect.void,
-    cancel: () => Effect.void,
-    accessToken: () =>
-      Effect.suspend(() => {
-        credentials++
-        return denied
-          ? Effect.fail(
-              denied instanceof AuthError
-                ? denied
-                : new AuthError({
-                    reason: new AuthExpiredError({ message: 'Credential refresh failed' }),
-                  }),
-            )
-          : Effect.succeed(Redacted.make(`private-token-${credentials}`))
-      }),
-  })
+  const auth = Layer.succeed(
+    OAuth.OAuth,
+    OAuth.OAuth.of({
+      begin: () => Effect.die('No login permitted'),
+      complete: () => Effect.die('No callback permitted'),
+      refresh: () => Effect.die('No refresh permitted'),
+      signOut: () => Effect.void,
+      cancel: () => Effect.void,
+      accessToken: () =>
+        Effect.suspend(() => {
+          credentials++
+          return denied
+            ? Effect.fail(
+                denied instanceof AuthError
+                  ? denied
+                  : new AuthError({
+                      reason: new AuthExpiredError({ message: 'Credential refresh failed' }),
+                    }),
+              )
+            : Effect.succeed(Redacted.make(`private-token-${credentials}`))
+        }),
+    }),
+  )
   const frames = [
     {
       type: 'message_start',
@@ -172,7 +175,7 @@ const fixture = (stream = false, denied: boolean | AuthError = false) => {
       ),
     )
   })
-  const client = Account.layerClient({
+  const client = AnthropicAccountClient.layer({
     account: 'my-account',
     apiUrl: 'https://test.example',
     apiVersion: 'custom-version',
@@ -221,18 +224,21 @@ describe('Account', () => {
             assert.strictEqual(request.headers.authorization, 'Bearer private-token-1')
             assert.strictEqual(request.headers['x-api-key'], undefined)
             assert.strictEqual(request.headers['x-app'], 'cli')
-            assert.strictEqual(request.headers['user-agent'], `claude-cli/${Account.cliVersion}`)
+            assert.strictEqual(
+              request.headers['user-agent'],
+              `claude-cli/${AnthropicAccountClient.cliVersion}`,
+            )
             assert.strictEqual(request.headers['anthropic-dangerous-direct-browser-access'], 'true')
             assert.strictEqual(request.headers['anthropic-version'], 'custom-version')
             assert.strictEqual(request.headers['x-transform'], 'preserved')
-            for (const beta of Account.betas)
+            for (const beta of AnthropicAccountClient.betas)
               assert.include(request.headers['anthropic-beta'], beta)
             assert.include(request.headers['anthropic-beta'], 'interleaved-thinking-2025-05-14')
-            const sent = body(request)
+            const sent = bodyUnsafe(request)
             assert.deepStrictEqual(sent.system, [
               {
                 type: 'text',
-                text: Account.identity,
+                text: AnthropicAccountClient.identity,
                 cache_control: { type: 'ephemeral', ttl: '1h' },
               },
               { type: 'text', text: 'Saved instructions', cache_control: null },
@@ -314,7 +320,7 @@ describe('Account', () => {
             const finish = parts.find((part) => part.type === 'finish')
             assert.strictEqual(finish?.reason, 'tool-calls')
             assert.strictEqual(finish?.usage.outputTokens.total, 3)
-            assert.strictEqual(body(f.requests[0]!).stream, true)
+            assert.strictEqual(bodyUnsafe(f.requests[0]!).stream, true)
           }).pipe(Effect.provide(f.layer))
         }),
     )
@@ -349,7 +355,7 @@ describe('Account', () => {
             yield* descriptor.model
               .generateText({ prompt: history, toolkit, disableToolCallResolution: true })
               .pipe(Effect.provideContext(context))
-            const sent = body(f.requests[0]!)
+            const sent = bodyUnsafe(f.requests[0]!)
             assert.strictEqual(sent.model, 'declared-model')
             assert.strictEqual(sent.max_tokens, 6000)
             assert.deepStrictEqual(sent.thinking, { type: 'adaptive' })
@@ -398,7 +404,10 @@ describe('Account', () => {
               },
               params: { 'anthropic-beta': 'caller-beta,oauth-2025-04-20' },
             })
-            assert.deepStrictEqual(body(f.requests[0]!).tool_choice, { type: 'tool', name: 'Read' })
+            assert.deepStrictEqual(bodyUnsafe(f.requests[0]!).tool_choice, {
+              type: 'tool',
+              name: 'Read',
+            })
             assert.strictEqual(
               f.requests[0]?.headers['anthropic-beta'],
               'claude-code-20250219,oauth-2025-04-20,caller-beta',
@@ -478,13 +487,17 @@ describe('Account', () => {
                 tool_choice: { type: 'tool', name: 'bash' },
               },
             })
-            assert.deepStrictEqual(body(f.requests[0]!).tools, [
+            assert.deepStrictEqual(bodyUnsafe(f.requests[0]!).tools, [
               { type: 'bash_20250124', name: 'bash' },
             ])
-            assert.deepStrictEqual(body(f.requests[0]!).tool_choice, { type: 'tool', name: 'bash' })
+            assert.deepStrictEqual(bodyUnsafe(f.requests[0]!).tool_choice, {
+              type: 'tool',
+              name: 'bash',
+            })
           }).pipe(Effect.provide(f.layer))
         }),
     )
+    // effect-nit-allow P8-gen-test-body-shape: this is one lazy Effect.forEach; each callback owns fixture creation, provision and typed assertions, with default ordered traversal and runner-owned Scope.
     it.effect(
       'transient token network, rate limit and server faults remain native retryable reasons before inference',
       () =>
@@ -511,6 +524,7 @@ describe('Account', () => {
           },
         ),
     )
+    // effect-nit-allow P8-gen-test-body-shape: this is one lazy Effect.forEach; each callback owns fixture creation, provision and typed assertions, with default ordered traversal and runner-owned Scope.
     it.effect(
       'permission and uncertain storage failures remain permanent despite server status',
       () =>
@@ -573,7 +587,7 @@ describe('Account', () => {
               ],
             },
           })
-          const sent = body(f.requests[0]!)
+          const sent = bodyUnsafe(f.requests[0]!)
           assert.deepStrictEqual(sent.messages, [
             {
               role: 'assistant',
@@ -597,3 +611,5 @@ describe('Account', () => {
       }),
   )
 })
+
+import * as AnthropicAccountClient from 'effect-harness/provider-anthropic/AnthropicAccountClient'

@@ -47,3 +47,8 @@ export const Compaction = Workflow.make('@effect-harness/durable/Compaction/v1',
   error: ExecutionError,
   idempotencyKey: ({ sessionId, taskId }) => JSON.stringify([sessionId, taskId]),
 })
+
+/** Checks the decoded Result contract without decoding or coercing input.
+ * @category guards
+ */
+export const isResult: (u: unknown) => u is Result = Schema.is(Schema.toType(Result))
