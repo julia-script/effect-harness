@@ -10,6 +10,8 @@ Storage.layerJsonl({ filePath: './agent.jsonl' })
 
 Memory requires no services. SQL requires Effect's `SqlClient`; JSONL requires `FileSystem`. The library does not select a SQL implementation or host runtime. Initialization and cleanup follow the supplying Layer's lifecycle. JSONL commits require a final newline; incomplete trailing bytes are discarded on reopening.
 
+SQL initialization and mutations (`Storage.commit`, `Storage.mintId`, and Session commits that write) must run outside the supplying client's `SqlClient.withTransaction`. They fail with an `invalid` StorageError inside an ambient transaction: a savepoint cannot guarantee durability before its outer transaction settles. This rejection performs no storage write and does not poison Storage or Session; retry outside the application transaction.
+
 `Session` is a scoped instance over Storage, shared by all conversations in that local runtime. It captures the storage service, caches decoded documents, serializes transactions, and publishes committed changes. A session can be used independently of an agent runtime:
 
 ```ts
