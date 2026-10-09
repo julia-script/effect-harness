@@ -3,12 +3,6 @@
  */
 // @barrel
 /**
- * Validated model catalogues with pinned request configuration and usage accounting.
- *
- * @category re-exports
- */
-export * as Catalog from './Catalog.ts'
-/**
  * Native Effect AI OpenAI client service and protocol facade.
  *
  * @category re-exports

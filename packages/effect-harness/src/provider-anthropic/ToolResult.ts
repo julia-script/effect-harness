@@ -1,3 +1,4 @@
+import type {} from '@effect/ai-anthropic/AnthropicLanguageModel'
 /**
  * Canonical tool-media translation at the captured native client boundary.
  */

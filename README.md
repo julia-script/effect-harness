@@ -1,179 +1,167 @@
 # Effect Harness
 
-Embedded durable AI conversations, built with Effect.
+Durable AI conversations with Effect services, schema-backed state, and scoped local execution.
 
 [effect-harness on npm](https://www.npmjs.com/package/effect-harness)
 
-An application opens a scoped `Harness` with a model catalogue, a tool registry and a `Persistence` Layer. Conversations, task checkpoints, tool results and typed documents share atomic commits. One harness process owns each store; clients call that process's conversation APIs.
+Define tools with schemas, supply their handlers through Layers, and submit input through a `Harness` client. The local runtime persists conversation history, submissions, tool checkpoints, and application documents through a `Storage` service.
 
-- **Native Effect AI.** Models use `LanguageModel`, `Prompt`, `Tool` and `Toolkit`.
-- **Checkpoint tasks.** Named, versioned task definitions run phases outside transactions and save their next checkpoint or outcome.
-- **Atomic application state.** A task can commit its output, document edits and terminal state together.
-- **Explicit tool recovery.** Replay policies distinguish safe repeatable work from interrupted external actions.
-- **Committed observations.** Watches start with a snapshot and stream subsequent commits.
+## Submit and recover
+
+Your application supplies `tools`, `ToolsLive` (their handlers), and `ModelLive` (a native Effect AI `LanguageModel`). This is the complete client program and local Layer composition:
+
+```ts
+import { Effect, Layer } from 'effect'
+import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
+import * as Harness from 'effect-harness/Harness'
+import * as Conversation from 'effect-harness/Conversation'
+import * as Submission from 'effect-harness/Submission'
+import * as Storage from 'effect-harness/Storage'
+
+const HarnessLive = Harness.layerLocal({ tools }).pipe(
+  Layer.provide(ToolsLive),
+  Layer.provide(ModelLive),
+  Layer.provide(
+    Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename: './agent.sqlite' }))),
+  ),
+)
+
+const job = {
+  type: 'input',
+  content: 'Fix the flaky login test',
+  requestId: 'job-42',
+} as const
+
+const program = Effect.gen(function* () {
+  const harness = yield* Harness.Harness
+  const root = yield* harness.root
+  const submission = yield* root.pipe(Conversation.submit(job))
+  return yield* Submission.wait(submission)
+})
+
+const settled = await Effect.runPromise(program.pipe(Effect.provide(HarnessLive)))
+```
+
+Run the same program after a crash. It opens the same store, resumes unfinished work, and retrieves the same submission by its request ID. `Submission.wait` returns an `InputDone` or `InputUnanswered` record; a completed record identifies the committed answer entry.
+
+The [single-file recovery example](apps/example/src/tour/Recovery.ts) supplies an offline model and handlers and runs without an API key.
+
+## Declare tools, then supply handlers
+
+Declarations describe the shared contract. Handler Layers resolve the services used by the implementation.
+
+```ts
+import { Effect, Schema } from 'effect'
+import * as Tool from 'effect-harness/Tool'
+import * as Toolkit from 'effect-harness/Toolkit'
+import { ToolExecution } from 'effect-harness/ToolExecution'
+
+const tools = Toolkit.make(
+  Tool.make('uppercase', {
+    description: 'Convert text to uppercase',
+    parameters: Schema.Struct({ text: Schema.String }),
+    success: Schema.String,
+    replay: 'safe',
+  }),
+)
+
+const ToolsLive = tools.toLayer({
+  uppercase: Effect.fn('uppercase')(function* ({ text }) {
+    const execution = yield* ToolExecution
+    yield* execution.output('Converting text\n')
+    return text.toUpperCase()
+  }),
+})
+```
+
+`Toolkit.merge` combines declarations. Handlers receive decoded arguments and return schema-typed values. The runtime validates and encodes results, persists progress, and supplies invocation capabilities. Tools default to unsafe replay: an interrupted action is reported to the model without being repeated. Mark a tool safe only when repeating the whole handler is safe.
+
+See [tools and dependencies](docs/tools.md) and the [runnable tool definition](apps/example/src/Uppercase.ts).
+
+## Fork a conversation
+
+A fork creates a conversation with inherited history through the selected entry. Parent and child can process independent submissions concurrently.
+
+```ts
+const answered =
+  yield *
+  root.pipe(
+    Conversation.submit({ type: 'input', content: 'Investigate the login test' }),
+    Effect.flatMap(Submission.wait),
+  )
+
+if (answered._tag === 'InputDone') {
+  const fork = yield * root.pipe(Conversation.fork({ at: answered.answer }))
+  yield * fork.pipe(Conversation.configure({ instructions: 'Explore another approach.' }))
+  const next =
+    yield *
+    fork.pipe(
+      Conversation.submit({ type: 'input', content: 'Check the timeout' }),
+      Effect.flatMap(Submission.wait),
+    )
+}
+```
+
+These operations run inside `Effect.gen`. The [forks example](apps/example/src/tour/Forks.ts) runs parent and child in parallel.
+
+## Persist application data
+
+`Document.define` takes a schema, scope, and initial value. `Session.commit` stages document changes and entries in one atomic transaction. Tool handlers access that transaction through `ToolExecution.commit`.
+
+```ts
+const Calls = Document.define({
+  kind: 'app.calls',
+  version: 1,
+  scope: 'session',
+  schema: Schema.Struct({ count: Schema.Natural }),
+  initial: () => ({ count: 0 }),
+})
+
+const target = { scope: { _tag: 'session' } } as const
+
+// Inside a tool handler:
+const execution = yield * ToolExecution
+
+yield *
+  execution.commit((tx) =>
+    Effect.gen(function* () {
+      yield* Transaction.ensureDocument(tx, Calls, target)
+      yield* Transaction.updateDocument(tx, Calls, target, ({ count }) => ({ count: count + 1 }))
+    }),
+  )
+
+// From the application:
+const snapshot = yield * root.pipe(Conversation.snapshot(Calls, target))
+```
+
+Import `Document` and `Transaction` from their `effect-harness/*` subpaths. This handler changes state, so repeating it would increment twice; use the default unsafe replay policy. The [documents example](apps/example/src/tour/Documents.ts) includes the full handler and composition.
 
 ## Runtime support
 
-The core uses standard JavaScript, Web APIs and Effect services. It has no Bun or Node runtime dependency and can run in Node, Bun, Deno or a browser. Persistence, model transport and tool capabilities come from your application; choose adapters that your host supports. Bun is the repository's development tool.
+The library uses standard JavaScript, Web APIs, and Effect services. `Storage.layerMemory` needs no platform services. `Storage.layerSql` requires `SqlClient`; the application chooses its implementation. `Storage.layerJsonl({ filePath })` requires `FileSystem`.
 
-Runtime-specific adapters are optional leaf imports: `NodeEnv`, `NodeNativeFiles`, `storage/SqliteNode`, `storage/JsonlNode`, `storage/SqliteBun` and `storage/JsonlBun`. Importing the package root, portable tools or `storage/Memory` does not load them.
+Tool dependencies define their environment: a handler can use a local filesystem, an issue-tracker service, or a remote object store supplied through Layers. The library has no Bun or Node runtime imports. The example application chooses Node adapters; the portable example also runs in a browser bundle. Bun is the repository's development tool.
 
-The [portable example](apps/example/src/Portable.ts) runs eight conversation and task scenarios without platform services. After building, run it under Node:
+One active local runtime owns a store. Recovery requires the same persisted data and the resources used by the tools. [Recovery](docs/explanation/recovery.md) describes interrupted tool execution and its limits.
 
-```sh
-node apps/example/dist/PortableMain.js
-```
+## Client and runtime
 
-See [the runtime commands](apps/example/README.md#portable-runtime-example) for Bun, Deno and browser bundling.
+`Harness` is the application client. `HarnessRuntime` owns the local agent loop and its `Session`. `HarnessBackend` is their schema-backed data boundary. `Harness.layerLocal` composes all three; `Harness.layer` accepts a backend supplied separately. Remote transports can implement that backend contract; this package currently implements local execution.
 
-## Run the example
+[Composition](docs/explanation/composition.md) explains the boundaries. [Extensions](apps/example/src/tour/Extensions.ts) shows static bundles of tools, hooks, and prompt sections.
+
+## Run the examples
 
 ```sh
 bun install
 bun run build
-bun run --cwd apps/example test
+bun run --cwd apps/example start
+bun run --cwd apps/example tour
+bun run --cwd apps/example recovery
+bun run --cwd apps/example portable
 ```
 
-The offline example calls an uppercase tool, returns `HELLO`, and runs a custom greeting task. It requires no API key. [Run your first conversation](docs/tutorials/first-conversation.md) explains the application.
-
-The [conversation and task tour](apps/example/TOUR.md) provides ten more runnable examples, including process recovery, parallel forks, subagents, compensating tasks and typed documents:
-
-```sh
-bun run --cwd apps/example tour -- all
-```
-
-## Examples
-
-These programs expect a configured `Harness.Harness` service from your application's Layer. The [example application](apps/example/src/Application.ts) composes SQLite, a native Effect AI model and a tool registry; [main.ts](apps/example/src/main.ts) supplies the Bun platform and runs the program.
-
-### Submit and resume a conversation
-
-Resume saved work when the host environment is ready, then submit a message. Reusing the request ID in this conversation returns the saved submission. `Submission.wait` returns its settled state; an `InputDone` result identifies the committed answer entry.
-
-```ts
-import * as Effect from 'effect/Effect'
-import * as Harness from 'effect-harness/Harness'
-import * as Conversation from 'effect-harness/Conversation'
-import * as Submission from 'effect-harness/Submission'
-import * as Identity from 'effect-harness/Identity'
-
-export const program = Effect.gen(function* () {
-  const harness = yield* Harness.Harness
-  yield* harness.resume
-  const conversation = yield* harness.root
-  const submission = yield* Conversation.submit(conversation, 'Read notes.txt', {
-    requestId: Identity.RequestId.make('read-notes-v1'),
-  })
-  return yield* Submission.wait(submission)
-})
-```
-
-The [quickstart](apps/example/src/tour/Quickstart.ts) reads a real workspace file. The [recovery example](apps/example/src/tour/Recovery.ts) kills a process and resumes the same SQLite-backed submission in a fresh process.
-
-### Fork at an answer and explore in parallel
-
-A fork inherits the saved history through the selected entry. The parent and fork can then accept independent requests.
-
-```ts
-import * as Effect from 'effect/Effect'
-import * as Harness from 'effect-harness/Harness'
-import * as Conversation from 'effect-harness/Conversation'
-import * as Submission from 'effect-harness/Submission'
-
-export const program = Effect.gen(function* () {
-  const harness = yield* Harness.Harness
-  const channel = yield* harness.root
-  const question = yield* Conversation.submit(channel, 'Why did the deployment fail?')
-  const answer = yield* Submission.wait(question)
-  if (answer._tag !== 'InputDone') return answer
-
-  const thread = yield* Conversation.fork(channel, answer.answer)
-  yield* Conversation.configure(thread, { instructions: 'Review rollback options.' })
-
-  return yield* Effect.all(
-    [
-      Conversation.submit(thread, 'Can we roll it back?').pipe(Effect.flatMap(Submission.wait)),
-      Conversation.submit(channel, 'Who is on call?').pipe(Effect.flatMap(Submission.wait)),
-    ],
-    { concurrency: 'unbounded' },
-  )
-})
-```
-
-See the [parallel forks example](apps/example/src/tour/Forks.ts) for a runnable version that checks concurrent model requests and inherited history.
-
-### Commit typed document state with the transcript
-
-A schema defines the document's value. A transaction can edit its draft and append an entry atomically. With `rewindable` history and `asOf` forks, a historical fork receives the document value at its cutoff.
-
-```ts
-import * as Effect from 'effect/Effect'
-import * as Schema from 'effect/Schema'
-import * as Harness from 'effect-harness/Harness'
-import * as Conversation from 'effect-harness/Conversation'
-import * as Document from 'effect-harness/Document'
-
-const TodoData = Schema.Struct({
-  items: Schema.Array(Schema.Struct({ text: Schema.String, done: Schema.Boolean })),
-})
-const TodoAdded = Schema.Struct({ text: Schema.String })
-const Todos = Document.defineUnsafe({
-  kind: 'app.todos',
-  version: 1,
-  scope: 'conversation',
-  history: 'rewindable',
-  fork: 'asOf',
-  schema: TodoData,
-  initial: () => ({ items: [] }),
-})
-
-export const program = Effect.gen(function* () {
-  const harness = yield* Harness.Harness
-  const conversation = yield* harness.root
-  yield* harness.transaction(
-    Effect.fn(function* (tx) {
-      const todos = yield* tx.doc(Todos, { owner: conversation.id })
-      todos.items.push({ text: 'Add a smoke test', done: false })
-      yield* tx.appendEntry(conversation.id, {
-        kind: 'app.todo-added',
-        data: yield* Schema.encodeEffect(TodoAdded)({ text: 'Add a smoke test' }),
-      })
-    }),
-  )
-  return yield* Conversation.document(conversation, Todos)
-})
-```
-
-The [documents example](apps/example/src/tour/Documents.ts) also renders saved Todos into model context and watches the atomic commit. For custom checkpoint tasks, see [checkout](apps/example/src/tour/Checkout.ts) and [reminders](apps/example/src/tour/Reminder.ts).
-
-## Choose your imports
-
-```ts
-import * as Harness from 'effect-harness/Harness'
-import * as Conversation from 'effect-harness/Conversation'
-import * as Submission from 'effect-harness/Submission'
-import * as SqliteBun from 'effect-harness/storage/SqliteBun'
-```
-
-The package root exposes concept namespaces. Leaf imports select individual modules. Storage and provider adapters have dedicated subpaths:
-
-| Import                                            | Purpose                                                    |
-| ------------------------------------------------- | ---------------------------------------------------------- |
-| `effect-harness`                                  | Harness, conversations, documents, tasks, models and tools |
-| `effect-harness/storage/Memory`                   | Process-local persistence                                  |
-| `effect-harness/storage/SqliteBun` / `SqliteNode` | Indexed persistent records                                 |
-| `effect-harness/storage/JsonlBun` / `JsonlNode`   | Framed JSONL commits                                       |
-| `effect-harness/provider-openai`                  | Native API-key OpenAI models and catalogues                |
-| `effect-harness/provider-anthropic`               | Native API-key Anthropic models and catalogues             |
-| `effect-harness/tools`                            | Portable coding tools                                      |
-
-Your application supplies platform services and the execution environment. Recovery requires that the store and the resources used by tools remain available. See [recovery](docs/explanation/recovery.md).
-
-## Build an application
-
-[Connect a provider](docs/providers.md), [register tools](docs/tools.md), [declare tasks](docs/tasks.md), [persist state](docs/persistence.md), or [observe committed changes](docs/observations.md). The [documentation index](docs/README.md) links the contracts and examples.
-
-External clients use an application-owned API or transport around the embedded harness. Storage ownership and tool scheduling remain inside the harness process.
+The examples use an offline native Effect AI model. [Example commands](apps/example/README.md) describe each program. [Documentation](docs/README.md) covers providers, storage, documents, and observation.
 
 ## Develop
 
@@ -183,8 +171,10 @@ bun run test
 bun run build
 ```
 
-`check` verifies formatting, lint, source and test types, and public type assertions. [The repository example](apps/example/README.md) exercises the published package exports with SQLite. Package changes use [Changesets](.changeset/README.md).
+The package root exposes concept namespaces; public leaf imports such as `effect-harness/Harness`, `effect-harness/Storage`, and `effect-harness/Toolkit` select individual modules. Provider adapters use `effect-harness/provider-openai/*` and `effect-harness/provider-anthropic/*`. Internal modules are private.
+
+Package changes use [Changesets](.changeset/README.md).
 
 ## Thanks
 
-This project adapts [Pi Durable](https://github.com/earendil-works/pi)'s embedded conversation and task design using Effect services and scoped fibers. Upstream attribution is retained in [NOTICE](packages/effect-harness/NOTICE).
+Inspired by [Pi Durable](https://github.com/earendil-works/pi)'s embedded durable conversation design. Upstream attribution is retained in [NOTICE](packages/effect-harness/NOTICE).

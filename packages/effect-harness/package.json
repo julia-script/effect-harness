@@ -1,7 +1,7 @@
 {
   "name": "effect-harness",
   "version": "0.2.1",
-  "description": "Embedded durable AI conversations with Effect, atomic persistence and phase tasks.",
+  "description": "Durable AI conversations with Effect services, schema-backed state, and scoped local execution.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/julia-script/effect-harness.git",
@@ -17,28 +17,12 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./tools": {
-      "types": "./dist/tools/index.d.ts",
-      "default": "./dist/tools/index.js"
-    },
-    "./testing": {
-      "types": "./dist/testing/index.d.ts",
-      "default": "./dist/testing/index.js"
-    },
     "./*": {
       "types": "./dist/*.d.ts",
       "default": "./dist/*.js"
     },
-    "./env": {
-      "types": "./dist/env/index.d.ts",
-      "default": "./dist/env/index.js"
-    },
-    "./env/internal/*": null,
-    "./tools/internal/*": null,
     "./internal/*": null,
     "./internal": null,
-    "./env/internal": null,
-    "./tools/internal": null,
     "./provider-openai": {
       "types": "./dist/provider-openai/index.d.ts",
       "default": "./dist/provider-openai/index.js"
@@ -55,12 +39,8 @@
       "types": "./dist/provider-anthropic/*.d.ts",
       "default": "./dist/provider-anthropic/*.js"
     },
-    "./storage": {
-      "types": "./dist/storage/index.d.ts",
-      "default": "./dist/storage/index.js"
-    },
-    "./storage/internal": null,
-    "./storage/internal/*": null
+    "./workflow": null,
+    "./workflow/*": null
   },
   "publishConfig": {
     "access": "public",
@@ -76,35 +56,14 @@
   },
   "dependencies": {
     "@effect/ai-anthropic": "4.0.1",
-    "@effect/ai-openai": "4.0.1",
-    "diff": "^8.0.2"
+    "@effect/ai-openai": "4.0.1"
   },
   "devDependencies": {
-    "@effect/platform-bun": "4.0.1",
     "@effect/platform-node": "4.0.1",
-    "@effect/sql-sqlite-bun": "4.0.1",
     "@effect/sql-sqlite-node": "4.0.1",
     "effect": "catalog:"
   },
   "peerDependencies": {
-    "@effect/platform-bun": "4.0.1",
-    "@effect/platform-node": "4.0.1",
-    "@effect/sql-sqlite-bun": "4.0.1",
-    "@effect/sql-sqlite-node": "4.0.1",
     "effect": "^4.0.1"
-  },
-  "peerDependenciesMeta": {
-    "@effect/platform-bun": {
-      "optional": true
-    },
-    "@effect/platform-node": {
-      "optional": true
-    },
-    "@effect/sql-sqlite-bun": {
-      "optional": true
-    },
-    "@effect/sql-sqlite-node": {
-      "optional": true
-    }
   }
 }

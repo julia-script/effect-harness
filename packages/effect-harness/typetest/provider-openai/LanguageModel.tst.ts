@@ -7,14 +7,12 @@ import type * as AiError from 'effect/ai/AiError'
 import * as Tool from 'effect/ai/Tool'
 import * as Toolkit from 'effect/ai/Toolkit'
 
-import * as Catalog from 'effect-harness/provider-openai/Catalog'
 import * as ToolResult from 'effect-harness/provider-openai/ToolResult'
 import type * as OpenAiSchema from '@effect/ai-openai/OpenAiSchema'
 import type * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
 import type * as Prompt from 'effect/ai/Prompt'
 import type * as Layer from 'effect/Layer'
 import type * as HttpClient from 'effect/http/HttpClient'
-import type { ModelError } from 'effect-harness/ModelError'
 import * as Redacted from 'effect/Redacted'
 class Audit extends Context.Service<
   Audit,
@@ -80,9 +78,6 @@ test('owned public construction exposes the exact captured native client', () =>
       HttpClient.HttpClient
     >
   >()
-  expect(
-    Catalog.descriptor({ modelId: 'declared', contextWindow: 200000, maxOutputTokens: 32000 }),
-  ).type.toBe<Effect.Effect<Catalog.Descriptor, ModelError, OpenAiClient.OpenAiClient>>()
   expect(ToolResult.content).type.not.toBeCallableWith([{ type: 'text', text: 1 }])
   expect(ToolResult.content(parts)).type.toBe<
     Effect.Effect<Array<typeof OpenAiSchema.InputContent.Encoded>, AiError.AiError>
@@ -91,14 +86,6 @@ test('owned public construction exposes the exact captured native client', () =>
 declare const parts: ReadonlyArray<Prompt.UserMessagePart>
 
 test('curried provider combinators retain channels and reject ambiguous empty options', () => {
-  const entry = { modelId: 'declared', contextWindow: 200000, maxOutputTokens: 32000 }
-  expect(Catalog.descriptor()(entry)).type.toBe<
-    Effect.Effect<Catalog.Descriptor, ModelError, OpenAiClient.OpenAiClient>
-  >()
-  expect(Catalog.descriptor({ provider: 'custom' })(entry)).type.toBe<
-    Effect.Effect<Catalog.Descriptor, ModelError, OpenAiClient.OpenAiClient>
-  >()
-  expect(Catalog.descriptor).type.not.toBeCallableWith({})
   expect(ToolResult.content({ prefixes: [] })(parts)).type.toBe<
     Effect.Effect<Array<typeof OpenAiSchema.InputContent.Encoded>, AiError.AiError>
   >()

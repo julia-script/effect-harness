@@ -1,4 +1,4 @@
-import { BunServices } from '@effect/platform-bun'
+import { NodeServices } from '@effect/platform-node'
 import { fileURLToPath } from 'node:url'
 import { delimiter } from 'node:path'
 import { assert, it } from '@effect/vitest'
@@ -9,7 +9,7 @@ import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as ChildProcess from 'effect/process/ChildProcess'
 import { ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
-import { Result } from '../dist/Portable.js'
+import { ResultSchema } from '../dist/Portable.js'
 
 const entrypoint = fileURLToPath(new URL('../dist/PortableMain.js', import.meta.url))
 const nodeRunner = fileURLToPath(new URL('./fixtures/NodeRuntime.mjs', import.meta.url))
@@ -59,19 +59,16 @@ const execute = Effect.fn('portability.execute')(function* (
   return stdout
 })
 const verify = Effect.fn('portability.verify')(function* (output: string) {
-  const result = yield* Schema.decodeEffect(Schema.fromJsonString(Result))(
+  const result = yield* Schema.decodeEffect(Schema.fromJsonString(ResultSchema))(
     output.trim().replace(/^portable: /, ''),
   )
   assert.include(result.imports, 'Harness')
-  assert.include(result.imports, 'Memory')
-  assert.notInclude(result.imports, 'SqliteBun')
-  assert.strictEqual(result.forks.concurrentRequests, 2)
-  assert.isTrue(result.extensions.firstWriterWins)
-  assert.isTrue(result.subagent.reusedSubmission)
-  assert.strictEqual(result.checkout.decline.status, 'failed')
-  assert.strictEqual(result.reminder.recovered.status, 'completed')
-  assert.isTrue(result.documents.atomicCommit)
-  assert.isTrue(result.multiplayer.lateClientSawActiveWork)
+  assert.include(result.imports, 'Storage')
+  assert.strictEqual(result.answer, 'HELLO')
+  assert.isTrue(result.reusedSubmission)
+  assert.strictEqual(result.forks, 2)
+  assert.strictEqual(result.documentCalls, 1)
+  assert.strictEqual(result.extensionStatus, 'done')
 })
 
 it.live('runs the published package and portable tour under Node without Bun', () =>
@@ -80,7 +77,7 @@ it.live('runs the published package and portable tour under Node without Bun', (
       Effect.flatMap((node) => execute(node, [nodeRunner, entrypoint])),
       Effect.flatMap(verify),
     ),
-  ).pipe(Effect.provide(BunServices.layer)),
+  ).pipe(Effect.provide(NodeServices.layer)),
 )
 
 it.live('bundles portable imports for browsers and runs without host runtime globals', () =>
@@ -102,5 +99,5 @@ it.live('bundles portable imports for browsers and runs without host runtime glo
         Effect.flatMap(verify),
       )
     }),
-  ).pipe(Effect.provide(BunServices.layer)),
+  ).pipe(Effect.provide(NodeServices.layer)),
 )

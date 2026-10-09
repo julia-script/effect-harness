@@ -27,8 +27,8 @@
     "apps/example": {
       "name": "@effect-harness/example",
       "dependencies": {
-        "@effect/platform-bun": "4.0.1",
-        "@effect/sql-sqlite-bun": "4.0.1",
+        "@effect/platform-node": "4.0.1",
+        "@effect/sql-sqlite-node": "4.0.1",
         "effect": "catalog:",
         "effect-harness": "workspace:*",
       },
@@ -39,28 +39,15 @@
       "dependencies": {
         "@effect/ai-anthropic": "4.0.1",
         "@effect/ai-openai": "4.0.1",
-        "diff": "^8.0.2",
       },
       "devDependencies": {
-        "@effect/platform-bun": "4.0.1",
         "@effect/platform-node": "4.0.1",
-        "@effect/sql-sqlite-bun": "4.0.1",
         "@effect/sql-sqlite-node": "4.0.1",
         "effect": "catalog:",
       },
       "peerDependencies": {
-        "@effect/platform-bun": "4.0.1",
-        "@effect/platform-node": "4.0.1",
-        "@effect/sql-sqlite-bun": "4.0.1",
-        "@effect/sql-sqlite-node": "4.0.1",
         "effect": "^4.0.1",
       },
-      "optionalPeers": [
-        "@effect/platform-bun",
-        "@effect/platform-node",
-        "@effect/sql-sqlite-bun",
-        "@effect/sql-sqlite-node",
-      ],
     },
   },
   "overrides": {
@@ -387,7 +374,7 @@
 
     "detect-libc": ["detect-libc@2.1.2", "", {}, "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ=="],
 
-    "diff": ["diff@8.0.4", "", {}, "sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw=="],
+    "diff": ["diff@9.0.0", "", {}, "sha512-svtcdpS8CgJyqAjEQIXdb3OjhFVVYjzGAPO8WGCmRbrml64SPw/jJD4GoE98aR7r25A0XcgrK3F02yw9R/vhQw=="],
 
     "dir-glob": ["dir-glob@3.0.1", "", { "dependencies": { "path-type": "^4.0.0" } }, "sha512-WkrWp9GR4KXfKGYzOLmTuGVi1UWFfws377n9cc55/tb6DuqyF6pcQ5AbiHEshaDpY9v6oaSr2XCDidGmMwdzIA=="],
 
@@ -606,8 +593,6 @@
     "@manypkg/get-packages/@changesets/types": ["@changesets/types@4.1.0", "", {}, "sha512-LDQvVDv5Kb50ny2s25Fhm3d9QSZimsoUGBsUioj6MC3qbMUCuC8GPIvk/M6IvXx3lYhAs0lwWUQLb+VIEUCECw=="],
 
     "@manypkg/get-packages/fs-extra": ["fs-extra@8.1.0", "", { "dependencies": { "graceful-fs": "^4.2.0", "jsonfile": "^4.0.0", "universalify": "^0.1.0" } }, "sha512-yhlQgA6mnOJUKOsRUFsgJdQCvkKhcz8tlZG5HBQfReYZy46OwLcY+Zia0mtdHsOo9y/hP+CxMN0TU9QxoOtG4g=="],
-
-    "@types/diff/diff": ["diff@9.0.0", "", {}, "sha512-svtcdpS8CgJyqAjEQIXdb3OjhFVVYjzGAPO8WGCmRbrml64SPw/jJD4GoE98aR7r25A0XcgrK3F02yw9R/vhQw=="],
 
     "micromatch/picomatch": ["picomatch@2.3.2", "", {}, "sha512-V7+vQEJ06Z+c5tSye8S+nHUfI51xoXIXjHQ99cQtKUkQqqO1kO/KCJUfZXuB47h/YBlDhah2H3hdUGXn8ie0oA=="],
 

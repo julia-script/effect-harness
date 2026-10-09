@@ -7,7 +7,12 @@ import * as Arr from 'effect/Array'
 import * as Schema from 'effect/Schema'
 import * as Result from 'effect/Result'
 import * as Record from '../Record.ts'
-import * as Document from '../Document.ts'
+interface Snapshot {
+  readonly record: Record.Document
+  readonly version: number
+  readonly value: Schema.JsonObject
+  readonly deltasSinceBase: number
+}
 import {
   rejected,
   type StorageError,
@@ -15,7 +20,7 @@ import {
   CorruptError,
   NotFoundError,
   ConflictError,
-} from '../StorageError.ts'
+} from './RecordError.js'
 
 export class CloneError extends Schema.TaggedError<CloneError>(
   '@effect-harness/durable/storage/State/CloneError',
@@ -126,9 +131,9 @@ const applyOpsImpl = Effect.fnUntraced(function* (
 })
 
 const materializeImpl = Effect.fnUntraced(function* (
-  self: Record.StoredDocument,
+  self: Record.DocumentHistory,
   at: Record.Point,
-): Effect.fn.Return<Option.Option<import('../Document.ts').Document.Snapshot>, StorageError> {
+): Effect.fn.Return<Option.Option<Snapshot>, StorageError> {
   if (at !== 'current' && Record.isCurrentOnly(self.record))
     return yield* rejected('Document does not retain historical content')
   if (!Record.isAlive(self.record, at)) return Option.none()
@@ -149,14 +154,12 @@ const materializeImpl = Effect.fnUntraced(function* (
       )
     value = yield* applyOps(value, revision.content.ops)
   }
-  return Option.some(
-    Document.makeSnapshot({
-      record: yield* detachedEffect(self.record),
-      version: base.content.version,
-      value,
-      deltasSinceBase: revisions.length - baseIndex - 1,
-    }),
-  )
+  return Option.some({
+    record: yield* detachedEffect(self.record),
+    version: base.content.version,
+    value,
+    deltasSinceBase: revisions.length - baseIndex - 1,
+  })
 })
 
 const applyWritesImpl = Effect.fnUntraced(function* (
@@ -367,7 +370,7 @@ export const applyWrites: {
   (self: State, input: ReadonlyArray<Record.Write>): Effect.Effect<State, StorageError>
 } = dual(2, applyWritesImpl)
 
-import * as Json from 'effect-harness/Json'
+import * as Json from '../Json.js'
 
 export const applyOps: {
   (
@@ -382,13 +385,11 @@ export const applyOps: {
 export const materialize: {
   (
     at: Record.Point,
-  ): (
-    self: Record.StoredDocument,
-  ) => Effect.Effect<Option.Option<Document.Document.Snapshot>, StorageError>
+  ): (self: Record.DocumentHistory) => Effect.Effect<Option.Option<Snapshot>, StorageError>
   (
-    self: Record.StoredDocument,
+    self: Record.DocumentHistory,
     at: Record.Point,
-  ): Effect.Effect<Option.Option<Document.Document.Snapshot>, StorageError>
+  ): Effect.Effect<Option.Option<Snapshot>, StorageError>
 } = dual(2, materializeImpl)
 
 /** Transient batch validation state containing only the records touched by a commit. */
@@ -404,7 +405,7 @@ export const State = Schema.Struct({
   entries: Schema.Array(Schema.Struct({ entry: Record.Entry, commitSeq: Record.Seq })),
   tasks: Schema.Array(Record.Task),
   submissions: Schema.Array(Record.Submission),
-  documents: Schema.Array(Record.StoredDocument),
+  documents: Schema.Array(Record.DocumentHistory),
 })
 export type State = typeof State.Type
 

@@ -1,82 +1,97 @@
-/**
- * Executable extension declarations and prompt-section callbacks.
- */
-import { identity } from 'effect/Function'
-import type { HookError } from './HookError.ts'
-import type * as Effect from 'effect/Effect'
-import type * as Transcript from './Transcript.ts'
-import type * as Hook from './Hook.ts'
-import type { Invocation } from './Invocation.ts'
-import type * as ToolRegistration from './ToolRegistration.ts'
-/**
- * Immutable executable code; install it again after restart.
- *
- * **Details**
- *
- * Build callbacks within Layers to capture services.
- *
- * @category models
- */
-export interface Extension {
-  readonly name: string
-  readonly tools?: ReadonlyArray<ToolRegistration.Registration> | undefined
-  readonly sections?: ReadonlyArray<Extension.Section> | undefined
-  readonly hooks?: ReadonlyArray<Hook.Registration> | undefined
-  readonly toolWraps?: ReadonlyArray<Extension.ToolWrap> | undefined
-  readonly sectionWraps?: ReadonlyArray<Extension.SectionWrap> | undefined
-}
-/**
- * Returns the executable extension declaration with its inferred callback requirements.
- *
- * @category constructors
- */
-export const make: (input: Extension) => Extension = identity
+/** Named static capability bundles and deferred runtime provisioning. */
+import type * as Layer from 'effect/Layer'
+import type * as Scope from 'effect/Scope'
+import type { ToolExecution } from './ToolExecution.js'
+import { dual } from 'effect/Function'
+import * as Capability from './internal/Capability.js'
+import type * as Pipeable from 'effect/Pipeable'
+import * as Schema from 'effect/Schema'
+import type * as Hook from './Hook.js'
+import type * as PromptSection from './PromptSection.js'
+import type * as Tool from './Tool.js'
+import type * as Toolkit from './Toolkit.js'
 
-/**
- * Type-level contracts for `Extension`.
- *
- */
-export declare namespace Extension {
-  /**
-   * Conversation and agent inputs supplied to an extension prompt section.
-   *
-   * @category models
-   */
-  interface PromptInput {
-    readonly view: Transcript.View
-    readonly tools: ReadonlyArray<ToolRegistration.Registration>
-    readonly cwd: string
+export const TypeId = '~effect-harness/Extension'
+export const DefinitionSchema = Schema.Struct({ name: Schema.NonEmptyString })
+export type Definition = typeof DefinitionSchema.Type
+
+export interface Any extends Pipeable.Pipeable {
+  readonly [TypeId]: {
+    readonly _Requirements: (_: never) => unknown
+    readonly _ConstructionError: (_: never) => unknown
   }
-  /**
-   * Named prompt section with effectful rendering.
-   *
-   * @category models
-   */
-  interface Section {
-    readonly key: string
-    readonly tag?: boolean | undefined
-    readonly render: (
-      input: PromptInput,
-    ) => Effect.Effect<string | undefined, HookError, Invocation>
-  }
-  /**
-   * Wrapper around a registered tool invocation.
-   *
-   * @category models
-   */
-  interface ToolWrap {
-    readonly name: string
-    readonly wrap: (
-      tool: ToolRegistration.Registration,
-    ) => Effect.Effect<ToolRegistration.Registration, HookError, Invocation>
-  }
-  /**
-   * Wrapper around a prompt section renderer.
-   *
-   * @category models
-   */
-  interface SectionWrap {
-    readonly key: string
-    readonly wrap: (section: Section) => Effect.Effect<Section, HookError, Invocation>
+  readonly name: string
+  readonly tools: ReadonlyArray<Tool.Any>
+  readonly hooks: ReadonlyArray<Hook.Any>
+  readonly sections: ReadonlyArray<PromptSection.Any>
+}
+
+export type Requirements<X extends Any> = X extends {
+  readonly [TypeId]: { readonly _Requirements: (_: never) => infer R }
+}
+  ? R
+  : never
+export type ConstructionError<X extends Any> = X extends {
+  readonly [TypeId]: { readonly _ConstructionError: (_: never) => infer E }
+}
+  ? E
+  : never
+
+export interface Extension<R = never, E = never> extends Any {
+  readonly [TypeId]: {
+    readonly _Requirements: (_: never) => R
+    readonly _ConstructionError: (_: never) => E
   }
 }
+
+type ToolsOf<T> =
+  T extends ReadonlyArray<Tool.Any>
+    ? T[number]
+    : T extends { readonly tools: infer Tools }
+      ? Extract<Tools[keyof Tools], Tool.Any>
+      : never
+
+export const make: <
+  const Tools extends
+    | ReadonlyArray<Tool.Any>
+    | { readonly tools: Readonly<Record<string, Tool.Any>> } = readonly [],
+  const Hooks extends ReadonlyArray<Hook.Any> = readonly [],
+  const Sections extends ReadonlyArray<PromptSection.Any> = readonly [],
+>(
+  definition: Definition & {
+    readonly tools?: Tools
+    readonly hooks?: Hooks
+    readonly sections?: Sections
+  },
+) => Extension<
+  | Tool.CodecServices<ToolsOf<Tools>>
+  | Exclude<Tool.RequestServices<ToolsOf<Tools>>, ToolExecution | Scope.Scope>
+  | Toolkit.HandlerFor<ToolsOf<Tools>>
+  | Hook.Requirements<Hooks[number]>
+  | PromptSection.Requirements<Sections[number]>,
+  Hook.ConstructionError<Hooks[number]>
+> = (definition) => {
+  let tools: ReadonlyArray<Tool.Any> = []
+  if (definition.tools !== undefined) {
+    tools = 'tools' in definition.tools ? Object.values(definition.tools.tools) : definition.tools
+  }
+  return {
+    ...definition,
+    tools,
+    hooks: definition.hooks ?? [],
+    sections: definition.sections ?? [],
+    [TypeId]: { _Requirements: (_: never) => _, _ConstructionError: (_: never) => _ },
+    pipe: Capability.pipe,
+  }
+}
+
+/** Provisioning is deferred to the consuming Harness's Scope. */
+export const provide: {
+  <ROut, ELayer, RIn>(
+    layer: Layer.Layer<ROut, ELayer, RIn>,
+  ): <R, E>(self: Extension<R, E>) => Extension<Exclude<R, ROut> | RIn, E | ELayer>
+  <R, E, ROut, ELayer, RIn>(
+    self: Extension<R, E>,
+    layer: Layer.Layer<ROut, ELayer, RIn>,
+  ): Extension<Exclude<R, ROut> | RIn, E | ELayer>
+} = dual(2, Capability.provide)

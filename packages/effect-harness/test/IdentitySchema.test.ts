@@ -1,14 +1,12 @@
 import * as TestSchema from 'effect/testing/TestSchema'
 
-import { assert, describe, it } from '@effect/vitest'
+import { describe, it } from '@effect/vitest'
 
 import * as Effect from 'effect/Effect'
 
 import * as Identity from 'effect-harness/Identity'
 
-import * as Transcript from 'effect-harness/Transcript'
-
-import * as Executor from 'effect-harness/Executor'
+import * as Record from 'effect-harness/Record'
 
 describe('IdentitySchema', () => {
   it.effect(
@@ -34,14 +32,12 @@ describe('IdentitySchema', () => {
           yield* entryAsserts.decoding().failEffect(input, issue)
           yield* conversationAsserts.decoding().failEffect(input, issue)
         }
-        yield* new TestSchema.Asserts(Transcript.Edit)
+        yield* new TestSchema.Asserts(Record.ContextEdit)
           .decoding()
           .succeedEffect(
             { _tag: 'omit', target: 3 },
             { _tag: 'omit', target: Identity.EntryId.make(3) },
           )
-        assert.strictEqual(Executor.SummaryRequest.fields.firstKept, Identity.EntryId)
-        assert.strictEqual(Executor.SummaryRequest.fields.tail, Identity.EntryId)
       }),
   )
 })

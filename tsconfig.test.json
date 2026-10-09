@@ -5,14 +5,10 @@
     "paths": {
       "effect-harness": ["./packages/effect-harness/src/index.ts"],
       "effect-harness/*": ["./packages/effect-harness/src/*.ts"],
-      "effect-harness/tools": ["./packages/effect-harness/src/tools/index.ts"],
-      "effect-harness/testing": ["./packages/effect-harness/src/testing/index.ts"],
-      "effect-harness/env": ["./packages/effect-harness/src/env/index.ts"],
       "effect-harness/provider-openai": ["./packages/effect-harness/src/provider-openai/index.ts"],
       "effect-harness/provider-anthropic": [
         "./packages/effect-harness/src/provider-anthropic/index.ts"
-      ],
-      "effect-harness/storage": ["./packages/effect-harness/src/storage/index.ts"]
+      ]
     }
   },
   "include": ["packages/effect-harness/test/**/*.ts", "apps/*/test/**/*.ts", "vitest.config.ts"]

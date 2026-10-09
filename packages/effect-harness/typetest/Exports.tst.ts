@@ -1,17 +1,29 @@
 import { expect, test } from 'tstyche'
-import * as Harness from 'effect-harness'
-import * as OpenAI from 'effect-harness/provider-openai'
-import * as Anthropic from 'effect-harness/provider-anthropic'
-import type * as Model from 'effect-harness/Model'
-import type * as Runtime from 'effect-harness/Harness'
-// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/provider-openai/Catalog and effect-harness/provider-anthropic/Catalog both own Catalog; OpenAiCatalog keeps their distinct native/harness APIs available together for these constructor, service and declaration assertions.
-import type * as OpenAiCatalog from 'effect-harness/provider-openai/Catalog'
-// effect-nit-allow P9-namespace-alias-equals-module: effect-harness/provider-anthropic/Catalog and effect-harness/provider-openai/Catalog both own Catalog; AnthropicCatalog keeps their distinct native/harness APIs available together for these constructor, service and declaration assertions.
-import type * as AnthropicCatalog from 'effect-harness/provider-anthropic/Catalog'
+import * as HarnessPackage from 'effect-harness'
+import type * as Harness from 'effect-harness/Harness'
+import type * as HarnessBackend from 'effect-harness/HarnessBackend'
+import type * as HarnessRuntime from 'effect-harness/HarnessRuntime'
+import type * as Conversation from 'effect-harness/Conversation'
+import type * as Submission from 'effect-harness/Submission'
+import type * as Storage from 'effect-harness/Storage'
+import type * as Session from 'effect-harness/Session'
+import type * as Tool from 'effect-harness/Tool'
+import type * as Toolkit from 'effect-harness/Toolkit'
+import type * as Document from 'effect-harness/Document'
+import type * as Transaction from 'effect-harness/Transaction'
 
-test('root and directory imports retain the same concept types as leaf imports', () => {
-  expect(Harness.Model.Catalog).type.toBe<typeof Model.Catalog>()
-  expect(Harness.Harness.Harness).type.toBe<typeof Runtime.Harness>()
-  expect(OpenAI.Catalog.layerApiKey).type.toBe<typeof OpenAiCatalog.layerApiKey>()
-  expect(Anthropic.Catalog.layerApiKey).type.toBe<typeof AnthropicCatalog.layerApiKey>()
+test('root namespaces and stable leaf imports expose the promoted API', () => {
+  expect(HarnessPackage.Harness.layerLocal).type.toBe<typeof Harness.layerLocal>()
+  expect(HarnessPackage.HarnessBackend.HarnessBackend).type.toBe<
+    typeof HarnessBackend.HarnessBackend
+  >()
+  expect(HarnessPackage.HarnessRuntime.make).type.toBe<typeof HarnessRuntime.make>()
+  expect(HarnessPackage.Conversation.submit).type.toBe<typeof Conversation.submit>()
+  expect(HarnessPackage.Submission.wait).type.toBe<typeof Submission.wait>()
+  expect(HarnessPackage.Storage.layerSql).type.toBe<typeof Storage.layerSql>()
+  expect(HarnessPackage.Session.commit).type.toBe<typeof Session.commit>()
+  expect(HarnessPackage.Tool.make).type.toBe<typeof Tool.make>()
+  expect(HarnessPackage.Toolkit.merge).type.toBe<typeof Toolkit.merge>()
+  expect(HarnessPackage.Document.define).type.toBe<typeof Document.define>()
+  expect(HarnessPackage.Transaction.updateDocument).type.toBe<typeof Transaction.updateDocument>()
 })
