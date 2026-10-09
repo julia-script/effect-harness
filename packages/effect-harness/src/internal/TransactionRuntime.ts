@@ -688,6 +688,7 @@ export const forkConversation = Effect.fnUntraced(function* (
         return yield* error('conflict', 'conversation.fork', 'Ambiguous document fork source')
       selected.set(key, { record, at: 'current' })
     }
+  const copies: Array<{ readonly draft: Draft; readonly sourceId: Domain.DocumentId }> = []
   for (const [key, source] of selected) {
     const pending = state.incarnations.get(source.record.id)
     if (
@@ -713,7 +714,6 @@ export const forkConversation = Effect.fnUntraced(function* (
       deltasSinceBase: 0,
       record: { ...record, createdAt: Sequence.make(0) },
     })
-    yield* active(state)
     const draft: Draft = {
       key,
       original: Option.none(),
@@ -723,18 +723,23 @@ export const forkConversation = Effect.fnUntraced(function* (
       changed: false,
       retired: false,
     }
-    state.documents.set(key, draft)
-    state.incarnations.set(record.id, draft)
-    state.copiedSources.add(source.record.id)
+    copies.push({ draft, sourceId: source.record.id })
   }
   const value = yield* Value.copy(Domain.Conversation, {
     id,
     parent: { conversationId: parent, at },
     ...(owner === undefined ? {} : { owner }),
   })
+  const result = yield* Value.copy(Domain.Conversation, value)
   yield* active(state)
+  // Prepare the complete fork before changing the overlay: callers may catch an operation error.
+  for (const { draft, sourceId } of copies) {
+    state.documents.set(draft.key, draft)
+    state.incarnations.set(draft.value.record.id, draft)
+    state.copiedSources.add(sourceId)
+  }
   state.conversations.set(id, value)
-  return yield* Value.copy(Domain.Conversation, value)
+  return result
 })
 
 export const writes = Effect.fnUntraced(function* (state: State) {
