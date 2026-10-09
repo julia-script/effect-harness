@@ -212,7 +212,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
             requesting.agent.tools === undefined || requesting.agent.tools.includes(tool.name),
         )
         .filter((tool) => {
-          const owner = extensions.find((extension) => extension.tools.includes(tool))
+          const owner = extensions.findLast((extension) => extension.tools.includes(tool))
           return (
             owner === undefined ||
             requesting.agent.extensions === undefined ||
@@ -403,7 +403,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
     let call = pending.call
     let result: import('../ToolResult.js').Result | undefined
     const definition = allTools.find((tool) => tool.name === call.name)
-    const extension = extensions.find(
+    const extension = extensions.findLast(
       (extension) => definition !== undefined && extension.tools.includes(definition),
     )
     const currentlyAllowed =
