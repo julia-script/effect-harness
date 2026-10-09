@@ -1,5 +1,11 @@
 # effect-harness
 
+## 0.2.1
+
+### Patch Changes
+
+- 270dfbc: Remove the Bun requirement from npm package preparation and declare the JSONL Bun adapter's platform dependency as an optional peer. The core and portable public imports remain independent of runtime-specific adapters.
+
 ## 0.2.0
 
 ### Minor Changes
