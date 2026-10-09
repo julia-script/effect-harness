@@ -13,8 +13,8 @@ import * as FetchHttpClient from 'effect/http/FetchHttpClient'
 import * as OpenAiLanguageModel from 'effect-harness/provider-openai/OpenAiLanguageModel'
 
 const ModelLive = OpenAiLanguageModel.layerApiKeyConfig({
-  apiKey: Config.redacted('OPENAI_API_KEY'),
-  model: Config.string('OPENAI_MODEL'),
+  apiKey: Config.Redacted('OPENAI_API_KEY'),
+  model: Config.String('OPENAI_MODEL'),
 }).pipe(Layer.provide(FetchHttpClient.layer))
 ```
 

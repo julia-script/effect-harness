@@ -11,6 +11,6 @@ const nextEntries = root.pipe(Conversation.entries({ after: lastSeen }))
 
 Entries include user input, assistant messages, tool progress, diagnostics, and results. `InputDone.answer` identifies the final assistant entry; entry `model` values encode native Effect AI prompt messages through schemas.
 
-`Conversation.snapshot(document, target)` returns an optional decoded document revision. `Conversation.watch(document, target)` returns a Stream starting with the current optional revision and then committed changes to that document. Decoding happens on the client, using the supplied schema. The backend carries schema-backed JSON data.
+`Conversation.snapshot(document, target)` returns an optional decoded document revision. `Conversation.watch(document, target)` returns a Stream starting with the current revision and then committed revisions of that document. Watching a missing document fails; retiring the document ends the stream. Decoding happens on the client, using the supplied schema. The backend carries schema-backed JSON data.
 
 `Session.commits` observes atomic write batches inside a runtime. `Session.watch` observes document revisions when using a Session independently. Scope cleanup ends subscriptions. Progress belongs to persisted history, so reconnecting observers can inspect it after a restart.
