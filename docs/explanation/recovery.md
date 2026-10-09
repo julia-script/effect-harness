@@ -1,23 +1,17 @@
-# Recovery from committed checkpoints
+# Restart and recovery
 
-The store is the harness's recovery boundary. Conversations, documents, submission state, task checkpoints and outcomes commit together. A process interruption discards live fibers; reopening reconstructs work from those records.
+The store contains conversation history, admission records, tool intents/results, application documents, and the current run checkpoint. The runtime persists the assistant's tool intentions before invoking a handler and marks a tool started before its side effects.
 
-## Model calls
+After a process dies, build a new runtime against the same store, supply compatible models and handlers, and access `harness.root` or look up a saved conversation. Access automatically starts persisted work. Repeating a submission with the same request ID returns the original durable admission instead of adding another input. [Recovery.ts](../../apps/example/src/tour/Recovery.ts) uses the same program for both launches.
 
-A generation or summarization task saves its prepared request before inference. Recovery uses that pinned request boundary. A committed response or summary is reused. When generation was interrupted, recovery records an aborted attempt with its last committed partial output, clears that progress and reissues the same pinned request. The aborted output remains inspectable and is excluded from later model context. Closing preserves the submission and does not request an explicit abort.
+An interrupted started tool has an uncertain external outcome:
 
-## External actions
+- A tool saved as safe, whose current declaration is still safe, may run again.
+- An unsafe tool is not repeated. The model receives a failed result explaining the interruption and can decide what to do next.
+- Changing a formerly safe tool to unsafe prevents replay.
 
-A tool task saves final arguments and replay policy before entering its handler. If its result commits, reopening uses that result. If the process stops during execution, the tool's external action may already have happened.
+A completed persisted tool result is reused. A crash after an external action but before its result commit cannot be made atomic merely by persisting local data. Application idempotency keys or reconciliation can address that external boundary.
 
-Safe replay requires both the saved and current registration to permit rerunning. Unsafe work settles with an interrupted result and committed partial output. Exactly-once external effects require guarantees supplied by the external system, such as its own idempotency key.
+Normal Scope shutdown interrupts running handlers and leaves resumable checkpoints. Explicit abort settles affected submissions as unanswered. Canceling an application's wait only ends observation.
 
-## Ownership and lifetime
-
-Abort intent is persisted before active fibers are interrupted. Invocation checks fence late writes. Parents hold their outcomes until owned foreground work and cleanup finish. Closing pauses recoverable work and does not manufacture an abort decision.
-
-## Working environments
-
-The host supplies tool workspaces and remote capabilities. A persisted checkpoint cannot recreate uncommitted files lost with a machine. A replacement process needs access to the same required environment or an application-defined restoration procedure.
-
-SQLite and JSONL adapters protect the harness's stored facts. Their durability still depends on the host's storage lifetime. One harness process owns each store; distributed worker placement and failover are outside this embedded runtime.
+The local runtime coordinates one store in one process. Do not run multiple independent active runtimes against the same persisted store. Recovery also requires tools to access the resources they relied on before the crash: restoring history alone does not restore files or external systems.

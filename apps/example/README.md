@@ -1,61 +1,40 @@
-# Embedded harness example
+# Examples
 
-The [conversation and task tour](TOUR.md) adds ten runnable examples: recovery, forks, extensions, subagents, checkout, reminders, context, documents and shared observations. Build once, then run `bun run --cwd apps/example tour -- all` from the repository root.
-
-This offline application composes a native Effect AI model, an uppercase Toolkit, checkpoint tasks and SQLite persistence. Its integration test opens the same database twice and verifies that saved model, tool and greeting results are reused.
-
-From the repository root:
+These programs exercise the public package imports using an offline native Effect AI model. No API key is needed.
 
 ```sh
+bun install
 bun run build
-bun run --cwd apps/example test
+bun run --cwd apps/example start
+bun run --cwd apps/example tour
+bun run --cwd apps/example portable
 ```
 
-Expected output:
+The development commands use Bun; the built example entrypoints run with Node. The library's core and portable example also bundle for a browser without host services.
 
-```text
-Hello, Effect
-HELLO
-embedded-harness-example-ok
-```
+- [main.ts](src/main.ts): submit input through Harness and wait for the settled record.
+- [Application.ts](src/Application.ts): compose tool handlers and a model, leaving Storage to the application.
+- [Uppercase.ts](src/Uppercase.ts): schema declarations separated from handler Layers, with durable output.
+- [DemoModel.ts](src/DemoModel.ts): an offline native LanguageModel returning tool intents.
+- [Tour](TOUR.md): forks, documents, extensions, and recovery.
+- [Portable.ts](src/Portable.ts): the same client/tool/runtime APIs with in-memory storage, including reopening the same store.
 
-Without `EXAMPLE_DB`, the application creates a scoped temporary database. To retain a conversation between process runs:
+## Recovery
 
 ```sh
-EXAMPLE_DB=/tmp/effect-harness-example.sqlite bun apps/example/dist/main.js
-EXAMPLE_DB=/tmp/effect-harness-example.sqlite bun apps/example/dist/main.js
+bun run --cwd apps/example recovery
 ```
 
-`main.ts` reuses the stable `uppercase-v1` request identity. Its greeting document saves the custom task identity in the transaction that admits the task. Reopening calls `Harness.resume` to start unfinished saved work; completed work supplies its stored outcome.
-
-`Application.ts` composes `Harness.layer`, `Executor.layer` and the application-owned model, registry and database Layers. `Database.ts` selects `storage/SqliteBun`. `Greeting.ts` declares a two-phase task. `DemoModel.ts` and `Uppercase.ts` supply native model and Toolkit boundaries.
-
-The unknown-tool reproduction retains native Effect AI validation:
-
-```sh
-bun run --cwd apps/example reproduce:unknown-tool
-```
-
-The model asks for `upper_case`, while the registry offers `uppercase`. Native validation rejects that response, and the harness settles the failed attempt. The `--retry` option exercises the configured retry policy.
+[Recovery.ts](src/tour/Recovery.ts) opens `./agent.sqlite` in the command's working directory. Run it again to retrieve the same `job-42` submission. If the process was interrupted, the new runtime resumes its checkpoint. The offline uppercase handler finishes quickly; the integration tests kill a worker while a tool is blocked to verify recovery during execution.
 
 ## Portable runtime example
 
-[Portable.ts](src/Portable.ts) combines the eight in-memory tour scenarios. It imports the portable package namespaces, declares a result schema, and uses no platform Layer or host runtime globals. [PortableMain.ts](src/PortableMain.ts) runs that effect using the same entrypoint in each runtime.
-
-From the repository root, after `bun run build`:
+After building:
 
 ```sh
 node apps/example/dist/PortableMain.js
 bun apps/example/dist/PortableMain.js
+deno run --allow-read apps/example/dist/PortableMain.js
 ```
 
-For Deno, bundle the workspace imports first. This avoids requiring Deno to resolve Bun's workspace catalog aliases:
-
-```sh
-bun build --target=browser --outfile=apps/example/dist/portable.browser.js apps/example/dist/PortableMain.js
-deno run --no-config --no-prompt apps/example/dist/portable.browser.js
-```
-
-The same bundle is a browser ES module; load it from a module script or worker. All eight scenarios use memory persistence, local models and simulated external actions. Their close/reopen demonstrations retain the same memory service inside one process.
-
-CI runs the compiled package with Node, builds a browser bundle and checks it without Node/Bun globals, and runs the bundle with Deno. Runtime-specific persistent adapters remain separate leaf imports, and require host capabilities suitable for that adapter.
+The portability tests also bundle this entrypoint with `bun build --target=browser` and evaluate it without Node, Bun, or Deno globals. SQL and JSONL applications choose compatible SqlClient/FileSystem Layers at their application edge.

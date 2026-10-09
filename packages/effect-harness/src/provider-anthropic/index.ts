@@ -21,12 +21,6 @@ export * as AnthropicLanguageModel from './AnthropicLanguageModel.ts'
  */
 export * as AnthropicTool from './AnthropicTool.ts'
 /**
- * Validated model catalogues with pinned request configuration and usage accounting.
- *
- * @category re-exports
- */
-export * as Catalog from './Catalog.ts'
-/**
  * Provider prompt projections that retain native message roles and opaque protocol data.
  *
  * @category re-exports

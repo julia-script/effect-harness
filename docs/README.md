@@ -1,11 +1,12 @@
-# Effect Harness documentation
+# Documentation
 
-These documents assume TypeScript and Effect's Effect, Service, Layer and Scope APIs. Applications supply native AI models, tools, persistence and the working environment for an embedded harness.
+Start with the [README examples](../README.md) or run the [offline application](../apps/example/README.md).
 
-Start with [your first conversation](tutorials/first-conversation.md), then [keep state across process runs](tutorials/persistent-state.md).
+- [Tools](tools.md): schema declarations, handler Layers, dependencies, progress, and replay.
+- [Providers](providers.md): native Effect AI models and explicit model descriptors.
+- [Persistence](persistence.md): Storage, Session, documents, and atomic transactions.
+- [Observations](observations.md): committed entries, document streams, and submission settlement.
+- [Composition](explanation/composition.md): the client, backend, local runtime, and service requirements.
+- [Recovery](explanation/recovery.md): restart, request identity, and interrupted actions.
 
-For integration, read [providers](providers.md), [tools](tools.md), [checkpoint tasks](tasks.md), [persistence](persistence.md) and [observations](observations.md).
-
-The references cover [modules and services](reference/packages.md), [configuration](reference/configuration.md), [documents and storage](reference/documents-and-storage.md), [execution and observations](reference/execution-and-observation.md) and [Effect compatibility](reference/compatibility.md).
-
-[Composition](explanation/composition.md) explains the service boundaries. [Recovery](explanation/recovery.md) explains committed checkpoints, interrupted external work and the lifetime of the execution environment.
+The [example tour](../apps/example/TOUR.md) links complete programs for recovery, forks, documents, and extensions. All examples use the public package imports.

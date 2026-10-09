@@ -1,58 +1,24 @@
-# Conversation and task examples
+# Conversation tour
 
-This tour adapts the examples in [Pi Durable](https://earendil.com/posts/pi-durable/) to the embedded Effect harness. Each program uses the public package imports, runs offline, and checks the behavior it demonstrates. No model credentials are needed. Payments, deployments, issue searches and approval decisions use local simulations.
-
-From the repository root:
+Build and run the offline tour:
 
 ```sh
-bun install
 bun run build
-bun run --cwd apps/example tour -- all
+bun run --cwd apps/example tour
 ```
 
-Run an individual example by name:
+The tour runs three independent programs using the public API:
+
+| Example                              | Behavior                                                                                          |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| [Forks](src/tour/Forks.ts)           | Create a new conversation at an answer, configure it, and submit to parent and fork concurrently. |
+| [Documents](src/tour/Documents.ts)   | Update schema-backed application state and append an entry atomically from a tool handler.        |
+| [Extensions](src/tour/Extensions.ts) | Bundle tools, a prompt section, and a before-tool hook with deferred handler provisioning.        |
+
+[Recovery](src/tour/Recovery.ts) is a separate single-file entrypoint using persistent SQLite storage:
 
 ```sh
-bun run --cwd apps/example tour -- recovery
-bun run --cwd apps/example tour -- documents
-bun run --cwd apps/example tour -- --help
+bun run --cwd apps/example recovery
 ```
 
-Each successful example prints its name and a JSON result. Failed assertions fail the command. Generated databases and workspace files live in scoped temporary directories and are removed when the example exits.
-
-## Pick an example
-
-| Command       | Source                                                                               | What it checks                                                                                                                               |
-| ------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `quickstart`  | [Quickstart.ts](src/tour/Quickstart.ts)                                              | SQLite persistence, a coding tool reading a real workspace file, and stable request identity returning the same submission.                  |
-| `recovery`    | [Recovery.ts](src/tour/Recovery.ts), [RecoveryWorker.ts](src/tour/RecoveryWorker.ts) | Kill a process after a tool commits progress, reopen SQLite, resume the safe tool, and reuse the completed submission on another reopen.     |
-| `forks`       | [Forks.ts](src/tour/Forks.ts)                                                        | Create a thread at a saved answer and run both conversations concurrently with their inherited history.                                      |
-| `extensions`  | [Extensions.ts](src/tour/Extensions.ts)                                              | Selected tools, safe and unsafe replay policies, managed context sections, tool timing, registry replacement, and a saved approval decision. |
-| `subagent`    | [Subagent.ts](src/tour/Subagent.ts)                                                  | A tool owns a triage conversation; save its identity atomically, close and reopen, and reuse its settled request.                            |
-| `checkout`    | [Checkout.ts](src/tour/Checkout.ts)                                                  | Join parallel payment tasks, fail fast on a decline, and compensate charges with idempotency keys.                                           |
-| `reminder`    | [Reminder.ts](src/tour/Reminder.ts)                                                  | Save an absolute deadline, reopen without restarting the delay, and explicitly cancel background work.                                       |
-| `context`     | [Context.ts](src/tour/Context.ts)                                                    | Compact model context, reset it, and still search the saved transcript.                                                                      |
-| `documents`   | [Documents.ts](src/tour/Documents.ts)                                                | Commit typed Todo and progress documents with a transcript entry, render Todos into context, and fork their earlier value.                   |
-| `multiplayer` | [Multiplayer.ts](src/tour/Multiplayer.ts)                                            | Two local observers see committed changes; a late observer sees active work and submits steering input.                                      |
-
-## Read and reuse the code
-
-[Runtime.ts](src/tour/Runtime.ts) supplies the shared scoped harness setup and a deterministic native Effect AI model. Each scenario exports a `run` effect and a `Result` schema. Tasks declare input, checkpoint and result schemas; documents declare their value schemas. The observation examples encode and decode `Observation.Change`, which an application can reuse at a transport boundary.
-
-The examples intentionally have different recovery boundaries. `recovery` sends `SIGKILL` to a child process, then launches a fresh process against the same SQLite file. `extensions`, `subagent` and `reminder` close and reopen a harness over the same in-memory persistence service inside one process. Those examples exercise scheduler recovery; their memory store does not survive process termination.
-
-Safe replay can execute a tool again after interruption. The recovery tool commits its transcript output only once while its invocation audit records both executions. An unsafe deployment uses a simulated action and a saved approval memo; approval hooks reuse the committed decision after reopening.
-
-In checkout, an aborted live payment runs its refund handler. A payment that already completed remains terminal, so the checkout task explicitly compensates those charges too. The fake bank deduplicates charge and refund keys; a real integration needs equivalent behavior from its external service.
-
-Both multiplayer clients call the same local harness. To expose it remotely, an application would provide its own API or transport around these operations and schema-encoded observations.
-
-## Verify
-
-```sh
-bun run check
-bun run build
-bun run test
-```
-
-The tour tests live in [test/](test/), alongside the original embedded application tests. The recovery test launches and kills actual Bun subprocesses.
+Run that same command after an interruption. The runtime resumes persisted work, and the same request ID retrieves the same submission. The executable model is local and deterministic so every example runs without credentials.

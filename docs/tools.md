@@ -1,84 +1,35 @@
-# How to register application and coding tools
+# Tools
 
-Use this guide to expose application functions to a harness conversation. Tools are ordinary Effect AI declarations and Toolkit handlers, bound into a named Registry extension.
-
-## Bind a Toolkit
-
-Install the generic harness:
-
-```sh
-npm install effect-harness effect
-```
-
-Define the schemas, supply the handlers and bind them when constructing the Registry:
+`Tool.make` declares a tool's name, description, parameter schema, success schema, failure schema, and replay policy. `Toolkit.make` combines declarations; `Toolkit.merge` combines toolkits.
 
 ```ts
-import * as Registry from 'effect-harness/Registry'
-import * as ToolRegistration from 'effect-harness/ToolRegistration'
-import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
-import * as Schema from 'effect/Schema'
-import * as Tool from 'effect/ai/Tool'
-import * as Toolkit from 'effect/ai/Toolkit'
+const tools = Toolkit.make(
+  Tool.make('search_issues', {
+    description: 'Search the issue tracker',
+    parameters: Schema.Struct({ query: Schema.String }),
+    success: Schema.Array(Schema.Struct({ id: Schema.String, title: Schema.String })),
+    replay: 'safe',
+  }),
+)
 
-const Uppercase = Tool.make('uppercase', {
-  description: 'Convert text to uppercase.',
-  parameters: Schema.Struct({ text: Schema.String }),
-  success: Schema.String,
-})
-const toolkit = Toolkit.make(Uppercase)
-const handlers = toolkit.toLayer({ uppercase: ({ text }) => Effect.succeed(text.toUpperCase()) })
-
-export const Tools = Layer.unwrap(
-  ToolRegistration.bind(toolkit, { uppercase: { replay: 'safe' } }).pipe(
-    Effect.map((tools) => Registry.layer([{ name: 'text-tools', tools }])),
-  ),
-).pipe(Layer.provide(handlers))
+const ToolsLive = tools.toLayer(
+  Effect.gen(function* () {
+    const tracker = yield* IssueTracker
+    return { search_issues: ({ query }) => tracker.search(query) }
+  }),
+)
 ```
 
-Provide `Tools` to the harness Executor. If conversation settings restrict extensions, include `text-tools` in the selected extension names. If agent settings restrict tools, include `uppercase`. See [selection rules](reference/configuration.md#agent-configuration).
+`IssueTracker` is an application service. Supply its Layer to `ToolsLive`; the builder captures the service for subsequent calls. No registry or environment service is needed. Different handler Effects can provide different Layers for filesystem, network, or other capabilities.
 
-Provide host service Layers while binding handlers. `ToolRegistration.bind` captures them for later calls. Keep per-call `Invocation` and `ToolCall` services dynamic; additional request services belong in the explicit `requestServices` argument.
+Handlers receive decoded parameters. The toolkit encodes their success values and declared domain failures through the schemas. A domain failure becomes a failed tool result visible to the model. Infrastructure failures and defects fail execution rather than pretending to be domain results.
 
-## Report progress during execution
+Each handler invocation has its own Scope. The runtime supplies `ToolExecution`, which exposes the current conversation, task and call identifiers; durable output and diagnostics; document snapshots and watches; and `commit` for atomic entries/document changes. These capabilities are revoked when the invocation ends.
 
-Add `Invocation.ToolCall` as a dependency to the native Tool declaration and yield that service inside its handler. Its `output`, `details` and `diagnostic` operations report distinct channels of progress. The [example Toolkit](../apps/example/src/Uppercase.ts) shows the minimal binding; the API comments in `effect-harness/Invocation` describe the reporting operations.
+Tools default to unsafe replay and sequential scheduling metadata. Set `replay: 'safe'` only when repeating the entire handler after a crash is safe. A durable document update alone does not make an arbitrary handler replay safe.
 
-For richer results, supply `project` in the per-name metadata passed to `ToolRegistration.bind`, or annotate the native Tool with `ToolRegistration.Metadata`. The projector maps the native result to model-facing content and committed metadata. Keep model content in `content`; private details and control requests remain separate. Provider media translation is described in [the provider guide](providers.md#tool-media-and-native-validation).
+The local loop currently executes tool calls in response order. The `executionMode` declaration is metadata; parallel tool scheduling is not implemented.
 
-## Bind the portable coding tools
+`Extension.make` statically bundles tools, hooks, and prompt sections. `Extension.provide` defers a Layer to runtime construction. Hooks can transform prompts, block tool calls, replace arguments or results, and continue a yielded response. See the [extension example](../apps/example/src/tour/Extensions.ts).
 
-The Node environment adapter supplies narrow filesystem capabilities in addition to native Effect platform services. This Layer registers `read`, `write`, `edit` and `bash`:
-
-```ts
-import * as NodeServices from '@effect/platform-node/NodeServices'
-import * as MutationLocks from 'effect-harness/MutationLocks'
-import * as NodeEnv from 'effect-harness/NodeEnv'
-import * as Registry from 'effect-harness/Registry'
-import * as CodingTools from 'effect-harness/tools/CodingTools'
-import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
-
-const Environment = NodeEnv.layer({ id: 'workspace', cwd: '/srv/project' })
-const Locks = MutationLocks.layer
-
-export const CodingRegistry = Layer.unwrap(
-  CodingTools.make().pipe(Effect.map((extension) => Registry.layer([extension]))),
-).pipe(Layer.provide(Layer.mergeAll(Environment, Locks)), Layer.provide(NodeServices.layer))
-```
-
-Install `@effect/platform-node` for this adapter. Replace `/srv/project` with the application's working directory. Share `Locks` across every runtime that writes files in the same environment namespace.
-
-The environment is a capability boundary, not a filesystem sandbox. The host chooses access policy and which tools a conversation can select. For a remote or restricted environment, supply your own Env capabilities instead of the Node adapter.
-
-## Choose an honest recovery policy
-
-Replay is `unsafe` by default. Mark a tool `safe` only when repeating its body after a crash is acceptable. Pure transformations are a straightforward case; a payment, shell command or file mutation needs an application-specific decision. Built-in coding tools retain unsafe replay.
-
-Use [replay and recovery](explanation/recovery.md#external-actions) to reason about an external action that completes before its result commits. The [tool policy reference](reference/configuration.md#tool-policy) lists execution and output defaults.
-
-## Verify registration
-
-Build the Registry and inspect Registry.snapshot. The bound tools should appear under the coding-tools extension. Check the [coding tool API](../packages/effect-harness/src/tools/CodingTools.ts) when selecting read windows, shell timeouts and output limits.
-
-For custom environment adapters, run the public `effect-harness/testing` conformance helpers. Check scoped reader/watcher lifetimes and process cancellation before offering those tools to a conversation.
+The [uppercase tool](../apps/example/src/Uppercase.ts) is a complete declaration/handler example. The [documents example](../apps/example/src/tour/Documents.ts) writes application state from a handler.

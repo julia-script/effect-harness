@@ -1,8 +1,11 @@
-/** This entrypoint runs unchanged in Node, Bun, Deno or a browser module. */
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
-import { run } from './Portable.ts'
+import * as Schema from 'effect/Schema'
+import * as Portable from './Portable.js'
 
 await Effect.runPromise(
-  run.pipe(Effect.flatMap((result) => Console.log(`portable: ${JSON.stringify(result)}`))),
+  Effect.scoped(Portable.program).pipe(
+    Effect.flatMap(Schema.encodeEffect(Schema.fromJsonString(Portable.ResultSchema))),
+    Effect.flatMap(Console.log),
+  ),
 )

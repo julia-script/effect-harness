@@ -1,13 +1,10 @@
 /**
  * Semantic model failure reasons and their permanent wrapper.
  */
-import * as SchemaField from './SchemaField.ts'
 import * as Schema from 'effect/Schema'
-import * as Usage from './Usage.ts'
 const Payload = Schema.Struct({
   message: Schema.String,
-  cause: SchemaField.optional(Schema.Defect()),
-  usage: SchemaField.optional(Usage.Usage),
+  cause: Schema.optionalKey(Schema.Defect()),
 })
 
 /**
@@ -80,9 +77,6 @@ export class ModelError extends Schema.TaggedError<ModelError>(
   }
   override get cause(): unknown {
     return this.reason.cause
-  }
-  get usage(): Usage.Usage | undefined {
-    return this.reason.usage
   }
   get isRetryable(): boolean {
     return this.reason.isRetryable

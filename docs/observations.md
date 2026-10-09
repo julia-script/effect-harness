@@ -1,17 +1,16 @@
-# Observe committed changes
+# Observing committed work
 
-Call `Conversation.watch` to obtain an Effect Stream. The first item is a coherent snapshot; later items contain committed frames. Snapshot acquisition and subscription share the mutation line, so a commit cannot fall between them.
+`Submission.wait` returns a persisted `InputDone` or `InputUnanswered` record. Reusing a request ID in the same conversation retrieves the existing submission. Interrupting `wait` cancels the observer; it does not cancel durable execution. `Submission.withdraw` removes queued work when it has not yet been placed, and `Conversation.abort` stops work for that conversation.
 
-The change schema contains three cases:
+`Conversation.entries` returns a Stream of persisted entries. It emits existing visible history in ascending order and then follows newly committed entries. Supply `{ after: entryId }` to continue after a known entry.
 
-- `snapshot`: initial conversation state and revision.
-- `commit`: the next persisted frame.
-- `reset`: a fresh snapshot after a subscriber loses its revision continuity.
+```ts
+const entries = root.pipe(Conversation.entries())
+const nextEntries = root.pipe(Conversation.entries({ after: lastSeen }))
+```
 
-Treat snapshots and resets as replacement state. Apply commit operations only after the preceding revision. The observer buffer is bounded; a slow subscriber can recover through a reset instead of retaining unbounded history in memory.
+Entries include user input, assistant messages, tool progress, diagnostics, and results. `InputDone.answer` identifies the final assistant entry; entry `model` values encode native Effect AI prompt messages through schemas.
 
-`Conversation.snapshot` reads current committed state without opening a subscription. Closing the harness or the consuming Scope ends the watch.
+`Conversation.snapshot(document, target)` returns an optional decoded document revision. `Conversation.watch(document, target)` returns a Stream starting with the current revision and then committed revisions of that document. Watching a missing document fails; retiring the document ends the stream. Decoding happens on the client, using the supplied schema. The backend carries schema-backed JSON data.
 
-A missing conversation fails with `StorageError` carrying `NotFoundError`. `Conversation.document` returns `Option.none` when the requested document is absent; check it before accessing the document value.
-
-The application can send schema-encoded observations over a socket or SSE connection. It owns transport, authentication and routing. Remote clients reconnect to the owning harness and acquire a new snapshot.
+`Session.commits` observes atomic write batches inside a runtime. `Session.watch` observes document revisions when using a Session independently. Scope cleanup ends subscriptions. Progress belongs to persisted history, so reconnecting observers can inspect it after a restart.

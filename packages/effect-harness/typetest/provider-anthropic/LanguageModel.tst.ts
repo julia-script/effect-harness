@@ -9,11 +9,9 @@ import * as Toolkit from 'effect/ai/Toolkit'
 import type * as AnthropicClient from '@effect/ai-anthropic/AnthropicClient'
 import type * as AnthropicLanguageModel from '@effect/ai-anthropic/AnthropicLanguageModel'
 
-import * as Catalog from 'effect-harness/provider-anthropic/Catalog'
 import * as Prompt from 'effect-harness/provider-anthropic/Prompt'
 
 import type * as Layer from 'effect/Layer'
-import type { ModelError } from 'effect-harness/ModelError'
 class Audit extends Context.Service<
   Audit,
   { readonly record: (value: number) => Effect.Effect<void> }
@@ -73,13 +71,6 @@ test('owned construction pins native client outputs ', () => {
       AnthropicClient.AnthropicClient
     >
   >()
-  expect(
-    Catalog.descriptor({ modelId: 'declared', contextWindow: 200000, maxOutputTokens: 32000 }),
-  ).type.toBe<Effect.Effect<Catalog.Descriptor, ModelError, AnthropicClient.AnthropicClient>>()
-  expect(Catalog.descriptor).type.not.toBeCallableWith(
-    { modelId: 'declared', contextWindow: 1, maxOutputTokens: 1 },
-    42,
-  )
 })
 
 test('both native config override forms retain caller services and foreign errors', () => {
@@ -97,16 +88,6 @@ test('both native config override forms retain caller services and foreign error
   expect(HarnessAnthropicLanguageModel.withConfigOverride).type.not.toBeCallableWith(request, {
     max_tokens: 'wrong',
   })
-})
-
-test('curried catalogue projection retains captured native client channels', () => {
-  const entry = { modelId: 'declared', contextWindow: 200000, maxOutputTokens: 32000 }
-  expect(Catalog.descriptor('custom')(entry)).type.toBe<
-    Effect.Effect<Catalog.Descriptor, ModelError, AnthropicClient.AnthropicClient>
-  >()
-  expect(Catalog.descriptor()(entry)).type.toBe<
-    Effect.Effect<Catalog.Descriptor, ModelError, AnthropicClient.AnthropicClient>
-  >()
 })
 
 import * as ProviderAnthropic from 'effect-harness/provider-anthropic'

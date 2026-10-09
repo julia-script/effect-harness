@@ -1,37 +1,22 @@
-import { Invocation, Registry, ToolRegistration, ToolError } from 'effect-harness'
-import { Effect, Layer, Schema } from 'effect'
-import { Tool, Toolkit } from 'effect/ai'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import * as Tool from 'effect-harness/Tool'
+import { ToolExecution } from 'effect-harness/ToolExecution'
+import * as Toolkit from 'effect-harness/Toolkit'
 
-export const Uppercase = Tool.make('uppercase', {
-  description: 'Convert text to uppercase without external side effects.',
-  parameters: Schema.Struct({ text: Schema.String }),
-  success: Schema.String,
-  failure: ToolError.ToolError,
-}).addDependency(Invocation.ToolCall)
-
-export const toolkit = Toolkit.make(Uppercase)
-
-export const handle = Effect.fn('Uppercase.handle')(function* ({
-  text,
-}: typeof Uppercase.parametersSchema.Type) {
-  const call = yield* Invocation.ToolCall
-  const result = text.toUpperCase()
-  yield* call.output(result)
-  return result
-})
-
-export const layerHandlers: Layer.Layer<Tool.Handler<'uppercase'>> = toolkit.toLayer({
-  uppercase: handle,
-})
-
-export const layerRegistry: Layer.Layer<
-  Registry.Registry,
-  Registry.RegistryError,
-  Tool.Handler<'uppercase'>
-> = Layer.unwrap(
-  Effect.gen(function* () {
-    // Pure uppercasing is safe to repeat if recovery occurs before its result is committed.
-    const tools = yield* ToolRegistration.bind(toolkit, { uppercase: { replay: 'safe' } })
-    return Registry.layer([{ name: 'example', tools }])
+export const tools = Toolkit.make(
+  Tool.make('uppercase', {
+    description: 'Convert text to uppercase',
+    parameters: Schema.Struct({ text: Schema.String }),
+    success: Schema.String,
+    replay: 'safe',
   }),
 )
+
+export const layer = tools.toLayer({
+  uppercase: Effect.fn('uppercase')(function* ({ text }) {
+    const execution = yield* ToolExecution
+    yield* execution.output('Converting text\n')
+    return text.toUpperCase()
+  }),
+})

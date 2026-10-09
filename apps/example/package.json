@@ -3,17 +3,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dependencies:build": "bun run --cwd ../../packages/effect-harness build",
-    "tour": "bun dist/Tour.js",
+    "start": "node dist/main.js",
+    "tour": "node dist/Tour.js",
+    "recovery": "node dist/tour/Recovery.js",
     "portable": "node dist/PortableMain.js",
     "typecheck": "tsc --noEmit",
     "build": "rm -rf dist && tsc",
-    "reproduce:unknown-tool": "bun run dependencies:build && bun src/ReproduceUnknownTool.ts",
-    "test": "bunx --bun vitest run --config vitest.config.ts --root ../.. apps/example/test && bun dist/main.js"
+    "test": "vitest run --config vitest.config.ts --root ../.. apps/example/test"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.1",
-    "@effect/sql-sqlite-bun": "4.0.1",
+    "@effect/platform-node": "4.0.1",
+    "@effect/sql-sqlite-node": "4.0.1",
     "effect": "catalog:",
     "effect-harness": "workspace:*"
   }
