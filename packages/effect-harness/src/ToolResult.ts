@@ -1,8 +1,27 @@
 import * as Schema from 'effect/Schema'
+import * as SchemaTransformation from 'effect/SchemaTransformation'
 import * as Prompt from 'effect/ai/Prompt'
 
-/** Model-visible content reuses Effect's text and media codecs. */
-export const ContentSchema = Schema.Array(Prompt.UserMessagePart)
+const Bytes = Schema.Uint8Array.annotate({
+  toCodecJson: () =>
+    Schema.link<Uint8Array>()(
+      Schema.TaggedStruct('@effect-harness/Bytes', { data: Schema.Uint8ArrayFromBase64 }),
+      SchemaTransformation.transform({
+        decode: (encoded) => encoded.data,
+        encode: (data) => ({ _tag: '@effect-harness/Bytes' as const, data }),
+      }),
+    ),
+})
+const FilePart = Prompt.FilePart.mapFields((fields) => ({
+  ...fields,
+  data: Schema.Union([Schema.String, Bytes, Schema.URL]),
+}))
+
+/**
+ * Model-visible content uses native Effect text and media parts.
+ * JSON codecs tag byte arrays to distinguish them from literal string data.
+ */
+export const ContentSchema = Schema.Array(Schema.Union([Prompt.TextPart, FilePart]))
 export type Content = typeof ContentSchema.Type
 
 export const DiagnosticSchema = Schema.Struct({
