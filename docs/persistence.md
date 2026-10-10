@@ -12,6 +12,8 @@ Memory requires no services. SQL requires Effect's `SqlClient`; JSONL requires `
 
 SQL initialization and mutations (`Storage.commit`, `Storage.mintId`, and Session commits that write) must run outside the supplying client's `SqlClient.withTransaction`. They fail with an `invalid` StorageError inside an ambient transaction: a savepoint cannot guarantee durability before its outer transaction settles. This rejection performs no storage write and does not poison Storage or Session; retry outside the application transaction.
 
+SQL transaction-control failures (including COMMIT and ROLLBACK failures) report an `uncertain` StorageError. Stop using that Storage instance and reopen it to reconcile the durable state before retrying; the failed write may have committed. Session also seals itself on an uncertain commit.
+
 `Session` is a scoped instance over Storage, shared by all conversations in that local runtime. It captures the storage service, caches decoded documents, serializes transactions, and publishes committed changes. A session can be used independently of an agent runtime:
 
 ```ts

@@ -1,8 +1,10 @@
 /** Indexed SQL storage using only the supplied Effect SqlClient. */
+import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as SchemaTransformation from 'effect/SchemaTransformation'
+import * as SqlError from 'effect/sql/SqlError'
 import * as SqlClient from 'effect/sql/SqlClient'
 import * as Errors from '../StorageError.js'
 import type { Access } from './Kernel.js'
@@ -296,9 +298,29 @@ export const make = Effect.gen(function* () {
             ),
           ),
         ),
-        Effect.mapError((cause) => {
-          if (cause._tag === 'StorageError' && cause.reason !== 'io') return cause
-          return Errors.make('uncertain', 'commit', 'SQL write outcome is uncertain', cause)
+        Effect.catchCause((cause) => {
+          // SqlClient converts COMMIT/ROLLBACK failures to defects in its finalizer.
+          if (
+            !cause.reasons.some(
+              (reason) => Cause.isDieReason(reason) && SqlError.isSqlError(reason.defect),
+            )
+          )
+            return Effect.failCause(
+              Cause.map(cause, (error) => {
+                if (error._tag === 'StorageError' && error.reason !== 'io') return error
+                return Errors.make('uncertain', 'commit', 'SQL write outcome is uncertain', error)
+              }),
+            )
+          const error = Errors.make('uncertain', 'commit', 'SQL write outcome is uncertain', cause)
+          // Retain cancellation and unrelated defects, and keep the full SQL cause on the error.
+          const remaining = Cause.fromReasons<never>(
+            cause.reasons.filter(
+              (reason): reason is Cause.Die | Cause.Interrupt =>
+                Cause.isInterruptReason(reason) ||
+                (Cause.isDieReason(reason) && !SqlError.isSqlError(reason.defect)),
+            ),
+          )
+          return Effect.failCause(Cause.combine(Cause.fail(error), remaining))
         }),
       ),
   }
