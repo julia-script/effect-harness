@@ -1,8 +1,8 @@
 import * as Console from 'effect/Console'
+import * as ScriptedStream from '../../dist/ScriptedStream.js'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
-import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Conversation from 'effect-harness/Conversation'
@@ -25,7 +25,7 @@ const finish = (reason) => ({
 })
 const ModelLive = Layer.effect(
   LanguageModel.LanguageModel,
-  LanguageModel.make({
+  ScriptedStream.make({
     generateText: ({ prompt }) =>
       Effect.succeed(
         prompt.content.some((message) => message.role === 'tool')
@@ -41,7 +41,6 @@ const ModelLive = Layer.effect(
               finish('tool-calls'),
             ],
       ),
-    streamText: () => Stream.empty,
   }),
 )
 const tools = Toolkit.make(Tool.make('work', { success: Schema.String, replay: 'safe' }))

@@ -7,6 +7,8 @@ import * as Submission from '../Submission.js'
 import * as Tool from '../Tool.js'
 import * as ToolResult from '../ToolResult.js'
 import * as PreparedRequest from '../PreparedRequest.js'
+import * as Usage from '../Usage.js'
+import * as LiveState from '../LiveState.js'
 
 const shared = { submissionId: Record.SubmissionId }
 const running = {
@@ -15,6 +17,16 @@ const running = {
   agent: Agent.StateSchema,
   ordinal: Schema.optionalKey(Schema.Natural),
   preparation: Schema.optionalKey(PreparedRequest.SnapshotSchema),
+  attempt: Schema.optionalKey(Usage.AttemptId),
+  retries: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
+  ),
+}
+const prepared = {
+  ...running,
+  preparation: PreparedRequest.SnapshotSchema,
+  attempt: Usage.AttemptId,
+  retries: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
 }
 export const RunStateSchema = Schema.Union([
   Schema.TaggedStruct('queued', {
@@ -23,6 +35,17 @@ export const RunStateSchema = Schema.Union([
     draft: Submission.InputDraftSchema,
   }),
   Schema.TaggedStruct('request', { phase: Schema.tag('request'), ...running }),
+  Schema.TaggedStruct('streaming', {
+    phase: Schema.tag('streaming'),
+    ...prepared,
+    revision: Schema.Natural,
+    partial: Schema.optionalKey(LiveState.PartialSchema),
+  }),
+  Schema.TaggedStruct('retry', {
+    phase: Schema.tag('retry'),
+    ...prepared,
+    until: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
+  }),
   Schema.TaggedStruct('tools', {
     phase: Schema.tag('tools'),
     ...running,

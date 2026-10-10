@@ -1,3 +1,4 @@
+import * as ScriptedStream from '../ScriptedStream.js'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as NodePath from '@effect/platform-node/NodePath'
 import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
@@ -44,7 +45,7 @@ NodeRuntime.runMain(
         },
         response: undefined,
       }
-      const model = yield* LanguageModel.make({
+      const model = yield* ScriptedStream.make({
         generateText: () =>
           Effect.sync(() => {
             step++
@@ -72,7 +73,6 @@ NodeRuntime.runMain(
               ]
             return [{ type: 'text' as const, text: 'File created and read.' }, finish]
           }),
-        streamText: () => Stream.empty,
       })
       const services = yield* Layer.build(Layer.merge(binding(root), Storage.layerMemory))
       const runtime = yield* HarnessRuntime.make({ tools }).pipe(

@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -49,9 +50,8 @@ const finish = (reason: Response.FinishReason): Response.FinishPartEncoded => ({
 })
 const plainModel = Layer.effect(
   LanguageModel.LanguageModel,
-  LanguageModel.make({
+  ScriptedStream.make({
     generateText: () => Effect.succeed([{ type: 'text', text: 'answer' }, finish('stop')]),
-    streamText: () => Stream.empty,
   }),
 )
 const customContract = {
@@ -488,7 +488,7 @@ describe('native legacy run adoption', () => {
           )
           const model = Layer.effect(
             LanguageModel.LanguageModel,
-            LanguageModel.make({
+            ScriptedStream.make({
               generateText: ({ prompt }) =>
                 Effect.succeed(
                   prompt.content.some((message) => message.role === 'tool')
@@ -504,7 +504,6 @@ describe('native legacy run adoption', () => {
                         finish('tool-calls'),
                       ],
                 ),
-              streamText: () => Stream.empty,
             }),
           )
           const firstScope = yield* Scope.make()
@@ -644,7 +643,7 @@ describe('native legacy run adoption', () => {
           Storage.layerMemory,
           Layer.effect(
             LanguageModel.LanguageModel,
-            LanguageModel.make({
+            ScriptedStream.make({
               generateText: ({ prompt }) =>
                 Effect.succeed(
                   prompt.content.some((message) => message.role === 'tool')
@@ -667,7 +666,6 @@ describe('native legacy run adoption', () => {
                         finish('tool-calls'),
                       ],
                 ),
-              streamText: () => Stream.empty,
             }),
           ),
         ]),
@@ -703,13 +701,12 @@ describe('native legacy run adoption', () => {
             Effect.provide(
               Layer.effect(
                 LanguageModel.LanguageModel,
-                LanguageModel.make({
+                ScriptedStream.make({
                   generateText: () =>
                     Deferred.succeed(entered, undefined).pipe(
                       Effect.andThen(Deferred.await(release)),
                       Effect.as([{ type: 'text', text: 'answer' }, finish('stop')]),
                     ),
-                  streamText: () => Stream.empty,
                 }),
               ),
             ),
@@ -864,7 +861,7 @@ describe('native legacy run adoption', () => {
           Storage.layerMemory,
           Layer.effect(
             LanguageModel.LanguageModel,
-            LanguageModel.make({
+            ScriptedStream.make({
               generateText: ({ prompt }) =>
                 Effect.succeed(
                   prompt.content.some(
@@ -875,7 +872,6 @@ describe('native legacy run adoption', () => {
                     ? []
                     : [{ type: 'text', text: 'answer' }, finish('stop')],
                 ),
-              streamText: () => Stream.empty,
             }),
           ),
         ]),
@@ -1035,7 +1031,7 @@ for (const reused of [false, true]) {
                   return 'caught'
                 }),
             })
-            const native = yield* LanguageModel.make({
+            const native = yield* ScriptedStream.make({
               generateText: () =>
                 Effect.succeed([
                   {
@@ -1047,7 +1043,6 @@ for (const reused of [false, true]) {
                   },
                   finish('tool-calls'),
                 ]),
-              streamText: () => Stream.empty,
             })
             const runtime = yield* HarnessRuntime.make({ tools: toolkit }).pipe(
               Effect.provideService(Storage.Storage, storage),

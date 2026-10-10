@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -285,7 +286,7 @@ describe('task retirement failures and legacy state', () => {
           },
           response: undefined,
         }
-        const model = yield* LanguageModel.make({
+        const model = yield* ScriptedStream.make({
           generateText: ({ prompt }) =>
             Effect.succeed(
               prompt.content.some((message) => message.role === 'tool')
@@ -301,7 +302,6 @@ describe('task retirement failures and legacy state', () => {
                     { ...finish, reason: 'tool-calls' as const },
                   ],
             ),
-          streamText: () => Stream.empty,
         })
         let owner: Record.TaskId | undefined
         const runtime = yield* HarnessRuntime.make({ tools }).pipe(

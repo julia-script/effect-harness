@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -45,9 +46,8 @@ const target = (conversationId: Record.ConversationId): Document.Target => ({
 const globalTarget = { scope: { _tag: 'session' } } as const
 const model = Layer.effect(
   LanguageModel.LanguageModel,
-  LanguageModel.make({
+  ScriptedStream.make({
     generateText: () => Effect.die('Initialization must not invoke the model'),
-    streamText: () => Stream.empty,
   }),
 )
 const withMemory = <A, E, R>(effect: Effect.Effect<A, E, R>) =>

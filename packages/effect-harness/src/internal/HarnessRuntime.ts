@@ -313,6 +313,10 @@ export const make = Effect.fnUntraced(function* <
         (lease) => ({
           session,
           requireSubmissionFormat,
+          requireStreamFormat: StorageFormat.requireSupportedFormat({
+            formatVersion: 6,
+            minimumReaderVersion: 6,
+          }).pipe(Effect.provideContext(context)),
           requireRequestFormat: StorageFormat.requireSupportedFormat({
             formatVersion: 5,
             minimumReaderVersion: 5,

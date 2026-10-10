@@ -11,8 +11,8 @@ export interface Format {
   readonly minimumReaderVersion: number
 }
 
-/** This reader understands legacy containers and explicitly activated v2/v3/v4 containers. */
-export const readerVersion = 5
+/** This reader understands legacy containers and explicitly activated formats 2 through 6. */
+export const readerVersion = 6
 
 export class StorageFormatError extends Schema.TaggedError<StorageFormatError>()(
   'StorageFormatError',
@@ -62,6 +62,8 @@ export const inspect: Effect.Effect<Format, Failure, Storage> = capability.pipe(
  * v3 enables compact document splices and rejects format2 readers before replay.
  * v4 enables grouped submission membership and canonical context boundaries;
  * reader3 rejects its container before decoding or dropping grouped facts.
+ * v5 enables immutable prepared requests; v6 enables streaming progress and finite retry
+ * phases. Reader5 refuses format6 before replaying either phase.
  *
  * This is a reopen barrier, not fencing of foreign writers that already opened the store.
  * Stop old processes before activation. JSONL requires one owning writer per file;
@@ -79,15 +81,15 @@ export const requireSupportedFormat = Effect.fn('StorageFormat.requireSupportedF
 export const validate = (format: Format): Effect.Effect<Format, StorageFormatError> =>
   Schema.decodeUnknownEffect(
     Schema.Struct({
-      formatVersion: Schema.Literals([1, 2, 3, 4, 5]),
-      minimumReaderVersion: Schema.Literals([1, 2, 3, 4, 5]),
+      formatVersion: Schema.Literals([1, 2, 3, 4, 5, 6]),
+      minimumReaderVersion: Schema.Literals([1, 2, 3, 4, 5, 6]),
     }).check(Schema.makeFilter((marker) => marker.formatVersion === marker.minimumReaderVersion)),
   )(format).pipe(
     Effect.mapError(
       () =>
         new StorageFormatError({
           reason: 'unsupported',
-          message: 'Only matching container/reader pairs 1 through 5 are supported',
+          message: 'Only matching container/reader pairs 1 through 6 are supported',
         }),
     ),
     Effect.map(({ formatVersion, minimumReaderVersion }) => ({

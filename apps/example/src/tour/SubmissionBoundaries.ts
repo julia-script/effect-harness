@@ -1,3 +1,4 @@
+import * as ScriptedStream from '../ScriptedStream.js'
 /** Saved input/write IDs resume after a cold reopen; reset placement is a passive write. */
 import { NodeServices } from '@effect/platform-node'
 import * as Effect from 'effect/Effect'
@@ -5,7 +6,6 @@ import * as Exit from 'effect/Exit'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Scope from 'effect/Scope'
-import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Conversation from 'effect-harness/Conversation'
 import * as Harness from 'effect-harness/Harness'
@@ -19,7 +19,7 @@ export const program = Effect.scoped(
     const fs = yield* FileSystem.FileSystem
     const directory = yield* fs.makeTempDirectoryScoped()
     const disk = Storage.layerJsonl({ filePath: `${directory}/submissions.jsonl` })
-    const model = yield* LanguageModel.make({
+    const model = yield* ScriptedStream.make({
       generateText: () =>
         Effect.succeed([
           { type: 'text', text: 'continued' },
@@ -33,7 +33,6 @@ export const program = Effect.scoped(
             response: undefined,
           },
         ]),
-      streamText: () => Stream.empty,
     })
     const open = Effect.gen(function* () {
       const storage = yield* Layer.build(Layer.fresh(disk))

@@ -1,6 +1,6 @@
+import * as ScriptedStream from './ScriptedStream.js'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
-import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
 import type * as Response from 'effect/ai/Response'
 
@@ -17,7 +17,7 @@ const finish = (reason: Response.FinishReason): Response.FinishPartEncoded => ({
 /** Offline native provider: asks for uppercase, then answers with its committed result. */
 export const layer = Layer.effect(
   LanguageModel.LanguageModel,
-  LanguageModel.make({
+  ScriptedStream.make({
     generateText: ({ prompt, tools }) => {
       const lastUser = prompt.content.findLastIndex((message) => message.role === 'user')
       const result = prompt.content
@@ -49,6 +49,5 @@ export const layer = Layer.effect(
         finish('tool-calls'),
       ])
     },
-    streamText: () => Stream.empty,
   }),
 )

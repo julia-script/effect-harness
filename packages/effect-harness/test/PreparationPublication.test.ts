@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import { SqliteClient } from '@effect/sql-sqlite-node'
@@ -11,7 +12,7 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
-import * as LanguageModel from 'effect/ai/LanguageModel'
+import type * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Prompt from 'effect/ai/Prompt'
 import type * as Response from 'effect/ai/Response'
 import * as Extension from 'effect-harness/Extension'
@@ -90,13 +91,12 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             const interrupted = yield* Deferred.make<void>()
             const runtimeScope = yield* Scope.make()
             let calls = 0
-            const native = yield* LanguageModel.make({
+            const native = yield* ScriptedStream.make({
               generateText: () =>
                 Effect.sync(() => {
                   calls++
                   return answer
                 }),
-              streamText: () => Stream.empty,
             })
             const model = descriptor(native)
             if (failure === 'encode') {
@@ -198,7 +198,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             const observed: Prepared.Snapshot[] = []
             let hooks = 0
             let renders = 0
-            const native = yield* LanguageModel.make({
+            const native = yield* ScriptedStream.make({
               generateText: ({ prompt }) =>
                 Effect.gen(function* () {
                   const current = Option.getOrThrow(
@@ -212,7 +212,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                   }
                   return answer
                 }),
-              streamText: () => Stream.empty,
             })
             const toolkit = Toolkit.make(
               Tool.make('work', { parameters: Schema.Struct({}), success: Schema.String }),
@@ -333,13 +332,12 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               const context = yield* open(backend)
               let calls = 0
               let hooks = 0
-              const native = yield* LanguageModel.make({
+              const native = yield* ScriptedStream.make({
                 generateText: () =>
                   Effect.sync(() => {
                     calls++
                     return answer
                   }),
-                streamText: () => Stream.empty,
               })
               const extension = Extension.make({
                 name: 'publication',
@@ -409,13 +407,12 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             const open = yield* fixture
             const context = yield* open(backend)
             let calls = 0
-            const native = yield* LanguageModel.make({
+            const native = yield* ScriptedStream.make({
               generateText: () =>
                 Effect.sync(() => {
                   calls++
                   return answer
                 }),
-              streamText: () => Stream.empty,
             })
             const extension = Extension.make({
               name: 'publication',

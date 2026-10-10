@@ -24,6 +24,8 @@ import * as Transaction from '../Transaction.js'
 import type { PhaseResult } from './TaskRegistry.js'
 import * as RunLoop from './RunLoop.js'
 import * as Run from './RunState.js'
+import * as LiveState from '../LiveState.js'
+import * as Usage from '../Usage.js'
 import * as Inbox from './Inbox.js'
 import { NativeWriteFailure } from './NativeWriteFailure.js'
 import * as Preparation from './RequestPreparation.js'
@@ -154,7 +156,7 @@ export const make = (
       submissionId,
       draft: { type: 'input' as const, content: '' },
     }),
-    phases: { queued: phase, request: phase, tools: phase },
+    phases: { queued: phase, request: phase, streaming: phase, retry: phase, tools: phase },
   })
   const settle = Effect.fnUntraced(function* (
     record: Record.Task,
@@ -162,9 +164,49 @@ export const make = (
     message?: string,
   ) {
     const execution = yield* TaskExecution
-    const checkpoint = yield* Run.decode(record.state.checkpoint)
     yield* execution.commit((tx) =>
       Effect.gen(function* () {
+        const current = yield* Transaction.task(tx, record.id)
+        const checkpoint = yield* Run.decode(
+          Option.isSome(current) ? current.value.state.checkpoint : record.state.checkpoint,
+        )
+        if (
+          checkpoint._tag === 'streaming' &&
+          !(yield* Usage.receipts(tx, record.conversationId)).some(
+            (receipt) =>
+              receipt.identity._tag === 'requestAttempt' &&
+              receipt.identity.requestId === checkpoint.preparation.requestId &&
+              receipt.identity.attempt === checkpoint.attempt &&
+              receipt.identity.purpose === 'generation',
+          )
+        ) {
+          yield* Usage.record(tx, {
+            conversationId: record.conversationId,
+            identity: {
+              _tag: 'requestAttempt',
+              requestId: checkpoint.preparation.requestId,
+              attempt: checkpoint.attempt,
+              purpose: 'generation',
+            },
+            outcome:
+              reason === 'aborted'
+                ? { _tag: 'interrupted', reason }
+                : { _tag: 'failed', error: { message: message ?? reason } },
+            ...(checkpoint.partial?.usage === undefined ? {} : { usage: checkpoint.partial.usage }),
+          })
+        }
+        const live = yield* Transaction.snapshot(
+          tx,
+          LiveState.document,
+          LiveState.target(record.conversationId),
+        )
+        if (Option.isSome(live))
+          yield* Transaction.setDocument(
+            tx,
+            LiveState.document,
+            LiveState.target(record.conversationId),
+            {},
+          )
         yield* Inbox.settle(tx, record.conversationId, record.id, checkpoint.submissionId, {
           reason,
           ...(message === undefined ? {} : { detail: { message } }),
@@ -205,7 +247,7 @@ export const make = (
             if (
               checkpoint._tag !== 'queued' &&
               checkpoint.preparation !== undefined &&
-              (checkpoint._tag === 'request' || checkpoint.index < checkpoint.calls.length)
+              (checkpoint._tag !== 'tools' || checkpoint.index < checkpoint.calls.length)
             ) {
               const snapshot = yield* registry.snapshot
               // This read-only check neither renders nor activates the persisted format.

@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
@@ -39,14 +40,13 @@ const finish = (reason: Response.FinishReason): Response.FinishPartEncoded => ({
 })
 const plainModel = Layer.effect(
   LanguageModel.LanguageModel,
-  LanguageModel.make({
+  ScriptedStream.make({
     generateText: () => Effect.succeed([{ type: 'text', text: 'answer' }, finish('stop')]),
-    streamText: () => Stream.empty,
   }),
 )
 const modelForTool = Layer.effect(
   LanguageModel.LanguageModel,
-  LanguageModel.make({
+  ScriptedStream.make({
     generateText: ({ prompt, tools }) => {
       if (tools.length === 0)
         return Effect.succeed([{ type: 'text', text: 'answer' }, finish('stop')])
@@ -68,7 +68,6 @@ const modelForTool = Layer.effect(
           : [{ type: 'text', text: result.isFailure ? 'interrupted' : 'done' }, finish('stop')],
       )
     },
-    streamText: () => Stream.empty,
   }),
 )
 const work = (replay: Tool.Replay = 'safe') =>
@@ -347,7 +346,7 @@ describe('local runtime', () => {
             }),
         })
         const extension = Extension.make({ name: 'project', hooks: [hook], sections: [section] })
-        const native = yield* LanguageModel.make({
+        const native = yield* ScriptedStream.make({
           generateText: ({ prompt }) =>
             Effect.sync(() => {
               seen = prompt.content
@@ -356,7 +355,6 @@ describe('local runtime', () => {
                 .join('\n')
               return [{ type: 'text', text: 'answer' }, finish('stop')]
             }),
-          streamText: () => Stream.empty,
         })
         const runtime = yield* HarnessRuntime.make({ extensions: [extension] }).pipe(
           Effect.provideService(LanguageModel.LanguageModel, native),
@@ -375,9 +373,8 @@ describe('local runtime', () => {
   it.effect('selects an already-built provider through model metadata', () =>
     withMemory(
       Effect.gen(function* () {
-        const native = yield* LanguageModel.make({
+        const native = yield* ScriptedStream.make({
           generateText: () => Effect.succeed([{ type: 'text', text: 'selected' }, finish('stop')]),
-          streamText: () => Stream.empty,
         })
         const model = Model.make({
           definition: {

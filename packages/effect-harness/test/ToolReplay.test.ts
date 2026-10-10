@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -54,7 +55,7 @@ describe('tool declaration resolution', () => {
             }),
         })
         const entered = yield* Deferred.make<void>()
-        const model = yield* LanguageModel.make({
+        const model = yield* ScriptedStream.make({
           generateText: ({ prompt, tools }) => {
             const result = prompt.content
               .flatMap((m) => (m.role === 'tool' ? m.content : []))
@@ -76,7 +77,6 @@ describe('tool declaration resolution', () => {
               { ...finish, reason: 'tool-calls' as const },
             ])
           },
-          streamText: () => Stream.empty,
         })
         const firstScope = yield* Scope.make()
         yield* Effect.addFinalizer(() => Scope.close(firstScope, Exit.void))
@@ -170,7 +170,7 @@ describe('tool declaration resolution', () => {
         const last = Extension.make({ name: 'last', tools: toolkit }).pipe(
           Extension.provide(handlerLayer),
         )
-        const model = yield* LanguageModel.make({
+        const model = yield* ScriptedStream.make({
           generateText: ({ prompt, tools }) => {
             offeredNames = tools.map((tool) => tool.name)
             const result = prompt.content
@@ -189,7 +189,6 @@ describe('tool declaration resolution', () => {
               { ...finish, reason: 'tool-calls' as const },
             ])
           },
-          streamText: () => Stream.empty,
         })
         const runtime = yield* HarnessRuntime.make({
           tools: toolkit,

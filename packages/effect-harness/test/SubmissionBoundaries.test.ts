@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import { SqliteClient } from '@effect/sql-sqlite-node'
@@ -54,9 +55,8 @@ const users = (prompt: Prompt.Prompt) =>
     .flatMap((m) => m.content.filter((p) => p.type === 'text').map((p) => p.text))
 const plain = Layer.effect(
   LanguageModel.LanguageModel,
-  LanguageModel.make({
+  ScriptedStream.make({
     generateText: () => Effect.succeed(answer),
-    streamText: () => Stream.empty,
   }),
 )
 const client = (runtime: HarnessRuntime.HarnessRuntimeService) =>
@@ -104,7 +104,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             const entered = yield* Deferred.make<void>()
             const release = yield* Deferred.make<void>()
             const prompts: string[][] = []
-            const model = yield* LanguageModel.make({
+            const model = yield* ScriptedStream.make({
               generateText: ({ prompt }) => {
                 prompts.push(users(prompt))
                 return prompts.length === 1
@@ -114,7 +114,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                     )
                   : Effect.succeed(answer)
               },
-              streamText: () => Stream.empty,
             })
             const open = Effect.gen(function* () {
               const native = yield* Layer.build(Layer.fresh(disk[backend]))
@@ -239,7 +238,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                   return `result${n}`
                 }),
             })
-            const model = yield* LanguageModel.make({
+            const model = yield* ScriptedStream.make({
               generateText: ({ prompt }) => {
                 prompts.push(prompt)
                 return Effect.succeed(
@@ -264,7 +263,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                     : answer,
                 )
               },
-              streamText: () => Stream.empty,
             })
             const storageContext = yield* Layer.build(Layer.fresh(disk[backend]))
             const runtime = yield* HarnessRuntime.make({ tools }).pipe(
@@ -347,12 +345,11 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
           Effect.gen(function* () {
             const disk = yield* fixture
             const prompts: string[][] = []
-            const model = yield* LanguageModel.make({
+            const model = yield* ScriptedStream.make({
               generateText: ({ prompt }) => {
                 prompts.push(users(prompt))
                 return Effect.succeed(answer)
               },
-              streamText: () => Stream.empty,
             })
             const open = Effect.gen(function* () {
               const storageContext = yield* Layer.build(Layer.fresh(disk[backend]))
@@ -454,7 +451,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                   Effect.as('result'),
                 ),
             })
-            const model = yield* LanguageModel.make({
+            const model = yield* ScriptedStream.make({
               generateText: () => {
                 requests++
                 if (requests === 1)
@@ -474,7 +471,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                   Effect.andThen(Effect.die('model failed')),
                 )
               },
-              streamText: () => Stream.empty,
             })
             const scope = yield* Scope.make()
             yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
@@ -641,7 +637,7 @@ it.live(
               Effect.as('result'),
             ),
         })
-        const model = yield* LanguageModel.make({
+        const model = yield* ScriptedStream.make({
           generateText: ({ prompt }) => {
             prompts.push(users(prompt))
             return Effect.succeed(
@@ -659,7 +655,6 @@ it.live(
                 : answer,
             )
           },
-          streamText: () => Stream.empty,
         })
         const runtime = yield* HarnessRuntime.make({ tools }).pipe(
           Effect.provide(handlers),
@@ -809,7 +804,7 @@ it.live('withdrawal/admission races remove each queued item and do not duplicate
       const entered = yield* Deferred.make<void>()
       const release = yield* Deferred.make<void>()
       let requests = 0
-      const model = yield* LanguageModel.make({
+      const model = yield* ScriptedStream.make({
         generateText: () => {
           requests++
           return requests === 1
@@ -819,7 +814,6 @@ it.live('withdrawal/admission races remove each queued item and do not duplicate
               )
             : Effect.succeed(answer)
         },
-        streamText: () => Stream.empty,
       })
       const runtime = yield* HarnessRuntime.make().pipe(
         Effect.provideService(LanguageModel.LanguageModel, model),
@@ -1121,7 +1115,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                 return 'once'
               }),
           })
-          const model = yield* LanguageModel.make({
+          const model = yield* ScriptedStream.make({
             generateText: () => {
               requests++
               if (requests === 1)
@@ -1142,7 +1136,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                   )
                 : Effect.succeed(answer)
             },
-            streamText: () => Stream.empty,
           })
           const open = Effect.gen(function* () {
             const storage = yield* Layer.build(Layer.fresh(disk[backend]))
@@ -1225,7 +1218,7 @@ it.live('historical queued v1 tasks retain IDs and order ahead of new inbox batc
       const entered = yield* Deferred.make<void>()
       const release = yield* Deferred.make<void>()
       const prompts: string[][] = []
-      const model = yield* LanguageModel.make({
+      const model = yield* ScriptedStream.make({
         generateText: ({ prompt }) => {
           prompts.push(users(prompt))
           return prompts.length === 1
@@ -1235,7 +1228,6 @@ it.live('historical queued v1 tasks retain IDs and order ahead of new inbox batc
               )
             : Effect.succeed(answer)
         },
-        streamText: () => Stream.empty,
       })
       const runtime = yield* HarnessRuntime.make().pipe(
         Effect.provideService(LanguageModel.LanguageModel, model),

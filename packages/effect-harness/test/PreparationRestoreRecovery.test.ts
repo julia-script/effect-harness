@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import { SqliteClient } from '@effect/sql-sqlite-node'
@@ -12,7 +13,6 @@ import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as AiError from 'effect/ai/AiError'
-import * as LanguageModel from 'effect/ai/LanguageModel'
 import type * as Response from 'effect/ai/Response'
 import * as Extension from 'effect-harness/Extension'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
@@ -112,7 +112,7 @@ const fixture = Effect.fnUntraced(function* (
         return yield* failure
       }),
   })
-  const native = yield* LanguageModel.make({
+  const native = yield* ScriptedStream.make({
     generateText: () =>
       Effect.gen(function* () {
         counters.provider++
@@ -129,7 +129,6 @@ const fixture = Effect.fnUntraced(function* (
         )
         return answer
       }),
-    streamText: () => Stream.empty,
   })
   const model = Model.make({
     definition: {

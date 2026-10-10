@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import { SqliteClient } from '@effect/sql-sqlite-node'
@@ -11,7 +12,7 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
-import * as LanguageModel from 'effect/ai/LanguageModel'
+import type * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Prompt from 'effect/ai/Prompt'
 import type * as Response from 'effect/ai/Response'
 import * as NativeTool from 'effect/ai/Tool'
@@ -139,7 +140,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             let configurations = 0
             const requests: Prepared.Snapshot[] = []
             const values: string[] = []
-            const native = yield* LanguageModel.make({
+            const native = yield* ScriptedStream.make({
               generateText: () =>
                 Effect.gen(function* () {
                   requests.push(
@@ -153,7 +154,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                   }
                   return answer
                 }),
-              streamText: () => Stream.empty,
             })
             const extension = Extension.make({
               name: 'prompt',
@@ -211,7 +211,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(first.context)))
                 .minimumReaderVersion,
-              5,
+              6,
             )
             yield* first.runtime.backend.configure({
               conversationId: root,
@@ -290,7 +290,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             })
             yield* registry.install(Registry.toolWrapper({ id: 'wrapper', version: 1 }, wrapper))
             const requests: Prepared.Snapshot[] = []
-            const firstModel = yield* LanguageModel.make({
+            const firstModel = yield* ScriptedStream.make({
               generateText: () =>
                 Effect.gen(function* () {
                   requests.push(
@@ -299,9 +299,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                   )
                   return intent()
                 }),
-              streamText: () => Stream.empty,
             })
-            const secondModel = yield* LanguageModel.make({
+            const secondModel = yield* ScriptedStream.make({
               generateText: () =>
                 Effect.gen(function* () {
                   requests.push(
@@ -314,7 +313,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                   )
                   return answer
                 }),
-              streamText: () => Stream.empty,
             })
             const first = descriptor(firstModel, config, undefined, 'one')
             const second = descriptor(secondModel, config, undefined, 'two')
@@ -394,7 +392,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             const entered = yield* Deferred.make<void>()
             let calls = 0
             const requests: Prepared.Snapshot[] = []
-            const native = yield* LanguageModel.make({
+            const native = yield* ScriptedStream.make({
               generateText: () =>
                 Effect.gen(function* () {
                   requests.push(
@@ -406,7 +404,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                     ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never))
                     : Effect.succeed(answer)
                 }),
-              streamText: () => Stream.empty,
             })
             const model = descriptor(native, config)
             const open = store
@@ -453,9 +450,8 @@ it.effect(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const native = yield* LanguageModel.make({
+        const native = yield* ScriptedStream.make({
           generateText: () => Effect.die('Provider must not run'),
-          streamText: () => Stream.empty,
         })
         const model = Model.make({
           definition: {
@@ -549,10 +545,9 @@ it.live(
             }),
           ),
         )
-        const native = yield* LanguageModel.make({
+        const native = yield* ScriptedStream.make({
           generateText: () =>
             Effect.sync(() => (++calls < 4 ? intent('read', { path: 'same.png' }) : answer)),
-          streamText: () => Stream.empty,
         })
         const limits = { maxWidth: 1, maxHeight: 30, maxBytes: 100000, maxInputPixels: 100 }
         const model = (modelId: string, images: boolean, maxWidth: number) =>
@@ -644,7 +639,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
           const preparations: Prepared.Snapshot[] = []
           const client = OpenAiClient.OpenAiClient.of({
             client: HttpClient.make(() => Effect.die('Unexpected HTTP work')),
-            createResponse: (input) =>
+            createResponseStream: (input) =>
               Effect.gen(function* () {
                 requests.push(input)
                 preparations.push(
@@ -656,7 +651,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
                 }
                 return yield* Effect.die('captured native wire')
               }),
-            createResponseStream: () => Effect.die('Unexpected streaming'),
+            createResponse: () => Effect.die('Unexpected nonstreaming'),
             createEmbedding: () => Effect.die('Unexpected embedding'),
           })
           const native = yield* OpenAiLanguageModel.make({

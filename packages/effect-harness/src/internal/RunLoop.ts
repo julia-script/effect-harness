@@ -1,6 +1,12 @@
 import * as ProviderState from './ProviderState.js'
 import { ProviderAffinity } from '../ProviderAffinity.js'
 import * as Usage from '../Usage.js'
+import * as Clock from 'effect/Clock'
+import * as Exit from 'effect/Exit'
+import * as Cause from 'effect/Cause'
+import * as AiError from 'effect/ai/AiError'
+import * as LiveState from '../LiveState.js'
+import * as ModelStream from './ModelStream.js'
 /** Executes one durable submission; scheduling and client admission live in HarnessRuntime. */
 import type * as Document from '../Document.js'
 import * as Context from 'effect/Context'
@@ -48,6 +54,7 @@ export interface BoundSection {
 }
 export interface Services {
   readonly nativeModel: Prepared.Binding
+  readonly requireStreamFormat: Services['requireSubmissionFormat']
   readonly requireRequestFormat: Services['requireSubmissionFormat']
   readonly refresh: Effect.Effect<
     Pick<Services, 'lease' | 'allTools' | 'toolExtensions' | 'sections' | 'runHooks'>,
@@ -126,8 +133,85 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       }),
     )
   }
+  const clearLive = (tx: Transaction.Transaction) =>
+    Effect.gen(function* () {
+      const found = yield* Transaction.snapshot(
+        tx,
+        LiveState.document,
+        LiveState.target(task.conversationId),
+      )
+      if (Option.isSome(found))
+        yield* Transaction.setDocument(
+          tx,
+          LiveState.document,
+          LiveState.target(task.conversationId),
+          {},
+        )
+    })
+  const identity = (
+    preparation: Prepared.Snapshot,
+    attempt: Usage.AttemptId,
+  ): Usage.ReceiptIdentity => ({
+    _tag: 'requestAttempt',
+    requestId: preparation.requestId,
+    attempt,
+    purpose: 'generation',
+  })
+  const nextAttempt = (attempt: number) => Schema.decodeEffect(Usage.AttemptId)(attempt + 1)
   while (true) {
     yield* checkOpen
+    if (state._tag === 'retry') {
+      const retry = state
+      let remaining = retry.until - (yield* Clock.currentTimeMillis)
+      while (remaining > 0) {
+        yield* Effect.sleep(Math.min(remaining, 0x7fffffff))
+        remaining = retry.until - (yield* Clock.currentTimeMillis)
+      }
+      const { until: _until, ...pinned } = retry
+      state = { ...pinned, _tag: 'request', phase: 'request' }
+      yield* write((tx, current) => saveState(tx, current, state))
+      continue
+    }
+    if (state._tag === 'streaming') {
+      const interrupted = state
+      const attempt = yield* nextAttempt(interrupted.attempt)
+      state = yield* write((tx, current) =>
+        Effect.gen(function* () {
+          let linkedEntryId: Record.EntryId | undefined
+          if (interrupted.partial !== undefined)
+            linkedEntryId = (yield* Transaction.appendEntry(tx, task.conversationId, {
+              kind: 'assistant.interrupted',
+              data: yield* Schema.encodeEffect(Schema.toCodecJson(LiveState.PartialSchema))(
+                interrupted.partial,
+              ),
+              ...(interrupted.partial.usage === undefined
+                ? {}
+                : { usage: interrupted.partial.usage }),
+            })).id
+          yield* Usage.record(tx, {
+            conversationId: task.conversationId,
+            identity: identity(interrupted.preparation, interrupted.attempt),
+            outcome: {
+              _tag: 'interrupted',
+              reason:
+                'Runtime scope ended before terminal commit; unreported external spend is unknown',
+            },
+            ...(interrupted.partial?.usage === undefined
+              ? {}
+              : { usage: interrupted.partial.usage }),
+            ...(linkedEntryId === undefined || interrupted.partial?.usage === undefined
+              ? {}
+              : { linkedEntryId }),
+          })
+          const { revision: _revision, partial: _partial, ...pinned } = interrupted
+          const next: Run.RunState = { ...pinned, _tag: 'request', phase: 'request', attempt }
+          yield* clearLive(tx)
+          yield* saveState(tx, current, next)
+          return next
+        }),
+      )
+      continue
+    }
     if (state._tag === 'queued') {
       const queued = state
       state = yield* write((tx, current) =>
@@ -497,13 +581,140 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
             : declaration.annotate(NativeTool.Strict, tool.strict)
         }),
       )
-      const response = yield* model
-        .generateText({
-          prompt: (yield* Preparation.own(preparation)).prompt,
-          toolkit: nativeToolkit,
-          disableToolCallResolution: true,
+      const attempt = requesting.attempt ?? preparation.attempt
+      const retries = requesting.retries ?? 0
+      const streaming: Extract<Run.RunState, { _tag: 'streaming' }> = {
+        ...requesting,
+        _tag: 'streaming',
+        phase: 'streaming',
+        preparation,
+        attempt,
+        retries,
+        revision: 0,
+      }
+      yield* write((tx, current) =>
+        Effect.gen(function* () {
+          yield* services.requireStreamFormat
+          yield* saveState(tx, current, streaming)
+          yield* Transaction.ensureDocument(
+            tx,
+            LiveState.document,
+            LiveState.target(task.conversationId),
+          )
+          yield* Transaction.setDocument(
+            tx,
+            LiveState.document,
+            LiveState.target(task.conversationId),
+            { generation: { requestId: preparation.requestId, attempt, revision: 0 } },
+          )
+        }),
+      )
+      state = streaming
+      const progressPolicy = yield* Settings.getOrDefault.pipe(Effect.provideContext(context))
+      const streamed = yield* ModelStream.consume(
+        model
+          .streamText({
+            prompt: (yield* Preparation.own(preparation)).prompt,
+            toolkit: nativeToolkit,
+            disableToolCallResolution: true,
+          })
+          .pipe(Stream.provideContext(requestContext)),
+        preparation,
+        progressPolicy.progress.partialIntervalMs,
+        (partial, revision) =>
+          write((tx, current) =>
+            Effect.gen(function* () {
+              if (!invocationActive())
+                return yield* new TaskError({
+                  reason: 'revoked',
+                  operation: 'model.partial',
+                  message: 'Model invocation ended',
+                })
+              yield* saveState(tx, current, { ...streaming, partial, revision })
+              yield* Transaction.setDocument(
+                tx,
+                LiveState.document,
+                LiveState.target(task.conversationId),
+                { generation: { requestId: preparation.requestId, attempt, revision, partial } },
+              )
+            }),
+          ),
+      )
+      if (Exit.isFailure(streamed.exit)) {
+        const cause = streamed.exit.cause
+        const reason = cause.reasons.length === 1 ? cause.reasons[0] : undefined
+        const error =
+          reason !== undefined && Cause.isFailReason(reason) && AiError.isAiError(reason.error)
+            ? reason.error
+            : undefined
+        const policy = yield* Settings.getOrDefault.pipe(Effect.provideContext(context))
+        const until =
+          error === undefined
+            ? undefined
+            : ModelStream.retryAt(error, retries, policy, yield* Clock.currentTimeMillis)
+        const known =
+          streamed.partial?.usage ??
+          (error === undefined ? undefined : ModelStream.errorUsage(error, preparation))
+        const followingAttempt = until === undefined ? undefined : yield* nextAttempt(attempt)
+        const next: Run.RunState | undefined =
+          until === undefined || followingAttempt === undefined
+            ? undefined
+            : {
+                ...requesting,
+                _tag: 'retry',
+                phase: 'retry',
+                preparation,
+                attempt: followingAttempt,
+                retries: retries + 1,
+                until,
+              }
+        yield* write((tx, current) =>
+          Effect.gen(function* () {
+            yield* Usage.record(tx, {
+              conversationId: task.conversationId,
+              identity: identity(preparation, attempt),
+              outcome: { _tag: 'failed', error: { message: Cause.pretty(cause) } },
+              ...(known === undefined ? {} : { usage: known }),
+            })
+            if (next === undefined) {
+              yield* clearLive(tx)
+              yield* saveState(tx, current, { ...requesting, attempt, retries })
+            } else {
+              yield* saveState(tx, current, next)
+              yield* Transaction.setDocument(
+                tx,
+                LiveState.document,
+                LiveState.target(task.conversationId),
+                {
+                  generation: {
+                    requestId: preparation.requestId,
+                    attempt: next.attempt,
+                    revision: 0,
+                    retryAt: next.until,
+                  },
+                },
+              )
+            }
+          }),
+        )
+        if (next === undefined) return yield* Effect.failCause(cause)
+        state = next
+        continue
+      }
+      const response = streamed.exit.value
+      const appendAssistant = (tx: Transaction.Transaction, draft: Transaction.EntryDraft) =>
+        Effect.gen(function* () {
+          const entry = yield* Transaction.appendEntry(tx, task.conversationId, draft)
+          yield* Usage.record(tx, {
+            conversationId: task.conversationId,
+            identity: identity(preparation, attempt),
+            outcome: { _tag: 'completed', value: { entryId: entry.id } },
+            linkedEntryId: entry.id,
+            ...(draft.usage === undefined ? {} : { usage: draft.usage }),
+          })
+          yield* clearLive(tx)
+          return entry
         })
-        .pipe(Effect.provideContext(requestContext))
       if (
         response.toolResults.length > 0 ||
         response.toolCalls.some((call) => call.providerExecuted)
@@ -583,14 +794,19 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           task.id,
         )
         if (decision !== undefined && '_tag' in decision && decision._tag === 'continue') {
-          const { preparation: _preparation, ...unprepared } = requesting
+          const {
+            preparation: _preparation,
+            attempt: _attempt,
+            retries: _retries,
+            ...unprepared
+          } = requesting
           const next: Run.RunState = {
             ...unprepared,
             prompt: Prompt.concat(nextPrompt, Prompt.make([decision.input])),
           }
           yield* write((tx, current) =>
             Effect.gen(function* () {
-              yield* Transaction.appendEntry(tx, task.conversationId, {
+              yield* appendAssistant(tx, {
                 kind: 'assistant',
                 usage,
                 model: yield* Schema.encodeEffect(Run.Messages)(responsePrompt.content),
@@ -607,7 +823,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         }
         yield* write((tx) =>
           Effect.gen(function* () {
-            const entry = yield* Transaction.appendEntry(tx, task.conversationId, {
+            const entry = yield* appendAssistant(tx, {
               kind: 'assistant',
               usage,
               model: yield* Schema.encodeEffect(Run.Messages)(responsePrompt.content),
@@ -644,7 +860,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       }
       yield* write((tx, current) =>
         Effect.gen(function* () {
-          yield* Transaction.appendEntry(tx, task.conversationId, {
+          yield* appendAssistant(tx, {
             kind: 'assistant',
             usage,
             model: yield* Schema.encodeEffect(Run.Messages)(responsePrompt.content),

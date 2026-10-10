@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Deferred from 'effect/Deferred'
@@ -8,7 +9,6 @@ import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Path from 'effect/Path'
 import * as Scope from 'effect/Scope'
-import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
 import type * as Response from 'effect/ai/Response'
 import * as Conversation from 'effect-harness/Conversation'
@@ -43,7 +43,7 @@ it.live(
         const filePath = path.join(directory, 'records.jsonl')
         const entered = yield* Deferred.make<void>()
         const release = yield* Deferred.make<void>()
-        const model = yield* LanguageModel.make({
+        const model = yield* ScriptedStream.make({
           generateText: ({ prompt }) => {
             const user = prompt.content.findLast((message) => message.role === 'user')
             if (user?.content.some((part) => part.type === 'text' && part.text === 'complete'))
@@ -53,7 +53,6 @@ it.live(
               Effect.as(answer),
             )
           },
-          streamText: () => Stream.empty,
         })
         const open = Effect.gen(function* () {
           const storage = yield* Layer.build(Storage.layerJsonl({ filePath }))

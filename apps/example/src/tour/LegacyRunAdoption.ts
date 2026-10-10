@@ -1,7 +1,7 @@
+import * as ScriptedStream from '../ScriptedStream.js'
 /** One runtime runs registered tasks and ordinary durable conversation submissions. */
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as Stream from 'effect/Stream'
 import * as Layer from 'effect/Layer'
 import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
@@ -37,7 +37,7 @@ const custom = Task.make({
 })
 const model = Layer.effect(
   LanguageModel.LanguageModel,
-  LanguageModel.make({
+  ScriptedStream.make({
     generateText: () =>
       Effect.succeed([
         { type: 'text', text: 'Hello from the supervised conversation.' },
@@ -51,7 +51,6 @@ const model = Layer.effect(
           response: undefined,
         },
       ]),
-    streamText: () => Stream.empty,
   }),
 )
 const program = Effect.scoped(

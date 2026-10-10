@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { NodeServices } from '@effect/platform-node'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
@@ -97,7 +98,7 @@ describe('model-call control receipt compatibility', () => {
           const storage = yield* Layer.buildWithScope(Storage.layerJsonl({ filePath }), firstScope)
           let requests = 0
           let modelResult: unknown
-          const model = yield* LanguageModel.make({
+          const model = yield* ScriptedStream.make({
             generateText: ({ prompt }) => {
               requests++
               const result = prompt.content
@@ -112,7 +113,6 @@ describe('model-call control receipt compatibility', () => {
                 { ...finish, reason: 'tool-calls' as const },
               ])
             },
-            streamText: () => Stream.empty,
           })
           const toolkit = Toolkit.make(
             Tool.makeResult('work', { success: Schema.String, resultValidation: 'strict' }),

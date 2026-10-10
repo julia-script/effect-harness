@@ -1,3 +1,4 @@
+import * as ScriptedStream from '../ScriptedStream.js'
 import * as NodeChildProcessSpawner from '@effect/platform-node/NodeChildProcessSpawner'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as NodePath from '@effect/platform-node/NodePath'
@@ -58,7 +59,7 @@ NodeRuntime.runMain(
         },
         response: undefined,
       }
-      const model = yield* LanguageModel.make({
+      const model = yield* ScriptedStream.make({
         generateText: () =>
           Effect.sync(() => {
             step++
@@ -92,7 +93,6 @@ NodeRuntime.runMain(
               finish,
             ]
           }),
-        streamText: () => Stream.empty,
       })
       const services = yield* Layer.build(Layer.merge(binding(root), Storage.layerMemory))
       const runtime = yield* HarnessRuntime.make({ tools }).pipe(
