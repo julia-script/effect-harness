@@ -509,7 +509,10 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       )
       // A handler may already return the canonical media envelope. Expose its native
       // content to result hooks before the final model-visible projection is encoded.
-      const envelope = Schema.decodeUnknownOption(jsonCodec(ToolResult.Envelope))(result.details)
+      const envelope =
+        definition !== undefined && Tool.hasResultChannels(definition)
+          ? Option.none()
+          : Schema.decodeUnknownOption(jsonCodec(ToolResult.Envelope))(result.details)
       if (Option.isSome(envelope)) {
         result = { ...result, content: envelope.value.content }
         explicitEnvelope = true
@@ -522,6 +525,21 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       task.id,
     )
     if (after !== undefined && 'isError' in after) result = after
+    if (definition !== undefined && Tool.hasResultChannels(definition)) {
+      // Hook results contain encoded programmatic JSON, while media parts retain native bytes.
+      // Decode against the declared channel schema to validate replacements before committing.
+      const schema = (result.isError
+        ? definition.failureSchema
+        : definition.successSchema) as unknown as Schema.ConstraintCodec<
+        unknown,
+        unknown,
+        never,
+        never
+      >
+      yield* Schema.decodeEffect(jsonCodec(schema))(
+        yield* Schema.encodeEffect(jsonCodec(ToolResult.ResultSchema))(result),
+      ).pipe(Effect.provideContext(context))
+    }
     const plainText = result.content.flatMap((part) =>
       part.type === 'text' && Object.keys(part.options).length === 0 ? [part.text] : [],
     )
