@@ -116,6 +116,8 @@ const clientImpl = (
   })
   return OpenAiClient.OpenAiClient.of({
     ...self,
+    client: self.client,
+    createEmbedding: self.createEmbedding.bind(self),
     createResponse: Effect.fnUntraced(function* (payload) {
       const translated = yield* translate(payload)
       return yield* self.createResponse(translated)
