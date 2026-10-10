@@ -44,7 +44,11 @@ export const validate = Effect.fn('ImagesWasm.validateJpeg')(function* (
         useTArray: true,
         formatAsRGBA: true,
         tolerantDecoding: false,
-        maxResolutionInMP: maxInputPixels / 1_000_000,
+        // jpeg-js converts back with * 1000 * 1000; a fractional MP can round below
+        // the exact pixel cap. Whole MPs round outward by less than 1,000,000 pixels.
+        // Headers.inspect enforces the exact caller cap before this redundant guard;
+        // decoder allocations remain capped independently by the geometry above.
+        maxResolutionInMP: Math.ceil(maxInputPixels / 1_000_000),
         maxMemoryUsageInMB: memoryBytes / 1_048_576,
       })
       if (
