@@ -13,6 +13,11 @@ export const Row = Schema.Union([
   Schema.TaggedStruct('document', { value: Domain.DocumentHistory }),
 ])
 export type Row = typeof Row.Type
+/** Immutable revision headers can be checked without decoding obsolete values or operations. */
+export const ContentHeader = Schema.Struct({
+  _tag: Schema.Literals(['base', 'delta']),
+  version: Domain.Content.members[0].fields.version,
+})
 /** Native persistence keeps obsolete bodies opaque; ordinary reads still decode Row. */
 export const StoredDocument = Schema.Struct({
   record: Domain.Document,

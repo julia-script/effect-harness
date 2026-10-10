@@ -16,20 +16,22 @@ import * as StorageFormat from '../StorageFormat.js'
 
 const WriteBatchJson = Schema.fromJsonString(Schema.Array(Data.StorageWriteSchema))
 
-const documentHeader = Effect.fnUntraced(function* (history: typeof Row.StoredDocument.Type) {
-  const latest = history.revisions.at(-1)
-  const header = yield* Schema.decodeUnknownEffect(
-    Schema.Struct({
-      _tag: Schema.Literals(['base', 'delta']),
-      version: Domain.Content.members[0].fields.version,
-    }),
-  )(latest?.content).pipe(Effect.mapError(Errors.corrupt('documentMetadata')))
+const documentHeader = Effect.fnUntraced(function* (
+  stored: typeof Row.StoredDocument.Type,
+  id: number,
+  nextSeq: number,
+) {
+  const history = yield* Schema.decodeEffect(Row.StoredDocument)(stored).pipe(
+    Effect.mapError(Errors.corrupt('documentMetadata')),
+  )
   const record = yield* Schema.decodeEffect(Data.DocumentRecordSchema)(history.record).pipe(
     Effect.mapError(Errors.corrupt('documentMetadata')),
   )
   if (
-    latest === undefined ||
-    latest.seq < record.createdAt ||
+    record.id !== id ||
+    record.createdAt >= nextSeq ||
+    (record.retiredAt !== undefined &&
+      (record.retiredAt < record.createdAt || record.retiredAt >= nextSeq)) ||
     (record.scope._tag === 'conversation'
       ? record.history === undefined ||
         record.fork === undefined ||
@@ -37,7 +39,28 @@ const documentHeader = Effect.fnUntraced(function* (history: typeof Row.StoredDo
       : record.history !== undefined || record.fork !== undefined)
   )
     return yield* Errors.make('corrupt', 'documentMetadata', 'Invalid document metadata')
-  return { record: structuredClone(record), version: header.version }
+  let previous: number | undefined
+  let version: number | undefined
+  for (const revision of history.revisions) {
+    const header = yield* Schema.decodeUnknownEffect(Row.ContentHeader)(revision.content).pipe(
+      Effect.mapError(Errors.corrupt('documentMetadata')),
+    )
+    if (
+      revision.seq < record.createdAt ||
+      revision.seq >= nextSeq ||
+      (previous !== undefined && revision.seq <= previous) ||
+      (record.retiredAt !== undefined && revision.seq > record.retiredAt)
+    )
+      return yield* Errors.make('corrupt', 'documentMetadata', 'Invalid document revision sequence')
+    previous = revision.seq
+    version = header.version
+  }
+  if (version === undefined) {
+    // Ordinary retirement discards current-only history; that retired incarnation is valid.
+    if (record.retiredAt !== undefined && Domain.isCurrentOnly(history.record)) return Option.none()
+    return yield* Errors.make('corrupt', 'documentMetadata', 'Document has no retained headers')
+  }
+  return Option.some({ record: structuredClone(record), version })
 })
 
 export interface Access {
@@ -260,9 +283,11 @@ export const make = Effect.fnUntraced(function* (access: Access) {
             continue
           }
           if (retireIds.has(id) && !contentIds.has(id)) {
-            if (row.value._tag !== 'document' || row.value.value.record.retiredAt !== undefined)
+            if (row.value._tag !== 'document')
               return yield* Errors.make('notFound', 'commit', 'Document is absent or retired')
-            yield* documentHeader(row.value.value)
+            yield* documentHeader(row.value.value, id, metadata.nextSeq)
+            if (row.value.value.record.retiredAt !== undefined)
+              return yield* Errors.make('notFound', 'commit', 'Document is absent or retired')
             retirements.set(id, row.value)
           } else {
             loaded.set(
@@ -370,15 +395,10 @@ export const make = Effect.fnUntraced(function* (access: Access) {
         Effect.mapError(Errors.invalid('documentMetadata')),
       )
       const row = yield* access.get(id)
-      if (
-        Option.isNone(row) ||
-        row.value._tag !== 'document' ||
-        row.value.value.record.retiredAt !== undefined
-      )
-        return Option.none()
-      if (row.value.value.record.id !== id)
-        return yield* Errors.make('corrupt', 'documentMetadata', 'Document identity does not match')
-      return Option.some(yield* documentHeader(row.value.value))
+      if (Option.isNone(row) || row.value._tag !== 'document') return Option.none()
+      const metadata = yield* access.metadata
+      const header = yield* documentHeader(row.value.value, id, metadata.nextSeq)
+      return Option.filter(header, ({ record }) => record.retiredAt === undefined)
     }),
     scanEntries,
     entry: Effect.fnUntraced(function* (id, options) {
