@@ -506,6 +506,10 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           }),
         ),
       )
+      // A handler may already return the canonical media envelope. Expose its native
+      // content to result hooks before the final model-visible projection is encoded.
+      const envelope = Schema.decodeUnknownOption(jsonCodec(ToolResult.Envelope))(result.details)
+      if (Option.isSome(envelope)) result = { ...result, content: envelope.value.content }
     }
     const after = yield* runHooks(
       task.conversationId,
@@ -514,6 +518,10 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       task.id,
     )
     if (after !== undefined && 'isError' in after) result = after
+    const modelResult = yield* Schema.encodeEffect(jsonCodec(ToolResult.Envelope))({
+      _tag: '@effect-harness/ToolContent',
+      content: result.content,
+    })
     const output = Prompt.toolMessage({
       content: [
         Prompt.toolResultPart({
@@ -521,12 +529,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           name: call.name,
           providerExecuted: false,
           isFailure: result.isError,
-          result:
-            result.details !== undefined
-              ? result.details
-              : result.content
-                  .map((part) => (part.type === 'text' ? part.text : '[media]'))
-                  .join('\n'),
+          result: modelResult,
         }),
       ],
     })
