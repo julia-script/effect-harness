@@ -5,6 +5,7 @@ import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import type * as Record from './Record.js'
 import type * as Conversation from './Conversation.js'
+import type * as Submission from './Submission.js'
 import { HarnessBackend } from './HarnessBackend.js'
 import type { CreateOptions } from './HarnessBackend.js'
 import type { HarnessError } from './HarnessError.js'
@@ -26,6 +27,16 @@ export interface HarnessService {
   readonly conversation: (
     id: Record.ConversationId,
   ) => Effect.Effect<Option.Option<Conversation.Conversation>, HarnessError>
+  /**
+   * Reacquires a saved input submission using this client's backend.
+   * Validates immediately through backend.read, including settled submissions;
+   * missing IDs fail with HarnessError. Creates no durable records and retains
+   * the original conversation ID. Open that conversation to resume pending work
+   * after a local runtime restart, then use Submission.read, wait or withdraw.
+   */
+  readonly submission: (
+    id: Record.SubmissionId,
+  ) => Effect.Effect<Submission.Submission, HarnessError>
   readonly waitForIdle: Effect.Effect<void, HarnessError>
 }
 export class Harness extends Context.Service<Harness, HarnessService>()('effect-harness/Harness') {}
@@ -39,6 +50,12 @@ export const make = Effect.gen(function* () {
       backend
         .conversation(id)
         .pipe(Effect.map(Option.map((value) => ConversationHost.conversation(backend, value)))),
+    submission: (id) =>
+      backend
+        .read(id)
+        .pipe(
+          Effect.map((record) => ConversationHost.submission(backend, id, record.conversationId)),
+        ),
     waitForIdle: backend.waitForIdle,
   })
 })
