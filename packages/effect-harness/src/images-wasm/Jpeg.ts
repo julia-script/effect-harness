@@ -24,13 +24,28 @@ export const validate = Effect.fn('ImagesWasm.validateJpeg')(function* (
   }).pipe(Effect.uninterruptible)
   yield* Effect.try({
     try: () => {
+      const blocksWide = Math.ceil(size.width / 8)
+      const blocksHigh = Math.ceil(size.height / 8)
+      // jpeg-js supports up to four output components. Valid sampling factors are 1–4;
+      // ceil(width / (8 * maxH)) * h <= ceil(width / 8) + 3 (and likewise vertically).
+      // Bound every component by that worst-case MCU padding, regardless of subsampling.
+      const coefficients = 4 * (blocksWide + 3) * (blocksHigh + 3) * 256
+      const planes = 4 * blocksWide * blocksHigh * 64
+      const output = size.width * size.height * 8 // Four-component getData plus RGBA.
+      // Fixed table allowance stays capped: repeated tables/frames and invalid sampling
+      // still consume the decoder's cumulative allowance and cannot grow it from input.
+      const memoryBytes = coefficients + planes + output + 65_536
+      if (!Number.isSafeInteger(memoryBytes))
+        throw new ImageDecodeFailed({
+          mimeType: 'image/jpeg',
+          message: 'Strict JPEG allocation budget exceeds safe integer range',
+        })
       const image = codec.decode(bytes, {
         useTArray: true,
         formatAsRGBA: true,
         tolerantDecoding: false,
         maxResolutionInMP: maxInputPixels / 1_000_000,
-        // Coefficients and padded MCU planes require more space than the final RGBA image.
-        maxMemoryUsageInMB: (maxInputPixels * 64 + 65_536) / 1_048_576,
+        maxMemoryUsageInMB: memoryBytes / 1_048_576,
       })
       if (
         image.width !== size.width ||
