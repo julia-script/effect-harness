@@ -530,17 +530,47 @@ describe('FileWatch native coverage', () => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const root = yield* temporary
+        const delivered = yield* Deferred.make<void>()
+        const nativeChanges = new Set<string>()
+        let released = 0
+        const observed = Layer.effect(
+          FileWatch.Adapter,
+          Effect.map(FileWatch.Adapter, (native) => ({
+            subscribe: (targets, observer, options) =>
+              Effect.gen(function* () {
+                yield* Effect.addFinalizer(() => Effect.sync(() => released++))
+                return yield* native.subscribe(
+                  targets,
+                  {
+                    emit: (event) => {
+                      observer.emit(event)
+                      if (event._tag === 'Change' && event.path.startsWith(`${root}/burst-`)) {
+                        nativeChanges.add(event.path)
+                        if (nativeChanges.size >= 2) Deferred.doneUnsafe(delivered, Effect.void)
+                      }
+                    },
+                    fail: observer.fail,
+                  },
+                  options,
+                )
+              }),
+          })),
+        ).pipe(Layer.provide(FileWatchNode.adapter))
         const watcher = yield* Effect.flatMap(FileWatch.FileWatch, (service) =>
           service.open([{ path: '.' }], { queueCapacity: 1 }),
-        ).pipe(Effect.provide(FileWatchNode.layer({ root })))
-        // A stalled consumer keeps the startup invalidation queued while real host changes arrive.
-        yield* Effect.sleep('600 millis')
+        ).pipe(
+          Effect.provide(FileWatch.layer({ root }).pipe(Layer.provide([observed, NodePath.layer]))),
+        )
+        assert.strictEqual(watcher.coverage.mode, 'native')
+        // No consumer runs until two distinct native changes reach the one-slot queue.
+        // Completing writes or waiting a fixed duration does not establish callback delivery.
         yield* Effect.forEach(
           Array.from({ length: 128 }, (_, index) => index),
-          (index) => fs.writeFileString(`${root}/burst-${index}`, ''),
+          (index) => fs.writeFileString(`${root}/burst-${index}`, `burst:${index}`),
           { concurrency: 16, discard: true },
         )
-        yield* Effect.sleep('100 millis')
+        yield* Deferred.await(delivered).pipe(Effect.timeout('3 seconds'))
+        assert.isAtLeast(nativeChanges.size, 2)
         assert.deepStrictEqual(
           yield* watcher.events.pipe(
             Stream.take(1),
@@ -549,7 +579,28 @@ describe('FileWatch native coverage', () => {
           ),
           [{ _tag: 'Rescan', paths: [root], reason: 'overflow' }],
         )
+        assert.strictEqual((yield* fs.readDirectory(root)).length, 128)
+        for (let index = 0; index < 128; index++)
+          assert.strictEqual(yield* fs.readFileString(`${root}/burst-${index}`), `burst:${index}`)
+        const events: Array<FileWatch.Event> = []
+        const consumer = yield* watcher.events.pipe(
+          Stream.runForEach((event) => Effect.sync(() => events.push(event))),
+          Effect.forkScoped,
+        )
+        for (const value of ['continued:1', 'continued:2'])
+          yield* expectInvalidation(
+            events,
+            `${root}/continued`,
+            fs.writeFileString(`${root}/continued`, value),
+            fs
+              .readFileString(`${root}/continued`)
+              .pipe(Effect.map((actual) => assert.strictEqual(actual, value))),
+          )
         yield* watcher.close
+        yield* watcher.close
+        assert.strictEqual(released, 1)
+        yield* Fiber.join(consumer).pipe(Effect.timeout('2 seconds'))
+        assert.deepStrictEqual(yield* watcher.events.pipe(Stream.runCollect), [])
       }),
     ).pipe(Effect.provide(files)),
   )
