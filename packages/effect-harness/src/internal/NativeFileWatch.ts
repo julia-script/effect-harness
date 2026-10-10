@@ -244,6 +244,7 @@ export const subscribe: FileWatch.Adapter['Service']['subscribe'] = Effect.fn(
   // Every reattachment can have a native startup gap, not only the initial open.
   // One Clock-driven settling worker coalesces these invalidations without an unbounded timer per event.
   yield* Stream.tick('500 millis').pipe(
+    Stream.drop(1),
     Stream.runForEach(() =>
       Effect.sync(() => {
         if (!closed && settling) {

@@ -530,6 +530,7 @@ describe('FileWatch native coverage', () => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const root = yield* temporary
+        const settled = yield* Deferred.make<void>()
         const delivered = yield* Deferred.make<void>()
         const nativeChanges = new Set<string>()
         let released = 0
@@ -544,6 +545,12 @@ describe('FileWatch native coverage', () => {
                   {
                     emit: (event) => {
                       observer.emit(event)
+                      if (
+                        event._tag === 'Rescan' &&
+                        event.reason === 'coverage' &&
+                        event.paths.includes(root)
+                      )
+                        Deferred.doneUnsafe(settled, Effect.void)
                       if (event._tag === 'Change' && event.path.startsWith(`${root}/burst-`)) {
                         nativeChanges.add(event.path)
                         if (nativeChanges.size >= 2) Deferred.doneUnsafe(delivered, Effect.void)
@@ -563,13 +570,16 @@ describe('FileWatch native coverage', () => {
         )
         assert.strictEqual(watcher.coverage.mode, 'native')
         // No consumer runs until two distinct native changes reach the one-slot queue.
-        // Completing writes or waiting a fixed duration does not establish callback delivery.
-        yield* Effect.forEach(
-          Array.from({ length: 128 }, (_, index) => index),
-          (index) => fs.writeFileString(`${root}/burst-${index}`, `burst:${index}`),
-          { concurrency: 16, discard: true },
-        )
-        yield* Deferred.await(delivered).pipe(Effect.timeout('3 seconds'))
+        // First observe the adapter's delayed startup coverage, then actual burst delivery.
+        yield* Effect.gen(function* () {
+          yield* Deferred.await(settled)
+          yield* Effect.forEach(
+            Array.from({ length: 128 }, (_, index) => index),
+            (index) => fs.writeFileString(`${root}/burst-${index}`, `burst:${index}`),
+            { concurrency: 16, discard: true },
+          )
+          yield* Deferred.await(delivered)
+        }).pipe(Effect.timeout('3 seconds'))
         assert.isAtLeast(nativeChanges.size, 2)
         assert.deepStrictEqual(
           yield* watcher.events.pipe(
