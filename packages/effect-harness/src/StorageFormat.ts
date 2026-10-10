@@ -12,7 +12,7 @@ export interface Format {
 }
 
 /** This reader understands legacy containers and explicitly activated v2/v3/v4 containers. */
-export const readerVersion = 4
+export const readerVersion = 5
 
 export class StorageFormatError extends Schema.TaggedError<StorageFormatError>()(
   'StorageFormatError',
@@ -79,15 +79,15 @@ export const requireSupportedFormat = Effect.fn('StorageFormat.requireSupportedF
 export const validate = (format: Format): Effect.Effect<Format, StorageFormatError> =>
   Schema.decodeUnknownEffect(
     Schema.Struct({
-      formatVersion: Schema.Literals([1, 2, 3, 4]),
-      minimumReaderVersion: Schema.Literals([1, 2, 3, 4]),
+      formatVersion: Schema.Literals([1, 2, 3, 4, 5]),
+      minimumReaderVersion: Schema.Literals([1, 2, 3, 4, 5]),
     }).check(Schema.makeFilter((marker) => marker.formatVersion === marker.minimumReaderVersion)),
   )(format).pipe(
     Effect.mapError(
       () =>
         new StorageFormatError({
           reason: 'unsupported',
-          message: 'Only container/reader pairs 1/1, 2/2, 3/3 and 4/4 are supported',
+          message: 'Only matching container/reader pairs 1 through 5 are supported',
         }),
     ),
     Effect.map(({ formatVersion, minimumReaderVersion }) => ({

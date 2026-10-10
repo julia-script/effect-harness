@@ -26,6 +26,7 @@ import * as RunLoop from './RunLoop.js'
 import * as Run from './RunState.js'
 import * as Inbox from './Inbox.js'
 import { NativeWriteFailure } from './NativeWriteFailure.js'
+import * as Preparation from './RequestPreparation.js'
 
 interface Invocation {
   readonly record: Record.Task
@@ -37,19 +38,28 @@ class NativeInvocation extends Context.Service<NativeInvocation, Invocation>()(
 
 type BaseServices = Omit<
   RunLoop.Services,
-  'write' | 'writeCallback' | 'saveState' | 'invocationActive' | 'complete'
+  'write' | 'writeCallback' | 'saveState' | 'invocationActive' | 'complete' | 'refresh'
 >
 
 export const make = (
   services: (lease: RegistryScope.Lease) => BaseServices,
   registry: Registry.Service,
+  bindings: Pick<RunLoop.Services, 'models' | 'nativeModel' | 'nativeDefault'>,
 ): {
   readonly adapter: TaskScheduler.NativeRunAdapter
   readonly registration: Registry.Registration
 } => {
   const phase = Effect.fnUntraced(function* (): Effect.fn.Return<
     void,
-    TaskScheduler.Failure | HarnessError | AiError.AiError | ExecutionError | NativeWriteFailure,
+    | TaskScheduler.Failure
+    | HarnessError
+    | AiError.AiError
+    | ExecutionError
+    | NativeWriteFailure
+    | import('./ContextPlan.js').ContextPlanError
+    | import('../ToolInventory.js').Denial
+    | import('../ToolControl.js').InvalidControl
+    | import('../ModelError.js').ModelError,
     NativeInvocation | TaskExecution | Scope.Scope
   > {
     const { record, lease } = yield* NativeInvocation
@@ -108,6 +118,7 @@ export const make = (
     yield* RunLoop.run(
       {
         ...base,
+        refresh: registry.acquire.pipe(Effect.map((next) => services(next))),
         write,
         writeCallback,
         saveState: (tx, current, checkpoint) =>
@@ -174,20 +185,52 @@ export const make = (
     definition,
     inspect: (record) =>
       TaskResolution.inspect(definition, record).pipe(
-        Effect.map((inspection) => {
-          if (inspection._tag !== 'compatible') return inspection
-          const checkpoint = inspection.checkpoint
-          if (checkpoint.submissionId !== inspection.input || !Run.validPrefix(checkpoint))
-            return {
-              _tag: 'blocked' as const,
-              error: TaskResolution.blocked(
-                record,
-                'incompatible',
-                'Legacy run identity or committed tool prefix is inconsistent',
-              ),
+        Effect.flatMap((inspection) =>
+          Effect.gen(function* () {
+            if (inspection._tag !== 'compatible') return inspection
+            const checkpoint = inspection.checkpoint
+            if (checkpoint.submissionId !== inspection.input || !Run.validPrefix(checkpoint))
+              return {
+                _tag: 'blocked' as const,
+                error: TaskResolution.blocked(
+                  record,
+                  'incompatible',
+                  'Legacy run identity or committed tool prefix is inconsistent',
+                ),
+              }
+            // Completed results have already passed their pinned codec and hook validation.
+            // Their next boundary starts fresh work; only pending I/O needs the old bindings.
+            if (
+              checkpoint._tag !== 'queued' &&
+              checkpoint.preparation !== undefined &&
+              (checkpoint._tag === 'request' || checkpoint.index < checkpoint.calls.length)
+            ) {
+              const snapshot = yield* registry.snapshot
+              // This read-only check neither renders nor activates the persisted format.
+              const error = yield* Preparation.compatible(
+                checkpoint.preparation,
+                snapshot,
+                bindings.models,
+                bindings.nativeModel,
+                Option.isSome(bindings.nativeDefault),
+              ).pipe(
+                Effect.as(Option.none()),
+                Effect.catch((error) => Effect.succeedSome(error)),
+              )
+              if (Option.isSome(error))
+                return {
+                  _tag: 'blocked' as const,
+                  error: TaskResolution.blocked(
+                    record,
+                    'incompatible',
+                    error.value.message,
+                    error.value,
+                  ),
+                }
             }
-          return inspection
-        }),
+            return inspection
+          }),
+        ),
       ),
     invoke: (record, mode, lease) =>
       Effect.suspend(() => {

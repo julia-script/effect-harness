@@ -73,3 +73,4 @@ export * as Transaction from './Transaction.js'
 
 export * as Usage from './Usage.js'
 export * as ProviderAffinity from './ProviderAffinity.js'
+export * as PreparedRequest from './PreparedRequest.js'

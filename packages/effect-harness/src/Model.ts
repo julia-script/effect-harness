@@ -2,7 +2,7 @@ import type { ProviderAffinity } from './ProviderAffinity.js'
 import * as Usage from './Usage.js'
 import * as Identity from './Identity.js'
 /** Schema-backed model metadata and live Effect LanguageModel handles. */
-import type * as Context from 'effect/Context'
+import * as Context from 'effect/Context'
 import * as Capability from './internal/Capability.js'
 import * as Effect from 'effect/Effect'
 import * as Clock from 'effect/Clock'
@@ -14,6 +14,8 @@ import type * as Prompt from 'effect/ai/Prompt'
 import type * as Tool from 'effect/ai/Tool'
 import type * as Toolkit from 'effect/ai/Toolkit'
 import { ModelError, ModelInvalidResponseError, ModelUnsupportedError } from './ModelError.js'
+import type * as Settings from './Settings.js'
+import type * as Prepared from './PreparedRequest.js'
 
 export const TypeId = '~effect-harness/Model'
 
@@ -38,6 +40,24 @@ export const DefinitionSchema = Schema.Struct({
   capabilities: CapabilitiesSchema,
   contextWindow: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   maxOutputTokens: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
+  /** Explicit selected-model limits; omitted limits do not grant image reading. */
+  imageLimits: Schema.optionalKey(
+    Schema.Struct({
+      maxWidth: Schema.Int.check(
+        Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+      ),
+      maxHeight: Schema.Int.check(
+        Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+      ),
+      maxBytes: Schema.Int.check(
+        Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+      ),
+      maxInputPixels: Schema.Int.check(
+        Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+      ),
+      transparency: Schema.optionalKey(Schema.Literals(['preserve', 'flatten-white'])),
+    }),
+  ),
 })
 export type Definition = typeof DefinitionSchema.Type
 
@@ -46,6 +66,87 @@ export const SelectionSchema = Schema.Struct({
   options: Schema.JsonObject,
 })
 export type Selection = typeof SelectionSchema.Type
+
+/** Only an adapter's explicitly declared request configuration is persisted, never ambient services. */
+export interface Configuration {
+  readonly binding: Prepared.Binding
+  readonly encode: (context: Context.Context<never>) => Effect.Effect<Schema.Json, ModelError>
+  readonly restore: (value: Schema.Json) => Effect.Effect<Context.Context<never>, ModelError>
+}
+const configurationError = (cause: unknown) =>
+  new ModelError({
+    reason: new ModelUnsupportedError({
+      message: 'Request configuration cannot be restored by its declared codec',
+      cause,
+    }),
+  })
+
+/**
+ * Capture a concrete configuration codec and its own services before runtime erasure.
+ * capture and restore must name the supported native configuration tags and fields;
+ * clients, credentials and toolkit services are not request configuration.
+ * Increase version when changing this persisted contract. Recovery calls restore, never configure.
+ */
+export const makeConfiguration = <S extends Schema.Constraint, R, E>(input: {
+  readonly id: string
+  readonly version: number
+  readonly schema: S
+  /** Exact native request configuration tags; all other returned services are rejected. */
+  readonly tags: ReadonlyArray<{ readonly key: string }>
+  readonly capture: (context: Context.Context<never>) => Effect.Effect<S['Type'], E, R>
+  readonly restore: (value: S['Type']) => Effect.Effect<Context.Context<never>, E, R>
+}): Effect.Effect<Configuration, never, R | S['EncodingServices'] | S['DecodingServices']> =>
+  Effect.gen(function* () {
+    const context = yield* Effect.context<R | S['EncodingServices'] | S['DecodingServices']>()
+    const { capture, restore } = input
+    const codec = Schema.toCodecJson(input.schema)
+    const tags = new Set(input.tags.map((tag) => tag.key))
+    const validate = (
+      configuration: Context.Context<never>,
+    ): Effect.Effect<Context.Context<never>, ModelError> =>
+      [...configuration.mapUnsafe.keys()].every((key) => tags.has(key))
+        ? Effect.succeed(configuration)
+        : Effect.fail(configurationError('Configuration contains an undeclared service tag'))
+    return {
+      binding: Object.freeze({ id: input.id, version: input.version }),
+      encode: (configuration) =>
+        validate(configuration).pipe(
+          Effect.flatMap((configuration) => Effect.suspend(() => capture(configuration))),
+          Effect.flatMap(Schema.encodeEffect(codec, { onExcessProperty: 'error' })),
+          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Json)),
+          Effect.mapError(configurationError),
+          Effect.provideContext(context),
+        ),
+      restore: (value) =>
+        Schema.decodeEffect(codec, { onExcessProperty: 'error' })(value).pipe(
+          Effect.flatMap((value) => Effect.suspend(() => restore(value))),
+          Effect.flatMap(validate),
+          Effect.mapError(configurationError),
+          Effect.provideContext(context),
+        ),
+    }
+  })
+
+/** The portable default accepts only empty configuration. It never serializes arbitrary Context values. */
+export const emptyConfiguration: Configuration = {
+  binding: Object.freeze({ id: 'effect-harness/empty-configuration', version: 1 }),
+  encode: (context) =>
+    context.mapUnsafe.size === 0
+      ? Effect.succeed(null)
+      : Effect.fail(
+          configurationError('Supply a declared configuration codec for native request services'),
+        ),
+  restore: (value) =>
+    value === null
+      ? Effect.succeed(Context.empty())
+      : Effect.fail(configurationError('Expected empty configuration')),
+}
+export interface PreparationPolicy {
+  readonly requestId: Prepared.Snapshot['requestId']
+  readonly ordinal: number
+  readonly attempt: Prepared.Snapshot['attempt']
+  readonly settings: Settings.Snapshot
+}
 
 /** Immutable prepared-work identity, distinct from provider attempt and durable logical ordinal. */
 export const DeferredIdentitySchema = Schema.Struct({
@@ -270,8 +371,13 @@ export interface Any extends Pipeable.Pipeable {
   readonly definition: Definition
   readonly languageModel: typeof LanguageModel.LanguageModel.Service
   readonly options: Schema.Constraint
-  readonly configure: (options: never) => unknown
+  readonly configure: (options: never, preparation: PreparationPolicy) => unknown
   readonly deferred?: Deferred | undefined
+  /** Stable provider construction contract. Increase on incompatible callback/default changes. */
+  readonly version?: number | undefined
+  readonly configuration?: Configuration | undefined
+  /** Default leading/latest is an explicit native fallback, not positional tool support. */
+  readonly positioning?: Prepared.Snapshot['translation']['positioning'] | undefined
 }
 
 export type Requirements<M extends Any> = M extends {
@@ -291,6 +397,7 @@ export interface Model<Options extends Schema.Constraint, R = never> extends Any
    */
   readonly configure: (
     options: Options['Type'],
+    preparation: PreparationPolicy,
   ) => Effect.Effect<Context.Context<never>, ModelError, R>
 }
 
@@ -300,8 +407,12 @@ export const make: <Options extends Schema.Constraint, R>(input: {
   readonly languageModel: typeof LanguageModel.LanguageModel.Service
   readonly options: Options
   readonly deferred?: Deferred | undefined
+  readonly version?: number | undefined
+  readonly configuration?: Configuration | undefined
+  readonly positioning?: Prepared.Snapshot['translation']['positioning'] | undefined
   readonly configure: (
     options: Options['Type'],
+    preparation: PreparationPolicy,
   ) => Effect.Effect<Context.Context<never>, ModelError, R>
 }) => Model<Options, R | Options['DecodingServices'] | Options['EncodingServices']> = (input) => ({
   ...input,

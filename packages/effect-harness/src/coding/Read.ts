@@ -326,8 +326,7 @@ export const withImages = (options: ImageOptions) => {
   const handlers = imageToolkit.toLayer({
     read: (input) =>
       Effect.gen(function* () {
-        const resolver = yield* ImageReadPolicy.ImageReadPolicy
-        const policy = yield* resolver.current
+        const policy = yield* ImageReadPolicy.current
         return yield* readWithImages(input, policy, captured).pipe(
           Effect.mapError((error) => {
             if (error._tag === 'CodingFileError') return failureOutput(error)

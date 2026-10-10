@@ -3,7 +3,7 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import type * as ImagePreparation from '../ImagePreparation.js'
 import type * as Model from '../Model.js'
-import type { ToolExecution } from '../ToolExecution.js'
+import { ToolExecution } from '../ToolExecution.js'
 
 /** Explicit model input policy. maxBytes counts padded base64, not source bytes. */
 export type Policy =
@@ -30,3 +30,10 @@ export const fromCapabilities = (
   capabilities: Pick<Model.Capabilities, 'images'>,
   limits: ImagePreparation.Limits,
 ): Policy => (capabilities.images ? { vision: true, limits } : { vision: false })
+
+/** Harness selected policy wins; direct toolkit calls retain their explicitly supplied resolver. */
+export const current = Effect.gen(function* () {
+  const execution = yield* ToolExecution
+  if (execution.imageReadPolicy !== undefined) return execution.imageReadPolicy
+  return yield* (yield* ImageReadPolicy).current
+})

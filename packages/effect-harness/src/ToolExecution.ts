@@ -12,6 +12,8 @@ export class ToolExecution extends Context.Service<
   Execution.Access & {
     readonly taskId: Record.TaskId
     readonly callId: string
+    /** Request-pinned selected model policy; absent for direct toolkit execution. */
+    readonly imageReadPolicy?: import('./coding/ImageReadPolicy.js').Policy | undefined
     readonly output: (chunk: string) => Effect.Effect<void, Failure>
     readonly details: (value: Schema.Json) => Effect.Effect<void, Failure>
     readonly diagnostic: (value: ToolResult.Diagnostic) => Effect.Effect<void, Failure>

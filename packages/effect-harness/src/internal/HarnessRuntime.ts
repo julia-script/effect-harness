@@ -313,6 +313,11 @@ export const make = Effect.fnUntraced(function* <
         (lease) => ({
           session,
           requireSubmissionFormat,
+          requireRequestFormat: StorageFormat.requireSupportedFormat({
+            formatVersion: 5,
+            minimumReaderVersion: 5,
+          }).pipe(Effect.provideContext(context)),
+          nativeModel: options.nativeModel ?? { id: 'effect/ai/LanguageModel', version: 1 },
           context,
           lease,
           allTools: lease.snapshot.tools
@@ -346,6 +351,11 @@ export const make = Effect.fnUntraced(function* <
           notify: notify(),
         }),
         registry,
+        {
+          models,
+          nativeDefault,
+          nativeModel: options.nativeModel ?? { id: 'effect/ai/LanguageModel', version: 1 },
+        },
       )
       yield* registry.install(native.registration)
       yield* Effect.addFinalizer(() => registry.uninstall('native-runtime-run').pipe(Effect.ignore))
@@ -481,7 +491,10 @@ export const make = Effect.fnUntraced(function* <
             'conversation.submit',
             Effect.gen(function* () {
               yield* checkOpen
-              const { conversationId, draft } = yield* Value.copy(SubmitSchema, input)
+              const { conversationId, draft } = yield* Value.copy(
+                Schema.toCodecJson(SubmitSchema),
+                input,
+              )
               const requestId =
                 draft.requestId === undefined
                   ? undefined
@@ -592,7 +605,14 @@ export const make = Effect.fnUntraced(function* <
                     agentTarget(conversationId),
                   )
                   const value = { ...snapshot.value }
-                  for (const key of ['model', 'extensions', 'tools', 'instructions'] as const) {
+                  for (const key of [
+                    'model',
+                    'extensions',
+                    'tools',
+                    'modelTools',
+                    'toolkits',
+                    'instructions',
+                  ] as const) {
                     if (change[key] === null) delete value[key]
                     else if (change[key] !== undefined) Object.assign(value, { [key]: change[key] })
                   }

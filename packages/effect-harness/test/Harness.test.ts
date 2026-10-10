@@ -112,7 +112,7 @@ describe('local runtime', () => {
         )
         assert.deepEqual(
           entries.map((entry) => entry.kind),
-          ['input', 'assistant'],
+          ['input', 'context.change', 'assistant'],
         )
         yield* harness.waitForIdle
       }).pipe(Effect.provide(plainModel)),
@@ -143,7 +143,7 @@ describe('local runtime', () => {
         )
         assert.deepEqual(
           entries.map((entry) => entry.kind),
-          ['input', 'assistant', 'tool.output', 'tool.result', 'assistant'],
+          ['input', 'context.change', 'assistant', 'tool.output', 'tool.result', 'assistant'],
         )
       }).pipe(
         Effect.provide([
@@ -408,7 +408,7 @@ describe('local runtime', () => {
         const root = yield* harness.root
         const observing = yield* root.pipe(
           Conversation.entries(),
-          Stream.take(2),
+          Stream.take(3),
           Stream.runCollect,
           Effect.forkChild,
         )
@@ -417,16 +417,18 @@ describe('local runtime', () => {
         const entries = yield* Fiber.join(observing)
         assert.deepEqual(
           entries.map((entry) => entry.kind),
-          ['input', 'assistant'],
+          ['input', 'context.change', 'assistant'],
         )
         const cursor = entries[0]?.id
         assert.isDefined(cursor)
         const replay = yield* root.pipe(
           Conversation.entries({ after: cursor }),
-          Stream.take(1),
+          Stream.take(2),
           Stream.runCollect,
         )
-        assert.strictEqual(replay[0]?.kind, 'assistant')
+        assert.deepEqual(replay, entries.slice(1))
+        assert.strictEqual(replay[0]?.kind, 'context.change')
+        assert.strictEqual(replay[1]?.kind, 'assistant')
       }).pipe(Effect.provide(plainModel)),
     ),
   )

@@ -50,6 +50,8 @@ export interface Options<
   readonly models?: Models
   readonly agent?: Agent.State
   readonly maxTurns?: number
+  /** Stable raw native provider construction contract; bump version on incompatible defaults/callbacks. */
+  readonly nativeModel?: import('./PreparedRequest.js').Binding
 }
 export type Requirements<
   T extends Record<string, Tool.Any>,

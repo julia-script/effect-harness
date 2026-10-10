@@ -6,9 +6,16 @@ import * as Agent from '../Agent.js'
 import * as Submission from '../Submission.js'
 import * as Tool from '../Tool.js'
 import * as ToolResult from '../ToolResult.js'
+import * as PreparedRequest from '../PreparedRequest.js'
 
 const shared = { submissionId: Record.SubmissionId }
-const running = { ...shared, prompt: Prompt.Prompt, agent: Agent.StateSchema }
+const running = {
+  ...shared,
+  prompt: Prompt.Prompt,
+  agent: Agent.StateSchema,
+  ordinal: Schema.optionalKey(Schema.Natural),
+  preparation: Schema.optionalKey(PreparedRequest.SnapshotSchema),
+}
 export const RunStateSchema = Schema.Union([
   Schema.TaggedStruct('queued', {
     phase: Schema.tag('queued'),
@@ -34,6 +41,12 @@ export const Messages = Schema.Array(Schema.toCodecJson(Prompt.Message))
 /** Validate committed prefixes without repairing, discarding or replaying stored work. */
 export const validPrefix = (state: RunState): boolean => {
   if (state._tag !== state.phase) return false
+  if (
+    state._tag !== 'queued' &&
+    state.preparation !== undefined &&
+    state.preparation.ordinal !== state.ordinal
+  )
+    return false
   if (state._tag !== 'tools') return true
   return (
     state.index <= state.calls.length &&

@@ -10,8 +10,8 @@ import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as Prompt from 'effect/ai/Prompt'
 import type * as LanguageModel from 'effect/ai/LanguageModel'
-import type * as AiTool from 'effect/ai/Tool'
-import type * as AiToolkit from 'effect/ai/Toolkit'
+import * as NativeTool from 'effect/ai/Tool'
+import * as NativeToolkit from 'effect/ai/Toolkit'
 import type * as Record from '../Record.js'
 import type * as Agent from '../Agent.js'
 import type * as Execution from '../Execution.js'
@@ -21,12 +21,17 @@ import { HarnessError } from '../HarnessError.js'
 import { TaskError } from '../TaskError.js'
 import type * as Hook from '../Hook.js'
 import { HookExecution } from '../HookExecution.js'
-import type * as Model from '../Model.js'
+import * as Model from '../Model.js'
+import * as Prepared from '../PreparedRequest.js'
+import * as Preparation from './RequestPreparation.js'
+import * as Plan from './ContextPlan.js'
+import * as Inventory from '../ToolInventory.js'
+import * as Settings from '../Settings.js'
+import * as Identity from '../Identity.js'
 import * as Session from '../Session.js'
 import * as Tool from '../Tool.js'
 import { ToolExecution } from '../ToolExecution.js'
 import * as ToolResult from '../ToolResult.js'
-import * as Toolkit from '../Toolkit.js'
 import * as Transaction from '../Transaction.js'
 import * as Run from './RunState.js'
 import * as Inbox from './Inbox.js'
@@ -34,23 +39,19 @@ import type { NativeWriteFailure } from './NativeWriteFailure.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
 import { protect, absent } from './HarnessFailure.js'
 
-// Schema services are already present in the owning runtime's captured Context.
-type GenerationCodec = Schema.Codec<unknown, Schema.Json, never, never>
-type GenerationTool = AiTool.Tool<
-  string,
-  {
-    readonly parameters: Schema.Codec<unknown, Schema.JsonObject, never, never>
-    readonly success: GenerationCodec
-    readonly failure: GenerationCodec
-    readonly failureMode: 'error'
-  }
->
 export interface BoundSection {
   readonly section: PromptSection.Any
   readonly extension?: string | undefined
   readonly registration: string
 }
 export interface Services {
+  readonly nativeModel: Prepared.Binding
+  readonly requireRequestFormat: Services['requireSubmissionFormat']
+  readonly refresh: Effect.Effect<
+    Pick<Services, 'lease' | 'allTools' | 'toolExtensions' | 'sections' | 'runHooks'>,
+    import('../RegistryError.js').RegistryError,
+    import('effect/Scope').Scope
+  >
   readonly requireSubmissionFormat: Effect.Effect<
     import('../StorageFormat.js').Format,
     import('../StorageFormat.js').Failure
@@ -100,23 +101,19 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
   const {
     session,
     context,
-    allTools,
-    toolExtensions,
-    sections,
     models,
     nativeDefault,
     maxTurns,
     defaultAgent,
     checkOpen,
     access,
-    runHooks,
     write,
     writeCallback,
     saveState,
     invocationActive,
     notify,
-    lease,
   } = services
+  let { allTools, toolExtensions, sections, runHooks, lease } = services
   let task = initial
   let state = yield* Run.decode(task.state.checkpoint)
   if (state._tag !== 'queued') {
@@ -127,7 +124,6 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       }),
     )
   }
-  let turns = 0
   while (true) {
     yield* checkOpen
     if (state._tag === 'queued') {
@@ -158,160 +154,315 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       continue
     }
     if (state._tag === 'request') {
-      turns++
-      if (turns > maxTurns)
-        return yield* new HarnessError({
-          reason: 'failed',
-          operation: 'run.request',
-          message: `Conversation exceeded ${maxTurns} model turns`,
-        })
-      const requesting = state
-      let prompt = requesting.prompt
-      const system: Array<string> = []
-      if (requesting.agent.instructions !== undefined) system.push(requesting.agent.instructions)
-      for (const bound of sections) {
-        if (
-          bound.extension !== undefined &&
-          requesting.agent.extensions !== undefined &&
-          !requesting.agent.extensions.includes(bound.extension)
+      let requesting = state
+      let selected =
+        requesting.preparation === undefined
+          ? undefined
+          : Preparation.selectedModel(requesting.preparation, models)
+      let requestContext = Context.add(context, ProviderAffinity, {
+        id: requesting.preparation?.affinity ?? '',
+      })
+      if (requesting.preparation === undefined) {
+        const refreshed = yield* services.refresh
+        ;({ allTools, toolExtensions, sections, runHooks, lease } = refreshed)
+        const settingsService = yield* Effect.serviceOption(Settings.Settings).pipe(
+          Effect.provideContext(context),
         )
-          continue
-        let sectionActive = true
-        const guard = Effect.suspend(() =>
-          sectionActive && invocationActive()
-            ? Effect.void
-            : Effect.fail(
-                new ExecutionError({
-                  reason: 'revoked',
-                  operation: 'section.access',
-                  message: 'Section render has ended',
-                }),
-              ),
+        const settings = Option.isSome(settingsService)
+          ? yield* settingsService.value.get
+          : { ...Settings.defaults, maxTurns }
+        const ordinal = (requesting.ordinal ?? 0) + 1
+        if (!Number.isSafeInteger(ordinal) || ordinal > settings.maxTurns)
+          return yield* new HarnessError({
+            reason: 'failed',
+            operation: 'run.request',
+            message: `Conversation exceeded ${settings.maxTurns} model turns`,
+          })
+        const current = yield* write((tx) =>
+          Effect.gen(function* () {
+            const configured = yield* Transaction.snapshot(
+              tx,
+              agentDocument,
+              agentTarget(task.conversationId),
+            )
+            const agent = {
+              ...defaultAgent,
+              ...(Option.isSome(configured) ? configured.value.value : {}),
+            }
+            if (agent.extensions === undefined && settings.extensions !== undefined)
+              agent.extensions = settings.extensions
+            return { agent, view: yield* Inbox.project(tx, task.conversationId) }
+          }),
         )
-        const native = access(task.conversationId)
-        const text = yield* protect(
-          'promptSection.render',
-          lease.renderSection(bound.section.key, prompt, { binding: bound.registration }).pipe(
-            Effect.provideService(HookExecution, {
-              conversationId: task.conversationId,
-              taskId: task.id,
-              snapshot: (document, target) =>
-                guard.pipe(Effect.andThen(native.snapshot(document, target))),
-              watch: (document, target) =>
-                Stream.unwrap(guard.pipe(Effect.as(native.watch(document, target)))).pipe(
-                  Stream.mapEffect((value) => guard.pipe(Effect.as(value))),
+        requesting = { ...requesting, agent: current.agent, prompt: current.view.prompt, ordinal }
+        selected =
+          requesting.agent.model === undefined
+            ? models[0]
+            : models.find(
+                (model) =>
+                  model.definition.ref.provider === requesting.agent.model?.ref.provider &&
+                  model.definition.ref.modelId === requesting.agent.model?.ref.modelId,
+              )
+        if (requesting.agent.model !== undefined && selected === undefined)
+          return yield* absent('model.select', 'Configured model is unavailable')
+        const model = selected?.languageModel ?? Option.getOrUndefined(nativeDefault)
+        if (model === undefined)
+          return yield* absent('model.select', 'No generation capability is available')
+        const requestId = yield* Effect.try({
+          try: () => globalThis.crypto.randomUUID(),
+          catch: (cause) =>
+            new HarnessError({
+              reason: 'failed',
+              operation: 'request.identity',
+              message: 'Cannot allocate preparation identity',
+              cause,
+            }),
+        }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Identity.RequestId)))
+        const attempt = yield* Schema.decodeEffect(Usage.AttemptId)(0)
+        const affinity = yield* write((tx) =>
+          Effect.gen(function* () {
+            const saved = yield* Transaction.snapshot(
+              tx,
+              ProviderState.document,
+              ProviderState.target(task.conversationId),
+            )
+            if (Option.isSome(saved)) return saved.value.value.id
+            return (yield* Transaction.ensureDocument(
+              tx,
+              ProviderState.document,
+              ProviderState.target(task.conversationId),
+              { seed: yield* ProviderState.fresh },
+            )).value.id
+          }),
+        )
+        requestContext = Context.add(context, ProviderAffinity, { id: affinity })
+        let options: Schema.JsonObject = {}
+        let configured = Context.empty()
+        if (selected !== undefined) {
+          const codec = Schema.toCodecJson(
+            selected.options as Schema.ConstraintCodec<unknown, unknown, never, never>,
+          )
+          const decoded = yield* Schema.decodeEffect(codec)(
+            requesting.agent.model?.options ?? {},
+          ).pipe(Effect.provideContext(requestContext))
+          options = yield* Schema.encodeEffect(codec)(decoded).pipe(
+            Effect.provideContext(requestContext),
+            Effect.flatMap(Schema.decodeUnknownEffect(Schema.JsonObject)),
+          )
+          const configure = selected.configure as (
+            options: unknown,
+            policy: Model.PreparationPolicy,
+          ) => Effect.Effect<Context.Context<never>, import('../ModelError.js').ModelError>
+          configured = yield* configure(decoded, { requestId, ordinal, attempt, settings }).pipe(
+            Effect.provideContext(requestContext),
+          )
+        }
+        const configurationCodec = selected?.configuration ?? Model.emptyConfiguration
+        yield* Schema.decodeEffect(Prepared.BindingSchema)(configurationCodec.binding)
+        yield* Schema.decodeEffect(Prepared.BindingSchema)(services.nativeModel)
+        if (selected !== undefined)
+          yield* Schema.decodeEffect(Model.DefinitionSchema)(selected.definition)
+        const configuration = yield* configurationCodec.encode(configured)
+        let prompt = requesting.prompt
+        const desiredSections: Array<import('../ContextProjection.js').Section> = []
+        if (requesting.agent.instructions !== undefined)
+          desiredSections.push({
+            key: '@effect-harness/instructions',
+            text: requesting.agent.instructions,
+          })
+        for (const bound of sections) {
+          if (
+            bound.extension !== undefined &&
+            requesting.agent.extensions !== undefined &&
+            !requesting.agent.extensions.includes(bound.extension)
+          )
+            continue
+          let sectionActive = true
+          const guard = Effect.suspend(() =>
+            sectionActive && invocationActive()
+              ? Effect.void
+              : Effect.fail(
+                  new ExecutionError({
+                    reason: 'revoked',
+                    operation: 'section.access',
+                    message: 'Section render has ended',
+                  }),
                 ),
-              commit: (change) =>
-                guard.pipe(
-                  Effect.andThen(
-                    writeCallback((tx) =>
-                      Effect.gen(function* () {
-                        yield* guard
-                        const value = yield* change(tx)
-                        yield* guard
-                        return value
-                      }),
-                    ).pipe(
-                      Effect.mapError((error) =>
-                        Schema.is(TaskError)(error)
-                          ? new ExecutionError({
-                              reason: error.reason === 'revoked' ? 'revoked' : 'invalid',
-                              operation: 'section.commit',
-                              message: error.message,
-                              cause: error,
-                            })
-                          : error,
+          )
+          const native = access(task.conversationId)
+          const text = yield* protect(
+            'promptSection.render',
+            lease.renderSection(bound.section.key, prompt, { binding: bound.registration }).pipe(
+              Effect.provideService(HookExecution, {
+                conversationId: task.conversationId,
+                taskId: task.id,
+                snapshot: (document, target) =>
+                  guard.pipe(Effect.andThen(native.snapshot(document, target))),
+                watch: (document, target) =>
+                  Stream.unwrap(guard.pipe(Effect.as(native.watch(document, target)))).pipe(
+                    Stream.mapEffect((value) => guard.pipe(Effect.as(value))),
+                  ),
+                commit: (change) =>
+                  guard.pipe(
+                    Effect.andThen(
+                      writeCallback((tx) =>
+                        Effect.gen(function* () {
+                          yield* guard
+                          const value = yield* change(tx)
+                          yield* guard
+                          return value
+                        }),
+                      ).pipe(
+                        Effect.mapError((error) =>
+                          Schema.is(TaskError)(error)
+                            ? new ExecutionError({
+                                reason: error.reason === 'revoked' ? 'revoked' : 'invalid',
+                                operation: 'section.commit',
+                                message: error.message,
+                                cause: error,
+                              })
+                            : error,
+                        ),
                       ),
                     ),
                   ),
-                ),
-            }),
-            Effect.ensuring(
-              Effect.sync(() => {
-                sectionActive = false
               }),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  sectionActive = false
+                }),
+              ),
             ),
-          ),
-        )
-        if (text !== undefined) system.push(text)
-      }
-      if (system.length > 0)
-        prompt = Prompt.concat(
-          Prompt.make([Prompt.systemMessage({ content: system.join('\n\n') })]),
-          prompt,
-        )
-      const before = yield* runHooks(
-        task.conversationId,
-        requesting.agent,
-        { _tag: 'beforeRequest', prompt },
-        task.id,
-      )
-      if (before !== undefined && 'content' in before) prompt = before as Prompt.Prompt
-      const available = allTools
-        .filter(
-          (tool) =>
-            requesting.agent.tools === undefined || requesting.agent.tools.includes(tool.name),
-        )
-        .filter((tool) => {
-          const owner = toolExtensions.get(tool.name)
-          return (
-            owner === undefined ||
-            requesting.agent.extensions === undefined ||
-            requesting.agent.extensions.includes(owner)
           )
-        })
-      const selected =
-        requesting.agent.model === undefined
-          ? models[0]
-          : models.find(
-              (model) =>
-                model.definition.ref.provider === requesting.agent.model?.ref.provider &&
-                model.definition.ref.modelId === requesting.agent.model?.ref.modelId,
+          if (text !== undefined) desiredSections.push({ key: bound.section.key, text })
+        }
+        const offered =
+          selected !== undefined && !selected.definition.capabilities.tools
+            ? []
+            : Preparation.inventory(lease.snapshot, 'model', requesting.agent)
+        const offeredTools = yield* Effect.forEach(offered, Preparation.declaration)
+        const { modelTools: _modelTools, ...allAgent } = requesting.agent
+        const allInventory = [
+          ...Preparation.inventory(lease.snapshot, 'model', allAgent),
+          ...Preparation.inventory(lease.snapshot, 'tools', requesting.agent),
+        ]
+        const allBindings = [
+          ...new Map(allInventory.map((item) => [item.declaration.name, item])).values(),
+        ]
+        const allToolFacts = yield* Effect.forEach(allBindings, Preparation.declaration)
+        const translation = yield* write((tx) =>
+          Effect.gen(function* () {
+            const view = yield* Inbox.project(tx, task.conversationId)
+            const plan = yield* Plan.plan(view, {
+              sections: desiredSections,
+              tools: offeredTools.map((tool) => tool.declaration),
+            })
+            yield* services.requireRequestFormat
+            for (const draft of plan.drafts)
+              yield* Transaction.appendEntry(tx, task.conversationId, draft)
+            return yield* Plan.translate(
+              yield* Inbox.project(tx, task.conversationId),
+              selected?.positioning ?? { sections: 'leading', tools: 'latest' },
             )
-      if (requesting.agent.model !== undefined && selected === undefined)
-        return yield* absent('model.select', 'Configured model is unavailable')
-      const affinity = yield* write((tx) =>
-        Effect.gen(function* () {
-          const saved = yield* Transaction.snapshot(
-            tx,
-            ProviderState.document,
-            ProviderState.target(task.conversationId),
+          }),
+        )
+        prompt = translation.prompt
+        const before = yield* runHooks(
+          task.conversationId,
+          requesting.agent,
+          { _tag: 'beforeRequest', prompt },
+          task.id,
+        )
+        if (before !== undefined && 'content' in before) prompt = before as Prompt.Prompt
+        const preparation = yield* Preparation.own({
+          requestId,
+          ordinal,
+          attempt,
+          prompt,
+          agent: requesting.agent,
+          settings,
+          affinity,
+          model:
+            selected === undefined
+              ? { _tag: 'native', binding: services.nativeModel }
+              : {
+                  _tag: 'descriptor',
+                  definition: selected.definition,
+                  binding: {
+                    id: JSON.stringify([
+                      selected.definition.ref.provider,
+                      selected.definition.ref.modelId,
+                    ]),
+                    version: selected.version ?? 1,
+                  },
+                },
+          options,
+          configuration,
+          configurationBinding: configurationCodec.binding,
+          registryGeneration: lease.snapshot.generation,
+          requiredBindings: lease.snapshot.registrations
+            .filter((item) => item.enabled && item.id !== 'native-runtime-run')
+            .map((item) => ({ id: item.id, version: item.version })),
+          tools: offeredTools,
+          allTools: allToolFacts,
+          translation,
+        })
+        requesting = { ...requesting, preparation }
+        yield* write((tx, current) =>
+          Effect.gen(function* () {
+            yield* services.requireRequestFormat
+            yield* saveState(tx, current, requesting)
+          }),
+        )
+        state = requesting
+      } else {
+        yield* Preparation.compatible(
+          requesting.preparation,
+          lease.snapshot,
+          models,
+          services.nativeModel,
+          Option.isSome(nativeDefault),
+        )
+      }
+      const preparation = requesting.preparation!
+      selected = Preparation.selectedModel(preparation, models)
+      const available = preparation.tools.flatMap((saved) =>
+        lease.snapshot.bindings
+          .filter(
+            (item) =>
+              item.owner.id === saved.binding.id &&
+              item.declaration.name === saved.declaration.name,
           )
-          if (Option.isSome(saved)) return saved.value.value.id
-          return (yield* Transaction.ensureDocument(
-            tx,
-            ProviderState.document,
-            ProviderState.target(task.conversationId),
-            { seed: yield* ProviderState.fresh },
-          )).value.id
+          .map((item) => item.declaration),
+      )
+      const model = selected?.languageModel ?? Option.getOrUndefined(nativeDefault)
+      if (model === undefined) return yield* absent('model.select', 'Pinned model is unavailable')
+      const configurationCodec = selected?.configuration ?? Model.emptyConfiguration
+      const configuration = yield* configurationCodec.restore(preparation.configuration)
+      requestContext = Context.merge(
+        Context.add(context, ProviderAffinity, { id: preparation.affinity }),
+        configuration,
+      )
+      requestContext = Context.add(requestContext, Prepared.PreparedRequest, {
+        current: yield* Preparation.own(preparation),
+      })
+      const nativeToolkit = NativeToolkit.make(
+        ...preparation.tools.map((tool) => {
+          const declaration = NativeTool.dynamic(tool.declaration.name, {
+            description: tool.declaration.description,
+            parameters: tool.declaration.parameters,
+          })
+          return tool.strict === undefined
+            ? declaration
+            : declaration.annotate(NativeTool.Strict, tool.strict)
         }),
       )
-      let requestContext: Context.Context<never> = Context.add(context, ProviderAffinity, {
-        id: affinity,
-      })
-      const model = selected?.languageModel ?? Option.getOrUndefined(nativeDefault)
-      if (model === undefined)
-        return yield* absent('model.select', 'No generation capability is available')
-      if (selected !== undefined) {
-        const decoded = yield* Schema.decodeEffect(
-          selected.options as Schema.ConstraintCodec<unknown, unknown, never, never>,
-        )(requesting.agent.model?.options ?? {}).pipe(Effect.provideContext(requestContext))
-        const configure = selected.configure as (
-          options: unknown,
-        ) => Effect.Effect<Context.Context<never>, HarnessError>
-        requestContext = Context.merge(
-          requestContext,
-          yield* protect(
-            'model.configure',
-            configure(decoded).pipe(Effect.provideService(ProviderAffinity, { id: affinity })),
-          ),
-        )
-      }
-      const nativeToolkit = Toolkit.make(...available).native as unknown as AiToolkit.Toolkit<
-        Record<string, GenerationTool>
-      >
       const response = yield* model
-        .generateText({ prompt, toolkit: nativeToolkit, disableToolCallResolution: true })
+        .generateText({
+          prompt: (yield* Preparation.own(preparation)).prompt,
+          toolkit: nativeToolkit,
+          disableToolCallResolution: true,
+        })
         .pipe(Effect.provideContext(requestContext))
       if (
         response.toolResults.length > 0 ||
@@ -348,8 +499,10 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
               ? {}
               : { reasoning: nativeUsage.outputTokens.reasoning }),
           },
-          selected?.definition.ref,
-          selected?.definition.pricing,
+          preparation.model._tag === 'descriptor' ? preparation.model.definition.ref : undefined,
+          preparation.model._tag === 'descriptor'
+            ? preparation.model.definition.pricing
+            : undefined,
         ),
       )
       const responsePrompt = Prompt.fromResponseParts(response.content)
@@ -367,10 +520,12 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         task.id,
       )
       const calls = yield* Effect.forEach(response.toolCalls, (call) =>
-        Schema.decodeEffect(Tool.CallSchema)({
-          id: call.id,
-          name: call.name,
-          arguments: call.params,
+        Effect.gen(function* () {
+          return yield* Schema.decodeEffect(Tool.CallSchema)({
+            id: call.id,
+            name: call.name,
+            arguments: yield* Schema.decodeUnknownEffect(Schema.JsonObject)(call.params),
+          })
         }),
       )
       if (new Set(calls.map((call) => call.id)).size !== calls.length)
@@ -388,8 +543,9 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           task.id,
         )
         if (decision !== undefined && '_tag' in decision && decision._tag === 'continue') {
+          const { preparation: _preparation, ...unprepared } = requesting
           const next: Run.RunState = {
-            ...requesting,
+            ...unprepared,
             prompt: Prompt.concat(nextPrompt, Prompt.make([decision.input])),
           }
           yield* write((tx, current) =>
@@ -432,6 +588,8 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         phase: 'tools',
         submissionId: requesting.submissionId,
         agent: requesting.agent,
+        ordinal: preparation.ordinal,
+        preparation,
         prompt: nextPrompt,
         calls: calls.map((call) => {
           const tool = available.find((tool) => tool.name === call.name)
@@ -465,6 +623,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         phase: 'request',
         submissionId: toolState.submissionId,
         agent: toolState.agent,
+        ...(toolState.ordinal === undefined ? {} : { ordinal: toolState.ordinal }),
         prompt: toolState.prompt,
       }
       yield* runHooks(
@@ -504,7 +663,26 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
     let call = pending.call
     let result: import('../ToolResult.js').Result | undefined
     let explicitEnvelope = false
-    const definition = allTools.find((tool) => tool.name === call.name)
+    if (toolState.preparation !== undefined)
+      yield* Preparation.compatible(
+        toolState.preparation,
+        lease.snapshot,
+        models,
+        services.nativeModel,
+        Option.isSome(nativeDefault),
+      )
+    const binding = toolState.preparation?.tools.find(
+      (tool) => tool.declaration.name === call.name,
+    )?.binding
+    const definition =
+      binding === undefined
+        ? allTools.find((tool) => tool.name === call.name)
+        : lease.snapshot.bindings.find(
+            (item) =>
+              item.owner.id === binding.id &&
+              item.owner.version === binding.version &&
+              item.declaration.name === call.name,
+          )?.declaration
     const extension = toolExtensions.get(call.name)
     const currentlyAllowed =
       definition !== undefined &&
@@ -579,9 +757,26 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
             ),
           ),
           Effect.asVoid,
+          Effect.mapError((error) =>
+            Schema.is(TaskError)(error)
+              ? new ExecutionError({
+                  reason: error.reason === 'revoked' ? 'revoked' : 'invalid',
+                  operation: 'tool.report',
+                  message: error.message,
+                  cause: error,
+                })
+              : error,
+          ),
         )
+      const selected = toolState.preparation?.model
+      const modelDefinition = selected?._tag === 'descriptor' ? selected.definition : undefined
+      const imageReadPolicy: import('../coding/ImageReadPolicy.js').Policy =
+        modelDefinition?.capabilities.images === true && modelDefinition.imageLimits !== undefined
+          ? { vision: true, limits: modelDefinition.imageLimits }
+          : { vision: false }
       const toolAccess = {
         ...access(task.conversationId),
+        ...(toolState.preparation === undefined ? {} : { imageReadPolicy }),
         snapshot: <S extends Document.Codec>(
           document: Document.Document<S>,
           target: Document.Target,
@@ -605,6 +800,17 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
                   yield* guard
                   return value
                 }),
+              ).pipe(
+                Effect.mapError((error) =>
+                  Schema.is(TaskError)(error)
+                    ? new ExecutionError({
+                        reason: error.reason === 'revoked' ? 'revoked' : 'invalid',
+                        operation: 'tool.commit',
+                        message: error.message,
+                        cause: error,
+                      })
+                    : error,
+                ),
               ),
             ),
           ),
@@ -613,7 +819,25 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         diagnostic: (value: import('../ToolResult.js').Diagnostic) =>
           report('tool.diagnostic', { callId: call.id, value }),
       }
-      result = yield* lease.invokeTool(call).pipe(
+      result = yield* (
+        toolState.preparation === undefined
+          ? lease.invokeTool(call)
+          : Inventory.invoke(lease, call, 'model', {
+              agent: {
+                ...toolState.agent,
+                toolkits: {
+                  inherit: false,
+                  registrations: toolState.preparation.requiredBindings.map((item) => item.id),
+                  bindings: Object.fromEntries(
+                    toolState.preparation.allTools.map((item) => [
+                      item.declaration.name,
+                      { binding: item.binding.id, version: item.binding.version },
+                    ]),
+                  ),
+                },
+              },
+            })
+      ).pipe(
         Effect.provideService(ToolExecution, toolAccess),
         Effect.ensuring(
           Effect.sync(() => {
@@ -651,8 +875,11 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         never
       >
       const encoded = yield* Schema.encodeEffect(jsonCodec(ToolResult.ResultSchema))(result)
-      yield* lease.withTool(call.name, (item) =>
-        Schema.decodeEffect(jsonCodec(schema))(encoded).pipe(Effect.provideContext(item.context)),
+      yield* lease.withTool(
+        call.name,
+        (item) =>
+          Schema.decodeEffect(jsonCodec(schema))(encoded).pipe(Effect.provideContext(item.context)),
+        binding === undefined ? undefined : { binding: binding.id, version: binding.version },
       )
     }
     const plainText = result.content.flatMap((part) =>
