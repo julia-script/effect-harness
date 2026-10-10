@@ -26,6 +26,61 @@ const error = <A, E>(value: Result.Result<A, E>): E => {
   return assert.fail('Expected a typed failure')
 }
 
+const expectInvalidation = <A, E, R, E2, R2>(
+  events: Array<FileWatch.Event>,
+  target: string,
+  mutate: Effect.Effect<A, E, R>,
+  verify: Effect.Effect<void, E2, R2>,
+) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path
+    const boundary = events.length
+    yield* mutate
+    for (let i = 0; i < 100; i++) {
+      const invalidated = events.slice(boundary).some((event) => {
+        if (event._tag === 'Change') return event.path === target
+        return event.paths.some((value) => {
+          const relative = path.relative(value, target)
+          return (
+            relative === '' ||
+            !(
+              relative === '..' ||
+              relative.startsWith(`..${path.sep}`) ||
+              path.isAbsolute(relative)
+            )
+          )
+        })
+      })
+      if (invalidated) {
+        // A covering rescan requests a real read; an event alone never proves updated content.
+        yield* verify
+        return
+      }
+      yield* Effect.sleep('20 millis')
+    }
+    assert.fail(
+      `Missing native invalidation for ${target}: ${JSON.stringify(events.slice(boundary))}`,
+    )
+  })
+
+const collectInvalidations = (watcher: FileWatch.Watch, events: Array<FileWatch.Event>) =>
+  Effect.gen(function* () {
+    const startup = yield* Deferred.make<void>()
+    const consumer = yield* watcher.events.pipe(
+      Stream.runForEach((event) =>
+        Effect.gen(function* () {
+          events.push(event)
+          if (event._tag === 'Rescan' && event.reason === 'coverage')
+            yield* Deferred.succeed(startup, undefined)
+        }),
+      ),
+      Effect.forkScoped,
+    )
+    // Consume the initial settling invalidation before marking any mutation's event boundary.
+    yield* Deferred.await(startup).pipe(Effect.timeout('2 seconds'))
+    return consumer
+  })
+
 describe('DirectoryReader native opened handles', () => {
   it.effect(
     'bounds large pages, preserves identity before first read across rename, and closes',
@@ -215,6 +270,103 @@ describe('DirectoryReader replaceable backends', () => {
 })
 
 describe('FileWatch native coverage', () => {
+  it.live('re-reads each mutation when the real native adapter delivers only rescans', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const root = yield* temporary
+        const events: Array<FileWatch.Event> = []
+        // Normalize actual host callbacks, retaining native acquisition, coverage and finalizers.
+        // This exercises the valid Rescan-only contract without depending on FSEvents coalescing.
+        const rescans = Layer.effect(
+          FileWatch.Adapter,
+          Effect.map(FileWatch.Adapter, (native) => ({
+            subscribe: (targets, observer, options) =>
+              native.subscribe(
+                targets,
+                {
+                  emit: (event) =>
+                    observer.emit(
+                      event._tag === 'Change'
+                        ? { _tag: 'Rescan', paths: [event.path], reason: 'native' }
+                        : event,
+                    ),
+                  fail: observer.fail,
+                },
+                options,
+              ),
+          })),
+        ).pipe(Layer.provide(FileWatchNode.adapter))
+        const watcher = yield* Effect.flatMap(FileWatch.FileWatch, (service) =>
+          service.open([{ path: 'skills', recursive: true }]),
+        ).pipe(
+          Effect.provide(FileWatch.layer({ root }).pipe(Layer.provide([rescans, NodePath.layer]))),
+        )
+        assert.deepStrictEqual(watcher.coverage, {
+          mode: 'native',
+          recursive: 'native',
+          ancestors: 'native',
+          symlinks: 'file-targets',
+          reliability: 'best-effort',
+        })
+        const consumer = yield* collectInvalidations(watcher, events)
+        const content = (name: string, expected: string) =>
+          fs
+            .readFileString(`${root}/${name}`)
+            .pipe(Effect.map((actual) => assert.strictEqual(actual, expected)))
+        yield* expectInvalidation(
+          events,
+          `${root}/skills`,
+          fs
+            .makeDirectory(`${root}/skills`)
+            .pipe(Effect.andThen(fs.writeFileString(`${root}/skills/value`, 'created:1'))),
+          content('skills/value', 'created:1'),
+        )
+        yield* expectInvalidation(
+          events,
+          `${root}/skills/value`,
+          fs.writeFileString(`${root}/skills/value`, 'updated:2'),
+          content('skills/value', 'updated:2'),
+        )
+        yield* expectInvalidation(
+          events,
+          `${root}/skills`,
+          fs.rename(`${root}/skills`, `${root}/old-skills`),
+          Effect.gen(function* () {
+            assert.isFalse(yield* fs.exists(`${root}/skills`))
+            yield* content('old-skills/value', 'updated:2')
+          }),
+        )
+        yield* expectInvalidation(
+          events,
+          `${root}/skills`,
+          fs
+            .makeDirectory(`${root}/skills`)
+            .pipe(Effect.andThen(fs.writeFileString(`${root}/skills/value`, 'recreated:3'))),
+          Effect.gen(function* () {
+            assert.deepStrictEqual(yield* fs.readDirectory(`${root}/skills`), ['value'])
+            yield* content('skills/value', 'recreated:3')
+          }),
+        )
+        yield* expectInvalidation(
+          events,
+          `${root}/skills/value`,
+          fs.writeFileString(`${root}/skills/value`, 'continued:4'),
+          content('skills/value', 'continued:4'),
+        )
+        assert.isTrue(events.every((event) => event._tag === 'Rescan'))
+        yield* watcher.close
+        yield* watcher.close
+        yield* Fiber.join(consumer).pipe(Effect.timeout('2 seconds'))
+        assert.deepStrictEqual(yield* watcher.events.pipe(Stream.runCollect), [])
+        const count = events.length
+        yield* fs.writeFileString(`${root}/skills/value`, 'after-close:5')
+        yield* Effect.sleep('100 millis')
+        assert.strictEqual(events.length, count)
+      }),
+    ).pipe(Effect.provide(files)),
+  )
+
   it.live(
     'covers missing ancestors, creation/deletion/recreation, replacement, exclusions and file symlinks',
     () =>
@@ -240,48 +392,62 @@ describe('FileWatch native coverage', () => {
           assert.strictEqual(watcher.coverage.mode, 'native')
           assert.strictEqual(watcher.coverage.ancestors, 'native')
           assert.strictEqual(watcher.coverage.recursive, 'native')
-          yield* watcher.events.pipe(
-            Stream.runForEach((event) => Effect.sync(() => events.push(event))),
-            Effect.forkScoped,
-          )
-          // Wait for FSEvents startup; no tests pretend host watches are instant/lossless.
-          yield* Effect.sleep('600 millis')
-          const expectChange = <A, E>(suffix: string, mutate: Effect.Effect<A, E>) =>
-            Effect.gen(function* () {
-              events.length = 0
-              yield* mutate
-              for (let i = 0; i < 100; i++) {
-                if (events.some((e) => e._tag === 'Change' && e.path === `${root}/${suffix}`))
-                  return
-                yield* Effect.sleep('20 millis')
-              }
-              assert.fail(`Missing native invalidation for ${suffix}: ${JSON.stringify(events)}`)
-            })
-          yield* expectChange(
+          const consumer = yield* collectInvalidations(watcher, events)
+          const expectUpdate = <A, E, E2>(
+            suffix: string,
+            mutate: Effect.Effect<A, E>,
+            verify: Effect.Effect<void, E2>,
+          ) => expectInvalidation(events, `${root}/${suffix}`, mutate, verify)
+          const content = (suffix: string, expected: string) =>
+            fs
+              .readFileString(`${root}/${suffix}`)
+              .pipe(Effect.map((actual) => assert.strictEqual(actual, expected)))
+          yield* expectUpdate(
             'missing/deep/file',
             fs
               .makeDirectory(`${root}/missing/deep`, { recursive: true })
-              .pipe(Effect.andThen(fs.writeFileString(`${root}/missing/deep/file`, 'first'))),
+              .pipe(
+                Effect.andThen(
+                  fs.writeFileString(`${root}/missing/deep/file`, 'missing-created:1'),
+                ),
+              ),
+            content('missing/deep/file', 'missing-created:1'),
           )
-          yield* expectChange('missing/deep/file', fs.remove(`${root}/missing/deep/file`))
-          yield* expectChange(
+          yield* expectUpdate(
             'missing/deep/file',
-            fs.writeFileString(`${root}/missing/deep/file`, 'second'),
+            fs.remove(`${root}/missing/deep/file`),
+            fs
+              .exists(`${root}/missing/deep/file`)
+              .pipe(Effect.map((exists) => assert.isFalse(exists))),
           )
-          yield* expectChange(
+          yield* expectUpdate(
+            'missing/deep/file',
+            fs.writeFileString(`${root}/missing/deep/file`, 'missing-recreated:2'),
+            content('missing/deep/file', 'missing-recreated:2'),
+          )
+          yield* expectUpdate(
             'skills',
             fs
               .makeDirectory(`${root}/skills/a`, { recursive: true })
-              .pipe(Effect.andThen(fs.writeFileString(`${root}/skills/a/x`, 'x'))),
+              .pipe(Effect.andThen(fs.writeFileString(`${root}/skills/a/x`, 'skills-created:3'))),
+            content('skills/a/x', 'skills-created:3'),
           )
           yield* Effect.sleep('600 millis')
-          yield* expectChange('skills/a/y', fs.writeFileString(`${root}/skills/a/y`, 'y'))
+          yield* expectUpdate(
+            'skills/a/y',
+            fs.writeFileString(`${root}/skills/a/y`, 'skills-child:4'),
+            content('skills/a/y', 'skills-child:4'),
+          )
           events.length = 0
           yield* fs.makeDirectory(`${root}/skills/node_modules/dep`, { recursive: true })
           yield* fs.writeFileString(`${root}/skills/node_modules/dep/excluded`, '')
           yield* fs.writeFileString(`${root}/skills/.hidden`, '')
-          yield* fs.writeFileString(`${root}/skills/.draft`, 'draft')
-          yield* fs.rename(`${root}/skills/.draft`, `${root}/skills/visible`)
+          yield* fs.writeFileString(`${root}/skills/.draft`, 'skills-visible:5')
+          yield* expectUpdate(
+            'skills/visible',
+            fs.rename(`${root}/skills/.draft`, `${root}/skills/visible`),
+            content('skills/visible', 'skills-visible:5'),
+          )
           yield* Effect.sleep('250 millis')
           assert.isFalse(
             events.some(
@@ -292,13 +458,35 @@ describe('FileWatch native coverage', () => {
                   e.path.includes('/.draft')),
             ),
           )
-          assert.isTrue(
-            events.some((e) => e._tag === 'Change' && e.path.endsWith('/skills/visible')),
+          yield* content('skills/visible', 'skills-visible:5')
+          yield* expectUpdate(
+            'skills',
+            fs.rename(`${root}/skills`, `${root}/old-skills`),
+            Effect.gen(function* () {
+              assert.isFalse(yield* fs.exists(`${root}/skills`))
+              yield* content('old-skills/visible', 'skills-visible:5')
+            }),
           )
-          yield* expectChange('skills', fs.rename(`${root}/skills`, `${root}/old-skills`))
-          yield* expectChange('skills', fs.makeDirectory(`${root}/skills`))
+          yield* expectUpdate(
+            'skills',
+            fs
+              .makeDirectory(`${root}/skills`)
+              .pipe(
+                Effect.andThen(
+                  fs.writeFileString(`${root}/skills/generation`, 'skills-recreated:6'),
+                ),
+              ),
+            Effect.gen(function* () {
+              assert.deepStrictEqual(yield* fs.readDirectory(`${root}/skills`), ['generation'])
+              yield* content('skills/generation', 'skills-recreated:6')
+            }),
+          )
           yield* Effect.sleep('600 millis')
-          yield* expectChange('skills/new', fs.writeFileString(`${root}/skills/new`, 'new'))
+          yield* expectUpdate(
+            'skills/new',
+            fs.writeFileString(`${root}/skills/new`, 'skills-child-after-recreation:7'),
+            content('skills/new', 'skills-child-after-recreation:7'),
+          )
           yield* fs.writeFileString(`${root}/physical`, 'old')
           yield* fs.symlink(`${root}/physical`, `${root}/link`)
           yield* fs.symlink(`${root}/physical`, `${root}/link-two`)
@@ -320,11 +508,15 @@ describe('FileWatch native coverage', () => {
             Effect.forkScoped,
           )
           yield* Effect.sleep('600 millis')
-          yield* fs.writeFileString(`${root}/physical`, 'changed')
+          yield* fs.writeFileString(`${root}/physical`, 'aliases-updated:8')
           yield* Deferred.await(seen).pipe(Effect.timeout('3 seconds'))
+          for (const alias of ['link', 'link-two', 'physical'])
+            yield* content(alias, 'aliases-updated:8')
           yield* linked.close
           yield* watcher.close
           yield* watcher.close
+          yield* Fiber.join(consumer).pipe(Effect.timeout('2 seconds'))
+          assert.deepStrictEqual(yield* watcher.events.pipe(Stream.runCollect), [])
           const length = events.length
           yield* fs.writeFileString(`${root}/skills/after-close`, 'closed')
           yield* Effect.sleep('100 millis')
