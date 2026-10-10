@@ -43,14 +43,14 @@ const PayloadRows = Schema.Array(
   Schema.Struct({
     id: SqlCounter,
     category: Schema.String,
-    payload: Schema.fromJsonString(Row.Row),
+    payload: Schema.fromJsonString(Row.Stored),
   }).check(
     Schema.makeFilter(
       (row) => Row.idOf(row.payload) === row.id && row.payload._tag === row.category,
     ),
   ),
 )
-const RowJson = Schema.fromJsonString(Row.Row)
+const RowJson = Schema.fromJsonString(Row.Stored)
 const io = <A, E, R>(operation: string, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     Effect.mapError((cause) => Errors.make('io', operation, `SQL ${operation} failed`, cause)),
@@ -246,7 +246,7 @@ export const make = Effect.gen(function* () {
       return Option.fromUndefinedOr(rows[0])
     }),
     page: Effect.fnUntraced(function* (kind, after, limit, filter, order) {
-      const results: Array<Row.Row> = []
+      const results: Array<Row.Stored> = []
       let cursor = after
       while (results.length < limit) {
         const clauses = [sql`category = ${kind}`]

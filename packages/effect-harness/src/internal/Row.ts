@@ -13,6 +13,19 @@ export const Row = Schema.Union([
   Schema.TaggedStruct('document', { value: Domain.DocumentHistory }),
 ])
 export type Row = typeof Row.Type
+/** Native persistence keeps obsolete bodies opaque; ordinary reads still decode Row. */
+export const StoredDocument = Schema.Struct({
+  record: Domain.Document,
+  revisions: Schema.Array(Schema.Struct({ seq: Domain.Seq, content: Schema.Json })),
+})
+export const Stored = Schema.Union([
+  Row.members[0],
+  Row.members[1],
+  Row.members[2],
+  Row.members[3],
+  Schema.TaggedStruct('document', { value: StoredDocument }),
+])
+export type Stored = typeof Stored.Type
 export type Kind = Row['_tag']
 export interface Filter {
   readonly conversationId?: number | undefined
@@ -29,12 +42,12 @@ export interface Filter {
   readonly maxId?: number | undefined
   readonly at?: Data.DocumentPoint | undefined
 }
-export const idOf = (row: Row): number => {
+export const idOf = (row: Stored): number => {
   if (row._tag === 'entry') return row.value.entry.id
   if (row._tag === 'document') return row.value.record.id
   return row.value.id
 }
-export const indexOf = (row: Row) => {
+export const indexOf = (row: Stored) => {
   const base: {
     conversationId: number | null
     kind: string | null
@@ -99,7 +112,7 @@ export const indexOf = (row: Row) => {
       }
   }
 }
-export const matches = (row: Row, filter: Filter): boolean => {
+export const matches = (row: Stored, filter: Filter): boolean => {
   const id = idOf(row)
   if (filter.minId !== undefined && id < filter.minId) return false
   if (filter.maxId !== undefined && id > filter.maxId) return false

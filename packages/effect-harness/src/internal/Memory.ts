@@ -11,7 +11,7 @@ import * as Row from './Row.js'
 export const makeAccess = Effect.gen(function* () {
   const state = yield* Ref.make({
     metadata: Metadata.initialMetadata,
-    rows: new Map<number, Row.Row>(),
+    rows: new Map<number, Row.Stored>(),
   })
   const lock = yield* Semaphore.make(1)
   return {

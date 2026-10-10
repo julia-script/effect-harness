@@ -2,6 +2,8 @@ import { expect, test } from 'tstyche'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
+import type * as Option from 'effect/Option'
+import type * as Storage from 'effect-harness/Storage'
 import * as SchemaGetter from 'effect/SchemaGetter'
 import * as Document from 'effect-harness/Document'
 import * as DocumentRetirement from 'effect-harness/DocumentRetirement'
@@ -64,4 +66,19 @@ test('retirement targets require an incarnation and address, not old values', ()
   expect<{
     readonly id: Record.DocumentId
   }>().type.not.toBeAssignableTo<DocumentRetirement.Target>()
+})
+
+declare const storage: Storage.Storage['Service']
+test('fresh native metadata remains optional and needs no obsolete codec service', () => {
+  const lookup = storage.documentMetadata
+  expect(lookup).type.toBe<
+    | ((
+        id: Record.DocumentId,
+      ) => Effect.Effect<Option.Option<Storage.DocumentMetadata>, Storage.StorageError>)
+    | undefined
+  >()
+  if (lookup !== undefined)
+    expect(lookup(target.id)).type.toBe<
+      Effect.Effect<Option.Option<Storage.DocumentMetadata>, Storage.StorageError>
+    >()
 })

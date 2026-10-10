@@ -11,7 +11,7 @@ import * as Row from './Row.js'
 import * as Memory from './Memory.js'
 import * as Errors from '../StorageError.js'
 
-const Frame = Schema.Struct({ metadata: Metadata.Metadata, rows: Schema.Array(Row.Row) })
+const Frame = Schema.Struct({ metadata: Metadata.Metadata, rows: Schema.Array(Row.Stored) })
 const Envelope = Schema.Struct({ metadata: Metadata.Metadata, rows: Schema.Array(Schema.Unknown) })
 const io = <A, E, R>(operation: string, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(

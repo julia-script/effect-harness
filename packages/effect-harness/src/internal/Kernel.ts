@@ -16,18 +16,42 @@ import * as StorageFormat from '../StorageFormat.js'
 
 const WriteBatchJson = Schema.fromJsonString(Schema.Array(Data.StorageWriteSchema))
 
+const documentHeader = Effect.fnUntraced(function* (history: typeof Row.StoredDocument.Type) {
+  const latest = history.revisions.at(-1)
+  const header = yield* Schema.decodeUnknownEffect(
+    Schema.Struct({
+      _tag: Schema.Literals(['base', 'delta']),
+      version: Domain.Content.members[0].fields.version,
+    }),
+  )(latest?.content).pipe(Effect.mapError(Errors.corrupt('documentMetadata')))
+  const record = yield* Schema.decodeEffect(Data.DocumentRecordSchema)(history.record).pipe(
+    Effect.mapError(Errors.corrupt('documentMetadata')),
+  )
+  if (
+    latest === undefined ||
+    latest.seq < record.createdAt ||
+    (record.scope._tag === 'conversation'
+      ? record.history === undefined ||
+        record.fork === undefined ||
+        (record.history === 'latest' && record.fork === 'asOf')
+      : record.history !== undefined || record.fork !== undefined)
+  )
+    return yield* Errors.make('corrupt', 'documentMetadata', 'Invalid document metadata')
+  return { record: structuredClone(record), version: header.version }
+})
+
 export interface Access {
   readonly metadata: Effect.Effect<Metadata.Metadata, Errors.StorageError>
-  readonly get: (id: number) => Effect.Effect<Option.Option<Row.Row>, Errors.StorageError>
+  readonly get: (id: number) => Effect.Effect<Option.Option<Row.Stored>, Errors.StorageError>
   readonly page: (
     kind: Row.Kind,
     after: number | undefined,
     limit: number,
     filter: Row.Filter,
     order: Data.ScanOrder,
-  ) => Effect.Effect<ReadonlyArray<Row.Row>, Errors.StorageError>
+  ) => Effect.Effect<ReadonlyArray<Row.Stored>, Errors.StorageError>
   readonly save: (
-    rows: ReadonlyArray<Row.Row>,
+    rows: ReadonlyArray<Row.Stored>,
     metadata: Metadata.Metadata,
   ) => Effect.Effect<void, Errors.StorageError>
   readonly exclusive: <A>(
@@ -66,7 +90,18 @@ export const make = Effect.fnUntraced(function* (access: Access) {
     yield* Schema.decodeEffect(Data.StorageIdSchema)(id).pipe(
       Effect.mapError(Errors.invalid('lookup')),
     )
-    return yield* access.get(id)
+    return yield* access
+      .get(id)
+      .pipe(
+        Effect.flatMap((row) =>
+          Option.isNone(row)
+            ? Effect.succeedNone
+            : Schema.decodeUnknownEffect(Row.Row)(row.value).pipe(
+                Effect.asSome,
+                Effect.mapError(Errors.corrupt('record')),
+              ),
+        ),
+      )
   })
   const scan = (kind: Row.Kind, filter: Row.Filter, order: Data.ScanOrder = 'ascending') =>
     Stream.paginate(undefined, (after: number | undefined) =>
@@ -134,7 +169,9 @@ export const make = Effect.fnUntraced(function* (access: Access) {
               order,
             ),
           ),
-          Stream.filter((row): row is Extract<Row.Row, { _tag: 'entry' }> => row._tag === 'entry'),
+          Stream.filter(
+            (row): row is Extract<Row.Stored, { _tag: 'entry' }> => row._tag === 'entry',
+          ),
           Stream.map((row) => structuredClone(row.value.entry)),
         )
       }),
@@ -198,10 +235,43 @@ export const make = Effect.fnUntraced(function* (access: Access) {
           if (write._tag === 'document.create' || write._tag === 'document.copy')
             addresses.add(Domain.addressKey(write.record))
         }
+        // Only pure retirement may carry an opaque body through the atomic write boundary.
+        const retirements = new Map<number, Extract<Row.Stored, { _tag: 'document' }>>()
+        const retireIds = new Set<number>()
+        const contentIds = new Set<number>()
+        for (const write of writes) {
+          if (write._tag === 'document.retire') {
+            if (retireIds.has(write.id))
+              return yield* Errors.make('invalid', 'commit', 'Document is retired more than once')
+            retireIds.add(write.id)
+          } else {
+            if ('value' in write) contentIds.add(write.value.id)
+            else if ('record' in write) contentIds.add(write.record.id)
+            else contentIds.add(write.id)
+            if (write._tag === 'document.copy') contentIds.add(write.source.id)
+          }
+        }
         const loaded = new Map<number, Row.Row>()
         for (const id of ids) {
           const row = yield* access.get(id)
-          if (Option.isSome(row)) loaded.set(id, row.value)
+          if (Option.isNone(row)) {
+            if (retireIds.has(id))
+              return yield* Errors.make('notFound', 'commit', 'Document is absent or retired')
+            continue
+          }
+          if (retireIds.has(id) && !contentIds.has(id)) {
+            if (row.value._tag !== 'document' || row.value.value.record.retiredAt !== undefined)
+              return yield* Errors.make('notFound', 'commit', 'Document is absent or retired')
+            yield* documentHeader(row.value.value)
+            retirements.set(id, row.value)
+          } else {
+            loaded.set(
+              id,
+              yield* Schema.decodeUnknownEffect(Row.Row)(row.value).pipe(
+                Effect.mapError(Errors.corrupt('commit')),
+              ),
+            )
+          }
         }
         for (const address of addresses) {
           for (const row of yield* access.page(
@@ -211,7 +281,13 @@ export const make = Effect.fnUntraced(function* (access: Access) {
             { address, at: 'current' },
             'ascending',
           ))
-            loaded.set(Row.idOf(row), row)
+            if (!retirements.has(Row.idOf(row)))
+              loaded.set(
+                Row.idOf(row),
+                yield* Schema.decodeUnknownEffect(Row.Row)(row).pipe(
+                  Effect.mapError(Errors.corrupt('commit')),
+                ),
+              )
         }
         const requests = new Map<string, number>()
         for (const write of writes) {
@@ -239,9 +315,9 @@ export const make = Effect.fnUntraced(function* (access: Access) {
             return yield* Errors.make('conflict', 'commit', 'Request identity is already admitted')
         }
         // These shared pure validators own record/document consistency, not backend lifecycles.
-        const domainWrites = yield* Schema.decodeEffect(Schema.Array(Domain.Write))(writes).pipe(
-          Effect.mapError(Errors.invalid('commit')),
-        )
+        const domainWrites = yield* Schema.decodeEffect(Schema.Array(Domain.Write))(
+          writes.filter((write) => write._tag !== 'document.retire' || !retirements.has(write.id)),
+        ).pipe(Effect.mapError(Errors.invalid('commit')))
         const next = yield* Records.applyWrites(
           Commit.stateOf(metadata, loaded.values()),
           domainWrites,
@@ -254,8 +330,17 @@ export const make = Effect.fnUntraced(function* (access: Access) {
           nextId: next.nextId,
           nextSeq: next.nextSeq,
         }).pipe(Effect.mapError(Errors.invalid('commit')))
+        const retiredAt = yield* Schema.decodeEffect(Domain.Seq)(metadata.nextSeq).pipe(
+          Effect.mapError(Errors.invalid('commit')),
+        )
         yield* access.save(
-          Commit.rowsOf(next).filter((row) => affected.has(Row.idOf(row))),
+          [
+            ...Commit.rowsOf(next).filter((row) => affected.has(Row.idOf(row))),
+            ...Array.from(retirements.values(), (row) => ({
+              ...row,
+              value: { ...row.value, record: { ...row.value.record, retiredAt } },
+            })),
+          ],
           nextMetadata,
         )
         return sequence
@@ -280,20 +365,20 @@ export const make = Effect.fnUntraced(function* (access: Access) {
     conversation,
     document,
     documentMetadata: Effect.fn('Storage.documentMetadata')(function* (id: Domain.DocumentId) {
-      const row = yield* get(id)
+      yield* open
+      yield* Schema.decodeEffect(Data.DocumentId)(id).pipe(
+        Effect.mapError(Errors.invalid('documentMetadata')),
+      )
+      const row = yield* access.get(id)
       if (
         Option.isNone(row) ||
         row.value._tag !== 'document' ||
         row.value.value.record.retiredAt !== undefined
       )
         return Option.none()
-      const version = row.value.value.revisions.at(-1)?.content.version
-      if (version === undefined)
-        return yield* Errors.make('corrupt', 'documentMetadata', 'Document has no stored version')
-      const record = yield* Schema.decodeEffect(Data.DocumentRecordSchema)(
-        row.value.value.record,
-      ).pipe(Effect.mapError(Errors.corrupt('documentMetadata')))
-      return Option.some({ record: structuredClone(record), version })
+      if (row.value.value.record.id !== id)
+        return yield* Errors.make('corrupt', 'documentMetadata', 'Document identity does not match')
+      return Option.some(yield* documentHeader(row.value.value))
     }),
     scanEntries,
     entry: Effect.fnUntraced(function* (id, options) {
@@ -346,7 +431,7 @@ export const make = Effect.fnUntraced(function* (access: Access) {
       )
       return yield* scan('submission', { conversationId, requestId }).pipe(
         Stream.filter(
-          (row): row is Extract<Row.Row, { _tag: 'submission' }> => row._tag === 'submission',
+          (row): row is Extract<Row.Stored, { _tag: 'submission' }> => row._tag === 'submission',
         ),
         Stream.map((row) => structuredClone(row.value)),
         Stream.runHead,
@@ -391,7 +476,7 @@ export const make = Effect.fnUntraced(function* (access: Access) {
           Effect.map((valid) =>
             scan('conversation', valid, valid.order).pipe(
               Stream.filter(
-                (row): row is Extract<Row.Row, { _tag: 'conversation' }> =>
+                (row): row is Extract<Row.Stored, { _tag: 'conversation' }> =>
                   row._tag === 'conversation',
               ),
               Stream.map((row) => structuredClone(row.value)),
@@ -406,7 +491,7 @@ export const make = Effect.fnUntraced(function* (access: Access) {
           Effect.map((valid) =>
             scan('task', valid, valid.order).pipe(
               Stream.filter(
-                (row): row is Extract<Row.Row, { _tag: 'task' }> => row._tag === 'task',
+                (row): row is Extract<Row.Stored, { _tag: 'task' }> => row._tag === 'task',
               ),
               Stream.map((row) => structuredClone(row.value)),
             ),
@@ -420,7 +505,8 @@ export const make = Effect.fnUntraced(function* (access: Access) {
           Effect.map((valid) =>
             scan('submission', valid, valid.order).pipe(
               Stream.filter(
-                (row): row is Extract<Row.Row, { _tag: 'submission' }> => row._tag === 'submission',
+                (row): row is Extract<Row.Stored, { _tag: 'submission' }> =>
+                  row._tag === 'submission',
               ),
               Stream.map((row) => structuredClone(row.value)),
             ),
@@ -442,7 +528,7 @@ export const make = Effect.fnUntraced(function* (access: Access) {
               valid.order,
             ).pipe(
               Stream.filter(
-                (row): row is Extract<Row.Row, { _tag: 'document' }> => row._tag === 'document',
+                (row): row is Extract<Row.Stored, { _tag: 'document' }> => row._tag === 'document',
               ),
               Stream.mapEffect((row) =>
                 Schema.decodeEffect(Data.DocumentRecordSchema)(row.value.record).pipe(
