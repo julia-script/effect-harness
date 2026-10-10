@@ -1,6 +1,7 @@
 /** Isolated record overlays and schema-encoded document replacements for one commit. */
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
+import { pipeArguments } from 'effect/Pipeable'
 import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
@@ -277,7 +278,7 @@ const ownership = Effect.fnUntraced(function* (
   return { conversationId: owner.conversationId, taskId: owner.id }
 })
 
-export const ensureRoot = Effect.fnUntraced(function* (state: State) {
+const stageRoot = Effect.fnUntraced(function* (state: State) {
   const found = yield* conversation(state, Domain.ROOT_CONVERSATION_ID)
   if (Option.isSome(found)) return found.value
   const value = Domain.Conversation.make({ id: Domain.ROOT_CONVERSATION_ID })
@@ -286,7 +287,7 @@ export const ensureRoot = Effect.fnUntraced(function* (state: State) {
   return yield* Value.copy(Domain.Conversation, value)
 })
 
-export const createConversation = Effect.fnUntraced(function* (
+const stageConversation = Effect.fnUntraced(function* (
   state: State,
   options: Transaction.ConversationOptions,
 ) {
@@ -712,7 +713,7 @@ export const scanDocuments = Effect.fnUntraced(function* (
   )
 })
 
-export const forkConversation = Effect.fnUntraced(function* (
+const stageFork = Effect.fnUntraced(function* (
   state: State,
   parent: Domain.ConversationId,
   at: Domain.EntryId,
@@ -813,6 +814,87 @@ export const forkConversation = Effect.fnUntraced(function* (
   state.conversations.set(id, value)
   return result
 })
+
+/** A savepoint owns mutable Draft copies, including aliases in both document maps. */
+const initialize = Effect.fnUntraced(function* (
+  state: State,
+  stage: (draft: State) => Effect.Effect<Domain.Conversation, Failure>,
+) {
+  if (state.runtime.initializers.length === 0) return yield* stage(state)
+  const clones = new Map<Draft, Draft>()
+  const clone = (draft: Draft): Draft => {
+    let copy = clones.get(draft)
+    if (copy === undefined) {
+      copy = { ...draft }
+      clones.set(draft, copy)
+    }
+    return copy
+  }
+  const child: State = {
+    ...state,
+    semaphore: yield* Semaphore.make(1),
+    conversations: new Map(state.conversations),
+    entries: new Map(state.entries),
+    tasks: new Map(state.tasks),
+    submissions: new Map(state.submissions),
+    documents: new Map(Array.from(state.documents, ([key, draft]) => [key, clone(draft)])),
+    incarnations: new Map(Array.from(state.incarnations, ([id, draft]) => [id, clone(draft)])),
+    copiedSources: new Set(state.copiedSources),
+  }
+  const tx: Transaction.Transaction = {
+    [Transaction.TypeId]: Transaction.TypeId,
+    pipe() {
+      return pipeArguments(this, arguments)
+    },
+  }
+  register(tx, child)
+  // Parent use holds its permit. Callbacks use a separate capability/permit so
+  // Transaction operations can reenter without exposing partial creation drafts.
+  const result = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const record = yield* stage(child)
+      for (const run of state.runtime.initializers)
+        yield* run(tx, yield* Value.copy(Domain.Conversation, record))
+      return record
+    }),
+  ).pipe(
+    Effect.ensuring(
+      Effect.sync(() => {
+        child.active = false
+      }),
+    ),
+  )
+  yield* active(state)
+  const adoptMap = <K, V>(target: Map<K, V>, source: Map<K, V>) => {
+    target.clear()
+    for (const [key, value] of source) target.set(key, value)
+  }
+  adoptMap(state.conversations, child.conversations)
+  adoptMap(state.entries, child.entries)
+  adoptMap(state.tasks, child.tasks)
+  adoptMap(state.submissions, child.submissions)
+  adoptMap(state.documents, child.documents)
+  adoptMap(state.incarnations, child.incarnations)
+  state.copiedSources.clear()
+  for (const id of child.copiedSources) state.copiedSources.add(id)
+  return result
+})
+
+export const ensureRoot = Effect.fnUntraced(function* (state: State) {
+  const found = yield* conversation(state, Domain.ROOT_CONVERSATION_ID)
+  if (Option.isSome(found)) return found.value
+  return yield* initialize(state, stageRoot)
+})
+
+export const createConversation = (state: State, options: Transaction.ConversationOptions) =>
+  initialize(state, (child) => stageConversation(child, options))
+
+export const forkConversation = (
+  state: State,
+  parent: Domain.ConversationId,
+  at: Domain.EntryId,
+  options: Transaction.ConversationOptions,
+) => initialize(state, (child) => stageFork(child, parent, at, options))
 
 export const writes = Effect.fnUntraced(function* (state: State) {
   const result: Array<Record.StorageWrite> = []

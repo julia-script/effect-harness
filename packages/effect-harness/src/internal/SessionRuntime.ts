@@ -9,6 +9,7 @@ import * as Stream from 'effect/Stream'
 import type * as Domain from '../Record.js'
 import type * as Record from '../Record.js'
 import type * as Session from '../Session.js'
+import type * as Transaction from '../Transaction.js'
 import { SessionError, type Failure } from '../SessionError.js'
 import { Storage } from '../Storage.js'
 import * as Value from './DocumentValue.js'
@@ -23,6 +24,7 @@ export interface Subscriber {
 }
 
 export interface State {
+  readonly initializers: ReadonlyArray<Initializer>
   readonly storage: Storage['Service']
   readonly semaphore: Semaphore.Semaphore
   readonly cache: Map<string, Option.Option<Record.StoredDocument>>
@@ -30,6 +32,11 @@ export interface State {
   closed: boolean
   poison: Failure | undefined
 }
+
+export type Initializer = (
+  tx: Transaction.Transaction,
+  conversation: Domain.Conversation,
+) => Effect.Effect<void, Failure>
 
 const states = new WeakMap<object, State>()
 const owners = new WeakMap<Storage['Service'], State>()
@@ -186,10 +193,11 @@ export const stop = Effect.fnUntraced(function* (state: State, error?: Failure) 
   state.subscribers.clear()
 })
 
-export const make = Effect.fnUntraced(function* () {
+export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Initializer> = []) {
   const storage = yield* Storage
   const semaphore = yield* Semaphore.make(1)
   const state: State = {
+    initializers,
     storage,
     semaphore,
     cache: new Map(),

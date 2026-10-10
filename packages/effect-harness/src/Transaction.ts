@@ -205,7 +205,7 @@ export const scanDocuments: {
     ).pipe(Stream.mapEffect((value) => Runtime.use(self, () => Effect.succeed(value)))),
 )
 
-/** Stages the reserved root conversation when absent; initializes no Harness documents. */
+/** Stages an absent root with configured Session initializers; existing roots skip them. */
 export const ensureRoot: {
   (): (self: Transaction) => Effect.Effect<Record.Conversation, Failure>
   (self: Transaction): Effect.Effect<Record.Conversation, Failure>
@@ -214,6 +214,7 @@ export const ensureRoot: {
   (self: Transaction) => Runtime.use(self, (state) => Runtime.ensureRoot(state)),
 )
 
+/** Creates and initializes atomically. Caught initializer failure leaves prior drafts intact. */
 export const createConversation: {
   (options: ConversationOptions): (self: Transaction) => Effect.Effect<Record.Conversation, Failure>
   (self: Transaction, options: ConversationOptions): Effect.Effect<Record.Conversation, Failure>
@@ -223,7 +224,10 @@ export const createConversation: {
     Runtime.use(self, (state) => Runtime.createConversation(state, options)),
 )
 
-/** Creates a new conversation with inherited history and the source documents' fork policies. */
+/**
+ * Inherits history and documents by source fork policies, then runs configured
+ * Session initializers in order. Failure stages neither fork copies nor callback writes.
+ */
 export const forkConversation: {
   (
     parent: Record.ConversationId,

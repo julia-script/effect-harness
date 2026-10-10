@@ -14,6 +14,7 @@ import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Identity from '../Identity.js'
 import * as Record from '../Record.js'
 import * as Agent from '../Agent.js'
+import * as ConversationInitializer from '../ConversationInitializer.js'
 import * as Document from '../Document.js'
 import { ExecutionError } from '../ExecutionError.js'
 import type * as Extension from '../Extension.js'
@@ -60,17 +61,32 @@ export const make = Effect.fnUntraced(function* <
   H extends ReadonlyArray<Hook.Any>,
   X extends ReadonlyArray<Extension.Any>,
   M extends ReadonlyArray<Model.Any>,
+  I extends ReadonlyArray<ConversationInitializer.Any>,
 >(
-  options: Options<T, H, X, M>,
-): Effect.fn.Return<HarnessRuntimeService, HarnessError, Scope.Scope | Requirements<T, H, X, M>> {
-  const context = yield* Effect.context<Requirements<T, H, X, M>>()
+  options: Options<T, H, X, M, I>,
+): Effect.fn.Return<
+  HarnessRuntimeService,
+  HarnessError,
+  Scope.Scope | Requirements<T, H, X, M, I>
+> {
+  const context = yield* Effect.context<Requirements<T, H, X, M, I>>()
   const owner = yield* Scope.Scope
   const ownedScope = yield* Scope.fork(owner)
   return yield* protect(
     'runtime.make',
     Effect.gen(function* () {
       const storage = yield* Storage
-      const session = yield* Session.make()
+      const session = yield* Session.make({
+        initializers: [
+          ConversationInitializer.make({
+            execute: (tx, record) =>
+              Transaction.ensureDocument(tx, agentDocument, agentTarget(record.id)).pipe(
+                Effect.asVoid,
+              ),
+          }),
+          ...(options.initializers ?? []),
+        ],
+      })
       const schedulerScope = yield* Scope.make()
       const wakeups = yield* Queue.make<void>({ capacity: 1, strategy: 'dropping' })
       const topTools = Object.values(options.tools?.tools ?? {})

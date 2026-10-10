@@ -5,6 +5,7 @@
  * lazily caches loaded documents, serializes transactions and publishes only committed changes.
  */
 import * as Cause from 'effect/Cause'
+import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import { dual } from 'effect/Function'
 import * as Option from 'effect/Option'
@@ -12,9 +13,10 @@ import { pipeArguments } from 'effect/Pipeable'
 import type * as Pipeable from 'effect/Pipeable'
 import * as Predicate from 'effect/Predicate'
 import * as Schema from 'effect/Schema'
-import type * as Scope from 'effect/Scope'
+import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import type * as Identity from './Identity.js'
+import type * as ConversationInitializer from './ConversationInitializer.js'
 import * as Record from './Record.js'
 import type * as Document from './Document.js'
 import * as StorageRecord from './Record.js'
@@ -57,13 +59,52 @@ export type CommitOptions = typeof CommitOptionsSchema.Type
  * One active Session coordinates a Storage instance; a second make fails with conflict.
  * Scope cleanup seals admission, settles ongoing commits and ends subscriptions.
  * Storage's supplying layer retains ownership of backend cleanup.
+ * Initializers capture their services here and run in array order on each new
+ * root/create/fork Transaction operation. Existing conversations skip them.
+ * Callback drafts roll back to the creation boundary, even for caught failures.
+ * See ConversationInitializer.make for fork inheritance and callback lifetime.
  */
-export const make = Effect.fnUntraced(function* (): Effect.fn.Return<
+export const make = Effect.fnUntraced(function* <
+  const I extends ReadonlyArray<ConversationInitializer.Any> = readonly [],
+>(
+  options: { readonly initializers?: I } = {},
+): Effect.fn.Return<
   Session,
   SessionFailure,
-  Storage | Scope.Scope
+  Storage | Scope.Scope | ConversationInitializer.Requirements<I[number]>
 > {
-  const state = yield* SessionRuntime.make()
+  // Initializer.Requirements already excludes Scope; omit only removes ambient
+  // execution capabilities that must come from the callback, not construction.
+  const context = (yield* Effect.context<ConversationInitializer.Requirements<I[number]>>()).pipe(
+    Context.omit(Scope.Scope, SessionRuntime.Transactions),
+  ) as Context.Context<ConversationInitializer.Requirements<I[number]>>
+  const initializers = (options.initializers ?? []).map(
+    (initializer): SessionRuntime.Initializer => {
+      // The public phantom type retains callback requirements until Session captures their services.
+      const execute = initializer.execute as (
+        tx: Transaction.Transaction,
+        record: Record.Conversation,
+      ) => Effect.Effect<
+        void,
+        ConversationInitializer.Error<I[number]>,
+        ConversationInitializer.Requirements<I[number]>
+      >
+      return (tx, record) =>
+        Effect.suspend(() => execute(tx, record)).pipe(
+          Effect.provideContext(context),
+          Effect.mapError(
+            (cause) =>
+              new SessionFailure({
+                reason: 'invalid',
+                operation: 'conversation.initialize',
+                message: 'Conversation initializer failed',
+                cause,
+              }),
+          ),
+        )
+    },
+  )
+  const state = yield* SessionRuntime.make(initializers)
   const self: Session = {
     [TypeId]: TypeId,
     pipe() {

@@ -5,6 +5,7 @@ import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import type * as Record from './Record.js'
 import type * as Conversation from './Conversation.js'
+import type * as ConversationInitializer from './ConversationInitializer.js'
 import type * as Submission from './Submission.js'
 import { HarnessBackend } from './HarnessBackend.js'
 import type { CreateOptions } from './HarnessBackend.js'
@@ -67,6 +68,7 @@ export const layerLocal = <
   const H extends ReadonlyArray<Hook.Any> = readonly [],
   const X extends ReadonlyArray<Extension.Any> = readonly [],
   const M extends ReadonlyArray<Model.Any> = readonly [],
+  const I extends ReadonlyArray<ConversationInitializer.Any> = readonly [],
 >(
-  options: HarnessRuntime.Options<T, H, X, M> = {},
+  options: HarnessRuntime.Options<T, H, X, M, I> = {},
 ) => layer.pipe(Layer.provide(HarnessRuntime.layer(options)))
