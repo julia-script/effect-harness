@@ -84,6 +84,11 @@ export class Storage extends Context.Service<
 
 export const layerMemory: Layer.Layer<Storage> = Layer.effect(Storage, Memory.make)
 
+/**
+ * Uses the supplied SQL client with an independent durable transaction per write.
+ * Initialization, commit and ID allocation reject that client's ambient transactions
+ * with an invalid StorageError; invoke them outside SqlClient.withTransaction.
+ */
 export const layerSql: Layer.Layer<Storage, StorageError, SqlClient.SqlClient> = Layer.effect(
   Storage,
   Sql.make,

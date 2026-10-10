@@ -53,6 +53,22 @@ const io = <A, E, R>(operation: string, effect: Effect.Effect<A, E, R>) =>
 
 export const make = Effect.gen(function* () {
   const sql = (yield* SqlClient.SqlClient).withoutTransforms()
+  // A savepoint cannot settle durability before its owning transaction commits.
+  const independent = (operation: string) =>
+    Effect.serviceOption(sql.transactionService).pipe(
+      Effect.flatMap((transaction) =>
+        Option.isSome(transaction)
+          ? Effect.fail(
+              Errors.make(
+                'invalid',
+                operation,
+                'SQL storage cannot initialize or write inside the supplied client transaction',
+              ),
+            )
+          : Effect.void,
+      ),
+    )
+  yield* independent('initialize')
   const metadataTable = sql(metadataName)
   const recordsTable = sql(recordsName)
   const text = sql.onDialectOrElse({
@@ -272,18 +288,19 @@ export const make = Effect.gen(function* () {
       )
     }),
     exclusive: <A>(effect: Effect.Effect<A, Errors.StorageError>) =>
-      sql
-        .withTransaction(
-          io('lock', sql`UPDATE ${metadataTable} SET next_id = next_id WHERE singleton = 1`).pipe(
-            Effect.andThen(effect),
+      independent('commit').pipe(
+        Effect.andThen(
+          sql.withTransaction(
+            io('lock', sql`UPDATE ${metadataTable} SET next_id = next_id WHERE singleton = 1`).pipe(
+              Effect.andThen(effect),
+            ),
           ),
-        )
-        .pipe(
-          Effect.mapError((cause) => {
-            if (cause._tag === 'StorageError' && cause.reason !== 'io') return cause
-            return Errors.make('uncertain', 'commit', 'SQL write outcome is uncertain', cause)
-          }),
         ),
+        Effect.mapError((cause) => {
+          if (cause._tag === 'StorageError' && cause.reason !== 'io') return cause
+          return Errors.make('uncertain', 'commit', 'SQL write outcome is uncertain', cause)
+        }),
+      ),
   }
   return yield* Kernel.make(access)
 })
