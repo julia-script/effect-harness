@@ -214,7 +214,8 @@ export const cancel = Effect.fnUntraced(function* <E, R>(
         ),
       ).pipe(
         Effect.ensuring(
-          Scope.close(scope, Exit.void).pipe(
+          Fiber.interrupt(fiber).pipe(
+            Effect.ensuring(Scope.close(scope, Exit.void)),
             Effect.uninterruptible,
             Effect.forkIn(owner),
             Effect.asVoid,

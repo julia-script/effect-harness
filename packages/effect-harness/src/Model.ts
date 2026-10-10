@@ -7,6 +7,8 @@ import * as Cause from 'effect/Cause'
 import * as Capability from './internal/Capability.js'
 import * as Effect from 'effect/Effect'
 import * as Clock from 'effect/Clock'
+import * as Option from 'effect/Option'
+import * as Scope from 'effect/Scope'
 import type * as Pipeable from 'effect/Pipeable'
 import * as Schema from 'effect/Schema'
 import type * as LanguageModel from 'effect/ai/LanguageModel'
@@ -119,11 +121,17 @@ export const makeConfiguration = <S extends Schema.Constraint, R, E>(input: {
           Effect.provideContext(context),
         ),
       restore: (value) =>
-        Schema.decodeEffect(codec, { onExcessProperty: 'error' })(value).pipe(
-          Effect.flatMap((value) => Effect.suspend(() => restore(value))),
-          Effect.flatMap(validate),
-          Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, configurationError))),
-          Effect.provideContext(context),
+        Effect.flatMap(Effect.serviceOption(Scope.Scope), (operationScope) =>
+          Schema.decodeEffect(codec, { onExcessProperty: 'error' })(value).pipe(
+            Effect.flatMap((value) => Effect.suspend(() => restore(value))),
+            Effect.flatMap(validate),
+            Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, configurationError))),
+            Effect.provideContext(
+              Option.isSome(operationScope)
+                ? Context.add(context, Scope.Scope, operationScope.value)
+                : context,
+            ),
+          ),
         ),
     }
   })
@@ -227,7 +235,11 @@ export interface Deferred {
     previousPollAt: number,
     request: Request,
   ) => Effect.Effect<Complete | Pending, DeferredError, DeferredRequestServices<Request>>
-  readonly cancel: (handle: Schema.Json) => Effect.Effect<void, DeferredError>
+  /** Saved validated request configuration overrides captured construction defaults. */
+  readonly cancel: (
+    handle: Schema.Json,
+    configuration?: Context.Context<never>,
+  ) => Effect.Effect<void, DeferredError>
 }
 
 const invalidDeferred = (message: string, cause?: unknown) =>
@@ -243,6 +255,9 @@ const deadlineSchema = Schema.Int.check(
  * Codec failures stay in the ModelError channel. Encoding is additionally validated as JSON.
  * An explicit capture effect can restrict the retained context; configuration on each prepared
  * request takes precedence over this capture. The owner must keep acquired resources alive.
+ * Cancellation accepts the same saved configuration explicitly; a one-argument call uses
+ * construction defaults. New callback and codec acquisitions use the current operation Scope
+ * when present, while previously acquired captured services keep their original owner.
  * Supply R explicitly for callbacks that require services. Poll deadlines are checked against
  * the admission clock so encoding or callback work cannot invalidate a previously future deadline.
  */
@@ -286,20 +301,24 @@ export const makeDeferred = <H extends Schema.Constraint, R>(input: {
           'Deferred poll deadlines must strictly increase beyond the operation admission clock',
         )
     })
-    const configured = <A, R0, Tools extends Record<string, Tool.Any>>(
+    const configured = <A, R0>(
       effect: Effect.Effect<
         A,
         DeferredError,
         R | H['DecodingServices'] | H['EncodingServices'] | R0
       >,
-      request?: DeferredRequest<Tools>,
-    ) => {
-      const captured = effect.pipe(Effect.provideContext(services))
-      // Inner provision wins: frozen request configuration overrides construction defaults.
-      return request?.configuration === undefined
-        ? captured
-        : Effect.provideContext(effect.pipe(Effect.provideContext(request.configuration)), services)
-    }
+      configuration?: Context.Context<never>,
+    ) =>
+      Effect.flatMap(Effect.serviceOption(Scope.Scope), (operationScope) => {
+        const context = Context.merge(services, configuration ?? Context.empty())
+        // Only fresh acquisitions use the operation owner; captured services retain their owner.
+        return Effect.provideContext(
+          effect,
+          Option.isSome(operationScope)
+            ? Context.add(context, Scope.Scope, operationScope.value)
+            : context,
+        )
+      })
     return {
       start: <Request extends DeferredRequest<any>>(request: Request) =>
         configured(
@@ -329,7 +348,7 @@ export const makeDeferred = <H extends Schema.Constraint, R>(input: {
             )
             return { ...outcome, handle }
           }),
-          request,
+          request.configuration,
         ),
       poll: <Request extends DeferredRequest<any>>(
         handle: Schema.Json,
@@ -349,9 +368,10 @@ export const makeDeferred = <H extends Schema.Constraint, R>(input: {
               yield* deadline(outcome.nextPollAt, admittedAt, previous)
             return outcome
           }),
-          request,
+          request.configuration,
         ),
-      cancel: (handle) => configured(Effect.flatMap(decode(handle), cancel)),
+      cancel: (handle, configuration) =>
+        configured(Effect.flatMap(decode(handle), cancel), configuration),
     } satisfies Deferred
   })
 

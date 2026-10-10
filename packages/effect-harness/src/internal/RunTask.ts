@@ -2,13 +2,14 @@
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
+import * as Equal from 'effect/Equal'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Record from '../Record.js'
 import type * as Registry from '../Registry.js'
 import * as RegistryImpl from './Registry.js'
 import type * as RegistryScope from '../RegistryScope.js'
-import type * as Scope from 'effect/Scope'
+import * as Scope from 'effect/Scope'
 import type * as AiError from 'effect/ai/AiError'
 import { SessionError } from '../SessionError.js'
 import * as Session from '../Session.js'
@@ -326,10 +327,30 @@ export const make = (
                         return yield* Preparation.unavailable(
                           'Pinned deferred cancellation model is unavailable',
                         )
+                      const savedModel = checkpoint.preparation.model
+                      const configurationCodec = selected.configuration ?? Model.emptyConfiguration
+                      if (
+                        savedModel._tag !== 'descriptor' ||
+                        !Equal.equals(savedModel.binding, {
+                          id: JSON.stringify([
+                            selected.definition.ref.provider,
+                            selected.definition.ref.modelId,
+                          ]),
+                          version: selected.version ?? 1,
+                        }) ||
+                        !Equal.equals(selected.definition, savedModel.definition) ||
+                        !Equal.equals(
+                          configurationCodec.binding,
+                          checkpoint.preparation.configurationBinding,
+                        )
+                      )
+                        return yield* Preparation.unavailable(
+                          'Pinned deferred cancellation model or configuration is incompatible',
+                        )
                       const descriptor = yield* Model.deferred(selected)
-                      const configuration = yield* (
-                        selected.configuration ?? Model.emptyConfiguration
-                      ).restore(checkpoint.preparation.configuration)
+                      const configuration = yield* configurationCodec.restore(
+                        checkpoint.preparation.configuration,
+                      )
                       const context = Context.merge(
                         Context.add(base.context, ProviderAffinity, {
                           id: checkpoint.preparation.affinity,
@@ -339,9 +360,10 @@ export const make = (
                         Context.add(Prepared.PreparedRequest, {
                           current: yield* Preparation.own(checkpoint.preparation),
                         }),
+                        Context.add(Scope.Scope, yield* Scope.Scope),
                       )
                       yield* descriptor
-                        .cancel(checkpoint.handle)
+                        .cancel(checkpoint.handle, configuration)
                         .pipe(Effect.provideContext(context))
                     }),
                     base.cancellationCleanup,
