@@ -13,7 +13,7 @@ export const RunStateSchema = Schema.Union([
   Schema.TaggedStruct('queued', {
     phase: Schema.tag('queued'),
     ...shared,
-    draft: Submission.DraftSchema,
+    draft: Submission.InputDraftSchema,
   }),
   Schema.TaggedStruct('request', { phase: Schema.tag('request'), ...running }),
   Schema.TaggedStruct('tools', {

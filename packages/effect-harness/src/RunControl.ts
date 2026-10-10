@@ -3,6 +3,7 @@ import * as Schema from 'effect/Schema'
 import * as Document from './Document.js'
 import * as Record from './Record.js'
 import * as Transaction from './Transaction.js'
+import * as ContextProtocol from './internal/ContextProtocol.js'
 
 /** Serializable queue policy; steering never interrupts active tools. */
 export const ModeSchema = Schema.Literals(['followUp', 'steer', 'write'])
@@ -63,4 +64,19 @@ export const document = Document.define({
 
 export const target = (conversationId: Record.ConversationId): Document.Target => ({
   scope: { _tag: 'conversation', conversationId },
+})
+
+/** Immutable legacy interpretation cutoff. Forks copy it instead of recapturing a tail. */
+export const contextProtocol = Document.define({
+  kind: 'harness.contextProtocol',
+  version: 1,
+  scope: 'conversation',
+  history: 'rewindable',
+  fork: 'current',
+  schema: ContextProtocol.ProtocolSchema,
+  initial: (): ContextProtocol.Protocol => ({
+    version: 1,
+    origin: { conversationId: Record.ROOT_CONVERSATION_ID },
+    legacyMode: 'preserveManaged',
+  }),
 })

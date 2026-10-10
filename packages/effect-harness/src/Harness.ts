@@ -34,11 +34,11 @@ export interface HarnessService {
     id: Record.ConversationId,
   ) => Effect.Effect<Option.Option<Conversation.Conversation>, HarnessError>
   /**
-   * Reacquires a saved input submission using this client's backend.
+   * Reacquires a saved input or write submission using this client's backend.
    * Validates immediately through backend.read, including settled submissions;
    * missing IDs fail with HarnessError. Creates no durable records and retains
-   * the original conversation ID. Open that conversation to resume pending work
-   * after a local runtime restart, then use Submission.read, wait or withdraw.
+   * the original conversation ID. Submission.wait resumes pending work after a local runtime restart without
+   * opening the conversation. read and acquisition perform no durable writes.
    */
   readonly submission: (
     id: Record.SubmissionId,

@@ -6,6 +6,7 @@ import * as Option from 'effect/Option'
 import type * as Pipeable from 'effect/Pipeable'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
+import * as Prompt from 'effect/ai/Prompt'
 import type * as Record from './Record.js'
 import type * as Agent from './Agent.js'
 import * as Document from './Document.js'
@@ -19,7 +20,13 @@ import * as ConversationHost from './internal/ConversationHost.js'
 import { ConversationTypeId } from './internal/ClientHandle.js'
 
 export { ForkOptionsSchema, type ForkOptions } from './HarnessBackend.js'
-import type { ForkOptions } from './HarnessBackend.js'
+import type { ForkOptions, AbortOptions, ResetOptions } from './HarnessBackend.js'
+export {
+  AbortOptionsSchema,
+  ResetOptionsSchema,
+  type AbortOptions,
+  type ResetOptions,
+} from './HarnessBackend.js'
 export const TypeId = ConversationTypeId
 export interface Conversation extends Pipeable.Pipeable {
   readonly [TypeId]: typeof TypeId
@@ -62,12 +69,47 @@ export const fork: {
       .fork({ conversationId: self.id, ...(options === undefined ? {} : { options }) })
       .pipe(Effect.map((id) => ConversationHost.conversation(backend(self), id))),
 )
+/** Waits for supervised foreground cleanup; background inclusion captures the reached task set. */
 export const abort: {
-  (): (self: Conversation) => Effect.Effect<void, HarnessError>
-  (self: Conversation): Effect.Effect<void, HarnessError>
+  (options?: AbortOptions): (self: Conversation) => Effect.Effect<void, HarnessError>
+  (self: Conversation, options?: AbortOptions): Effect.Effect<void, HarnessError>
 } = dual(
-  (args) => args.length !== 0,
-  (self: Conversation) => backend(self).abort(self.id),
+  (args) => typeof args[0] === 'object' && args[0] !== null && TypeId in args[0],
+  (self: Conversation, options?: AbortOptions) => backend(self).abort(self.id, options),
+)
+
+/** Admit a passive context reset. Await its receipt for placement; tools finish before busy placement. */
+export const reset: {
+  (
+    options?: ResetOptions,
+  ): (self: Conversation) => Effect.Effect<Submission.Submission, HarnessError>
+  (self: Conversation, options?: ResetOptions): Effect.Effect<Submission.Submission, HarnessError>
+} = dual(
+  (args) => typeof args[0] === 'object' && args[0] !== null && TypeId in args[0],
+  (self: Conversation, options: ResetOptions = {}) =>
+    Effect.gen(function* () {
+      const model =
+        options.handoff === undefined
+          ? undefined
+          : yield* Schema.encodeEffect(Schema.Array(Schema.toCodecJson(Prompt.Message)))([
+              Prompt.userMessage({ content: [Prompt.textPart({ text: options.handoff })] }),
+            ]).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new HarnessError({
+                    reason: 'invalid',
+                    operation: 'conversation.reset',
+                    message: 'Invalid handoff',
+                    cause,
+                  }),
+              ),
+            )
+      return yield* submit(self, {
+        type: 'write',
+        entry: { kind: 'reset', head: 'self', ...(model === undefined ? {} : { model }) },
+        ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
+      })
+    }),
 )
 export const entries: {
   (

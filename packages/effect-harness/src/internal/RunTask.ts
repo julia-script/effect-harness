@@ -24,6 +24,7 @@ import * as Transaction from '../Transaction.js'
 import type { PhaseResult } from './TaskRegistry.js'
 import * as RunLoop from './RunLoop.js'
 import * as Run from './RunState.js'
+import * as Inbox from './Inbox.js'
 import { NativeWriteFailure } from './NativeWriteFailure.js'
 
 interface Invocation {
@@ -151,20 +152,10 @@ export const make = (
     const checkpoint = yield* Run.decode(record.state.checkpoint)
     yield* execution.commit((tx) =>
       Effect.gen(function* () {
-        const submission = yield* Transaction.submission(tx, checkpoint.submissionId)
-        if (
-          Option.isSome(submission) &&
-          submission.value.type === 'input' &&
-          submission.value.status !== 'done' &&
-          submission.value.status !== 'unanswered'
-        )
-          yield* Transaction.putSubmission(tx, {
-            ...submission.value,
-            _tag: 'InputUnanswered',
-            status: 'unanswered',
-            reason,
-            ...(message === undefined ? {} : { detail: { message } }),
-          })
+        yield* Inbox.settle(tx, record.conversationId, record.id, checkpoint.submissionId, {
+          reason,
+          ...(message === undefined ? {} : { detail: { message } }),
+        })
         yield* execution.progress(tx, definition, {
           status: 'completing',
           outcome:

@@ -32,6 +32,15 @@ export const ForkSchema = Schema.Struct({
   conversationId: Record.ConversationId,
   options: Schema.optionalKey(ForkOptionsSchema),
 })
+export const AbortOptionsSchema = Schema.Struct({
+  includeBackground: Schema.optionalKey(Schema.Boolean),
+})
+export type AbortOptions = typeof AbortOptionsSchema.Type
+export const ResetOptionsSchema = Schema.Struct({
+  handoff: Schema.optionalKey(Schema.String),
+  requestId: Schema.optionalKey(Schema.NonEmptyString),
+})
+export type ResetOptions = typeof ResetOptionsSchema.Type
 export const WatchSchema = Schema.Struct({
   conversationId: Record.ConversationId,
   after: Schema.optionalKey(Record.EntryId),
@@ -54,7 +63,10 @@ export interface HarnessBackendService {
   readonly fork: (
     request: typeof ForkSchema.Type,
   ) => Effect.Effect<Record.ConversationId, HarnessError>
-  readonly abort: (id: Record.ConversationId) => Effect.Effect<void, HarnessError>
+  readonly abort: (
+    id: Record.ConversationId,
+    options?: AbortOptions,
+  ) => Effect.Effect<void, HarnessError>
   readonly read: (id: Record.SubmissionId) => Effect.Effect<Submission.Record, HarnessError>
   readonly wait: (id: Record.SubmissionId) => Effect.Effect<Submission.Settled, HarnessError>
   readonly withdraw: (id: Record.SubmissionId) => Effect.Effect<Submission.Withdrawal, HarnessError>

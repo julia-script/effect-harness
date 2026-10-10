@@ -1,6 +1,8 @@
 /** Durable conversations, storage clients, tool contracts, and local execution. */
 export * as Agent from './Agent.js'
 export * as Coding from './coding/index.js'
+export * as Compaction from './Compaction.js'
+export * as CompactionError from './CompactionError.js'
 export * as Conversation from './Conversation.js'
 export * as ConversationInitializer from './ConversationInitializer.js'
 export * as ContextPlan from './ContextPlan.js'

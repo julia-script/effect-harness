@@ -7,6 +7,12 @@ import * as Semaphore from 'effect/Semaphore'
 import * as Identity from '../Identity.js'
 import type * as Record from '../Record.js'
 import * as RunControl from '../RunControl.js'
+import * as ContextProtocol from './ContextProtocol.js'
+import * as Stream from 'effect/Stream'
+import * as Run from './RunState.js'
+import * as Prompt from 'effect/ai/Prompt'
+import type * as Submission from '../Submission.js'
+import * as Settings from '../Settings.js'
 import { SessionError } from '../SessionError.js'
 import * as Transaction from '../Transaction.js'
 import * as Runtime from './TransactionRuntime.js'
@@ -42,6 +48,9 @@ export interface BoundaryOptions {
   readonly nextTaskId?: Record.TaskId
   readonly modes?: QueueModes
   readonly context?: ContextBoundary
+  readonly outcome?: { readonly answer: Record.EntryId } | { readonly reason: string }
+  readonly createNext?: boolean
+  readonly deferFinalUsers?: boolean
 }
 export interface Selection {
   readonly boundary: Boundary
@@ -261,7 +270,8 @@ export const reconcile = (tx: Transaction.Transaction, conversationId: Record.Co
 
 /** Place all writes before independently limited user queues. Caller invokes postTools only
  * after every tool settles. final releases prior membership; caller must settle its receipts
- * in this same enclosing commit. A selected final batch requires a distinct, live next task.
+ * in this same enclosing commit (outcome supplies atomic runtime settlement).
+ * A selected final batch requires a distinct, live next task.
  * The returned effective boundary exposes reset handling to the context/scheduler owner.
  */
 export const select = (
@@ -325,9 +335,26 @@ export const select = (
         if (entry.head !== undefined) head = entry.head
         if (resets) boundary = 'final'
       }
+      if (
+        boundary === 'final' &&
+        state.active !== undefined &&
+        (options.outcome !== undefined || options.createNext)
+      ) {
+        yield* settle(
+          child,
+          conversationId,
+          state.active.taskId,
+          state.active.submissionIds[0]!,
+          options.outcome ?? { reason: 'reset' },
+        )
+      }
       const users: Array<Item> = []
       for (const mode of ['followUp', 'steer'] as const) {
-        if (boundary === 'postTools' && mode === 'followUp') continue
+        if (
+          (boundary === 'postTools' && mode === 'followUp') ||
+          (boundary === 'final' && options.deferFinalUsers)
+        )
+          continue
         const candidates = state.items.filter((item) => item.mode === mode)
         const limit = mode === 'followUp' ? modes.followUp : modes.steering
         users.push(...(limit === 'all' ? candidates : candidates.slice(0, 1)))
@@ -335,7 +362,12 @@ export const select = (
       users.sort((a, b) => a.submissionId - b.submissionId)
       let active = boundary === 'postTools' ? state.active : undefined
       if (users.length > 0) {
-        const taskId = boundary === 'postTools' ? state.active?.taskId : options.nextTaskId
+        let taskId = state.active?.taskId
+        if (boundary === 'final') {
+          taskId = options.nextTaskId
+          if (taskId === undefined && options.createNext)
+            taskId = yield* createRun(child, conversationId, users[0]!.submissionId)
+        }
         if (taskId === undefined || (boundary === 'final' && taskId === state.active?.taskId))
           return yield* conflict(
             'inbox.select',
@@ -375,3 +407,236 @@ export const select = (
       return { boundary, previous: state.active, active, placed, stale }
     }),
   )
+
+/** Single immutable cutoff, persisted before the first new-format entry. */
+export const ensureContext = Effect.fnUntraced(function* (
+  tx: Transaction.Transaction,
+  id: Record.ConversationId,
+) {
+  const saved = yield* Transaction.snapshot(tx, RunControl.contextProtocol, target(id))
+  if (Option.isSome(saved)) return saved.value.value
+  const history = yield* Transaction.scanEntries(tx, {
+    conversationId: id,
+    order: 'ascending',
+  }).pipe(Stream.runCollect)
+  const protocol = yield* ContextProtocol.activate({
+    conversationId: id,
+    ...(history.at(-1) === undefined ? {} : { tail: history.at(-1)!.id }),
+  })
+  yield* Transaction.ensureDocument(tx, RunControl.contextProtocol, target(id))
+  yield* Transaction.setDocument(tx, RunControl.contextProtocol, target(id), protocol)
+  return protocol
+})
+
+/** Canonical context is read on the same transaction line as placement and settlement. */
+export const project = Effect.fnUntraced(function* (
+  tx: Transaction.Transaction,
+  id: Record.ConversationId,
+) {
+  const protocol = yield* ensureContext(tx, id)
+  const history = yield* Transaction.scanEntries(tx, {
+    conversationId: id,
+    order: 'ascending',
+  }).pipe(Stream.runCollect)
+  return yield* ContextProtocol.project(id, history, protocol).pipe(
+    Effect.mapError(
+      (cause) =>
+        new SessionError({
+          reason: 'invalid',
+          operation: 'inbox.context',
+          message: 'Invalid canonical context',
+          cause,
+        }),
+    ),
+  )
+})
+
+const createRun = Effect.fnUntraced(function* (
+  tx: Transaction.Transaction,
+  conversationId: Record.ConversationId,
+  submissionId: Record.SubmissionId,
+) {
+  const checkpoint = yield* Run.encode({
+    _tag: 'queued',
+    phase: 'queued',
+    submissionId,
+    draft: { type: 'input', content: '' },
+  })
+  return (yield* Transaction.createTask(tx, {
+    conversationId,
+    kind: 'harness.run',
+    version: 1,
+    background: false,
+    abortRequested: false,
+    input: submissionId,
+    state: { status: 'pending', checkpoint },
+  })).id
+})
+
+/** Settle every placed member; a legacy checkpoint supplies the single-ID fallback. */
+export const settle = Effect.fnUntraced(function* (
+  tx: Transaction.Transaction,
+  conversationId: Record.ConversationId,
+  taskId: Record.TaskId,
+  primary: Record.SubmissionId,
+  outcome:
+    | { readonly answer: Record.EntryId }
+    | { readonly reason: string; readonly detail?: Schema.JsonObject },
+) {
+  const control = yield* Transaction.snapshot(tx, RunControl.document, target(conversationId))
+  const active = Option.isSome(control) ? control.value.value.active : undefined
+  const ids = active?.taskId === taskId ? active.submissionIds : [primary]
+  for (const id of ids) {
+    const found = yield* Transaction.submission(tx, id)
+    if (
+      Option.isNone(found) ||
+      found.value.type !== 'input' ||
+      found.value.status === 'done' ||
+      found.value.status === 'unanswered'
+    )
+      continue
+    if (found.value.conversationId !== conversationId)
+      return yield* conflict('inbox.settle', 'Run member belongs to another conversation')
+    if ('answer' in outcome) {
+      if (found.value.status !== 'placed')
+        return yield* conflict('inbox.settle', 'Answered input was not placed')
+      yield* Transaction.putSubmission(tx, {
+        ...found.value,
+        _tag: 'InputDone',
+        status: 'done',
+        answer: outcome.answer,
+      })
+    } else
+      yield* Transaction.putSubmission(tx, {
+        ...found.value,
+        _tag: 'InputUnanswered',
+        status: 'unanswered',
+        reason: outcome.reason,
+        ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
+      })
+  }
+})
+
+/** Called only by admission/resumption or the existing run's final/tool boundary. */
+export const boundary = Effect.fnUntraced(function* (
+  tx: Transaction.Transaction,
+  conversationId: Record.ConversationId,
+  options: Pick<BoundaryOptions, 'boundary' | 'taskId' | 'outcome'>,
+) {
+  const view = yield* project(tx, conversationId)
+  const policy = yield* Settings.getOrDefault
+  // Legacy queued v1 tasks keep their original IDs and scheduler order. Their final
+  // boundary will release newly queued users after the last old task settles.
+  const pending = yield* Transaction.scanTasks(tx, { conversationId, kind: 'harness.run' }).pipe(
+    Stream.runCollect,
+  )
+  let deferFinalUsers = false
+  for (const task of pending) {
+    if (
+      task.id === options.taskId ||
+      task.state.status === 'terminal' ||
+      task.state.status === 'completing'
+    )
+      continue
+    const checkpoint = yield* Run.decode(task.state.checkpoint)
+    if (checkpoint._tag !== 'queued') continue
+    const receipt = yield* Transaction.submission(tx, checkpoint.submissionId)
+    if (Option.isSome(receipt) && receipt.value._tag === 'InputQueued') deferFinalUsers = true
+  }
+  return yield* select(tx, conversationId, {
+    ...options,
+    createNext: true,
+    deferFinalUsers,
+    modes: {
+      followUp: policy.followUpMode === 'all' ? 'all' : 'one',
+      steering: policy.steeringMode === 'all' ? 'all' : 'one',
+    },
+    context: {
+      ...(view.bounds.head?.head === undefined ? {} : { head: view.bounds.head.head }),
+      resetsRun: (entry) => entry.head === 'self',
+    },
+  })
+})
+
+/** One placement path for old queued native checkpoints and already-placed new batches. */
+export const placeRun = Effect.fnUntraced(function* (
+  tx: Transaction.Transaction,
+  task: Record.Task,
+  queued: Extract<Run.RunState, { _tag: 'queued' }>,
+) {
+  yield* ensureContext(tx, task.conversationId)
+  yield* Transaction.ensureDocument(tx, RunControl.document, target(task.conversationId))
+  const found = yield* Transaction.submission(tx, queued.submissionId)
+  if (
+    Option.isNone(found) ||
+    found.value.type !== 'input' ||
+    (found.value.status !== 'queued' && found.value.status !== 'placed')
+  )
+    return yield* conflict('inbox.placeRun', 'Native input is not pending placement or execution')
+  if (found.value.status === 'queued') {
+    const message = importInput(queued.draft.content)
+    const entry = yield* Transaction.appendEntry(tx, task.conversationId, {
+      kind: 'input',
+      model: yield* Schema.encodeEffect(Run.Messages)([message]),
+    })
+    yield* Transaction.putSubmission(tx, {
+      ...found.value,
+      _tag: 'InputPlaced',
+      status: 'placed',
+      entry: entry.id,
+    })
+    yield* Transaction.setDocument(tx, RunControl.document, target(task.conversationId), {
+      active: { taskId: task.id, submissionIds: [found.value.id] },
+    })
+  } else {
+    const control = yield* Transaction.snapshot(
+      tx,
+      RunControl.document,
+      target(task.conversationId),
+    )
+    if (
+      Option.isNone(control) ||
+      control.value.value.active?.taskId !== task.id ||
+      !control.value.value.active.submissionIds.includes(queued.submissionId)
+    )
+      return yield* conflict('inbox.placeRun', 'Placed native input has no matching durable owner')
+  }
+  return (yield* project(tx, task.conversationId)).prompt
+})
+
+export const importInput = (content: Submission.Input) =>
+  Prompt.userMessage({
+    content: typeof content === 'string' ? [Prompt.textPart({ text: content })] : content,
+  })
+
+/** Legacy in-place recovery: retain checkpoint/prefix and register its original placed input. */
+export const adopt = Effect.fnUntraced(function* (
+  tx: Transaction.Transaction,
+  task: Record.Task,
+  primary: Record.SubmissionId,
+) {
+  yield* ensureContext(tx, task.conversationId)
+  const control = yield* Transaction.ensureDocument(
+    tx,
+    RunControl.document,
+    target(task.conversationId),
+  )
+  if (control.value.active !== undefined) {
+    if (
+      control.value.active.taskId !== task.id ||
+      !control.value.active.submissionIds.includes(primary)
+    )
+      return yield* conflict('inbox.adopt', 'Native run membership differs from its primary input')
+    return
+  }
+  const receipt = yield* Transaction.submission(tx, primary)
+  if (
+    Option.isNone(receipt) ||
+    receipt.value._tag !== 'InputPlaced' ||
+    receipt.value.conversationId !== task.conversationId
+  )
+    return yield* conflict('inbox.adopt', 'Legacy placed input is absent')
+  yield* Transaction.setDocument(tx, RunControl.document, target(task.conversationId), {
+    active: { taskId: task.id, submissionIds: [primary] },
+  })
+})

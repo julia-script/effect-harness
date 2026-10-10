@@ -1,9 +1,10 @@
-/** Client handle for a durable input admission and its committed outcome. */
+/** Client handle for a durable input or passive write admission and its committed outcome. */
 import type * as Effect from 'effect/Effect'
 import type * as Pipeable from 'effect/Pipeable'
 import * as Schema from 'effect/Schema'
 import * as Prompt from 'effect/ai/Prompt'
 import * as DurableRecord from './Record.js'
+import * as Transaction from './Transaction.js'
 import { dual } from 'effect/Function'
 import type { HarnessError } from './HarnessError.js'
 import type { HarnessBackendService } from './HarnessBackend.js'
@@ -15,11 +16,21 @@ export const InputSchema = Schema.Union([Schema.String, Schema.Array(Prompt.User
 export type Input = typeof InputSchema.Type
 
 /** Admission validates and brands the request identity; callers can supply a normal string. */
-export const DraftSchema = Schema.Struct({
+export const InputDraftSchema = Schema.Struct({
   type: Schema.tag('input'),
   content: InputSchema,
+  whenBusy: Schema.optionalKey(Schema.Literals(['followUp', 'steer', 'reject'])),
   requestId: Schema.optionalKey(Schema.NonEmptyString),
 })
+export type InputDraft = typeof InputDraftSchema.Type
+/** Passive JSON entry writes never invoke a model. No callback is persisted. */
+export const WriteDraftSchema = Schema.Struct({
+  type: Schema.tag('write'),
+  entry: Transaction.EntryDraftSchema,
+  requestId: Schema.optionalKey(Schema.NonEmptyString),
+})
+export type WriteDraft = typeof WriteDraftSchema.Type
+export const DraftSchema = Schema.Union([InputDraftSchema, WriteDraftSchema])
 export type Draft = typeof DraftSchema.Type
 
 export const RecordSchema = Schema.Union([
@@ -27,9 +38,17 @@ export const RecordSchema = Schema.Union([
   DurableRecord.InputPlaced,
   DurableRecord.InputDone,
   DurableRecord.InputUnanswered,
+  DurableRecord.WriteQueued,
+  DurableRecord.WriteDone,
+  DurableRecord.WriteUnanswered,
 ])
 export type Record = typeof RecordSchema.Type
-export const SettledSchema = Schema.Union([DurableRecord.InputDone, DurableRecord.InputUnanswered])
+export const SettledSchema = Schema.Union([
+  DurableRecord.InputDone,
+  DurableRecord.InputUnanswered,
+  DurableRecord.WriteDone,
+  DurableRecord.WriteUnanswered,
+])
 export type Settled = typeof SettledSchema.Type
 export const WithdrawalSchema = Schema.Literals(['aborted', 'already_placed', 'settled'])
 export type Withdrawal = typeof WithdrawalSchema.Type

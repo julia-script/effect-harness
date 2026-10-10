@@ -29,6 +29,7 @@ import * as ToolResult from '../ToolResult.js'
 import * as Toolkit from '../Toolkit.js'
 import * as Transaction from '../Transaction.js'
 import * as Run from './RunState.js'
+import * as Inbox from './Inbox.js'
 import type { NativeWriteFailure } from './NativeWriteFailure.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
 import { protect, absent } from './HarnessFailure.js'
@@ -50,6 +51,10 @@ export interface BoundSection {
   readonly registration: string
 }
 export interface Services {
+  readonly requireSubmissionFormat: Effect.Effect<
+    import('../StorageFormat.js').Format,
+    import('../StorageFormat.js').Failure
+  >
   readonly notify: Effect.Effect<void, HarnessError | Failure>
   readonly lease: import('../RegistryScope.js').Lease
   readonly session: Session.Session
@@ -114,6 +119,14 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
   } = services
   let task = initial
   let state = yield* Run.decode(task.state.checkpoint)
+  if (state._tag !== 'queued') {
+    yield* write((tx) =>
+      Effect.gen(function* () {
+        yield* services.requireSubmissionFormat
+        yield* Inbox.adopt(tx, initial, state.submissionId)
+      }),
+    )
+  }
   let turns = 0
   while (true) {
     yield* checkOpen
@@ -121,39 +134,8 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       const queued = state
       state = yield* write((tx, current) =>
         Effect.gen(function* () {
-          const history = yield* Stream.runCollect(
-            Transaction.scanEntries(tx, {
-              conversationId: task.conversationId,
-              order: 'ascending',
-            }),
-          )
-          const messages = yield* Schema.decodeEffect(Run.Messages)(
-            history.flatMap((entry) => entry.model ?? []),
-          )
-          const input = Prompt.userMessage({
-            content:
-              typeof queued.draft.content === 'string'
-                ? [Prompt.textPart({ text: queued.draft.content })]
-                : queued.draft.content,
-          })
-          const entry = yield* Transaction.appendEntry(tx, task.conversationId, {
-            kind: 'input',
-            head: 'self',
-            model: yield* Schema.encodeEffect(Run.Messages)([input]),
-          })
-          const record = yield* Transaction.submission(tx, queued.submissionId)
-          if (
-            Option.isNone(record) ||
-            record.value.type !== 'input' ||
-            record.value.status !== 'queued'
-          )
-            return yield* absent('run.place', 'Queued submission is missing')
-          yield* Transaction.putSubmission(tx, {
-            ...record.value,
-            _tag: 'InputPlaced',
-            status: 'placed',
-            entry: entry.id,
-          })
+          yield* services.requireSubmissionFormat
+          const prompt = yield* Inbox.placeRun(tx, current, queued)
           const configured = yield* Transaction.snapshot(
             tx,
             agentDocument,
@@ -167,7 +149,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
               ...defaultAgent,
               ...(Option.isSome(configured) ? configured.value.value : {}),
             },
-            prompt: Prompt.make([...messages, input]),
+            prompt,
           }
           yield* saveState(tx, current, next)
           return next
@@ -415,12 +397,10 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
               yield* Transaction.appendEntry(tx, task.conversationId, {
                 kind: 'assistant',
                 usage,
-                head: 'self',
                 model: yield* Schema.encodeEffect(Run.Messages)(responsePrompt.content),
               })
               yield* Transaction.appendEntry(tx, task.conversationId, {
                 kind: 'input',
-                head: 'self',
                 model: yield* Schema.encodeEffect(Run.Messages)([decision.input]),
               })
               yield* saveState(tx, current, next)
@@ -434,22 +414,13 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
             const entry = yield* Transaction.appendEntry(tx, task.conversationId, {
               kind: 'assistant',
               usage,
-              head: 'self',
               model: yield* Schema.encodeEffect(Run.Messages)(responsePrompt.content),
             })
-            const found = yield* Transaction.submission(tx, requesting.submissionId)
-            if (
-              Option.isNone(found) ||
-              found.value.type !== 'input' ||
-              found.value.status !== 'placed'
-            )
-              return yield* absent('run.settle', 'Placed submission is missing')
-            yield* Transaction.putSubmission(tx, {
-              ...found.value,
-              _tag: 'InputDone',
-              status: 'done',
-              answer: entry.id,
-            })
+            yield* Inbox.boundary(tx, task.conversationId, {
+              boundary: 'final',
+              taskId: task.id,
+              outcome: { answer: entry.id },
+            }).pipe(Effect.provideContext(context))
             yield* services.complete(tx, { status: 'completed', result: entry.id })
           }),
         )
@@ -478,7 +449,6 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           yield* Transaction.appendEntry(tx, task.conversationId, {
             kind: 'assistant',
             usage,
-            head: 'self',
             model: yield* Schema.encodeEffect(Run.Messages)(responsePrompt.content),
           })
           yield* saveState(tx, current, pending)
@@ -503,8 +473,32 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         { _tag: 'afterTools', results: toolState.results },
         task.id,
       )
-      yield* write((tx, current) => saveState(tx, current, next))
-      state = next
+      const selected = yield* write((tx, current) =>
+        Effect.gen(function* () {
+          const selected = yield* Inbox.boundary(tx, task.conversationId, {
+            boundary: 'postTools',
+            taskId: task.id,
+          }).pipe(Effect.provideContext(context))
+          const prompt = (yield* Inbox.project(tx, task.conversationId)).prompt
+          if (selected.boundary === 'final') {
+            const reset = selected.placed.findLast((item) => item._tag === 'WriteDone')
+            if (reset === undefined || reset._tag !== 'WriteDone')
+              return yield* absent('run.reset', 'Reset placement is missing')
+            yield* services.complete(tx, { status: 'completed', result: reset.entry })
+          } else {
+            yield* saveState(tx, current, {
+              ...next,
+              prompt,
+            })
+          }
+          return { selected, prompt }
+        }),
+      )
+      if (selected.selected.boundary === 'final') {
+        yield* notify
+        return
+      }
+      state = { ...next, prompt: selected.prompt }
       continue
     }
     let call = pending.call
@@ -700,7 +694,6 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
             name: call.name,
             ...(result.spend === undefined ? {} : { cost: result.spend }),
           },
-          head: 'self',
           model: yield* Schema.encodeEffect(Run.Messages)([output]),
           data: yield* Schema.encodeEffect(jsonCodec(ToolResult.ResultSchema))(result),
         })
