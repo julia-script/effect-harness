@@ -1,5 +1,30 @@
 # effect-harness
 
+## 0.4.0
+
+### Minor Changes
+
+- 1ee6db2: Add ordered transactional conversation initializers to Session and the local Harness runtime. New roots, independent conversations, forks and configured raw Transaction creation commit their required documents and callback writes together. Failed or interrupted initialization leaves prior transaction drafts intact, including when callers catch the failure. Existing roots and reopened conversations skip initialization; notification hooks retain their post-commit behavior.
+- 1ee6db2: Add opt-in direct document migrations keyed by persisted source version. Transaction acquisition and updates validate the current encoded schema before staging an atomic upgrade. Reads and historical snapshots retain exact-version behavior, and forks preserve their configured revision policy.
+- 1ee6db2: Persist globally unique conversation affinity through reopen and allocate a fresh identity on forks. Expose request-scoped ProviderAffinity to custom adapters and default supported OpenAI prompt_cache_key without overriding caller options.
+
+  Persist model token usage, caller-declared pricing snapshots and opt-in tool spend with completed entries and recovery checkpoints. Add atomic conversation/session usage queries with fork deduplication, explicit unknown counters and costs, separate currencies, and legacy history reporting. Older transports may omit accounting queries; older decoders discard new usage fields on downgrade.
+
+- 1ee6db2: Publish runner-neutral Effect storage conformance cases through effect-harness/Testing. Scoped adapter factories cover atomicity, identity, ownership, document lifecycle and fork visibility, with opt-in historical document, reopen and SQL transaction recovery checks and typed assertion failures.
+- 1ee6db2: Add Harness.submission(id) to reacquire saved input submissions through the existing backend read contract. Acquisition immediately validates the ID, preserves the original conversation ID, and creates no durable records. Reopened clients can read, wait for, and withdraw the original submission.
+- 1ee6db2: Add opt-in Tool.makeResult handler envelopes with independently validated structured output, model-visible content and UI details on success and failure. Preserve all channels through hooks and durable JSON recovery while keeping existing Tool.make behavior.
+- 1ee6db2: Retire active task documents atomically when Transaction.putTask makes their owner terminal. Reject acquisition and replacement for terminal owners, including legacy tasks, before initialization or migration runs. Failed settlement preparation stages no partial retirement, even when caught. Detached snapshots and conversation history retain their existing read semantics; legacy terminal documents can be explicitly retired.
+
+### Patch Changes
+
+- ca61686: Prepare all fork document copies before staging the child conversation. Catching a fork validation error inside a successful Session callback no longer commits orphan copies, while unrelated callback changes remain commit-able.
+- 7c7742f: Project tool results from their post-hook model-visible content, retaining plain strings and using the canonical provider envelope for media and provider options. Preserve media, part options, and hook redactions while retaining typed details separately in durable history.
+- a5a2bfc: Keep native HTTP clients, OpenAI embeddings and Anthropic generic streaming when tool-result adapters wrap inherited or non-enumerable service properties. Forwarded methods retain their captured receiver.
+- d0c76ac: Preserve the complete scoped tool failure cause when it includes a defect, interruption, or infrastructure error. A declared domain failure no longer hides an accompanying cleanup defect or infrastructure failure, while domain-only failures still become tool results.
+- 9ed0877: Resolve duplicate tool declarations once using native Toolkit precedence, keeping the offered definition, extension admission, and persisted recovery policy aligned with the selected handler. Prevent interrupted unsafe overrides from being replayed after restart.
+- 09a8c8b: Normalize SQL COMMIT and ROLLBACK errors into uncertain StorageError failures and require reopening direct Storage after these failures.
+- 336b0a5: Preserve native tool file bytes across JSON serialization so Anthropic receives decoded text documents rather than base64 strings. Literal string content retains its original meaning.
+
 ## 0.3.0
 
 ### Minor Changes
