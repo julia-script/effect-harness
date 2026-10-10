@@ -1,7 +1,7 @@
 /** Executable definitions only. Registration, reservation and scheduling are separate runtime work. */
 import type * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
-import type * as Layer from 'effect/Layer'
+import * as Layer from 'effect/Layer'
 import { dual } from 'effect/Function'
 import { pipeArguments } from 'effect/Pipeable'
 import type * as Pipeable from 'effect/Pipeable'
@@ -303,7 +303,9 @@ export const provide: {
     layer: Layer.Layer<ROut, ELayer, RIn>,
   ): Task<I, C, S, F, H, B, Exclude<R, ROut> | RIn, EBuild | ELayer> => ({
     ...self,
-    context: self.context.pipe(Effect.provide(layer)),
+    context: Layer.build(layer).pipe(
+      Effect.flatMap((context) => self.context.pipe(Effect.provideContext(context))),
+    ),
     [TypeId]: {
       ...self[TypeId],
       _Requirements: (_: never) => _,

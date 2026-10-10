@@ -15,6 +15,8 @@ import * as Sequence from '../Sequence.js'
 import type * as Session from '../Session.js'
 import { SessionError, type Failure } from '../SessionError.js'
 import * as Transaction from '../Transaction.js'
+import * as TaskPolicy from '../TaskPolicy.js'
+import * as TaskTransitions from './TaskTransitions.js'
 import * as Value from './DocumentValue.js'
 import type * as Runtime from './SessionRuntime.js'
 
@@ -394,8 +396,7 @@ export const putTask = Effect.fnUntraced(function* (state: State, input: Domain.
   if (Option.isNone(previous)) return yield* error('notFound', 'task.write', 'Task is absent')
   if (
     !sameTaskIdentity(previous.value, value) ||
-    (previous.value.abortRequested && !value.abortRequested) ||
-    (previous.value.state.status === 'terminal' && !sameTask(previous.value, value))
+    !TaskTransitions.canReplace(previous.value, value)
   )
     return yield* error(
       'conflict',
@@ -413,6 +414,16 @@ export const putTask = Effect.fnUntraced(function* (state: State, input: Domain.
     state.incarnations.set(draft.value.record.id, draft)
   }
   state.tasks.set(value.id, value)
+})
+
+export const requestTaskAbort = Effect.fnUntraced(function* (
+  state: State,
+  id: Domain.TaskId,
+  reason?: string,
+) {
+  const previous = yield* task(state, id)
+  if (Option.isNone(previous)) return yield* error('notFound', 'task.abort', 'Task is absent')
+  yield* putTask(state, TaskPolicy.requestAbort(previous.value, reason))
 })
 
 const validateSubmission = Effect.fnUntraced(function* (state: State, value: Domain.Submission) {

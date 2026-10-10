@@ -1,0 +1,20 @@
+{
+  "extends": "../../../../../tsconfig.test.json",
+  "compilerOptions": {
+    "paths": {
+      "effect-harness": ["../../../src/index.ts"],
+      "effect-harness/*": ["../../../src/*.ts"]
+    },
+    "typeRoots": ["../../../../../node_modules/@types"]
+  },
+  "include": [
+    "../../../src/FileReader.ts",
+    "../../../src/FileReaderError.ts",
+    "../../../src/coding/**/*.ts",
+    "../../../src/internal/CodingFilePath.ts",
+    "../../../src/internal/CodingLineScan.ts",
+    "../../CodingFiles.test.ts",
+    "../../../typetest/CodingFiles.tst.ts",
+    "../../../../../apps/example/src/tour/CodingFiles.ts"
+  ]
+}

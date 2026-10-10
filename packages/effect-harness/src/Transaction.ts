@@ -266,7 +266,7 @@ export const appendEntry: {
     Runtime.use(self, (state) => Runtime.appendEntry(state, conversationId, draft)),
 )
 
-/** Stages task data; does not schedule or execute it. */
+/** Stages task data and optional restart policy; omission retains legacy resume behavior. Does not schedule or execute it. */
 export const createTask: {
   (value: TaskCreate): (self: Transaction) => Effect.Effect<Record.Task, Failure>
   (self: Transaction, value: TaskCreate): Effect.Effect<Record.Task, Failure>
@@ -289,6 +289,16 @@ export const putTask: {
   (args) => isTransaction(args[0]),
   (self: Transaction, value: Record.Task) =>
     Runtime.use(self, (state) => Runtime.putTask(state, value)),
+)
+
+/** Persist an ordinary abort request/reason. Does not interrupt fibers or run cleanup. */
+export const requestTaskAbort: {
+  (id: Record.TaskId, reason?: string): (self: Transaction) => Effect.Effect<void, Failure>
+  (self: Transaction, id: Record.TaskId, reason?: string): Effect.Effect<void, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, id: Record.TaskId, reason?: string) =>
+    Runtime.use(self, (state) => Runtime.requestTaskAbort(state, id, reason)),
 )
 
 export const createSubmission: {

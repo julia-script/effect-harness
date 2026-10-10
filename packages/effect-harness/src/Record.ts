@@ -1,4 +1,5 @@
 import * as Usage from './Usage.js'
+import * as TaskPolicy from './TaskPolicy.js'
 import type * as Types from 'effect/Types'
 /**
  * Durable facts, identifiers, journal frames and tagged codecs.
@@ -246,6 +247,9 @@ export const Task = Schema.Struct({
   owner: Schema.optionalKey(TaskId),
   background: Schema.Boolean,
   abortRequested: Schema.Boolean,
+  restartPolicy: Schema.optionalKey(TaskPolicy.RestartPolicySchema),
+  abortIntent: Schema.optionalKey(TaskPolicy.AbortIntentSchema),
+  schedulerFormat: Schema.optionalKey(TaskPolicy.SchedulerFormatSchema),
   state: TaskState,
   memos: Schema.optionalKey(Schema.JsonObject),
 }).check(
@@ -255,6 +259,9 @@ export const Task = Schema.Struct({
       task.memos === undefined,
     { message: 'Completed tasks cannot retain invocation memos' },
   ),
+  Schema.makeFilter((task) => task.abortIntent === undefined || task.abortRequested, {
+    message: 'Abort intent requires a durable abort mark',
+  }),
 )
 /** Owned checkpoint-based work with immutable identity and ownership fields. */
 export type Task = typeof Task.Type

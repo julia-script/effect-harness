@@ -40,7 +40,26 @@
       "default": "./dist/provider-anthropic/*.js"
     },
     "./workflow": null,
-    "./workflow/*": null
+    "./workflow/*": null,
+    "./images-bun": {
+      "types": "./dist/images-bun/index.d.ts",
+      "default": "./dist/images-bun/index.js"
+    },
+    "./images-bun/*": null,
+    "./images-node": {
+      "types": "./dist/images-node/index.d.ts",
+      "default": "./dist/images-node/index.js"
+    },
+    "./images-node/*": null,
+    "./images-wasm": {
+      "types": "./dist/images-wasm/index.d.ts",
+      "default": "./dist/images-wasm/index.js"
+    },
+    "./images-wasm/*": null,
+    "./coding": {
+      "types": "./dist/coding/index.d.ts",
+      "default": "./dist/coding/index.js"
+    }
   },
   "publishConfig": {
     "access": "public",
@@ -65,5 +84,9 @@
   },
   "peerDependencies": {
     "effect": "^4.0.1"
+  },
+  "optionalDependencies": {
+    "@cf-wasm/photon": "0.4.0",
+    "sharp": "0.35.5"
   }
 }

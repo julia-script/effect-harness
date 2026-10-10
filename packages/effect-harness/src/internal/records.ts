@@ -7,6 +7,7 @@ import * as Arr from 'effect/Array'
 import * as Schema from 'effect/Schema'
 import * as Result from 'effect/Result'
 import * as Record from '../Record.ts'
+import * as TaskTransitions from './TaskTransitions.js'
 interface Snapshot {
   readonly record: Record.Document
   readonly version: number
@@ -241,9 +242,18 @@ const applyWritesImpl = Effect.fnUntraced(function* (
           commitSeq: seq,
         })
         break
-      case 'task':
+      case 'task': {
+        const previous = MutableHashMap.get(tasks, write.value.id)
+        // Storage accepts scheduler upgrades, but cannot relax ownership, abort intent,
+        // held outcomes or terminal receipts. Public Transaction.putTask is stricter.
+        if (
+          Option.isSome(previous) &&
+          !TaskTransitions.canReplace(previous.value, write.value, true)
+        )
+          return yield* rejected('Task identity, policy or receipt is immutable', ConflictError)
         MutableHashMap.set(tasks, write.value.id, yield* detachedEffect(write.value))
         break
+      }
       case 'submission':
         MutableHashMap.set(submissions, write.value.id, yield* detachedEffect(write.value))
         break
