@@ -156,7 +156,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                     (yield* Session.scanDocuments(session, { scope: target(root).scope }).pipe(
                       Stream.runCollect,
                     )).length,
-                    1,
+                    2,
                   )
                 }
               }),
@@ -490,7 +490,7 @@ describe('transactional conversation initialization', () => {
             .filter((write) => write._tag === 'document.create')
             .map((write) => write.record.kind)
             .sort(),
-          ['harness.agent', 'initialization.state'],
+          ['harness.agent', 'harness.provider', 'initialization.state'],
         )
         assert.isTrue(Option.isSome(yield* Session.conversation(runtime.session, root)))
         yield* runtime.backend.root

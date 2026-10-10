@@ -1,3 +1,4 @@
+import * as ProviderState from './ProviderState.js'
 /** Isolated record overlays and schema-encoded document replacements for one commit. */
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -820,7 +821,6 @@ const initialize = Effect.fnUntraced(function* (
   state: State,
   stage: (draft: State) => Effect.Effect<Domain.Conversation, Failure>,
 ) {
-  if (state.runtime.initializers.length === 0) return yield* stage(state)
   const clones = new Map<Draft, Draft>()
   const clone = (draft: Draft): Draft => {
     let copy = clones.get(draft)
@@ -853,6 +853,9 @@ const initialize = Effect.fnUntraced(function* (
   const result = yield* Effect.scoped(
     Effect.gen(function* () {
       const record = yield* stage(child)
+      yield* ensureDocument(child, ProviderState.document, ProviderState.target(record.id), {
+        seed: yield* ProviderState.fresh,
+      })
       for (const run of state.runtime.initializers)
         yield* run(tx, yield* Value.copy(Domain.Conversation, record))
       return record

@@ -460,6 +460,8 @@ export const make = Effect.fnUntraced(function* <
         return record.id
       })
       const backend: HarnessBackendService = {
+        usage: (id) =>
+          protect('harness.usage', checkOpen.pipe(Effect.andThen(Session.usage(session, id)))),
         root: protect('harness.root', initialize(true)),
         create: (options) => protect('harness.create', initialize(false, options)),
         conversation: (id) =>

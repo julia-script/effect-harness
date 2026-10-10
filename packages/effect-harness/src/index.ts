@@ -30,3 +30,6 @@ export * as ToolExecution from './ToolExecution.js'
 export * as ToolResult from './ToolResult.js'
 export * as Toolkit from './Toolkit.js'
 export * as Transaction from './Transaction.js'
+
+export * as Usage from './Usage.js'
+export * as ProviderAffinity from './ProviderAffinity.js'

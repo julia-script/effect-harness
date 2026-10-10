@@ -1,3 +1,4 @@
+import type * as Usage from './Usage.js'
 /** Application client. Its backend can live in this process or behind a transport. */
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -9,7 +10,7 @@ import type * as ConversationInitializer from './ConversationInitializer.js'
 import type * as Submission from './Submission.js'
 import { HarnessBackend } from './HarnessBackend.js'
 import type { CreateOptions } from './HarnessBackend.js'
-import type { HarnessError } from './HarnessError.js'
+import { HarnessError } from './HarnessError.js'
 import * as ConversationHost from './internal/ConversationHost.js'
 import * as HarnessRuntime from './HarnessRuntime.js'
 import type * as Tool from './Tool.js'
@@ -20,6 +21,10 @@ import type * as Model from './Model.js'
 export { CreateOptionsSchema, type CreateOptions } from './HarnessBackend.js'
 export { HarnessError } from './HarnessError.js'
 export interface HarnessService {
+  /** Current own-conversation or whole-session accounting; inherited fork work is counted once. */
+  readonly usage: (
+    conversationId?: Record.ConversationId,
+  ) => Effect.Effect<Usage.Summary, HarnessError>
   /** Opens the root and automatically starts pending work in the local runtime. */
   readonly root: Effect.Effect<Conversation.Conversation, HarnessError>
   readonly create: (
@@ -44,6 +49,16 @@ export class Harness extends Context.Service<Harness, HarnessService>()('effect-
 export const make = Effect.gen(function* () {
   const backend = yield* HarnessBackend
   return Harness.of({
+    usage: (id) =>
+      backend.usage === undefined
+        ? Effect.fail(
+            new HarnessError({
+              reason: 'invalid',
+              operation: 'harness.usage',
+              message: 'Backend does not support usage queries',
+            }),
+          )
+        : backend.usage(id),
     root: backend.root.pipe(Effect.map((id) => ConversationHost.conversation(backend, id))),
     create: (options) =>
       backend.create(options).pipe(Effect.map((id) => ConversationHost.conversation(backend, id))),

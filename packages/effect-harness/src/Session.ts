@@ -1,3 +1,4 @@
+import * as Usage from './Usage.js'
 /**
  * One scoped state coordinator over Storage.
  *
@@ -563,3 +564,50 @@ const commitsImpl = (self: Session) =>
       )
     }),
   )
+
+/**
+ * Atomic accounting snapshot. Omit conversationId for all local work in this durable
+ * session; supply it for only that conversation's own entries. Fork history is excluded
+ * from child totals and counted once in session totals. Reads never create records.
+ * Older entries are counted as legacyRecords, with unknown usage. Earlier versions
+ * discard the optional accounting field on decode; downgrade loses these facts.
+ */
+export const usage = Effect.fnUntraced(function* (
+  self: Session,
+  conversationId?: Record.ConversationId,
+) {
+  return yield* commit(self, (tx) =>
+    Effect.gen(function* () {
+      const conversations =
+        conversationId === undefined
+          ? yield* Transaction.scanConversations(tx, { order: 'ascending' }).pipe(Stream.runCollect)
+          : [
+              yield* Transaction.conversation(tx, conversationId).pipe(
+                Effect.flatMap((found) =>
+                  Effect.fromOption(
+                    found,
+                    () =>
+                      new SessionFailure({
+                        reason: 'notFound',
+                        operation: 'session.usage',
+                        message: 'Conversation is absent',
+                      }),
+                  ),
+                ),
+              ),
+            ]
+      const entries: Array<Record.Entry> = []
+      for (const conversation of conversations) {
+        const own = yield* Transaction.scanEntries(tx, {
+          conversationId: conversation.id,
+          order: 'ascending',
+        }).pipe(
+          Stream.filter((entry) => entry.conversationId === conversation.id),
+          Stream.runCollect,
+        )
+        entries.push(...own)
+      }
+      return Usage.aggregate(entries)
+    }),
+  )
+})
