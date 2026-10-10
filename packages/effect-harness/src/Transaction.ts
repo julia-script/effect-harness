@@ -205,7 +205,7 @@ export const scanDocuments: {
     ).pipe(Stream.mapEffect((value) => Runtime.use(self, () => Effect.succeed(value)))),
 )
 
-/** Stages the reserved root conversation when absent; initializes no Harness documents. */
+/** Stages an absent root with configured Session initializers; existing roots skip them. */
 export const ensureRoot: {
   (): (self: Transaction) => Effect.Effect<Record.Conversation, Failure>
   (self: Transaction): Effect.Effect<Record.Conversation, Failure>
@@ -214,6 +214,7 @@ export const ensureRoot: {
   (self: Transaction) => Runtime.use(self, (state) => Runtime.ensureRoot(state)),
 )
 
+/** Creates and initializes atomically. Caught initializer failure leaves prior drafts intact. */
 export const createConversation: {
   (options: ConversationOptions): (self: Transaction) => Effect.Effect<Record.Conversation, Failure>
   (self: Transaction, options: ConversationOptions): Effect.Effect<Record.Conversation, Failure>
@@ -223,7 +224,10 @@ export const createConversation: {
     Runtime.use(self, (state) => Runtime.createConversation(state, options)),
 )
 
-/** Creates a new conversation with inherited history and the source documents' fork policies. */
+/**
+ * Inherits history and documents by source fork policies, then runs configured
+ * Session initializers in order. Failure stages neither fork copies nor callback writes.
+ */
 export const forkConversation: {
   (
     parent: Record.ConversationId,
@@ -272,6 +276,12 @@ export const createTask: {
     Runtime.use(self, (state) => Runtime.createTask(state, value)),
 )
 
+/**
+ * Stages a task replacement. Becoming terminal retires all active task documents
+ * in the same commit, including drafts created earlier in this callback.
+ * Retirement preparation failure stages neither replacement nor retirement, even if caught.
+ * Terminal receipts remain immutable; this does not sweep legacy terminal tasks.
+ */
 export const putTask: {
   (value: Record.Task): (self: Transaction) => Effect.Effect<void, Failure>
   (self: Transaction, value: Record.Task): Effect.Effect<void, Failure>
@@ -323,8 +333,13 @@ export const snapshot: {
 
 /**
  * Stages the initial value when missing. Seeds apply only to a new incarnation.
+ * Existing older versions upgrade through a declared direct migration, atomically
+ * with this commit. Failed migrations stage no replacement, even when caught.
  * New drafts have createdAt = 0 until commit assigns their persisted sequence.
  * Returned snapshots remain detached values; read the Session for committed metadata.
+ * Task owners must exist and be nonterminal, even for existing legacy documents.
+ * Terminal owners fail with SessionError(reason: 'conflict', operation: 'document.scope')
+ * before initialization or migration. Settlement cannot be undone by reusing a target.
  */
 export const ensureDocument: {
   <S extends Document.Codec>(
@@ -350,7 +365,10 @@ export const ensureDocument: {
   ) => Runtime.use(self, (state) => Runtime.ensureDocument(state, document, target, options)),
 )
 
-/** Replaces an existing document with a value encoded through its definition's schema. */
+/**
+ * Replaces an existing document with a value encoded through its definition's schema.
+ * Terminal task owners fail with SessionError(reason: 'conflict', operation: 'document.scope').
+ */
 export const setDocument: {
   <S extends Document.Codec>(
     document: Document.Document<S>,
@@ -373,7 +391,12 @@ export const setDocument: {
   ) => Runtime.use(self, (state) => Runtime.setDocument(state, document, target, value)),
 )
 
-/** Applies a pure replacement function to a detached value of an existing document. */
+/**
+ * Applies a pure replacement function to a detached value of an existing document.
+ * Declared migrations upgrade older values before calling the replacement function.
+ * Migration and replacement validate together before staging one current-version base.
+ * Terminal task owners conflict before migration or replacement callbacks run.
+ */
 export const updateDocument: {
   <S extends Document.Codec>(
     document: Document.Document<S>,
@@ -398,7 +421,11 @@ export const updateDocument: {
   ) => Runtime.use(self, (state) => Runtime.updateDocument(state, document, target, update)),
 )
 
-/** Retires the current incarnation; a later ensureDocument allocates a fresh identity. */
+/**
+ * Retires the current incarnation; a later ensureDocument allocates a fresh identity
+ * when its owner is still nonterminal. May explicitly clean up legacy terminal documents.
+ * A new draft retired in its creation transaction is omitted from persistence.
+ */
 export const retireDocument: {
   <S extends Document.Codec>(
     document: Document.Document<S>,

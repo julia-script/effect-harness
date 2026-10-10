@@ -1,3 +1,4 @@
+import type * as Usage from './Usage.js'
 /** Pipeable client handles; every backend operation carries schema-backed data. */
 import * as Effect from 'effect/Effect'
 import { dual } from 'effect/Function'
@@ -8,7 +9,7 @@ import * as Stream from 'effect/Stream'
 import type * as Record from './Record.js'
 import type * as Agent from './Agent.js'
 import * as Document from './Document.js'
-import type { HarnessError } from './HarnessError.js'
+import { HarnessError } from './HarnessError.js'
 import type { HarnessBackendService, Watch } from './HarnessBackend.js'
 import type * as Submission from './Submission.js'
 import * as ConversationHost from './internal/ConversationHost.js'
@@ -145,3 +146,17 @@ export const watch: {
         ),
       ),
 )
+
+/** Current accounting for this conversation's own work, excluding inherited fork history. */
+export const usage = (self: Conversation): Effect.Effect<Usage.Summary, HarnessError> => {
+  const service = backend(self)
+  return service.usage === undefined
+    ? Effect.fail(
+        new HarnessError({
+          reason: 'invalid',
+          operation: 'conversation.usage',
+          message: 'Backend does not support usage queries',
+        }),
+      )
+    : service.usage(self.id)
+}

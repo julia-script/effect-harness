@@ -1,6 +1,8 @@
+import * as ProviderState from './ProviderState.js'
 /** Isolated record overlays and schema-encoded document replacements for one commit. */
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
+import { pipeArguments } from 'effect/Pipeable'
 import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
@@ -277,7 +279,7 @@ const ownership = Effect.fnUntraced(function* (
   return { conversationId: owner.conversationId, taskId: owner.id }
 })
 
-export const ensureRoot = Effect.fnUntraced(function* (state: State) {
+const stageRoot = Effect.fnUntraced(function* (state: State) {
   const found = yield* conversation(state, Domain.ROOT_CONVERSATION_ID)
   if (Option.isSome(found)) return found.value
   const value = Domain.Conversation.make({ id: Domain.ROOT_CONVERSATION_ID })
@@ -286,7 +288,7 @@ export const ensureRoot = Effect.fnUntraced(function* (state: State) {
   return yield* Value.copy(Domain.Conversation, value)
 })
 
-export const createConversation = Effect.fnUntraced(function* (
+const stageConversation = Effect.fnUntraced(function* (
   state: State,
   options: Transaction.ConversationOptions,
 ) {
@@ -402,7 +404,14 @@ export const putTask = Effect.fnUntraced(function* (state: State, input: Domain.
     )
   if (sameTask(previous.value, value)) return
   yield* validateTask(state, value)
+  const retiring = value.state.status === 'terminal' ? yield* taskDocuments(state, value.id) : []
   yield* active(state)
+  // Prepare every retirement before staging anything: callers may catch storage errors.
+  for (const draft of retiring) {
+    draft.retired = true
+    if (!state.documents.has(draft.key)) state.documents.set(draft.key, draft)
+    state.incarnations.set(draft.value.record.id, draft)
+  }
   state.tasks.set(value.id, value)
 })
 
@@ -464,8 +473,39 @@ export const putSubmission = Effect.fnUntraced(function* (state: State, input: D
 
 const checkScope = Effect.fnUntraced(function* (state: State, scope: Domain.Scope) {
   if (scope._tag === 'conversation') yield* requireConversation(state, scope.conversationId)
-  if (scope._tag === 'task' && Option.isNone(yield* task(state, scope.taskId)))
-    return yield* error('notFound', 'document.scope', 'Document task is absent')
+  if (scope._tag === 'task') {
+    const owner = yield* task(state, scope.taskId)
+    if (Option.isNone(owner))
+      return yield* error('notFound', 'document.scope', 'Document task is absent')
+    if (owner.value.state.status === 'terminal')
+      return yield* error('conflict', 'document.scope', 'Document task is terminal')
+  }
+})
+
+const taskDocuments = Effect.fnUntraced(function* (state: State, taskId: Domain.TaskId) {
+  const retiring = Array.from(state.incarnations.values()).filter(
+    (draft) =>
+      draft.value.record.scope._tag === 'task' && draft.value.record.scope.taskId === taskId,
+  )
+  const records = yield* state.runtime.storage
+    .scanDocuments({ scope: { _tag: 'task', taskId } })
+    .pipe(Stream.runCollect)
+  for (const record of records) {
+    if (state.incarnations.has(record.id)) continue
+    const stored = yield* state.runtime.storage.document(record.id)
+    if (Option.isNone(stored))
+      return yield* error('invalid', 'task.write', 'Task document content is absent')
+    retiring.push({
+      key: yield* Value.key(record),
+      original: stored,
+      record: undefined,
+      source: undefined,
+      value: stored.value,
+      changed: false,
+      retired: false,
+    })
+  }
+  return retiring
 })
 
 const load = Effect.fnUntraced(function* (state: State, address: Record.DocumentAddress) {
@@ -510,9 +550,28 @@ export const ensureDocument = Effect.fnUntraced(function* <S extends Document.Co
   options?: { readonly seed?: Schema.Json },
 ) {
   const address = yield* Value.address(document, target)
-  const found = yield* load(state, address)
-  if (Option.isSome(found)) return yield* Value.snapshot(document, found.value.value)
   yield* checkScope(state, address.scope)
+  const found = yield* load(state, address)
+  if (Option.isSome(found)) {
+    const previous = found.value.value
+    if (
+      previous.version !== document.definition.version &&
+      state.copiedSources.has(previous.record.id)
+    )
+      return yield* error(
+        'conflict',
+        'document.migrate',
+        'A fork source cannot change in the copying transaction',
+      )
+    const migrated = yield* Value.migrate(document, previous)
+    const result = yield* Value.snapshot(document, migrated)
+    if (migrated.version !== previous.version) {
+      yield* active(state)
+      found.value.value = migrated
+      found.value.changed = true
+    }
+    return result
+  }
   const seed =
     options?.seed === undefined ? undefined : yield* Value.copy(Schema.Json, options.seed)
   const initial = yield* Effect.try({
@@ -562,6 +621,7 @@ export const setDocument = Effect.fnUntraced(function* <S extends Document.Codec
   value: S['Type'],
 ) {
   const address = yield* Value.address(document, target)
+  yield* checkScope(state, address.scope)
   const found = yield* load(state, address)
   if (Option.isNone(found)) return yield* error('notFound', 'document.update', 'Document is absent')
   yield* Value.compatible(document, found.value.value)
@@ -583,10 +643,20 @@ export const updateDocument = Effect.fnUntraced(function* <S extends Document.Co
   target: Document.Target,
   update: (value: S['Type']) => S['Type'],
 ) {
-  const found = yield* snapshot(state, document, target)
+  const address = yield* Value.address(document, target)
+  yield* checkScope(state, address.scope)
+  const found = yield* load(state, address)
   if (Option.isNone(found)) return yield* error('notFound', 'document.update', 'Document is absent')
+  if (state.copiedSources.has(found.value.value.record.id))
+    return yield* error(
+      'conflict',
+      'document.update',
+      'A fork source cannot change in the copying transaction',
+    )
+  const migrated = yield* Value.migrate(document, found.value.value)
+  const current = yield* Value.snapshot(document, migrated)
   const value = yield* Effect.try({
-    try: () => update(found.value.value),
+    try: () => update(current.value),
     catch: (cause) =>
       new SessionError({
         reason: 'invalid',
@@ -595,7 +665,11 @@ export const updateDocument = Effect.fnUntraced(function* <S extends Document.Co
         cause,
       }),
   })
-  yield* setDocument(state, document, target, value)
+  const encoded = yield* Value.encode(document, value)
+  yield* Value.snapshot(document, { ...migrated, value: encoded })
+  yield* active(state)
+  found.value.value = { ...migrated, value: encoded, deltasSinceBase: 0 }
+  found.value.changed = true
 })
 
 export const retireDocument = Effect.fnUntraced(function* <S extends Document.Codec>(
@@ -640,7 +714,7 @@ export const scanDocuments = Effect.fnUntraced(function* (
   )
 })
 
-export const forkConversation = Effect.fnUntraced(function* (
+const stageFork = Effect.fnUntraced(function* (
   state: State,
   parent: Domain.ConversationId,
   at: Domain.EntryId,
@@ -741,6 +815,89 @@ export const forkConversation = Effect.fnUntraced(function* (
   state.conversations.set(id, value)
   return result
 })
+
+/** A savepoint owns mutable Draft copies, including aliases in both document maps. */
+const initialize = Effect.fnUntraced(function* (
+  state: State,
+  stage: (draft: State) => Effect.Effect<Domain.Conversation, Failure>,
+) {
+  const clones = new Map<Draft, Draft>()
+  const clone = (draft: Draft): Draft => {
+    let copy = clones.get(draft)
+    if (copy === undefined) {
+      copy = { ...draft }
+      clones.set(draft, copy)
+    }
+    return copy
+  }
+  const child: State = {
+    ...state,
+    semaphore: yield* Semaphore.make(1),
+    conversations: new Map(state.conversations),
+    entries: new Map(state.entries),
+    tasks: new Map(state.tasks),
+    submissions: new Map(state.submissions),
+    documents: new Map(Array.from(state.documents, ([key, draft]) => [key, clone(draft)])),
+    incarnations: new Map(Array.from(state.incarnations, ([id, draft]) => [id, clone(draft)])),
+    copiedSources: new Set(state.copiedSources),
+  }
+  const tx: Transaction.Transaction = {
+    [Transaction.TypeId]: Transaction.TypeId,
+    pipe() {
+      return pipeArguments(this, arguments)
+    },
+  }
+  register(tx, child)
+  // Parent use holds its permit. Callbacks use a separate capability/permit so
+  // Transaction operations can reenter without exposing partial creation drafts.
+  const result = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const record = yield* stage(child)
+      yield* ensureDocument(child, ProviderState.document, ProviderState.target(record.id), {
+        seed: yield* ProviderState.fresh,
+      })
+      for (const run of state.runtime.initializers)
+        yield* run(tx, yield* Value.copy(Domain.Conversation, record))
+      return record
+    }),
+  ).pipe(
+    Effect.ensuring(
+      Effect.sync(() => {
+        child.active = false
+      }),
+    ),
+  )
+  yield* active(state)
+  const adoptMap = <K, V>(target: Map<K, V>, source: Map<K, V>) => {
+    target.clear()
+    for (const [key, value] of source) target.set(key, value)
+  }
+  adoptMap(state.conversations, child.conversations)
+  adoptMap(state.entries, child.entries)
+  adoptMap(state.tasks, child.tasks)
+  adoptMap(state.submissions, child.submissions)
+  adoptMap(state.documents, child.documents)
+  adoptMap(state.incarnations, child.incarnations)
+  state.copiedSources.clear()
+  for (const id of child.copiedSources) state.copiedSources.add(id)
+  return result
+})
+
+export const ensureRoot = Effect.fnUntraced(function* (state: State) {
+  const found = yield* conversation(state, Domain.ROOT_CONVERSATION_ID)
+  if (Option.isSome(found)) return found.value
+  return yield* initialize(state, stageRoot)
+})
+
+export const createConversation = (state: State, options: Transaction.ConversationOptions) =>
+  initialize(state, (child) => stageConversation(child, options))
+
+export const forkConversation = (
+  state: State,
+  parent: Domain.ConversationId,
+  at: Domain.EntryId,
+  options: Transaction.ConversationOptions,
+) => initialize(state, (child) => stageFork(child, parent, at, options))
 
 export const writes = Effect.fnUntraced(function* (state: State) {
   const result: Array<Record.StorageWrite> = []

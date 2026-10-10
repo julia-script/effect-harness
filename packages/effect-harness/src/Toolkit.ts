@@ -9,12 +9,12 @@ import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 import * as Prompt from 'effect/ai/Prompt'
 import * as AiToolkit from 'effect/ai/Toolkit'
-import type * as Tool from './Tool.js'
+import * as Tool from './Tool.js'
 import { ExecutionError, type Failure } from './ExecutionError.js'
 import { SessionError } from './SessionError.js'
 import { StorageError } from './StorageError.js'
 import type { ToolExecution } from './ToolExecution.js'
-import type * as ToolResult from './ToolResult.js'
+import * as ToolResult from './ToolResult.js'
 
 export interface Handler<Name extends string> {
   readonly name: Name
@@ -183,6 +183,14 @@ const resolve = <Tools extends Record<string, Tool.Any>>(
                   ),
                 )(exit.value)
               const json = yield* Schema.decodeUnknownEffect(Schema.Json)(value)
+              if (Tool.hasResultChannels(tool)) {
+                const channels = yield* Schema.decodeUnknownEffect(Schema.JsonObject)(json)
+                return yield* Schema.decodeEffect(Schema.toCodecJson(ToolResult.ResultSchema))({
+                  ...channels,
+                  isError,
+                  diagnostics: channels.diagnostics ?? [],
+                })
+              }
               return {
                 content: [
                   Prompt.textPart({ text: typeof json === 'string' ? json : JSON.stringify(json) }),

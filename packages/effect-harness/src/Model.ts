@@ -1,3 +1,5 @@
+import type { ProviderAffinity } from './ProviderAffinity.js'
+import * as Usage from './Usage.js'
 /** Schema-backed model metadata and live Effect LanguageModel handles. */
 import type * as Context from 'effect/Context'
 import * as Capability from './internal/Capability.js'
@@ -26,6 +28,7 @@ export type Capabilities = typeof CapabilitiesSchema.Type
 /** Limits are explicit caller declarations, not a claim of current remote availability. */
 export const DefinitionSchema = Schema.Struct({
   ref: ReferenceSchema,
+  pricing: Schema.optionalKey(Usage.PricingSchema),
   capabilities: CapabilitiesSchema,
   contextWindow: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   maxOutputTokens: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
@@ -49,13 +52,17 @@ export interface Any extends Pipeable.Pipeable {
 export type Requirements<M extends Any> = M extends {
   readonly [TypeId]: { readonly _Requirements: (_: never) => infer R }
 }
-  ? R
+  ? Exclude<R, ProviderAffinity>
   : never
 
 export interface Model<Options extends Schema.Constraint, R = never> extends Any {
   readonly [TypeId]: { readonly _Requirements: (_: never) => R }
   readonly options: Options
-  /** Maps schema-decoded options to provider request services without changing the pinned model. */
+  /**
+   * Maps schema-decoded options to provider request services without changing the pinned model.
+   * ProviderAffinity is supplied by the runtime. Native LanguageModel callbacks can read
+   * it with Effect.serviceOption because their required services are owned by Effect AI.
+   */
   readonly configure: (
     options: Options['Type'],
   ) => Effect.Effect<Context.Context<never>, ModelError, R>

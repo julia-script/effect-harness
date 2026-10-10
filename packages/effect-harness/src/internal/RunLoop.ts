@@ -1,3 +1,6 @@
+import * as ProviderState from './ProviderState.js'
+import { ProviderAffinity } from '../ProviderAffinity.js'
+import * as Usage from '../Usage.js'
 /** Executes one durable submission; scheduling and client admission live in HarnessRuntime. */
 import type * as Document from '../Document.js'
 import * as Context from 'effect/Context'
@@ -229,20 +232,41 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
             )
       if (requesting.agent.model !== undefined && selected === undefined)
         return yield* absent('model.select', 'Configured model is unavailable')
-      let requestContext: Context.Context<never> = context
+      const affinity = yield* write((tx) =>
+        Effect.gen(function* () {
+          const saved = yield* Transaction.snapshot(
+            tx,
+            ProviderState.document,
+            ProviderState.target(task.conversationId),
+          )
+          if (Option.isSome(saved)) return saved.value.value.id
+          return (yield* Transaction.ensureDocument(
+            tx,
+            ProviderState.document,
+            ProviderState.target(task.conversationId),
+            { seed: yield* ProviderState.fresh },
+          )).value.id
+        }),
+      )
+      let requestContext: Context.Context<never> = Context.add(context, ProviderAffinity, {
+        id: affinity,
+      })
       const model = selected?.languageModel ?? Option.getOrUndefined(nativeDefault)
       if (model === undefined)
         return yield* absent('model.select', 'No generation capability is available')
       if (selected !== undefined) {
         const decoded = yield* Schema.decodeEffect(
           selected.options as Schema.ConstraintCodec<unknown, unknown, never, never>,
-        )(requesting.agent.model?.options ?? {})
+        )(requesting.agent.model?.options ?? {}).pipe(Effect.provideContext(requestContext))
         const configure = selected.configure as (
           options: unknown,
         ) => Effect.Effect<Context.Context<never>, HarnessError>
         requestContext = Context.merge(
-          context,
-          yield* protect('model.configure', configure(decoded)),
+          requestContext,
+          yield* protect(
+            'model.configure',
+            configure(decoded).pipe(Effect.provideService(ProviderAffinity, { id: affinity })),
+          ),
         )
       }
       const nativeToolkit = Toolkit.make(...available).native as unknown as AiToolkit.Toolkit<
@@ -260,6 +284,36 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           operation: 'model.response',
           message: 'Providers must return tool intents without executing tools',
         })
+      const nativeUsage = response.usage
+      const usage = yield* Schema.decodeEffect(Usage.RecordSchema)(
+        Usage.model(
+          {
+            ...(nativeUsage.inputTokens.total === undefined
+              ? {}
+              : { input: nativeUsage.inputTokens.total }),
+            ...(nativeUsage.inputTokens.uncached === undefined
+              ? {}
+              : { inputUncached: nativeUsage.inputTokens.uncached }),
+            ...(nativeUsage.inputTokens.cacheRead === undefined
+              ? {}
+              : { cacheRead: nativeUsage.inputTokens.cacheRead }),
+            ...(nativeUsage.inputTokens.cacheWrite === undefined
+              ? {}
+              : { cacheWrite: nativeUsage.inputTokens.cacheWrite }),
+            ...(nativeUsage.outputTokens.total === undefined
+              ? {}
+              : { output: nativeUsage.outputTokens.total }),
+            ...(nativeUsage.outputTokens.text === undefined
+              ? {}
+              : { outputText: nativeUsage.outputTokens.text }),
+            ...(nativeUsage.outputTokens.reasoning === undefined
+              ? {}
+              : { reasoning: nativeUsage.outputTokens.reasoning }),
+          },
+          selected?.definition.ref,
+          selected?.definition.pricing,
+        ),
+      )
       const responsePrompt = Prompt.fromResponseParts(response.content)
       const assistant = responsePrompt.content.find((message) => message.role === 'assistant')
       if (assistant === undefined || assistant.role !== 'assistant')
@@ -304,6 +358,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
             Effect.gen(function* () {
               yield* Transaction.appendEntry(tx, task.conversationId, {
                 kind: 'assistant',
+                usage,
                 head: 'self',
                 model: yield* Schema.encodeEffect(Run.Messages)(responsePrompt.content),
               })
@@ -322,6 +377,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           Effect.gen(function* () {
             const entry = yield* Transaction.appendEntry(tx, task.conversationId, {
               kind: 'assistant',
+              usage,
               head: 'self',
               model: yield* Schema.encodeEffect(Run.Messages)(responsePrompt.content),
             })
@@ -371,6 +427,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         Effect.gen(function* () {
           yield* Transaction.appendEntry(tx, task.conversationId, {
             kind: 'assistant',
+            usage,
             head: 'self',
             model: yield* Schema.encodeEffect(Run.Messages)(responsePrompt.content),
           })
@@ -509,7 +566,10 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       )
       // A handler may already return the canonical media envelope. Expose its native
       // content to result hooks before the final model-visible projection is encoded.
-      const envelope = Schema.decodeUnknownOption(jsonCodec(ToolResult.Envelope))(result.details)
+      const envelope =
+        definition !== undefined && Tool.hasResultChannels(definition)
+          ? Option.none()
+          : Schema.decodeUnknownOption(jsonCodec(ToolResult.Envelope))(result.details)
       if (Option.isSome(envelope)) {
         result = { ...result, content: envelope.value.content }
         explicitEnvelope = true
@@ -522,6 +582,21 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       task.id,
     )
     if (after !== undefined && 'isError' in after) result = after
+    if (definition !== undefined && Tool.hasResultChannels(definition)) {
+      // Hook results contain encoded programmatic JSON, while media parts retain native bytes.
+      // Decode against the declared channel schema to validate replacements before committing.
+      const schema = (result.isError
+        ? definition.failureSchema
+        : definition.successSchema) as unknown as Schema.ConstraintCodec<
+        unknown,
+        unknown,
+        never,
+        never
+      >
+      yield* Schema.decodeEffect(jsonCodec(schema))(
+        yield* Schema.encodeEffect(jsonCodec(ToolResult.ResultSchema))(result),
+      ).pipe(Effect.provideContext(context))
+    }
     const plainText = result.content.flatMap((part) =>
       part.type === 'text' && Object.keys(part.options).length === 0 ? [part.text] : [],
     )
@@ -556,6 +631,11 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       Effect.gen(function* () {
         yield* Transaction.appendEntry(tx, task.conversationId, {
           kind: 'tool.result',
+          usage: {
+            _tag: 'tool',
+            name: call.name,
+            ...(result.spend === undefined ? {} : { cost: result.spend }),
+          },
           head: 'self',
           model: yield* Schema.encodeEffect(Run.Messages)([output]),
           data: yield* Schema.encodeEffect(jsonCodec(ToolResult.ResultSchema))(result),

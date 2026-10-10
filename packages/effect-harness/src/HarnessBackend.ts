@@ -1,3 +1,4 @@
+import type * as Usage from './Usage.js'
 /** Data-only boundary implemented by a local runtime or a transport adapter. */
 import * as Context from 'effect/Context'
 import type * as Effect from 'effect/Effect'
@@ -38,6 +39,10 @@ export const WatchSchema = Schema.Struct({
 export type Watch = typeof WatchSchema.Type
 
 export interface HarnessBackendService {
+  /** Optional for older transports. Undefined is unsupported, never a zero usage report. */
+  readonly usage?: (
+    conversationId?: Record.ConversationId,
+  ) => Effect.Effect<Usage.Summary, HarnessError>
   readonly root: Effect.Effect<Record.ConversationId, HarnessError>
   readonly create: (options?: CreateOptions) => Effect.Effect<Record.ConversationId, HarnessError>
   readonly conversation: (

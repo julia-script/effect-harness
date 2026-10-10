@@ -35,12 +35,16 @@ export const key = Schema.encodeEffect(AddressJson)
 export const compatible = Effect.fnUntraced(function* <S extends Document.Codec>(
   document: Document.Document<S>,
   stored: Record.StoredDocument,
+  allowMigration = false,
 ) {
   const definition = document.definition
   if (
     stored.record.kind !== definition.kind ||
     stored.record.scope._tag !== definition.scope ||
-    stored.version !== definition.version ||
+    (stored.version !== definition.version &&
+      (!allowMigration ||
+        stored.version >= definition.version ||
+        definition.migrations?.[stored.version] === undefined)) ||
     (definition.scope === 'conversation' &&
       (stored.record.history !== definition.history || stored.record.fork !== definition.fork))
   )
@@ -49,6 +53,37 @@ export const compatible = Effect.fnUntraced(function* <S extends Document.Codec>
       operation: 'document.read',
       message: 'Persisted document version or policies differ from its definition',
     })
+})
+
+/** Prepares an upgrade without changing the overlay, including target-schema validation. */
+export const migrate = Effect.fnUntraced(function* <S extends Document.Codec>(
+  document: Document.Document<S>,
+  stored: Record.StoredDocument,
+) {
+  yield* compatible(document, stored, true)
+  if (stored.version === document.definition.version) return stored
+  const migration = document.definition.migrations?.[stored.version]
+  if (migration === undefined)
+    return yield* new SessionError({
+      reason: 'conflict',
+      operation: 'document.migrate',
+      message: 'Persisted document version has no direct migration',
+    })
+  const owned = yield* copy(Record.StoredDocumentSchema, stored)
+  const result = yield* Effect.try({
+    try: () => migration(owned.value),
+    catch: (cause) =>
+      new SessionError({
+        reason: 'invalid',
+        operation: 'document.migrate',
+        message: 'Document migration callback failed',
+        cause,
+      }),
+  })
+  const value = yield* copy(Schema.JsonObject, yield* result)
+  const migrated = { ...owned, version: document.definition.version, value, deltasSinceBase: 0 }
+  yield* snapshot(document, migrated)
+  return migrated
 })
 
 export const snapshot = Effect.fnUntraced(function* <S extends Document.Codec>(

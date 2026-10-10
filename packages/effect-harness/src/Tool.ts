@@ -3,6 +3,7 @@ import * as Context from 'effect/Context'
 import * as Schema from 'effect/Schema'
 import * as AiTool from 'effect/ai/Tool'
 import * as Record from './Record.js'
+import * as ToolResult from './ToolResult.js'
 
 export const ReplaySchema = Schema.Literals(['safe', 'unsafe'])
 export type Replay = typeof ReplaySchema.Type
@@ -75,4 +76,46 @@ export const make = <
     executionMode: options?.executionMode ?? 'sequential',
   })
 export const policy = (tool: Any): Policy => Context.get(tool.annotations, Policy)
+
+/** Marks schema-backed handler envelopes; ordinary native tools keep value-style results. */
+export const ResultChannels = Context.Reference<boolean>('effect-harness/Tool/ResultChannels', {
+  defaultValue: () => false,
+})
+export const hasResultChannels = (tool: Any): boolean =>
+  Context.get(tool.annotations, ResultChannels)
+
+/**
+ * Declare a tool whose handlers return independent content, structuredOutput and details.
+ * success/failure validate only their respective structured output; without a schema,
+ * that channel accepts JSON. Omission is allowed even when a schema is declared.
+ * Fail with the same envelope shape to choose error content independently.
+ * Codecs encode programmatic values to JSON in receipts, hooks and durable history;
+ * callers can decode structuredOutput with the declared schema after recovery.
+ * Hooks may replace or omit any channel; their final values are validated before saving.
+ */
+export const makeResult = <
+  const Name extends string,
+  P extends Schema.Constraint = typeof AiTool.EmptyParams,
+  S extends Schema.Constraint = typeof Schema.Json,
+  F extends Schema.Constraint = typeof Schema.Json,
+>(
+  name: Name,
+  options?: {
+    readonly description?: string
+    readonly parameters?: P
+    readonly success?: S
+    readonly failure?: F
+    readonly replay?: Replay
+    readonly executionMode?: ExecutionMode
+  },
+): Tool<Name, P, ToolResult.OutputSchema<S>, ToolResult.OutputSchema<F>> => {
+  // Defaults are JSON codecs; generic callers retain their explicitly supplied schemas.
+  const success = (options?.success ?? Schema.Json) as S
+  const failure = (options?.failure ?? Schema.Json) as F
+  return make(name, {
+    ...options,
+    success: ToolResult.outputSchema(success),
+    failure: ToolResult.outputSchema(failure),
+  }).annotate(ResultChannels, true)
+}
 export type { Parameters, Success, Failure, Name } from 'effect/ai/Tool'

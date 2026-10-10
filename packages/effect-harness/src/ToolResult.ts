@@ -1,3 +1,4 @@
+import * as Usage from './Usage.js'
 import * as Schema from 'effect/Schema'
 import * as SchemaTransformation from 'effect/SchemaTransformation'
 import * as Prompt from 'effect/ai/Prompt'
@@ -39,9 +40,39 @@ export const ProgressSchema = Schema.Struct({
 })
 export type Progress = typeof ProgressSchema.Type
 
+/**
+ * Handler-owned channels for Tool.makeResult. Only content is sent to the model.
+ * Omitted structured output stays absent; details are optional JSON for UI consumers.
+ * The same shape is used for successful values and declared failures.
+ * spend is opt-in reported cost with caller currency/source; unknown spend is omitted.
+ * Hooks may replace it with the rest of the final result; only the committed final
+ * declaration is accounted. Interrupted/uncommitted external charges remain unknown.
+ */
+export interface Output<A = Schema.Json> {
+  readonly content: Content
+  /** Explicit reported spend, persisted with the final result and never sent to the model. */
+  readonly spend?: Usage.Cost
+  readonly structuredOutput?: A
+  readonly details?: Schema.Json
+  readonly diagnostics?: ReadonlyArray<Diagnostic>
+}
+
+/** Wrap a structured-output schema in the independent handler-result channels. */
+export const outputSchema = <S extends Schema.Constraint>(structuredOutput: S) =>
+  Schema.Struct({
+    content: ContentSchema,
+    spend: Schema.optionalKey(Usage.CostSchema),
+    structuredOutput: Schema.optionalKey(structuredOutput),
+    details: Schema.optionalKey(Schema.Json),
+    diagnostics: Schema.optionalKey(Schema.Array(DiagnosticSchema)),
+  })
+export type OutputSchema<S extends Schema.Constraint> = ReturnType<typeof outputSchema<S>>
+
 export const ResultSchema = Schema.Struct({
   content: ContentSchema,
   isError: Schema.Boolean,
+  spend: Schema.optionalKey(Usage.CostSchema),
+  structuredOutput: Schema.optionalKey(Schema.Json),
   details: Schema.optionalKey(Schema.Json),
   diagnostics: Schema.Array(DiagnosticSchema),
 })

@@ -1,3 +1,4 @@
+import { ProviderAffinity } from '../ProviderAffinity.js'
 import * as Predicate from 'effect/Predicate'
 /**
  * Canonical tool-media translation at the captured native client boundary.
@@ -112,7 +113,12 @@ const clientImpl = (
   ) {
     const dynamic = yield* Effect.serviceOption(OpenAiLanguageModel.Config)
     const config = { ...defaults, ...Option.getOrUndefined(dynamic) }
-    return yield* request(payload, config.fileIdPrefixes ?? [])
+    const affinity = yield* Effect.serviceOption(ProviderAffinity)
+    const routed =
+      payload.prompt_cache_key === undefined && Option.isSome(affinity)
+        ? { ...payload, prompt_cache_key: affinity.value.id }
+        : payload
+    return yield* request(routed, config.fileIdPrefixes ?? [])
   })
   return OpenAiClient.OpenAiClient.of({
     ...self,

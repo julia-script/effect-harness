@@ -1,3 +1,4 @@
+import * as Usage from './Usage.js'
 import type * as Types from 'effect/Types'
 /**
  * Durable facts, identifiers, journal frames and tagged codecs.
@@ -153,6 +154,7 @@ export const Entry = Schema.Struct({
   id: EntryId,
   conversationId: ConversationId,
   kind: Schema.String,
+  usage: Schema.optionalKey(Usage.RecordSchema),
   model: Schema.optionalKey(Schema.Array(Schema.Json)),
   data: Schema.optionalKey(Schema.Json),
   head: Schema.optionalKey(EntryId),
