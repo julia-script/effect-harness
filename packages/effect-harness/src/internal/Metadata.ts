@@ -18,7 +18,7 @@ export const initialMetadata: Metadata = { format: 1, nextId: 2, nextSeq: 1 }
 
 /** Validate before any record replay, including metadata supplied by another SQL writer. */
 export const requireSupported = Effect.fnUntraced(function* (metadata: Metadata) {
-  if (metadata.format > 6 || (metadata.minimumReader ?? 1) > 6)
+  if (metadata.format > 7 || (metadata.minimumReader ?? 1) > 7)
     return yield* Errors.make(
       'unsupportedFormat',
       'metadata',

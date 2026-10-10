@@ -28,6 +28,9 @@ const prepared = {
   attempt: Usage.AttemptId,
   retries: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
 }
+const deadline = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+)
 export const RunStateSchema = Schema.Union([
   Schema.TaggedStruct('queued', {
     phase: Schema.tag('queued'),
@@ -35,6 +38,23 @@ export const RunStateSchema = Schema.Union([
     draft: Submission.InputDraftSchema,
   }),
   Schema.TaggedStruct('request', { phase: Schema.tag('request'), ...running }),
+  Schema.TaggedStruct('deferred-start', {
+    phase: Schema.tag('deferred-start'),
+    ...prepared,
+    expiresAt: deadline,
+    usage: Schema.optionalKey(Usage.RecordSchema),
+  }),
+  Schema.TaggedStruct('deferred', {
+    phase: Schema.tag('deferred'),
+    ...prepared,
+    handle: Schema.Json,
+    pollAt: deadline,
+    expiresAt: deadline,
+    pollFailures: Schema.Int.check(
+      Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+    ),
+    usage: Schema.optionalKey(Usage.RecordSchema),
+  }),
   Schema.TaggedStruct('streaming', {
     phase: Schema.tag('streaming'),
     ...prepared,
@@ -68,6 +88,11 @@ export const validPrefix = (state: RunState): boolean => {
     state._tag !== 'queued' &&
     state.preparation !== undefined &&
     state.preparation.ordinal !== state.ordinal
+  )
+    return false
+  if (
+    (state._tag === 'deferred' || state._tag === 'deferred-start') &&
+    state.preparation.execution !== 'deferred'
   )
     return false
   if (state._tag !== 'tools') return true

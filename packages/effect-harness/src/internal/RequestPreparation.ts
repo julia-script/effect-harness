@@ -179,6 +179,8 @@ export const compatible = Effect.fnUntraced(function* (
     )
       return yield* unavailable('Pinned model definition is unavailable or incompatible')
     const configuration = model.configuration
+    if (preparation.execution === 'deferred' && model.deferred === undefined)
+      return yield* unavailable('Pinned deferred model capability is unavailable')
     const binding = configuration?.binding ?? {
       id: 'effect-harness/empty-configuration',
       version: 1,

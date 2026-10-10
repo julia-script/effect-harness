@@ -31,6 +31,10 @@ import { NativeWriteFailure } from './NativeWriteFailure.js'
 import { StreamPublicationFailure } from './StreamPublicationFailure.js'
 import * as Preparation from './RequestPreparation.js'
 import { PreparationRestoreFailure } from './PreparationRestoreFailure.js'
+import * as Model from '../Model.js'
+import * as Prepared from '../PreparedRequest.js'
+import { ProviderAffinity } from '../ProviderAffinity.js'
+import * as DeferredExecution from './DeferredExecution.js'
 
 interface Invocation {
   readonly record: Record.Task
@@ -61,6 +65,7 @@ export const make = (
     | ExecutionError
     | NativeWriteFailure
     | StreamPublicationFailure
+    | import('../Model.js').DeferredTerminalError
     | import('./ContextPlan.js').ContextPlanError
     | import('../ToolInventory.js').Denial
     | import('../ToolControl.js').InvalidControl
@@ -158,13 +163,22 @@ export const make = (
       submissionId,
       draft: { type: 'input' as const, content: '' },
     }),
-    phases: { queued: phase, request: phase, streaming: phase, retry: phase, tools: phase },
+    phases: {
+      queued: phase,
+      request: phase,
+      streaming: phase,
+      retry: phase,
+      'deferred-start': phase,
+      deferred: phase,
+      tools: phase,
+    },
   })
   const settle = Effect.fnUntraced(function* (
     record: Record.Task,
     reason: string,
     message?: string,
     observed?: StreamPublicationFailure,
+    cancellation?: DeferredExecution.CancelReport,
   ) {
     const execution = yield* TaskExecution
     yield* execution.commit((tx) =>
@@ -174,7 +188,9 @@ export const make = (
           Option.isSome(current) ? current.value.state.checkpoint : record.state.checkpoint,
         )
         if (
-          checkpoint._tag === 'streaming' &&
+          (checkpoint._tag === 'streaming' ||
+            checkpoint._tag === 'deferred' ||
+            checkpoint._tag === 'deferred-start') &&
           !(yield* Usage.receipts(tx, record.conversationId)).some(
             (receipt) =>
               receipt.identity._tag === 'requestAttempt' &&
@@ -183,11 +199,13 @@ export const make = (
               receipt.identity.purpose === 'generation',
           )
         ) {
+          const storedUsage =
+            checkpoint._tag === 'streaming' ? checkpoint.partial?.usage : checkpoint.usage
           const usage =
             observed?.requestId === checkpoint.preparation.requestId &&
             observed.attempt === checkpoint.attempt
               ? observed.usage
-              : checkpoint.partial?.usage
+              : storedUsage
           yield* Usage.record(tx, {
             conversationId: record.conversationId,
             identity: {
@@ -223,7 +241,11 @@ export const make = (
           status: 'completing',
           outcome:
             reason === 'aborted'
-              ? { status: 'aborted', reason }
+              ? {
+                  status: 'aborted',
+                  reason,
+                  ...(cancellation === undefined ? {} : { result: { cancellation } }),
+                }
               : {
                   status: 'failed',
                   error: { message: message ?? reason },
@@ -254,6 +276,7 @@ export const make = (
             // Their next boundary starts fresh work; only pending I/O needs the old bindings.
             if (
               checkpoint._tag !== 'queued' &&
+              !record.abortRequested &&
               checkpoint.preparation !== undefined &&
               (checkpoint._tag !== 'tools' || checkpoint.index < checkpoint.calls.length)
             ) {
@@ -288,7 +311,50 @@ export const make = (
       Effect.suspend(() => {
         return (
           mode === 'abort'
-            ? settle(record, 'aborted')
+            ? Effect.gen(function* () {
+                const checkpoint = yield* Run.decode(record.state.checkpoint)
+                let report: DeferredExecution.CancelReport | undefined
+                if (checkpoint._tag === 'deferred') {
+                  const base = services(lease)
+                  report = yield* DeferredExecution.cancel(
+                    Effect.gen(function* () {
+                      const selected = Preparation.selectedModel(
+                        checkpoint.preparation,
+                        bindings.models,
+                      )
+                      if (selected === undefined)
+                        return yield* Preparation.unavailable(
+                          'Pinned deferred cancellation model is unavailable',
+                        )
+                      const descriptor = yield* Model.deferred(selected)
+                      const configuration = yield* (
+                        selected.configuration ?? Model.emptyConfiguration
+                      ).restore(checkpoint.preparation.configuration)
+                      const context = Context.merge(
+                        Context.add(base.context, ProviderAffinity, {
+                          id: checkpoint.preparation.affinity,
+                        }),
+                        configuration,
+                      ).pipe(
+                        Context.add(Prepared.PreparedRequest, {
+                          current: yield* Preparation.own(checkpoint.preparation),
+                        }),
+                      )
+                      yield* descriptor
+                        .cancel(checkpoint.handle)
+                        .pipe(Effect.provideContext(context))
+                    }),
+                    base.cancellationCleanup,
+                  )
+                } else if (checkpoint._tag === 'deferred-start') {
+                  report = {
+                    status: 'failed',
+                    message:
+                      'Remote create outcome is unknown; no durable handle is available to cancel',
+                  }
+                }
+                yield* settle(record, 'aborted', undefined, undefined, report)
+              })
             : phase().pipe(Effect.provideService(NativeInvocation, { record, lease }))
         ).pipe(
           Effect.as<PhaseResult>({ _tag: 'returned' }),

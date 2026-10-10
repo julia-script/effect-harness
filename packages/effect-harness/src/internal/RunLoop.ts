@@ -16,7 +16,7 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as Prompt from 'effect/ai/Prompt'
-import type * as LanguageModel from 'effect/ai/LanguageModel'
+import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as NativeTool from 'effect/ai/Tool'
 import * as NativeToolkit from 'effect/ai/Toolkit'
 import type * as Record from '../Record.js'
@@ -42,6 +42,7 @@ import { ToolExecution } from '../ToolExecution.js'
 import * as ToolResult from '../ToolResult.js'
 import * as Transaction from '../Transaction.js'
 import * as Run from './RunState.js'
+import * as DeferredExecution from './DeferredExecution.js'
 import * as Inbox from './Inbox.js'
 import { NativeWriteFailure } from './NativeWriteFailure.js'
 import { StreamPublicationFailure } from './StreamPublicationFailure.js'
@@ -54,8 +55,10 @@ export interface BoundSection {
   readonly registration: string
 }
 export interface Services {
+  readonly cancellationCleanup: import('effect/Scope').Closeable
   readonly nativeModel: Prepared.Binding
   readonly requireStreamFormat: Services['requireSubmissionFormat']
+  readonly requireDeferredFormat: Services['requireSubmissionFormat']
   readonly requireRequestFormat: Services['requireSubmissionFormat']
   readonly refresh: Effect.Effect<
     Pick<Services, 'lease' | 'allTools' | 'toolExtensions' | 'sections' | 'runHooks'>,
@@ -117,12 +120,44 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
     defaultAgent,
     checkOpen,
     access,
-    write,
+    write: nativeWrite,
     writeCallback,
     saveState,
     invocationActive,
     notify,
   } = services
+  let observed:
+    | {
+        readonly requestId: Identity.RequestId
+        readonly attempt: Usage.AttemptId
+        readonly usage: Usage.Record
+      }
+    | undefined
+  const write = <A, E, R>(
+    change: (tx: Transaction.Transaction, task: Record.Task) => Effect.Effect<A, E, R>,
+  ): Effect.Effect<
+    A,
+    E | import('../TaskError.js').Failure | NativeWriteFailure | StreamPublicationFailure,
+    R
+  > =>
+    nativeWrite(change).pipe(
+      Effect.catchCause(
+        (
+          cause,
+        ): Effect.Effect<
+          never,
+          E | import('../TaskError.js').Failure | NativeWriteFailure | StreamPublicationFailure
+        > => {
+          const reason = cause.reasons.length === 1 ? cause.reasons[0] : undefined
+          return observed !== undefined &&
+            reason !== undefined &&
+            Cause.isFailReason(reason) &&
+            reason.error instanceof NativeWriteFailure
+            ? Effect.fail(new StreamPublicationFailure({ error: reason.error, ...observed }))
+            : Effect.failCause(cause)
+        },
+      ),
+    )
   let { allTools, toolExtensions, sections, runHooks, lease } = services
   let task = initial
   let state = yield* Run.decode(task.state.checkpoint)
@@ -240,7 +275,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       )
       continue
     }
-    if (state._tag === 'request') {
+    if (state._tag === 'request' || state._tag === 'deferred' || state._tag === 'deferred-start') {
       let requesting = state
       let selected =
         requesting.preparation === undefined
@@ -295,6 +330,15 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         const model = selected?.languageModel ?? Option.getOrUndefined(nativeDefault)
         if (model === undefined)
           return yield* absent('model.select', 'No generation capability is available')
+        const execution =
+          settings.stream.deferred === true || typeof settings.stream.deferred === 'object'
+            ? ('deferred' as const)
+            : ('streaming' as const)
+        if (execution === 'deferred') {
+          if (selected === undefined)
+            return yield* absent('model.deferred', 'Deferred execution requires a model descriptor')
+          yield* Model.deferred(selected)
+        }
         const requestId = yield* Effect.try({
           try: () => globalThis.crypto.randomUUID(),
           catch: (cause) =>
@@ -489,6 +533,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
                   },
                 },
           options,
+          execution,
           configuration,
           configurationBinding: configurationCodec.binding,
           registryGeneration: lease.snapshot.generation,
@@ -533,6 +578,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
             // publishes the accepted facts and immutable checkpoint in one native commit.
             yield* saveState(tx, current, next)
             yield* services.requireRequestFormat
+            if (execution === 'deferred') yield* services.requireDeferredFormat
             return next
           }),
         )
@@ -584,142 +630,211 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       )
       const attempt = requesting.attempt ?? preparation.attempt
       const retries = requesting.retries ?? 0
-      const streaming: Extract<Run.RunState, { _tag: 'streaming' }> = {
-        ...requesting,
-        _tag: 'streaming',
-        phase: 'streaming',
-        preparation,
-        attempt,
-        retries,
-        revision: 0,
-      }
-      yield* write((tx, current) =>
-        Effect.gen(function* () {
-          yield* services.requireStreamFormat
-          yield* saveState(tx, current, streaming)
-          yield* Transaction.ensureDocument(
-            tx,
-            LiveState.document,
-            LiveState.target(task.conversationId),
-          )
-          yield* Transaction.setDocument(
-            tx,
-            LiveState.document,
-            LiveState.target(task.conversationId),
-            { generation: { requestId: preparation.requestId, attempt, revision: 0 } },
-          )
-        }),
-      )
-      state = streaming
-      const progressPolicy = yield* Settings.getOrDefault.pipe(Effect.provideContext(context))
-      const streamed = yield* ModelStream.consume(
-        model
-          .streamText({
-            prompt: (yield* Preparation.own(preparation)).prompt,
-            toolkit: nativeToolkit,
-            disableToolCallResolution: true,
-          })
-          .pipe(Stream.provideContext(requestContext)),
-        preparation,
-        progressPolicy.progress.partialIntervalMs,
-        (partial, revision) =>
-          write((tx, current) =>
-            Effect.gen(function* () {
-              if (!invocationActive())
-                return yield* new TaskError({
-                  reason: 'revoked',
-                  operation: 'model.partial',
-                  message: 'Model invocation ended',
-                })
-              yield* saveState(tx, current, { ...streaming, partial, revision })
-              yield* Transaction.setDocument(
-                tx,
-                LiveState.document,
-                LiveState.target(task.conversationId),
-                { generation: { requestId: preparation.requestId, attempt, revision, partial } },
-              )
-            }),
-          ),
-      )
-      if (Exit.isFailure(streamed.exit)) {
-        const cause = streamed.exit.cause
-        const reason = cause.reasons.length === 1 ? cause.reasons[0] : undefined
-        // Publication failures never enter provider retry/receipt writes. Only a direct,
-        // deterministic native rejection can carry this invocation's observed usage.
-        if (streamed.publicationFailure) {
-          if (
-            reason !== undefined &&
-            Cause.isFailReason(reason) &&
-            reason.error instanceof NativeWriteFailure &&
-            streamed.partial?.usage !== undefined
-          )
-            return yield* new StreamPublicationFailure({
-              error: reason.error,
-              requestId: preparation.requestId,
-              attempt,
-              usage: streamed.partial.usage,
-            })
-          return yield* Effect.failCause(cause)
-        }
-        const error =
-          reason !== undefined && Cause.isFailReason(reason) && AiError.isAiError(reason.error)
-            ? reason.error
-            : undefined
-        const policy = yield* Settings.getOrDefault.pipe(Effect.provideContext(context))
-        const until =
-          error === undefined
-            ? undefined
-            : ModelStream.retryAt(error, retries, policy, yield* Clock.currentTimeMillis)
-        const known =
-          streamed.partial?.usage ??
-          (error === undefined ? undefined : ModelStream.errorUsage(error, preparation))
-        const followingAttempt = until === undefined ? undefined : yield* nextAttempt(attempt)
-        const next: Run.RunState | undefined =
-          until === undefined || followingAttempt === undefined
-            ? undefined
+      let response: LanguageModel.GenerateTextResponse<Record<string, NativeTool.Any>, 'encoded'>
+      if (preparation.execution === 'deferred') {
+        if (selected === undefined)
+          return yield* absent('model.deferred', 'Pinned deferred model is unavailable')
+        const adapter = yield* Model.deferred(selected)
+        const initial =
+          requesting._tag === 'deferred' || requesting._tag === 'deferred-start'
+            ? requesting
             : {
                 ...requesting,
-                _tag: 'retry',
-                phase: 'retry',
+                _tag: 'deferred-start' as const,
+                phase: 'deferred-start' as const,
                 preparation,
-                attempt: followingAttempt,
-                retries: retries + 1,
-                until,
+                attempt,
+                retries,
+                expiresAt: yield* DeferredExecution.expiry(preparation.settings),
               }
+        const outcome = yield* DeferredExecution.run(
+          initial,
+          adapter,
+          {
+            requestId: preparation.requestId,
+            attempt,
+            prompt: (yield* Preparation.own(preparation)).prompt,
+            toolkit: nativeToolkit,
+            configuration,
+          },
+          (next) =>
+            write((tx, current) =>
+              Effect.gen(function* () {
+                yield* services.requireDeferredFormat
+                yield* saveState(tx, current, next)
+                yield* Transaction.ensureDocument(
+                  tx,
+                  LiveState.document,
+                  LiveState.target(task.conversationId),
+                )
+                yield* Transaction.setDocument(
+                  tx,
+                  LiveState.document,
+                  LiveState.target(task.conversationId),
+                  {
+                    generation: {
+                      requestId: preparation.requestId,
+                      attempt,
+                      revision: 0,
+                      retryAt: next._tag === 'deferred' ? next.pollAt : next.expiresAt,
+                    },
+                  },
+                )
+                state = next
+              }),
+            ),
+          Settings.getOrDefault.pipe(Effect.provideContext(context)),
+          requesting._tag === 'request',
+        ).pipe(Effect.provideContext(requestContext))
+        response = new LanguageModel.GenerateTextResponse(outcome.response.content)
+        observed = {
+          requestId: preparation.requestId,
+          attempt,
+          usage: ModelStream.usage(outcome.response.usage, preparation),
+        }
+      } else {
+        if (requesting._tag !== 'request')
+          return yield* absent(
+            'model.deferred',
+            'Deferred checkpoint requires its pinned execution choice',
+          )
+        const streaming: Extract<Run.RunState, { _tag: 'streaming' }> = {
+          ...requesting,
+          _tag: 'streaming',
+          phase: 'streaming',
+          preparation,
+          attempt,
+          retries,
+          revision: 0,
+        }
         yield* write((tx, current) =>
           Effect.gen(function* () {
-            yield* Usage.record(tx, {
-              conversationId: task.conversationId,
-              identity: identity(preparation, attempt),
-              outcome: { _tag: 'failed', error: { message: Cause.pretty(cause) } },
-              ...(known === undefined ? {} : { usage: known }),
-            })
-            if (next === undefined) {
-              yield* clearLive(tx)
-              yield* saveState(tx, current, { ...requesting, attempt, retries })
-            } else {
-              yield* saveState(tx, current, next)
-              yield* Transaction.setDocument(
-                tx,
-                LiveState.document,
-                LiveState.target(task.conversationId),
-                {
-                  generation: {
-                    requestId: preparation.requestId,
-                    attempt: next.attempt,
-                    revision: 0,
-                    retryAt: next.until,
-                  },
-                },
-              )
-            }
+            yield* services.requireStreamFormat
+            yield* saveState(tx, current, streaming)
+            yield* Transaction.ensureDocument(
+              tx,
+              LiveState.document,
+              LiveState.target(task.conversationId),
+            )
+            yield* Transaction.setDocument(
+              tx,
+              LiveState.document,
+              LiveState.target(task.conversationId),
+              { generation: { requestId: preparation.requestId, attempt, revision: 0 } },
+            )
           }),
         )
-        if (next === undefined) return yield* Effect.failCause(cause)
-        state = next
-        continue
+        state = streaming
+        const progressPolicy = yield* Settings.getOrDefault.pipe(Effect.provideContext(context))
+        const streamed = yield* ModelStream.consume(
+          model
+            .streamText({
+              prompt: (yield* Preparation.own(preparation)).prompt,
+              toolkit: nativeToolkit,
+              disableToolCallResolution: true,
+            })
+            .pipe(Stream.provideContext(requestContext)),
+          preparation,
+          progressPolicy.progress.partialIntervalMs,
+          (partial, revision) =>
+            write((tx, current) =>
+              Effect.gen(function* () {
+                if (!invocationActive())
+                  return yield* new TaskError({
+                    reason: 'revoked',
+                    operation: 'model.partial',
+                    message: 'Model invocation ended',
+                  })
+                yield* saveState(tx, current, { ...streaming, partial, revision })
+                yield* Transaction.setDocument(
+                  tx,
+                  LiveState.document,
+                  LiveState.target(task.conversationId),
+                  { generation: { requestId: preparation.requestId, attempt, revision, partial } },
+                )
+              }),
+            ),
+        )
+        if (Exit.isFailure(streamed.exit)) {
+          const cause = streamed.exit.cause
+          const reason = cause.reasons.length === 1 ? cause.reasons[0] : undefined
+          // Publication failures never enter provider retry/receipt writes. Only a direct,
+          // deterministic native rejection can carry this invocation's observed usage.
+          if (streamed.publicationFailure) {
+            if (
+              reason !== undefined &&
+              Cause.isFailReason(reason) &&
+              reason.error instanceof NativeWriteFailure &&
+              streamed.partial?.usage !== undefined
+            )
+              return yield* new StreamPublicationFailure({
+                error: reason.error,
+                requestId: preparation.requestId,
+                attempt,
+                usage: streamed.partial.usage,
+              })
+            return yield* Effect.failCause(cause)
+          }
+          const error =
+            reason !== undefined && Cause.isFailReason(reason) && AiError.isAiError(reason.error)
+              ? reason.error
+              : undefined
+          const policy = yield* Settings.getOrDefault.pipe(Effect.provideContext(context))
+          const until =
+            error === undefined
+              ? undefined
+              : ModelStream.retryAt(error, retries, policy, yield* Clock.currentTimeMillis)
+          const known =
+            streamed.partial?.usage ??
+            (error === undefined ? undefined : ModelStream.errorUsage(error, preparation))
+          const followingAttempt = until === undefined ? undefined : yield* nextAttempt(attempt)
+          const next: Run.RunState | undefined =
+            until === undefined || followingAttempt === undefined
+              ? undefined
+              : {
+                  ...requesting,
+                  _tag: 'retry',
+                  phase: 'retry',
+                  preparation,
+                  attempt: followingAttempt,
+                  retries: retries + 1,
+                  until,
+                }
+          yield* write((tx, current) =>
+            Effect.gen(function* () {
+              yield* Usage.record(tx, {
+                conversationId: task.conversationId,
+                identity: identity(preparation, attempt),
+                outcome: { _tag: 'failed', error: { message: Cause.pretty(cause) } },
+                ...(known === undefined ? {} : { usage: known }),
+              })
+              if (next === undefined) {
+                yield* clearLive(tx)
+                yield* saveState(tx, current, { ...requesting, attempt, retries })
+              } else {
+                yield* saveState(tx, current, next)
+                yield* Transaction.setDocument(
+                  tx,
+                  LiveState.document,
+                  LiveState.target(task.conversationId),
+                  {
+                    generation: {
+                      requestId: preparation.requestId,
+                      attempt: next.attempt,
+                      revision: 0,
+                      retryAt: next.until,
+                    },
+                  },
+                )
+              }
+            }),
+          )
+          if (next === undefined) return yield* Effect.failCause(cause)
+          state = next
+          continue
+        }
+        response = streamed.exit.value
       }
-      const response = streamed.exit.value
       const appendAssistant = (tx: Transaction.Transaction, draft: Transaction.EntryDraft) =>
         Effect.gen(function* () {
           const entry = yield* Transaction.appendEntry(tx, task.conversationId, draft)
@@ -820,6 +935,8 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           } = requesting
           const next: Run.RunState = {
             ...unprepared,
+            _tag: 'request',
+            phase: 'request',
             prompt: Prompt.concat(nextPrompt, Prompt.make([decision.input])),
           }
           yield* write((tx, current) =>
@@ -837,6 +954,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
             }),
           )
           state = next
+          observed = undefined
           continue
         }
         yield* write((tx) =>
@@ -887,6 +1005,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         }),
       )
       state = pending
+      observed = undefined
       continue
     }
     const toolState = state

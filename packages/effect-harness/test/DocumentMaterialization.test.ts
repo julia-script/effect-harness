@@ -702,29 +702,39 @@ describe('Document materialization', () => {
       return withMemory(
         Effect.gen(function* () {
           const storage = yield* Storage.Storage
+          class CallIO extends Context.Service<CallIO, boolean>()('test/materialization/CallIO') {}
+          const count = (increment: () => void) =>
+            Effect.serviceOption(CallIO).pipe(
+              Effect.map((probe) => {
+                if (Option.isSome(probe)) increment()
+              }),
+            )
           let reads = 0
           let writes = 0
           const format = yield* StorageFormat
           const counted = {
             ...storage,
             document: (...args: Parameters<typeof storage.document>) =>
-              Effect.sync(() => {
+              count(() => {
                 reads++
               }).pipe(Effect.andThen(storage.document(...args))),
             findDocument: (...args: Parameters<typeof storage.findDocument>) =>
-              Effect.sync(() => {
+              count(() => {
                 reads++
               }).pipe(Effect.andThen(storage.findDocument(...args))),
             entry: (...args: Parameters<typeof storage.entry>) =>
-              Effect.sync(() => {
+              count(() => {
                 reads++
               }).pipe(Effect.andThen(storage.entry(...args))),
             commit: (changes: Iterable<Record.StorageWrite>) =>
-              Effect.sync(() => {
+              count(() => {
                 writes++
               }).pipe(Effect.andThen(storage.commit(changes))),
           } satisfies Storage.Storage['Service']
+          const runtimeScope = yield* Scope.make()
+          yield* Effect.addFinalizer(() => Scope.close(runtimeScope, Exit.void))
           const runtime = yield* HarnessRuntime.make().pipe(
+            Effect.provideService(Scope.Scope, runtimeScope),
             Effect.provideService(Storage.Storage, counted),
             Effect.provideService(StorageFormat, { ...format, storage: counted }),
           )
@@ -733,6 +743,7 @@ describe('Document materialization', () => {
           )
           const conversation = yield* harness.root
           const cutoff = yield* initialize(runtime.session)
+          const userWatchers = new Set<SessionRuntime.Subscriber>()
           const run = Effect.gen(function* () {
             const result = some(
               yield* conversation.pipe(Conversation.materializedSnapshot(serviceDocument, target)),
@@ -756,17 +767,25 @@ describe('Document materialization', () => {
               Stream.toPull,
             )
             yield* pull
+            for (const subscriber of (yield* SessionRuntime.get(runtime.session)).subscribers) {
+              if (subscriber.documentId !== undefined) userWatchers.add(subscriber)
+            }
+            assert.strictEqual(userWatchers.size, 1)
             yield* Session.commit(runtime.session, (tx) =>
               Transaction.ensureDocument(tx, current, target),
             )
             assert.strictEqual((yield* pull)[0].storedVersion, 3)
           })
           yield* Effect.scoped(run).pipe(
+            Effect.provideService(CallIO, true),
             Effect.provide([
               Layer.succeed(HarnessRuntime.HarnessRuntime, runtime),
               Layer.succeed(Labels, 'client'),
             ]),
           )
+          const sessionState = yield* SessionRuntime.get(runtime.session)
+          for (const subscriber of userWatchers)
+            assert.isFalse(sessionState.subscribers.has(subscriber))
           assert.isTrue(reads > 0)
           assert.isTrue(writes > 0)
           reads = 0
@@ -783,14 +802,22 @@ describe('Document materialization', () => {
             conversation,
             current,
             target,
-          ).pipe(Effect.provideService(HarnessRuntime.HarnessRuntime, wrong), Effect.flip)
+          ).pipe(
+            Effect.provideService(CallIO, true),
+            Effect.provideService(HarnessRuntime.HarnessRuntime, wrong),
+            Effect.flip,
+          )
           assert.strictEqual(denied._tag, 'HarnessError')
           const historyDenied = yield* Conversation.materializedSnapshotAsOf(
             conversation,
             current,
             target,
             cutoff.id,
-          ).pipe(Effect.provideService(HarnessRuntime.HarnessRuntime, wrong), Effect.flip)
+          ).pipe(
+            Effect.provideService(CallIO, true),
+            Effect.provideService(HarnessRuntime.HarnessRuntime, wrong),
+            Effect.flip,
+          )
           assert.strictEqual(historyDenied._tag, 'HarnessError')
           const watchDenied = yield* Conversation.watchMaterialized(
             conversation,
@@ -798,6 +825,7 @@ describe('Document materialization', () => {
             target,
           ).pipe(
             Stream.runCollect,
+            Effect.provideService(CallIO, true),
             Effect.provideService(HarnessRuntime.HarnessRuntime, wrong),
             Effect.flip,
           )
@@ -805,7 +833,10 @@ describe('Document materialization', () => {
           assert.strictEqual(sessionAccesses, 0)
           assert.strictEqual(reads, 0)
           assert.strictEqual(writes, 0)
-          assert.strictEqual((yield* SessionRuntime.get(runtime.session)).subscribers.size, 0)
+          for (const subscriber of userWatchers)
+            assert.isFalse(sessionState.subscribers.has(subscriber))
+          yield* Scope.close(runtimeScope, Exit.void)
+          assert.strictEqual(sessionState.subscribers.size, 0)
         }).pipe(Effect.provide(model)),
       )
     },

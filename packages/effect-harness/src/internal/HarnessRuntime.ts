@@ -81,6 +81,11 @@ export const make = Effect.fnUntraced(function* <
         ],
       })
       const schedulerScope = yield* Scope.make()
+      const taskScope = yield* Scope.make()
+      const cancellationCleanup = yield* Scope.make()
+      // Also covers construction failures before the runtime close finalizer exists.
+      yield* Effect.addFinalizer(() => Scope.close(cancellationCleanup, Exit.void))
+      yield* Effect.addFinalizer(() => Scope.close(taskScope, Exit.void))
       const registry = options.registry ?? (yield* Registry.make)
       if (options.tools !== undefined)
         yield* registry.install(
@@ -312,7 +317,12 @@ export const make = Effect.fnUntraced(function* <
       const native = RunTask.make(
         (lease) => ({
           session,
+          cancellationCleanup,
           requireSubmissionFormat,
+          requireDeferredFormat: StorageFormat.requireSupportedFormat({
+            formatVersion: 7,
+            minimumReaderVersion: 7,
+          }).pipe(Effect.provideContext(context)),
           requireStreamFormat: StorageFormat.requireSupportedFormat({
             formatVersion: 6,
             minimumReaderVersion: 6,
@@ -378,7 +388,10 @@ export const make = Effect.fnUntraced(function* <
               return records.find((task) => task.state.status !== 'terminal')?.id === record.id
             }),
         },
-      }).pipe(Effect.provideService(Registry.Registry, registry))
+      }).pipe(
+        Effect.provideService(Registry.Registry, registry),
+        Effect.provideService(Scope.Scope, taskScope),
+      )
       const failScheduler = Effect.fnUntraced(function* (error: HarnessError) {
         if (schedulerFailure !== undefined) return
         schedulerFailure = error
@@ -407,6 +420,10 @@ export const make = Effect.fnUntraced(function* <
         Effect.gen(function* () {
           closing = true
           yield* Scope.close(schedulerScope, Exit.void)
+          yield* Scope.close(taskScope, Exit.void)
+          // No admission can add cleanup after this close. Uncooperative provider
+          // cancellation can delay close, while local user abort remains bounded.
+          yield* Scope.close(cancellationCleanup, Exit.void)
           yield* failScheduler(
             new HarnessError({
               reason: 'closed',

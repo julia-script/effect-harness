@@ -11,8 +11,8 @@ export interface Format {
   readonly minimumReaderVersion: number
 }
 
-/** This reader understands legacy containers and explicitly activated formats 2 through 6. */
-export const readerVersion = 6
+/** This reader understands legacy containers and explicitly activated formats 2 through 7. */
+export const readerVersion = 7
 
 export class StorageFormatError extends Schema.TaggedError<StorageFormatError>()(
   'StorageFormatError',
@@ -64,6 +64,8 @@ export const inspect: Effect.Effect<Format, Failure, Storage> = capability.pipe(
  * reader3 rejects its container before decoding or dropping grouped facts.
  * v5 enables immutable prepared requests; v6 enables streaming progress and finite retry
  * phases. Reader5 refuses format6 before replaying either phase.
+ * v7 enables pinned deferred execution, create admission and recoverable provider handles.
+ * Reader6 refuses format7 before interpreting a deferred request as ordinary streaming.
  *
  * This is a reopen barrier, not fencing of foreign writers that already opened the store.
  * Stop old processes before activation. JSONL requires one owning writer per file;
@@ -81,15 +83,15 @@ export const requireSupportedFormat = Effect.fn('StorageFormat.requireSupportedF
 export const validate = (format: Format): Effect.Effect<Format, StorageFormatError> =>
   Schema.decodeUnknownEffect(
     Schema.Struct({
-      formatVersion: Schema.Literals([1, 2, 3, 4, 5, 6]),
-      minimumReaderVersion: Schema.Literals([1, 2, 3, 4, 5, 6]),
+      formatVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7]),
+      minimumReaderVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7]),
     }).check(Schema.makeFilter((marker) => marker.formatVersion === marker.minimumReaderVersion)),
   )(format).pipe(
     Effect.mapError(
       () =>
         new StorageFormatError({
           reason: 'unsupported',
-          message: 'Only matching container/reader pairs 1 through 6 are supported',
+          message: 'Only matching container/reader pairs 1 through 7 are supported',
         }),
     ),
     Effect.map(({ formatVersion, minimumReaderVersion }) => ({

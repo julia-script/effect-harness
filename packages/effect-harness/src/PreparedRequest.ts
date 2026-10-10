@@ -42,6 +42,8 @@ export const SnapshotSchema = Schema.Struct({
     Schema.TaggedStruct('native', { binding: BindingSchema }),
   ]),
   options: Schema.JsonObject,
+  /** Missing on older accepted work means streaming, independent of current host policy. */
+  execution: Schema.optionalKey(Schema.Literals(['streaming', 'deferred'])),
   configuration: Schema.Json,
   configurationBinding: BindingSchema,
   registryGeneration: Schema.Natural,
