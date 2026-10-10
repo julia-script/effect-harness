@@ -30,3 +30,15 @@ export type RunState = typeof RunStateSchema.Type
 export const encode = Schema.encodeEffect(Schema.toCodecJson(RunStateSchema))
 export const decode = Schema.decodeUnknownEffect(Schema.toCodecJson(RunStateSchema))
 export const Messages = Schema.Array(Schema.toCodecJson(Prompt.Message))
+
+/** Validate committed prefixes without repairing, discarding or replaying stored work. */
+export const validPrefix = (state: RunState): boolean => {
+  if (state._tag !== state.phase) return false
+  if (state._tag !== 'tools') return true
+  return (
+    state.index <= state.calls.length &&
+    state.results.length === state.index &&
+    new Set(state.calls.map((item) => item.call.id)).size === state.calls.length &&
+    state.calls.slice(0, state.index).every((item) => item.started)
+  )
+}

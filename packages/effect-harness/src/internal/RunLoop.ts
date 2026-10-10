@@ -16,8 +16,9 @@ import type * as Record from '../Record.js'
 import type * as Agent from '../Agent.js'
 import type * as Execution from '../Execution.js'
 import { ExecutionError, type Failure } from '../ExecutionError.js'
-import type * as Extension from '../Extension.js'
+import type * as PromptSection from '../PromptSection.js'
 import { HarnessError } from '../HarnessError.js'
+import { TaskError } from '../TaskError.js'
 import type * as Hook from '../Hook.js'
 import { HookExecution } from '../HookExecution.js'
 import type * as Model from '../Model.js'
@@ -43,17 +44,17 @@ type GenerationTool = AiTool.Tool<
   }
 >
 export interface BoundSection {
-  readonly section: Extension.Any['sections'][number]
-  readonly context: Context.Context<never>
-  readonly extension: string
+  readonly section: PromptSection.Any
+  readonly extension?: string | undefined
+  readonly registration: string
 }
 export interface Services {
   readonly notify: Effect.Effect<void, HarnessError | Failure>
-  readonly handlers: Toolkit.WithHandler<Record<string, Tool.Any>>
+  readonly lease: import('../RegistryScope.js').Lease
   readonly session: Session.Session
   readonly context: Context.Context<never>
   readonly allTools: ReadonlyArray<Tool.Any>
-  readonly extensions: ReadonlyArray<Extension.Any>
+  readonly toolExtensions: ReadonlyMap<string, string>
   readonly sections: ReadonlyArray<BoundSection>
   readonly models: ReadonlyArray<Model.Any>
   readonly nativeDefault: Option.Option<typeof LanguageModel.LanguageModel.Service>
@@ -69,12 +70,19 @@ export interface Services {
   ) => Effect.Effect<Hook.Output<Hook.Name>, HarnessError>
   readonly write: <A, E, R>(
     change: (tx: Transaction.Transaction, task: Record.Task) => Effect.Effect<A, E, R>,
-  ) => Effect.Effect<A, E | Failure, R>
+  ) => Effect.Effect<A, E | import('../TaskError.js').Failure, R>
   readonly saveState: (
     tx: Transaction.Transaction,
     task: Record.Task,
     state: Run.RunState,
-  ) => Effect.Effect<void, Failure>
+  ) => Effect.Effect<void, import('../TaskError.js').Failure>
+  readonly complete: (
+    tx: Transaction.Transaction,
+    outcome: import('../Record.js').TaskOutcome & {
+      readonly status: 'completed'
+      readonly result: Record.EntryId
+    },
+  ) => Effect.Effect<void, import('../TaskError.js').Failure>
   readonly invocationActive: () => boolean
 }
 const jsonCodec = <S extends Schema.Constraint>(schema: S) => Schema.toCodecJson(schema)
@@ -84,7 +92,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
     session,
     context,
     allTools,
-    extensions,
+    toolExtensions,
     sections,
     models,
     nativeDefault,
@@ -97,7 +105,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
     saveState,
     invocationActive,
     notify,
-    handlers,
+    lease,
   } = services
   let task = initial
   let state = yield* Run.decode(task.state.checkpoint)
@@ -176,23 +184,66 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       if (requesting.agent.instructions !== undefined) system.push(requesting.agent.instructions)
       for (const bound of sections) {
         if (
+          bound.extension !== undefined &&
           requesting.agent.extensions !== undefined &&
           !requesting.agent.extensions.includes(bound.extension)
         )
           continue
-        const render = bound.section.render as (
-          prompt: Prompt.Prompt,
-        ) => Effect.Effect<string | undefined, HarnessError, HookExecution>
+        let sectionActive = true
+        const guard = Effect.suspend(() =>
+          sectionActive && invocationActive()
+            ? Effect.void
+            : Effect.fail(
+                new ExecutionError({
+                  reason: 'revoked',
+                  operation: 'section.access',
+                  message: 'Section render has ended',
+                }),
+              ),
+        )
+        const native = access(task.conversationId)
         const text = yield* protect(
           'promptSection.render',
-          render(prompt).pipe(
-            Effect.updateContext((input: Context.Context<HookExecution>) =>
-              Context.merge(bound.context, input),
-            ),
+          lease.renderSection(bound.section.key, prompt, { binding: bound.registration }).pipe(
             Effect.provideService(HookExecution, {
-              ...access(task.conversationId),
+              conversationId: task.conversationId,
               taskId: task.id,
+              snapshot: (document, target) =>
+                guard.pipe(Effect.andThen(native.snapshot(document, target))),
+              watch: (document, target) =>
+                Stream.unwrap(guard.pipe(Effect.as(native.watch(document, target)))).pipe(
+                  Stream.mapEffect((value) => guard.pipe(Effect.as(value))),
+                ),
+              commit: (change) =>
+                guard.pipe(
+                  Effect.andThen(
+                    write((tx) =>
+                      Effect.gen(function* () {
+                        yield* guard
+                        const value = yield* change(tx)
+                        yield* guard
+                        return value
+                      }),
+                    ).pipe(
+                      Effect.mapError((error) =>
+                        Schema.is(TaskError)(error)
+                          ? new ExecutionError({
+                              reason: error.reason === 'revoked' ? 'revoked' : 'invalid',
+                              operation: 'section.commit',
+                              message: error.message,
+                              cause: error,
+                            })
+                          : error,
+                      ),
+                    ),
+                  ),
+                ),
             }),
+            Effect.ensuring(
+              Effect.sync(() => {
+                sectionActive = false
+              }),
+            ),
           ),
         )
         if (text !== undefined) system.push(text)
@@ -215,11 +266,11 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
             requesting.agent.tools === undefined || requesting.agent.tools.includes(tool.name),
         )
         .filter((tool) => {
-          const owner = extensions.findLast((extension) => extension.tools.includes(tool))
+          const owner = toolExtensions.get(tool.name)
           return (
             owner === undefined ||
             requesting.agent.extensions === undefined ||
-            requesting.agent.extensions.includes(owner.name)
+            requesting.agent.extensions.includes(owner)
           )
         })
       const selected =
@@ -373,7 +424,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           state = next
           continue
         }
-        yield* write((tx, current) =>
+        yield* write((tx) =>
           Effect.gen(function* () {
             const entry = yield* Transaction.appendEntry(tx, task.conversationId, {
               kind: 'assistant',
@@ -394,13 +445,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
               status: 'done',
               answer: entry.id,
             })
-            yield* Transaction.putTask(tx, {
-              ...current,
-              state: {
-                status: 'terminal',
-                outcome: { status: 'completed', result: entry.id },
-              },
-            })
+            yield* services.complete(tx, { status: 'completed', result: entry.id })
           }),
         )
         yield* notify
@@ -461,15 +506,13 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
     let result: import('../ToolResult.js').Result | undefined
     let explicitEnvelope = false
     const definition = allTools.find((tool) => tool.name === call.name)
-    const extension = extensions.findLast(
-      (extension) => definition !== undefined && extension.tools.includes(definition),
-    )
+    const extension = toolExtensions.get(call.name)
     const currentlyAllowed =
       definition !== undefined &&
       (toolState.agent.tools === undefined || toolState.agent.tools.includes(call.name)) &&
       (extension === undefined ||
         toolState.agent.extensions === undefined ||
-        toolState.agent.extensions.includes(extension.name))
+        toolState.agent.extensions.includes(extension))
     if (!currentlyAllowed)
       result = {
         content: [Prompt.textPart({ text: `Tool ${call.name} is unavailable` })],
@@ -530,7 +573,11 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       const report = (kind: string, data: Schema.Json) =>
         guard.pipe(
           Effect.andThen(
-            write((tx) => Transaction.appendEntry(tx, task.conversationId, { kind, data })),
+            write((tx) =>
+              guard.pipe(
+                Effect.andThen(Transaction.appendEntry(tx, task.conversationId, { kind, data })),
+              ),
+            ),
           ),
           Effect.asVoid,
         )
@@ -550,13 +597,24 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         taskId: task.id,
         callId: call.id,
         commit: <A, E, R>(change: (tx: Transaction.Transaction) => Effect.Effect<A, E, R>) =>
-          guard.pipe(Effect.andThen(write((tx) => change(tx)))),
+          guard.pipe(
+            Effect.andThen(
+              write((tx) =>
+                Effect.gen(function* () {
+                  yield* guard
+                  const value = yield* change(tx)
+                  yield* guard
+                  return value
+                }),
+              ),
+            ),
+          ),
         output: (chunk: string) => report('tool.output', { callId: call.id, chunk }),
         details: (value: Schema.Json) => report('tool.details', { callId: call.id, value }),
         diagnostic: (value: import('../ToolResult.js').Diagnostic) =>
           report('tool.diagnostic', { callId: call.id, value }),
       }
-      result = yield* handlers.invoke(call).pipe(
+      result = yield* lease.invokeTool(call).pipe(
         Effect.provideService(ToolExecution, toolAccess),
         Effect.ensuring(
           Effect.sync(() => {
@@ -593,9 +651,10 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         never,
         never
       >
-      yield* Schema.decodeEffect(jsonCodec(schema))(
-        yield* Schema.encodeEffect(jsonCodec(ToolResult.ResultSchema))(result),
-      ).pipe(Effect.provideContext(context))
+      const encoded = yield* Schema.encodeEffect(jsonCodec(ToolResult.ResultSchema))(result)
+      yield* lease.withTool(call.name, (item) =>
+        Schema.decodeEffect(jsonCodec(schema))(encoded).pipe(Effect.provideContext(item.context)),
+      )
     }
     const plainText = result.content.flatMap((part) =>
       part.type === 'text' && Object.keys(part.options).length === 0 ? [part.text] : [],

@@ -49,8 +49,29 @@ export interface Contents {
   readonly taskHooks?: ReadonlyArray<TaskHook.Compiled>
 }
 
+// Authentication uses object identity, never a public flag or caller-provided property.
+const nativeRegistrations = new WeakSet<object>()
+/** Private compiler binding used only by the native runtime, outside public package routes. */
+export const nativeRunRegistration = (
+  declaration: Task.Any,
+  executable: TaskRegistry.Executable,
+): Registry.Registration => {
+  const registration: Registry.Registration = Object.freeze({
+    definition: Object.freeze({ id: 'native-runtime-run', version: 1 }),
+    acquire: Effect.succeed({
+      tools: [],
+      hooks: [],
+      sections: [],
+      tasks: [{ declaration, context: Context.empty(), executable }],
+    }),
+  })
+  nativeRegistrations.add(registration)
+  return registration
+}
+
 interface Entry {
   readonly owner: RegistryScope.Owner
+  readonly nativeRun: boolean
   readonly scope: Scope.Closeable
   readonly contents: Contents
   leases: number
@@ -497,6 +518,7 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
           yield* validate(contents, owner.id)
           const candidate: Entry = {
             owner,
+            nativeRun: nativeRegistrations.has(registration),
             scope,
             contents,
             leases: 0,
@@ -506,6 +528,12 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
             Effect.gen(function* () {
               if (closed) return yield* error('revoked', 'Registry Scope has closed')
               const previous = entries.find((entry) => entry.owner.id === candidate.owner.id)
+              if (previous?.nativeRun && !candidate.nativeRun)
+                return yield* error(
+                  'invalidRegistration',
+                  'Native runtime registration cannot be replaced by a public registration',
+                  owner.id,
+                )
               const next =
                 previous === undefined
                   ? [...entries, candidate]
@@ -517,7 +545,8 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
                     kinds.has(declaration.kind) ||
                     declaration.kind.startsWith('effect-harness/') ||
                     reserved.has(declaration.kind) ||
-                    declaration.kind === 'harness.run'
+                    (declaration.kind === 'harness.run' &&
+                      !(entry.nativeRun && declaration.version === 1))
                   )
                     return yield* error(
                       'duplicateTask',

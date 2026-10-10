@@ -13,6 +13,7 @@ import * as Model from 'effect-harness/Model'
 import { ProviderAffinity } from 'effect-harness/ProviderAffinity'
 import * as Session from 'effect-harness/Session'
 import type * as Storage from 'effect-harness/Storage'
+import type { StorageFormat } from 'effect-harness/StorageFormat'
 import * as Tool from 'effect-harness/Tool'
 import * as Toolkit from 'effect-harness/Toolkit'
 import * as Usage from 'effect-harness/Usage'
@@ -38,7 +39,11 @@ test('request-scoped affinity requirements are provided by the runtime', () => {
       }),
   })
   expect(HarnessRuntime.make({ models: [model] })).type.toBe<
-    Effect.Effect<HarnessRuntime.HarnessRuntimeService, HarnessError, Scope.Scope | Storage.Storage>
+    Effect.Effect<
+      HarnessRuntime.HarnessRuntimeService,
+      HarnessError,
+      Scope.Scope | Storage.Storage | StorageFormat
+    >
   >()
   expect(RootAffinity.ProviderAffinity).type.toBe<typeof ProviderAffinity>()
 })

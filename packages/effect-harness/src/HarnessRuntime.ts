@@ -13,7 +13,10 @@ import type * as Hook from './Hook.js'
 import type { HookExecution } from './HookExecution.js'
 import type * as Model from './Model.js'
 import type * as Session from './Session.js'
+import type * as Registry from './Registry.js'
+import type * as TaskScheduler from './TaskScheduler.js'
 import type { Storage } from './Storage.js'
+import type { StorageFormat } from './StorageFormat.js'
 import type * as Tool from './Tool.js'
 import type { ToolExecution } from './ToolExecution.js'
 import type * as Toolkit from './Toolkit.js'
@@ -22,6 +25,10 @@ import * as HarnessRuntimeImpl from './internal/HarnessRuntime.js'
 export interface HarnessRuntimeService {
   readonly session: Session.Session
   readonly backend: HarnessBackendService
+  /** Independently bound registrations; install retains its native service/error requirements. */
+  readonly registry: Registry.Service
+  /** One execution authority for registered tasks and native conversation runs. */
+  readonly scheduler: TaskScheduler.Service
 }
 export class HarnessRuntime extends Context.Service<HarnessRuntime, HarnessRuntimeService>()(
   'effect-harness/HarnessRuntime',
@@ -35,6 +42,8 @@ export interface Options<
 > {
   /** Transactional callbacks after built-in agent initialization, including raw Session creation. */
   readonly initializers?: Initializers
+  /** Use this actual Registry service, or omit to create one in the runtime Scope. */
+  readonly registry?: Registry.Service
   readonly tools?: Toolkit.Toolkit<Tools>
   readonly hooks?: Hooks
   readonly extensions?: Extensions
@@ -50,6 +59,7 @@ export type Requirements<
   I extends ReadonlyArray<ConversationInitializer.Any> = readonly [],
 > =
   | Storage
+  | StorageFormat
   | ConversationInitializer.Requirements<I[number]>
   | Toolkit.HandlersFor<T>
   | Toolkit.ContextServices<T>

@@ -1,12 +1,9 @@
 /** Persisted task checkpoints are authoritative; scoped fibers are disposable. */
-import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
-import * as Fiber from 'effect/Fiber'
 import * as Option from 'effect/Option'
-import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
@@ -36,26 +33,17 @@ import { Storage } from '../Storage.js'
 import type * as StorageRecord from '../Record.js'
 import type * as Submission from '../Submission.js'
 import type * as Tool from '../Tool.js'
-import * as Toolkit from '../Toolkit.js'
+import * as Registry from '../Registry.js'
+import type * as RegistryScope from '../RegistryScope.js'
+import * as TaskScheduler from '../TaskScheduler.js'
+import * as RunTask from './RunTask.js'
 import * as Transaction from '../Transaction.js'
-import * as Capability from './Capability.js'
-import * as RunLoop from './RunLoop.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
 import { protect, absent } from './HarnessFailure.js'
 import * as Run from './RunState.js'
 
 const rootOptions = { ownership: { _tag: 'ownerless' } } as const
 const runKind = 'harness.run'
-interface Invocation {
-  ended: boolean
-  fiber?: Fiber.Fiber<void, never>
-}
-interface BoundHook {
-  readonly hook: Hook.Any
-  readonly context: Context.Context<never>
-  readonly extension?: string
-}
-
 export const make = Effect.fnUntraced(function* <
   T extends Record<string, Tool.Any>,
   H extends ReadonlyArray<Hook.Any>,
@@ -88,43 +76,27 @@ export const make = Effect.fnUntraced(function* <
         ],
       })
       const schedulerScope = yield* Scope.make()
-      const wakeups = yield* Queue.make<void>({ capacity: 1, strategy: 'dropping' })
-      const topTools = Object.values(options.tools?.tools ?? {})
-      const extensions = options.extensions ?? []
-      const toolkit = Toolkit.make(
-        ...topTools,
-        ...extensions.flatMap((extension) => extension.tools),
-      )
-      // The native toolkit resolves duplicate names last-wins. Policy and admission must
-      // use those same declarations as the captured handler bindings.
-      const allTools = Object.values(toolkit.tools)
-      const hooks: Array<BoundHook> = []
-      const sections: Array<RunLoop.BoundSection> = []
-      let handlerContext: Context.Context<never> = context
-      for (const hook of options.hooks ?? [])
-        hooks.push({ hook, context: yield* Capability.context(hook) })
-      for (const extension of extensions) {
-        const extensionContext = yield* Capability.context(extension)
-        handlerContext = Context.merge(handlerContext, extensionContext)
-        yield* Effect.gen(function* () {
-          for (const hook of extension.hooks)
-            hooks.push({
-              hook,
-              context: yield* Capability.context(hook),
-              extension: extension.name,
-            })
-          for (const section of extension.sections)
-            sections.push({
-              section,
-              context: yield* Capability.context(section),
-              extension: extension.name,
-            })
-        }).pipe(Effect.provideContext(extensionContext))
-      }
-      // The public generic requirement enumerates each handler and codec service before this runtime erases tool names.
-      const handlers = yield* toolkit.pipe(
-        Effect.provideContext(handlerContext as Context.Context<unknown>),
-      )
+      const registry = options.registry ?? (yield* Registry.make)
+      if (options.tools !== undefined)
+        yield* registry.install(
+          Registry.toolkit({ id: 'native-runtime-tools', version: 1 }, options.tools),
+        )
+      for (const [index, extension] of (options.extensions ?? []).entries())
+        yield* registry.install(
+          Registry.extension(
+            { id: `native-runtime-extension-${index}`, version: 1 },
+            // Options retains the concrete extension channels before heterogeneous installation.
+            extension as Extension.Extension<Requirements<T, H, X, M, I>, HarnessError>,
+          ),
+        )
+      for (const [index, hook] of (options.hooks ?? []).entries())
+        yield* registry.install(
+          Registry.hook(
+            { id: `native-runtime-hook-${index}`, version: 1 },
+            // Options enumerates each hook's R/E before the heterogeneous installation bridge.
+            hook as Hook.Hook<Hook.Name, HarnessError, Requirements<T, H, X, M, I>>,
+          ),
+        )
       const defaultAgent = yield* Schema.decodeEffect(Agent.StateSchema)(options.agent ?? {})
       const maxTurns = yield* Schema.decodeEffect(Schema.Int.check(Schema.isGreaterThan(0)))(
         options.maxTurns ?? 100,
@@ -133,14 +105,12 @@ export const make = Effect.fnUntraced(function* <
       const nativeDefault = Context.getOption(context, LanguageModel.LanguageModel)
       if (models.length === 0 && Option.isNone(nativeDefault))
         return yield* absent('runtime.make', 'A LanguageModel or model descriptor is required')
-      const active = new Map<Record.ConversationId, Invocation>()
       const waiters = new Map<
         Record.SubmissionId,
         Set<Deferred.Deferred<Submission.Settled, HarnessError>>
       >()
       const idleWaiters = new Set<Deferred.Deferred<void, HarnessError>>()
       let closing = false
-      let enabled = false
       let schedulerFailure: HarnessError | undefined
       const checkOpen = Effect.suspend(() => {
         if (closing)
@@ -154,12 +124,8 @@ export const make = Effect.fnUntraced(function* <
         if (schedulerFailure !== undefined) return Effect.fail(schedulerFailure)
         return Effect.void
       })
-      const wake = Queue.offer(wakeups, undefined).pipe(Effect.asVoid)
-      const activate = Effect.gen(function* () {
-        yield* checkOpen
-        enabled = true
-        yield* wake
-      })
+      const activate = Effect.suspend(() => protect('runtime.resume', scheduler.resume))
+      const wake = activate
       const requireConversation = Effect.fnUntraced(function* (
         tx: Transaction.Transaction,
         id: Record.ConversationId,
@@ -202,130 +168,159 @@ export const make = Effect.fnUntraced(function* <
         commit: <A, E, R>(change: (tx: Transaction.Transaction) => Effect.Effect<A, E, R>) =>
           Session.commit(session, change, { conversationId: id }),
       })
-      const runHooks = Effect.fnUntraced(function* (
+      const dispatchHooks = Effect.fnUntraced(function* (
+        lease: RegistryScope.Lease,
         id: Record.ConversationId,
         agent: Agent.State,
         event: Hook.Event,
         taskId?: Record.TaskId,
       ) {
-        let output: Hook.Output<Hook.Name> = undefined
-        for (const bound of hooks) {
-          if (
-            bound.hook.event !== event._tag ||
-            (bound.extension !== undefined &&
-              agent.extensions !== undefined &&
-              !agent.extensions.includes(bound.extension))
-          )
-            continue
-          // Event matching establishes the concrete callback's input; errors are normalized at this boundary.
-          const execute = bound.hook.execute as (
-            event: Hook.Event,
-          ) => Effect.Effect<Hook.Output<Hook.Name>, HarnessError, HookExecution>
-          const value = yield* protect(
-            'hook.execute',
-            execute(event).pipe(
-              Effect.updateContext((input: Context.Context<HookExecution>) =>
-                Context.merge(bound.context, input),
+        let active = true
+        const guard = Effect.suspend(() =>
+          active && !closing
+            ? Effect.void
+            : Effect.fail(
+                new ExecutionError({
+                  reason: 'revoked',
+                  operation: 'hook.access',
+                  message: 'Hook invocation has ended',
+                }),
               ),
-              Effect.provideService(HookExecution, {
-                ...access(id),
-                ...(taskId === undefined ? {} : { taskId }),
-              }),
-            ),
-          )
-          if (value !== undefined) output = value
-        }
-        return output
-      })
-      const saveState = Effect.fnUntraced(function* (
-        tx: Transaction.Transaction,
-        task: Record.Task,
-        state: Run.RunState,
-      ) {
-        yield* Transaction.putTask(tx, {
-          ...task,
-          state: { status: 'running', checkpoint: yield* Run.encode(state) },
-        })
-      })
-      const currentTask = Effect.fnUntraced(function* (
-        tx: Transaction.Transaction,
-        task: Record.Task,
-        invocation: Invocation,
-      ) {
-        yield* checkOpen.pipe(
-          Effect.mapError(
-            (error) =>
-              new ExecutionError({
-                reason: 'closed',
-                operation: 'task.commit',
-                message: error.message,
-                cause: error,
-              }),
+        )
+        const native = access(id)
+        return yield* protect(
+          'hook.execute',
+          Effect.scoped(
+            lease
+              .dispatchHook(event, {
+                // Creation already committed: preserve its caller-visible notification failure.
+                ...(event._tag === 'conversationCreated' ? { report: Effect.fail } : {}),
+                registrations: lease.snapshot.hooks
+                  .filter((item) => {
+                    const extension = lease.snapshot.extensions.find(
+                      (bound) => bound.owner.id === item.owner.id,
+                    )
+                    return (
+                      extension === undefined ||
+                      agent.extensions === undefined ||
+                      agent.extensions.includes(extension.declaration.name)
+                    )
+                  })
+                  .map((item) => item.owner.id),
+              })
+              .pipe(
+                Effect.provideService(HookExecution, {
+                  conversationId: id,
+                  ...(taskId === undefined ? {} : { taskId }),
+                  snapshot: (document, target) =>
+                    guard.pipe(Effect.andThen(native.snapshot(document, target))),
+                  watch: (document, target) =>
+                    Stream.unwrap(guard.pipe(Effect.as(native.watch(document, target)))).pipe(
+                      Stream.mapEffect((value) => guard.pipe(Effect.as(value))),
+                    ),
+                  commit: (change) =>
+                    guard.pipe(
+                      Effect.andThen(
+                        native.commit((tx) =>
+                          Effect.gen(function* () {
+                            if (taskId !== undefined) {
+                              const current = yield* Transaction.task(tx, taskId)
+                              if (
+                                Option.isNone(current) ||
+                                current.value.abortRequested ||
+                                current.value.state.status === 'terminal'
+                              )
+                                return yield* new ExecutionError({
+                                  reason: 'revoked',
+                                  operation: 'hook.commit',
+                                  message: 'Task invocation has ended',
+                                })
+                            }
+                            const value = yield* change(tx)
+                            yield* guard
+                            return value
+                          }),
+                        ),
+                      ),
+                    ),
+                }),
+              ),
+          ),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              active = false
+            }),
           ),
         )
-        const found = yield* Transaction.task(tx, task.id)
-        if (
-          invocation.ended ||
-          Option.isNone(found) ||
-          found.value.state.status === 'terminal' ||
-          found.value.abortRequested
-        )
-          return yield* new ExecutionError({
-            reason: 'revoked',
-            operation: 'task.commit',
-            message: 'The task invocation is no longer active',
-          })
-        return found.value
       })
-      const taskCommit = <A, E, R>(
-        task: Record.Task,
-        invocation: Invocation,
-        change: (tx: Transaction.Transaction, current: Record.Task) => Effect.Effect<A, E, R>,
+      const runHooks = (
+        id: Record.ConversationId,
+        agent: Agent.State,
+        event: Hook.Event,
+        taskId?: Record.TaskId,
       ) =>
-        Session.commit(
-          session,
-          (tx) =>
-            currentTask(tx, task, invocation).pipe(
-              Effect.flatMap((current) => change(tx, current)),
-            ),
-          { conversationId: task.conversationId, taskId: task.id },
-        )
-      const unanswered = Effect.fnUntraced(function* (
-        task: Record.Task,
-        reason: string,
-        detail?: Schema.Json,
-      ) {
-        yield* Session.commit(session, (tx) =>
+        Effect.scoped(
           Effect.gen(function* () {
-            const current = yield* Transaction.task(tx, task.id)
-            if (Option.isNone(current) || current.value.state.status === 'terminal') return
-            const state = yield* Run.decode(current.value.state.checkpoint)
-            const record = yield* Transaction.submission(tx, state.submissionId)
-            if (
-              Option.isSome(record) &&
-              record.value.type === 'input' &&
-              record.value.status !== 'done' &&
-              record.value.status !== 'unanswered'
-            ) {
-              yield* Transaction.putSubmission(tx, {
-                ...record.value,
-                _tag: 'InputUnanswered',
-                status: 'unanswered',
-                reason,
-                ...(detail === undefined ? {} : { detail }),
-              })
-            }
-            yield* Transaction.putTask(tx, {
-              ...current.value,
-              state: {
-                status: 'terminal',
-                outcome: { status: 'failed', error: { message: reason } },
-              },
-            })
+            const lease = yield* registry.acquire
+            return yield* dispatchHooks(lease, id, agent, event, taskId)
           }),
         )
-        yield* notify()
-      })
+      const native = RunTask.make(
+        (lease) => ({
+          session,
+          context,
+          lease,
+          allTools: lease.snapshot.tools
+            .filter((item) => item.owner.enabled)
+            .map((item) => item.declaration),
+          toolExtensions: new Map(
+            lease.snapshot.tools.flatMap((item) => {
+              const extension = lease.snapshot.extensions.find(
+                (bound) => bound.owner.id === item.owner.id,
+              )
+              return extension === undefined
+                ? []
+                : [[item.declaration.name, extension.declaration.name] as const]
+            }),
+          ),
+          sections: lease.snapshot.sections
+            .filter((item) => item.owner.enabled)
+            .map((item) => ({
+              section: item.declaration,
+              extension: lease.snapshot.extensions.find((bound) => bound.owner.id === item.owner.id)
+                ?.declaration.name,
+              registration: item.owner.id,
+            })),
+          models,
+          nativeDefault,
+          maxTurns,
+          defaultAgent,
+          checkOpen,
+          access,
+          runHooks: (id, agent, event, taskId) => dispatchHooks(lease, id, agent, event, taskId),
+          notify: notify(),
+        }),
+        registry,
+      )
+      yield* registry.install(native.registration)
+      yield* Effect.addFinalizer(() => registry.uninstall('native-runtime-run').pipe(Effect.ignore))
+      const scheduler = yield* TaskScheduler.make(session, {
+        nativeRun: native.adapter,
+        host: {
+          open: () => Effect.succeed({}),
+          reconcile: (tx, record) =>
+            Effect.gen(function* () {
+              if (record.kind !== runKind || record.abortRequested) return true
+              const records = yield* Transaction.scanTasks(tx, {
+                conversationId: record.conversationId,
+                kind: runKind,
+                order: 'ascending',
+              }).pipe(Stream.runCollect)
+              return records.find((task) => task.state.status !== 'terminal')?.id === record.id
+            }),
+        },
+      }).pipe(Effect.provideService(Registry.Registry, registry))
       const failScheduler = Effect.fnUntraced(function* (error: HarnessError) {
         schedulerFailure = error
         for (const waiting of waiters.values())
@@ -334,56 +329,14 @@ export const make = Effect.fnUntraced(function* <
         for (const waiter of idleWaiters) yield* Deferred.fail(waiter, error)
         idleWaiters.clear()
       })
-      const pump = Effect.fnUntraced(function* () {
-        if (closing || schedulerFailure !== undefined) return
-        const tasks = yield* Stream.runCollect(
-          Session.scanTasks(session, { kind: runKind, order: 'ascending' }),
-        ).pipe(Effect.map((values) => values.filter((task) => task.state.status !== 'terminal')))
-        if (enabled)
-          for (const task of tasks) {
-            if (active.has(task.conversationId)) continue
-            const invocation: Invocation = { ended: false }
-            active.set(task.conversationId, invocation)
-            const execute = RunLoop.run(
-              {
-                session,
-                context,
-                allTools,
-                extensions,
-                sections,
-                models,
-                nativeDefault,
-                maxTurns,
-                defaultAgent,
-                checkOpen,
-                access,
-                runHooks,
-                saveState,
-                notify: notify(),
-                handlers,
-                write: (change) => taskCommit(task, invocation, change),
-                invocationActive: () => !invocation.ended,
-              },
-              task,
-            ).pipe(
-              Effect.catchCause((cause) => {
-                if (Cause.hasInterrupts(cause) || closing) return Effect.void
-                return protect(
-                  'run.fail',
-                  unanswered(task, 'failed', { message: Cause.pretty(cause) }),
-                ).pipe(Effect.catch((error) => failScheduler(error)))
-              }),
-              Effect.ensuring(
-                Effect.gen(function* () {
-                  invocation.ended = true
-                  active.delete(task.conversationId)
-                  yield* wake
-                }),
-              ),
-            )
-            invocation.fiber = yield* Effect.forkIn(execute, schedulerScope)
-          }
-        if (active.size === 0 && tasks.length === 0) {
+      const observe = Effect.fnUntraced(function* () {
+        if (closing) return
+        const failure = yield* scheduler.failure
+        if (Option.isSome(failure))
+          return yield* protect('runtime.scheduler', Effect.fail(failure.value))
+        yield* notify()
+        const tasks = yield* Session.scanTasks(session).pipe(Stream.runCollect)
+        if (tasks.every((task) => task.state.status === 'terminal')) {
           for (const waiter of idleWaiters) yield* Deferred.succeed(waiter, undefined)
           idleWaiters.clear()
         }
@@ -391,25 +344,21 @@ export const make = Effect.fnUntraced(function* <
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
           closing = true
-          for (const invocation of active.values()) invocation.ended = true
           yield* Scope.close(schedulerScope, Exit.void)
-          const error = new HarnessError({
-            reason: 'closed',
-            operation: 'runtime.close',
-            message: 'The owning runtime Scope is closed',
-          })
-          yield* failScheduler(error)
+          yield* failScheduler(
+            new HarnessError({
+              reason: 'closed',
+              operation: 'runtime.close',
+              message: 'The owning runtime Scope is closed',
+            }),
+          )
         }),
       )
-      yield* Effect.forkIn(
-        Effect.forever(
-          Queue.take(wakeups).pipe(
-            Effect.andThen(
-              protect('runtime.pump', pump()).pipe(Effect.catch((error) => failScheduler(error))),
-            ),
-          ),
+      yield* scheduler.changes.pipe(
+        Stream.runForEach(() =>
+          protect('runtime.observe', observe()).pipe(Effect.catch(failScheduler)),
         ),
-        schedulerScope,
+        Effect.forkIn(schedulerScope),
       )
       const rawSnapshot = Effect.fnUntraced(function* (address: StorageRecord.DocumentAddress) {
         yield* checkOpen
@@ -590,17 +539,8 @@ export const make = Effect.fnUntraced(function* <
             'conversation.abort',
             Effect.gen(function* () {
               yield* checkOpen
-              const tasks = yield* Stream.runCollect(
-                Session.scanTasks(session, { conversationId: id, kind: runKind }),
-              )
-              for (const task of tasks)
-                if (task.state.status !== 'terminal') yield* unanswered(task, 'aborted')
-              const invocation = active.get(id)
-              if (invocation !== undefined) {
-                invocation.ended = true
-                if (invocation.fiber !== undefined) yield* Fiber.interrupt(invocation.fiber)
-              }
-              yield* wake
+              yield* scheduler.abortConversation(id)
+              yield* notify()
             }),
           ),
         read: (id) => protect('submission.read', readSubmission(id)),
@@ -777,7 +717,7 @@ export const make = Effect.fnUntraced(function* <
           }),
         ),
       }
-      return { session, backend }
+      return { session, backend, registry, scheduler }
     }).pipe(
       Effect.provideService(Scope.Scope, ownedScope),
       Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(ownedScope, exit) : Effect.void)),

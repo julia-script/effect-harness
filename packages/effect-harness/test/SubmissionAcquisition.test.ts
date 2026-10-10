@@ -1,6 +1,5 @@
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -57,12 +56,9 @@ it.live(
           streamText: () => Stream.empty,
         })
         const open = Effect.gen(function* () {
-          const storage = Context.get(
-            yield* Layer.build(Storage.layerJsonl({ filePath })),
-            Storage.Storage,
-          )
+          const storage = yield* Layer.build(Storage.layerJsonl({ filePath }))
           const runtime = yield* HarnessRuntime.make().pipe(
-            Effect.provideService(Storage.Storage, storage),
+            Effect.provideContext(storage),
             Effect.provideService(LanguageModel.LanguageModel, model),
           )
           return yield* Harness.make.pipe(Effect.provideService(HarnessBackend, runtime.backend))

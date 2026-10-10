@@ -1,4 +1,4 @@
-/** Runner-neutral, scoped storage contract checks for adapter authors. */
+/** Runner-neutral, scoped storage and bound service contract checks for adapter authors. */
 import type * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Equal from 'effect/Equal'
@@ -876,3 +876,27 @@ export const storageConformance = <E = never, R = never, FactoryError = E>(
     )
   return cases
 }
+
+export { fileSystemConformance, ServiceConformanceError } from './testing/FileSystem.js'
+export type {
+  ConformanceCase,
+  ScopedFixture,
+  FileSystemError,
+  FileSystemFixture,
+  FileSystemCapabilities,
+  FileSystemOptions,
+} from './testing/FileSystem.js'
+export { processConformance } from './testing/Process.js'
+export type { ProcessError, ProcessFixture, ProcessOptions } from './testing/Process.js'
+export { imagesConformance } from './testing/Images.js'
+export type {
+  ImageSample,
+  OrientationSample,
+  ImagesFixture,
+  ImagesOptions,
+} from './testing/Images.js'
+export { toolkitIsolationConformance } from './testing/ToolkitIsolation.js'
+export type {
+  ToolkitIsolationFixture,
+  ToolkitIsolationOptions,
+} from './testing/ToolkitIsolation.js'

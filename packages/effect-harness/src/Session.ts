@@ -760,8 +760,9 @@ const commitsImpl = (self: Session) =>
 
 /**
  * Atomic accounting snapshot. Omit conversationId for all local work in this durable
- * session; supply it for only that conversation's own entries. Fork history is excluded
- * from child totals and counted once in session totals. Reads never create records.
+ * session; supply it for only that conversation's own entries and durable receipts.
+ * Fork history is excluded from child totals and counted once in session totals.
+ * Reads never create records. Receipts do not reconstruct uncommitted external charges.
  * Older entries are counted as legacyRecords, with unknown usage. Earlier versions
  * discard the optional accounting field on decode; downgrade loses these facts.
  */
@@ -790,6 +791,7 @@ export const usage = Effect.fnUntraced(function* (
               ),
             ]
       const entries: Array<Record.Entry> = []
+      const receipts: Array<Usage.Receipt> = []
       for (const conversation of conversations) {
         const own = yield* Transaction.scanEntries(tx, {
           conversationId: conversation.id,
@@ -799,8 +801,9 @@ export const usage = Effect.fnUntraced(function* (
           Stream.runCollect,
         )
         entries.push(...own)
+        receipts.push(...(yield* Usage.receipts(tx, conversation.id)))
       }
-      return Usage.aggregate(entries)
+      return Usage.aggregate(entries, receipts)
     }),
   )
 })

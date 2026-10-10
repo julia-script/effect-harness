@@ -21,6 +21,7 @@ import * as Model from 'effect-harness/Model'
 import * as PromptSection from 'effect-harness/PromptSection'
 import type * as Session from 'effect-harness/Session'
 import type { Storage } from 'effect-harness/Storage'
+import type { StorageFormat } from 'effect-harness/StorageFormat'
 import * as Submission from 'effect-harness/Submission'
 import * as Tool from 'effect-harness/Tool'
 import type { ToolExecution } from 'effect-harness/ToolExecution'
@@ -126,7 +127,11 @@ test('runtime owns tool handlers, hooks, storage and provider dependencies', () 
     Layer.Layer<
       HarnessRuntime.HarnessRuntime | HarnessBackend,
       Harness.HarnessError,
-      Storage | LanguageModel.LanguageModel | Toolkit.Handler<'search_issues'> | Audit
+      | Storage
+      | StorageFormat
+      | LanguageModel.LanguageModel
+      | Toolkit.Handler<'search_issues'>
+      | Audit
     >
   >()
   const extension = Extension.make({ name: 'issues', tools: [search], hooks: [beforeTool] })
@@ -137,7 +142,12 @@ test('runtime owns tool handlers, hooks, storage and provider dependencies', () 
     Effect.Effect<
       HarnessRuntime.HarnessRuntimeService,
       Harness.HarnessError,
-      Scope.Scope | Storage | LanguageModel.LanguageModel | Toolkit.Handler<'search_issues'> | Audit
+      | Scope.Scope
+      | Storage
+      | StorageFormat
+      | LanguageModel.LanguageModel
+      | Toolkit.Handler<'search_issues'>
+      | Audit
     >
   >()
 })
@@ -168,7 +178,7 @@ test('prompt sections keep application services on the execution side', () => {
     Layer.Layer<
       HarnessRuntime.HarnessRuntime | HarnessBackend,
       Harness.HarnessError,
-      Storage | LanguageModel.LanguageModel | Audit
+      Storage | StorageFormat | LanguageModel.LanguageModel | Audit
     >
   >()
 })
@@ -201,7 +211,12 @@ test('tool codecs are required by the handler side independently of application 
     Layer.Layer<
       HarnessRuntime.HarnessRuntime | HarnessBackend,
       Harness.HarnessError,
-      Storage | LanguageModel.LanguageModel | Toolkit.Handler<'clock'> | Decoder | Encoder
+      | Storage
+      | StorageFormat
+      | LanguageModel.LanguageModel
+      | Toolkit.Handler<'clock'>
+      | Decoder
+      | Encoder
     >
   >()
 })
@@ -225,7 +240,7 @@ test('model descriptors keep codec and configuration services exclusively on the
     Layer.Layer<
       HarnessRuntime.HarnessRuntime | HarnessBackend,
       Harness.HarnessError,
-      Storage | Toolkit.Handler<'search_issues'> | Decoder | Encoder | Credentials
+      Storage | StorageFormat | Toolkit.Handler<'search_issues'> | Decoder | Encoder | Credentials
     >
   >()
 })
@@ -277,7 +292,11 @@ test('the same application program depends only on the Harness client', () => {
     Effect.Effect<Submission.Settled, Harness.HarnessError, Harness.Harness>
   >()
   expect(Harness.layerLocal()).type.toBe<
-    Layer.Layer<Harness.Harness, Harness.HarnessError, Storage | LanguageModel.LanguageModel>
+    Layer.Layer<
+      Harness.Harness,
+      Harness.HarnessError,
+      Storage | StorageFormat | LanguageModel.LanguageModel
+    >
   >()
 })
 

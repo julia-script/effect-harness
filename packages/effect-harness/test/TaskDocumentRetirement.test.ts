@@ -18,6 +18,7 @@ import * as Record from 'effect-harness/Record'
 import * as Session from 'effect-harness/Session'
 import * as Storage from 'effect-harness/Storage'
 import { StorageError } from 'effect-harness/StorageError'
+import type { StorageFormat } from 'effect-harness/StorageFormat'
 import * as Tool from 'effect-harness/Tool'
 import { ToolExecution } from 'effect-harness/ToolExecution'
 import * as Toolkit from 'effect-harness/Toolkit'
@@ -84,8 +85,9 @@ const initialize = (session: Session.Session) =>
       return { task, saved, entry }
     }),
   )
-const withMemory = <A, E>(program: Effect.Effect<A, E, Storage.Storage | Scope.Scope>) =>
-  Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
+const withMemory = <A, E>(
+  program: Effect.Effect<A, E, Storage.Storage | StorageFormat | Scope.Scope>,
+) => Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
 const assertConflict = (failure: Session.Failure) => {
   assert.strictEqual(failure._tag, 'SessionError')
   if (failure._tag === 'SessionError') {

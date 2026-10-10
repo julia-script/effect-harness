@@ -68,9 +68,27 @@ const { ownedLive, hold } = Supervision
 
 export const make = Effect.fnUntraced(function* <R = never>(
   session: Session.Session,
-  options: { readonly host?: Scheduler.Host<R> } = {},
+  options: Scheduler.Options<R> = {},
 ): Effect.fn.Return<Scheduler.Service, Scheduler.Failure, Registry | Scope.Scope | R> {
   const registry = yield* Registry
+  const nativeRun = options.nativeRun
+  if (nativeRun !== undefined) {
+    yield* Task.validate(nativeRun.definition)
+    if (nativeRun.definition.kind !== 'harness.run' || nativeRun.definition.version !== 1)
+      return yield* error(
+        'invalidDefinition',
+        'scheduler.make',
+        'Native adapter must declare harness.run v1',
+      )
+  }
+  const adopts = (record: Record.Task) => record.kind === 'harness.run' && nativeRun !== undefined
+  const inspectRecord = (lease: RegistryScope.Lease, record: Record.Task) =>
+    adopts(record) &&
+    lease.snapshot.tasks.some(
+      (item) => item.declaration.kind === 'harness.run' && item.owner.enabled,
+    )
+      ? nativeRun!.inspect(record)
+      : lease.inspectTask(record, migrations.get(record.id))
   // One parent finalizer seals writes before closing any scheduler-owned fiber.
   const ownerScope = yield* Scope.make()
   const hostContext = yield* Effect.context<R>()
@@ -180,7 +198,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
             const records = yield* Transaction.scanTasks(tx).pipe(Stream.runCollect)
             for (const record of records) {
               if (
-                record.kind === 'harness.run' ||
+                (record.kind === 'harness.run' && nativeRun === undefined) ||
                 record.state.status === 'terminal' ||
                 invocations.has(record.id)
               )
@@ -509,9 +527,11 @@ export const make = Effect.fnUntraced(function* <R = never>(
       Stream.unwrap(active.pipe(Effect.as(stream))).pipe(
         Stream.interruptWhen(Deferred.await(invocation.done)),
       )
-    const declaration = lease.snapshot.tasks.find(
-      (item) => item.declaration.kind === invocation.kind,
-    )!.declaration
+    const declaration =
+      invocation.kind === 'harness.run' && nativeRun !== undefined
+        ? nativeRun.definition
+        : lease.snapshot.tasks.find((item) => item.declaration.kind === invocation.kind)!
+            .declaration
     const checkDefinition = (definition: Task.Contract) =>
       definition.kind === invocation.kind &&
       definition.version === invocation.version &&
@@ -864,9 +884,16 @@ export const make = Effect.fnUntraced(function* <R = never>(
             )
         yield* restore(lifecycle(invocation.mode === 'abort' ? 'abort' : 'beforePhase'))
         const exit = yield* restore(
-          lease
-            .invokeTask(record, invocation.mode)
-            .pipe(Effect.provideService(TaskExecution, native), Scope.provide(invocation.scope)),
+          (adopts(record)
+            ? nativeRun!
+                .invoke(record, invocation.mode, lease)
+                .pipe(
+                  Effect.updateContext((input: Context.Context<TaskExecution | Scope.Scope>) =>
+                    Context.merge(hostContext, input),
+                  ),
+                )
+            : lease.invokeTask(record, invocation.mode)
+          ).pipe(Effect.provideService(TaskExecution, native), Scope.provide(invocation.scope)),
         ).pipe(Effect.exit)
         if (
           Exit.isFailure(exit) &&
@@ -954,7 +981,11 @@ export const make = Effect.fnUntraced(function* <R = never>(
               Effect.gen(function* () {
                 if (closed || !enabled || failed !== undefined || invocations.has(id)) return
                 let record = yield* task(tx, id)
-                if (record.state.status === 'terminal' || record.kind === 'harness.run') return
+                if (
+                  record.state.status === 'terminal' ||
+                  (record.kind === 'harness.run' && nativeRun === undefined)
+                )
+                  return
                 // An ancestor may have committed a cancellation since the reconciliation
                 // pass. Mark it on this same line before admitting any phase.
                 const owner = Tree.cancellingOwner(yield* Tree.load(tx), record)
@@ -977,7 +1008,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
                     })
                   return
                 }
-                const inspection = yield* lease.inspectTask(record, migrations.get(id))
+                const inspection = yield* inspectRecord(lease, record)
                 if (inspection._tag === 'blocked' || inspection._tag === 'inactive') {
                   if (record.abortRequested && TaskPolicy.abortIntent(record)?._tag === 'request')
                     yield* hold(tx, record, {
@@ -1049,8 +1080,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
                     (record.state.status === 'waiting' && !record.abortRequested)
                   )
                     return
-                  if ((yield* lease.inspectTask(record, migrations.get(id)))._tag !== 'compatible')
-                    return
+                  if ((yield* inspectRecord(lease, record))._tag !== 'compatible') return
                 }
                 migrations.delete(id)
                 record = {
@@ -1106,7 +1136,10 @@ export const make = Effect.fnUntraced(function* <R = never>(
       if (invocation !== undefined) {
         if (record.abortRequested && invocation.mode === 'run' && invocation.fiber !== undefined)
           yield* Fiber.interrupt(invocation.fiber).pipe(Effect.forkIn(ownerScope))
-      } else if (record.kind !== 'harness.run' && record.state.status !== 'terminal')
+      } else if (
+        (record.kind !== 'harness.run' || nativeRun !== undefined) &&
+        record.state.status !== 'terminal'
+      )
         yield* reserve(record.id)
     }
   }).pipe(
@@ -1199,7 +1232,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
                   return { record: yield* task(tx, id), tree: yield* Tree.load(tx) }
                 }),
               )
-              const resolution = yield* lease.inspectTask(record, migrations.get(id))
+              const resolution = yield* inspectRecord(lease, record)
               const invoking = invocations.has(id)
               const waitingOn = record.abortRequested
                 ? Tree.liveOwned(tree, id).map((child) => child.id)

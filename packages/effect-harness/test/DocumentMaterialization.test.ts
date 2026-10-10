@@ -21,6 +21,7 @@ import * as DocumentMaterialization from '../src/DocumentMaterialization.js'
 import * as Harness from '../src/Harness.js'
 import { HarnessBackend } from 'effect-harness/HarnessBackend'
 import * as HarnessRuntime from '../src/HarnessRuntime.js'
+import { StorageFormat } from 'effect-harness/StorageFormat'
 import * as Record from 'effect-harness/Record'
 import * as Session from '../src/Session.js'
 import { SessionError } from 'effect-harness/SessionError'
@@ -703,6 +704,7 @@ describe('Document materialization', () => {
           const storage = yield* Storage.Storage
           let reads = 0
           let writes = 0
+          const format = yield* StorageFormat
           const counted = {
             ...storage,
             document: (...args: Parameters<typeof storage.document>) =>
@@ -724,6 +726,7 @@ describe('Document materialization', () => {
           } satisfies Storage.Storage['Service']
           const runtime = yield* HarnessRuntime.make().pipe(
             Effect.provideService(Storage.Storage, counted),
+            Effect.provideService(StorageFormat, { ...format, storage: counted }),
           )
           const harness = yield* Harness.make.pipe(
             Effect.provideService(HarnessBackend, runtime.backend),

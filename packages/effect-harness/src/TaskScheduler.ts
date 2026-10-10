@@ -1,4 +1,4 @@
-/** Standalone registered custom-task execution over one Session. */
+/** Registered task execution over one Session, with opt-in native run adoption. */
 import * as Context from 'effect/Context'
 import type * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -12,6 +12,7 @@ import type * as Task from './Task.js'
 import type * as TaskExecution from './TaskExecution.js'
 import type * as TaskPolicy from './TaskPolicy.js'
 import type * as TaskResolution from './TaskResolution.js'
+import type { PhaseResult } from './internal/TaskRegistry.js'
 import type { Registry } from './Registry.js'
 import type { RegistryError } from './RegistryError.js'
 import type * as StorageFormat from './StorageFormat.js'
@@ -27,7 +28,7 @@ export type Failure = TaskExecution.Failure | RegistryError | StorageFormat.Fail
  * a supplied adapter and fail with a typed TaskError when unavailable. Hooks dispatch
  * through the pinned native registry; task lifecycle notifications describe invocation
  * settlement, including outcomes held until owned work drains.
- * This standalone scheduler does not replace Harness.run or supervise legacy runs.
+ * Without a native run adapter, standalone scheduling leaves legacy runs untouched.
  */
 export type HostAccess = Partial<
   Pick<
@@ -68,6 +69,24 @@ export interface Host<R = never> {
     readonly mode: 'run' | 'abort'
   }) => Effect.Effect<HostAccess, TaskExecution.Failure, R | Scope.Scope>
 }
+/** Explicit native bridge for existing harness.run v1 records. No task kind is rewritten. */
+export interface NativeRunAdapter<R = never> {
+  readonly definition: Task.Any
+  /** Validate the complete stored input/checkpoint without writes or invocation. */
+  readonly inspect: (record: Record.Task) => Effect.Effect<TaskResolution.Inspection<Task.Any>>
+  /** The scheduler supplies fresh TaskExecution/Scope and one pinned registry lease. */
+  readonly invoke: (
+    record: Record.Task,
+    mode: 'run' | 'abort',
+    lease: RegistryScope.Lease,
+  ) => Effect.Effect<PhaseResult, Failure, R | TaskExecution.TaskExecution | Scope.Scope>
+}
+export interface Options<R = never> {
+  readonly host?: Host<R>
+  /** Omit to preserve standalone scheduling, which leaves legacy runs to their native runtime. */
+  readonly nativeRun?: NativeRunAdapter<R>
+}
+
 export interface Inspection {
   readonly record: Record.Task
   readonly resolution: TaskResolution.Inspection<Task.Any>
@@ -158,7 +177,7 @@ export interface Service {
  */
 export const make = <R = never>(
   session: Session.Session,
-  options: { readonly host?: Host<R> } = {},
+  options: Options<R> = {},
 ): Effect.Effect<Service, Failure, Registry | Scope.Scope | R> => Internal.make(session, options)
 
 /** Scoped standalone scheduler service; each Session accepts one active scheduler. */
@@ -168,6 +187,6 @@ export class TaskScheduler extends Context.Service<TaskScheduler, Service>()(
 
 export const layer = <R = never>(
   session: Session.Session,
-  options: { readonly host?: Host<R> } = {},
+  options: Options<R> = {},
 ): Layer.Layer<TaskScheduler, Failure, Registry | R> =>
   Layer.effect(TaskScheduler, make(session, options))

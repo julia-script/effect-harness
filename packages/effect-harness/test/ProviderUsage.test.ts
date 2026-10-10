@@ -27,6 +27,7 @@ import * as Record from 'effect-harness/Record'
 import * as Session from 'effect-harness/Session'
 import * as Storage from 'effect-harness/Storage'
 import { StorageError } from 'effect-harness/StorageError'
+import { StorageFormat } from 'effect-harness/StorageFormat'
 import * as Tool from 'effect-harness/Tool'
 import * as Toolkit from 'effect-harness/Toolkit'
 import * as Transaction from 'effect-harness/Transaction'
@@ -116,13 +117,9 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
           })
           const models = [definition(native, identities)]
           const open = Effect.gen(function* () {
-            const storage =
-              backend === 'memory'
-                ? yield* Storage.Storage
-                : Context.get(yield* Layer.build(disk), Storage.Storage)
-            return yield* HarnessRuntime.make({ models }).pipe(
-              Effect.provideService(Storage.Storage, storage),
-            )
+            if (backend === 'memory') return yield* HarnessRuntime.make({ models })
+            const context = yield* Layer.build(disk)
+            return yield* HarnessRuntime.make({ models }).pipe(Effect.provideContext(context))
           })
           const firstScope = yield* Scope.make()
           yield* Effect.addFinalizer(() => Scope.close(firstScope, Exit.void))
@@ -306,6 +303,7 @@ describe('provider accounting boundaries', () => {
     memory(
       Effect.gen(function* () {
         const real = yield* Storage.Storage
+        const format = yield* StorageFormat
         let reject = false
         const storage = Storage.Storage.of({
           ...real,
@@ -333,6 +331,7 @@ describe('provider accounting boundaries', () => {
         })
         const runtime = yield* HarnessRuntime.make({ models: [definition(native)] }).pipe(
           Effect.provideService(Storage.Storage, storage),
+          Effect.provideService(StorageFormat, { ...format, storage }),
         )
         yield* runtime.backend.root
         const job = yield* runtime.backend.submit({
@@ -346,6 +345,91 @@ describe('provider accounting boundaries', () => {
       }),
     ),
   )
+
+  for (const boundary of ['uncertain', 'corrupt', 'closed', 'settlement'] as const) {
+    it.effect(`native response ${boundary} failure retains health and recoverable state`, () =>
+      memory(
+        Effect.gen(function* () {
+          const real = yield* Storage.Storage
+          const format = yield* StorageFormat
+          let settlementWrites = 0
+          const storage = Storage.Storage.of({
+            ...real,
+            commit: (input) =>
+              Effect.suspend(() => {
+                const writes = Array.from(input)
+                const response = writes.some(
+                  (write) => write._tag === 'entry' && write.value.kind === 'assistant',
+                )
+                const settlement = writes.some(
+                  (write) => write._tag === 'submission' && write.value.status === 'unanswered',
+                )
+                if (settlement) settlementWrites++
+                if (response || (boundary === 'settlement' && settlement)) {
+                  const failure = new StorageError({
+                    reason: boundary === 'settlement' ? 'io' : boundary,
+                    operation: 'fixture.responseBoundary',
+                    message: boundary,
+                  })
+                  return boundary === 'uncertain' && response
+                    ? real.commit(writes).pipe(Effect.andThen(Effect.fail(failure)))
+                    : Effect.fail(failure)
+                }
+                return real.commit(writes)
+              }),
+          })
+          const native = yield* LanguageModel.make({
+            generateText: () => Effect.succeed(answer),
+            streamText: () => Stream.empty,
+          })
+          const scope = yield* Scope.make()
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+          const runtime = yield* HarnessRuntime.make({ models: [definition(native)] }).pipe(
+            Effect.provideService(Storage.Storage, storage),
+            Effect.provideService(StorageFormat, { ...format, storage }),
+            Effect.provideService(Scope.Scope, scope),
+          )
+          yield* runtime.backend.root
+          const job = yield* runtime.backend.submit({
+            conversationId: root,
+            draft: { type: 'input', content: 'go' },
+          })
+          const failure = yield* runtime.backend.wait(job.id).pipe(Effect.flip)
+          assert.strictEqual(
+            failure.operation,
+            boundary === 'uncertain' ? 'runtime.observe' : 'runtime.scheduler',
+          )
+          assert.strictEqual(settlementWrites, boundary === 'settlement' ? 1 : 0)
+          const saved = Option.getOrThrow(yield* real.submission(job.id))
+          assert.strictEqual(saved.status, boundary === 'uncertain' ? 'done' : 'placed')
+          const entries = yield* Stream.runCollect(real.scanEntries({ conversationId: root }))
+          assert.strictEqual(
+            entries.filter((entry) => entry.usage !== undefined).length,
+            boundary === 'uncertain' ? 1 : 0,
+          )
+          if (boundary === 'uncertain') {
+            const sealed = yield* Session.usage(runtime.session).pipe(Effect.flip)
+            assert.strictEqual(sealed._tag, 'StorageError')
+            if (sealed._tag === 'StorageError') assert.strictEqual(sealed.reason, 'uncertain')
+            yield* Scope.close(scope, Exit.void)
+            const reopened = yield* HarnessRuntime.make({ models: [definition(native)] })
+            yield* reopened.backend.root
+            assert.strictEqual((yield* reopened.backend.wait(job.id)).status, 'done')
+            assert.strictEqual((yield* Session.usage(reopened.session)).models[0]?.responses, 1)
+          } else {
+            const tasks = yield* Stream.runCollect(real.scanTasks({ kind: 'harness.run' }))
+            assert.strictEqual(tasks.length, 1)
+            assert.strictEqual(tasks[0]?.state.status, 'running')
+            const task = tasks[0]!
+            const checkpoint = yield* Schema.decodeUnknownEffect(
+              Schema.Struct({ phase: Schema.String }),
+            )(task.state.checkpoint)
+            assert.strictEqual(checkpoint.phase, 'request')
+          }
+        }),
+      ),
+    )
+  }
 
   for (const failed of [false, true]) {
     it.effect(

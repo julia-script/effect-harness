@@ -177,12 +177,6 @@ export const project = Effect.fnUntraced(function* (
         : yield* Schema.decodeUnknownEffect(Schema.Array(Prompt.Message))(eligible),
     )
   }
-  const ordered = orderToolResults(contributions.flat())
-  const baselineIndex = ordered.findIndex((message) => message.role !== 'user')
-  if (baselineIndex > 0 && ordered[baselineIndex]?.role === 'system') {
-    const baseline = ordered.splice(baselineIndex, 1)[0]!
-    ordered.unshift(baseline)
-  }
   const tail = bounded.at(-1)?.id
   return freeze({
     bounds: {
@@ -193,12 +187,23 @@ export const project = Effect.fnUntraced(function* (
     },
     activeEntries: active,
     contributions,
-    prompt: Prompt.fromMessages(ordered),
+    prompt: projectMessages(contributions.flat()),
     positionalFacts,
     orderedSections: [...sections.values()],
     toolDeclarations: [...tools.values()],
   })
 })
+
+/** Repair native tool pairing and position a user-preceded baseline without adding Prompt fields. */
+export const projectMessages = (messages: ReadonlyArray<Prompt.Message>): Prompt.Prompt => {
+  const ordered = orderToolResults(messages)
+  const baselineIndex = ordered.findIndex((message) => message.role !== 'user')
+  if (baselineIndex > 0 && ordered[baselineIndex]?.role === 'system') {
+    const baseline = ordered.splice(baselineIndex, 1)[0]!
+    ordered.unshift(baseline)
+  }
+  return Prompt.fromMessages(ordered)
+}
 
 const isAssistant = Schema.is(Schema.Struct({ role: Schema.Literal('assistant') }))
 
