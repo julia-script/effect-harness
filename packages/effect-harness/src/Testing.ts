@@ -174,9 +174,13 @@ const assertions = (caseName: string) => {
  * Creates reusable Effect cases without importing a test runner, Node or a platform layer.
  *
  * Each run evaluates make exactly once in its own scope, even on failure/interruption.
+ * Core cases include lossless string indexes (including lone UTF-16 surrogates), own
+ * prototype-sensitive JSON keys, multi-page ID ordering, four-generation ancestor cutoffs,
+ * waiting/completing task records and passive-write replacements. Fork probes tighten
+ * every ancestor cutoff; they do not impose a maximum supported ancestry depth.
  * Core cases require current documents, forks, ownership, deduplication and atomic batches.
  * Capabilities opt into stronger guarantees; they never suppress a failure in an enabled
- * case. Enabled SQL capabilities without the required fixture hooks fail explicitly.
+ * case. History also checks long delta tails across a root replacement. Enabled SQL capabilities without the required fixture hooks fail explicitly.
  * SQL uncertainty probes must use a failed write known to roll back after reconciliation.
  * This checks adapter contracts, not physical crash/power-loss durability or Session behavior.
  *
@@ -585,6 +589,707 @@ export const storageConformance = <E = never, R = never, FactoryError = E>(
       )
     }),
   )
+
+  // These new cases compare mutable adapter values only through fresh structural copies.
+  // Expected snapshots are detached and recursively frozen before adapter exposure.
+  const immutableExpected = <A>(value: A): A => {
+    const copy = structuredClone(value)
+    const freeze = (nested: unknown): void => {
+      if (typeof nested !== 'object' || nested === null) return
+      for (const child of Object.values(nested)) freeze(child)
+      Object.freeze(nested)
+    }
+    freeze(copy)
+    return copy
+  }
+  const freshSame =
+    (same: ReturnType<typeof assertions>['same']) =>
+    (assertion: string, actual: unknown, expected: unknown) =>
+      same(assertion, structuredClone(actual), structuredClone(expected))
+
+  core('storage: prototype-sensitive JSON keys', (storage, { same: compare, some }) =>
+    Effect.gen(function* () {
+      const same = freshSame(compare)
+      const data = {
+        ['__proto__']: { polluted: false },
+        constructor: { label: 'stored' },
+        toString: 'value',
+      }
+      const expectedData = immutableExpected(data)
+      yield* storage.commit([
+        { _tag: 'conversation', value: { id: root } },
+        { _tag: 'entry', value: { ...entry(2), data } },
+      ])
+      data.__proto__.polluted = true
+      data.constructor.label = 'mutated'
+      const first = (yield* some('prototype entry exists', yield* storage.entry(entryId(2)))).entry
+        .data
+      yield* compare(
+        'JSON keys keep the ordinary object prototype',
+        Object.getPrototypeOf(first),
+        Object.prototype,
+      )
+      yield* same(
+        'prototype key remains an own property',
+        typeof first === 'object' && first !== null && Object.hasOwn(first, '__proto__'),
+        true,
+      )
+      yield* same('prototype-sensitive input is detached', first, expectedData)
+      if (typeof first === 'object' && first !== null) {
+        Reflect.set(first, '__proto__', { polluted: true })
+        Reflect.set(first, 'constructor', { label: 'read mutation' })
+      }
+      yield* same(
+        'prototype-sensitive reads are detached',
+        (yield* some('prototype entry still exists', yield* storage.entry(entryId(2)))).entry.data,
+        expectedData,
+      )
+      yield* same(
+        'JSON data does not pollute Object.prototype',
+        Reflect.get(Object.prototype, 'polluted'),
+        undefined,
+      )
+    }),
+  )
+
+  core('storage: lossless indexed string identities', (storage, { same: compare, some }) =>
+    Effect.gen(function* () {
+      const same = freshSame(compare)
+      const strings = immutableExpected(['\ud800', '\ud801'])
+      const expectedSubmissions = immutableExpected(
+        strings.map((text, index) => ({
+          ...submission(3 + index * 4),
+          requestId: Identity.RequestId.make(text),
+        })),
+      )
+      yield* storage.commit([{ _tag: 'conversation', value: { id: root } }])
+      for (const [index, text] of strings.entries()) {
+        const offset = index * 4
+        yield* storage.commit([
+          { _tag: 'task', value: { ...task(2 + offset), kind: text } },
+          {
+            _tag: 'submission',
+            value: { ...submission(3 + offset), requestId: Identity.RequestId.make(text) },
+          },
+          {
+            _tag: 'document.create',
+            record: { ...document(4 + offset), kind: text },
+            content: base(index),
+          },
+          {
+            _tag: 'document.create',
+            record: { ...document(5 + offset), kind: 'testing.family', key: text },
+            content: base(index),
+          },
+        ])
+      }
+      for (const [index, text] of strings.entries()) {
+        const offset = index * 4
+        yield* same(
+          'task kind lookup keeps distinct surrogate identities',
+          (yield* Stream.runCollect(storage.scanTasks({ kind: text }))).map((t) => t.id),
+          [2 + offset],
+        )
+        yield* same(
+          'task payload keeps exact surrogate',
+          (yield* some('surrogate task exists', yield* storage.task(taskId(2 + offset)))).kind,
+          text,
+        )
+        yield* same(
+          'request lookup keeps distinct surrogate identities',
+          yield* storage.submissionByRequest(root, Identity.RequestId.make(text)),
+          Option.some(expectedSubmissions[index]),
+        )
+        yield* same(
+          'document kind lookup keeps distinct surrogate identities',
+          (yield* some(
+            'surrogate kind exists',
+            yield* storage.findDocument({ kind: text, scope: document(4).scope }),
+          )).id,
+          4 + offset,
+        )
+        yield* same(
+          'family key lookup keeps distinct surrogate identities',
+          (yield* some(
+            'surrogate family exists',
+            yield* storage.findDocument({
+              kind: 'testing.family',
+              scope: document(5).scope,
+              key: text,
+            }),
+          )).id,
+          5 + offset,
+        )
+        yield* same(
+          'document kind scan keeps distinct surrogate identities',
+          (yield* Stream.runCollect(
+            storage.scanDocuments({ scope: document(4).scope, kind: text }),
+          )).map((d) => d.id),
+          [4 + offset],
+        )
+      }
+    }),
+  )
+
+  core('storage: out-of-ID-order entry streams', (storage, { same: compare, some }) =>
+    Effect.gen(function* () {
+      const same = freshSame(compare)
+      // Multiplication by 37 permutes 130 IDs; every scan crosses a 64-row native page.
+      const ids = Array.from({ length: 130 }, (_, index) => 2 + ((index * 37) % 130))
+      const ascending = immutableExpected(Array.from({ length: 130 }, (_, index) => index + 2))
+      yield* storage.commit([
+        { _tag: 'conversation', value: { id: root } },
+        ...ids.map((id): Record.StorageWrite => ({
+          _tag: 'entry',
+          value: { ...entry(id), ...(id === 70 ? { head: entryId(10) } : {}) },
+        })),
+      ])
+      yield* same(
+        'shuffled entries stream completely in ascending ID order',
+        (yield* Stream.runCollect(
+          storage.scanEntries({ conversationId: root, order: 'ascending' }),
+        )).map((e) => e.id),
+        ascending,
+      )
+      yield* same(
+        'shuffled entries stream completely in descending ID order',
+        (yield* Stream.runCollect(storage.scanEntries({ conversationId: root }))).map((e) => e.id),
+        [...ascending].reverse(),
+      )
+      yield* same(
+        'entry bounds are inclusive across pages',
+        (yield* Stream.runCollect(
+          storage.scanEntries({
+            conversationId: root,
+            minEntryId: entryId(20),
+            maxEntryId: entryId(100),
+            order: 'ascending',
+          }),
+        )).map((e) => e.id),
+        Array.from({ length: 81 }, (_, index) => index + 20),
+      )
+      yield* same(
+        'head lookup uses entry ID rather than commit order',
+        (yield* some('shuffled head exists', yield* storage.findLatestHeadMarker(root))).id,
+        70,
+      )
+      let appended = false
+      const visible = yield* Stream.runCollect(
+        storage.scanEntries({ conversationId: root, order: 'ascending' }).pipe(
+          Stream.tap(() => {
+            if (appended) return Effect.void
+            appended = true
+            return storage.commit([{ _tag: 'entry', value: entry(132) }]).pipe(Effect.asVoid)
+          }),
+        ),
+      )
+      yield* same(
+        'entry stream retains its initial upper cutoff',
+        visible.map((e) => e.id),
+        ascending,
+      )
+      yield* same(
+        'new scan sees the appended entry',
+        (yield* Stream.runCollect(storage.scanEntries({ conversationId: root }))).map((e) => e.id),
+        [132, ...ascending.toReversed()],
+      )
+    }),
+  )
+
+  core('storage: multigeneration fork cutoffs', (storage, { same: compare, some }) =>
+    Effect.gen(function* () {
+      const same = freshSame(compare)
+      const child = Record.ConversationId.make(5)
+      const grandchild = Record.ConversationId.make(9)
+      const inheritedFork = Record.ConversationId.make(14)
+      const first = yield* storage.commit([
+        { _tag: 'conversation', value: { id: root } },
+        { _tag: 'entry', value: entry(2) },
+        { _tag: 'entry', value: { ...entry(3), head: entryId(2) } },
+        { _tag: 'entry', value: entry(4) },
+      ])
+      yield* storage.commit([
+        {
+          _tag: 'conversation',
+          value: { id: child, parent: { conversationId: root, at: entryId(3) } },
+        },
+        { _tag: 'entry', value: entry(6, child) },
+        { _tag: 'entry', value: entry(7, child) },
+      ])
+      yield* storage.commit([{ _tag: 'entry', value: entry(8) }])
+      const leaf = yield* storage.commit([
+        {
+          _tag: 'conversation',
+          value: { id: grandchild, parent: { conversationId: child, at: entryId(6) } },
+        },
+        { _tag: 'entry', value: { ...entry(10, grandchild), head: entryId(10) } },
+        { _tag: 'entry', value: entry(11, grandchild) },
+      ])
+      yield* storage.commit([
+        { _tag: 'entry', value: entry(12, child) },
+        { _tag: 'entry', value: entry(13) },
+      ])
+      yield* same(
+        'every ancestor cutoff excludes siblings and later parent writes',
+        (yield* Stream.runCollect(storage.scanEntries({ conversationId: grandchild }))).map(
+          (e) => e.id,
+        ),
+        [11, 10, 6, 3, 2],
+      )
+      yield* same(
+        'multigeneration ascending history retains ancestor order',
+        (yield* Stream.runCollect(
+          storage.scanEntries({ conversationId: grandchild, order: 'ascending' }),
+        )).map((e) => e.id),
+        [2, 3, 6, 10, 11],
+      )
+      yield* same(
+        'multigeneration range applies at each ancestor',
+        (yield* Stream.runCollect(
+          storage.scanEntries({
+            conversationId: grandchild,
+            minEntryId: entryId(3),
+            maxEntryId: entryId(6),
+            order: 'ascending',
+          }),
+        )).map((e) => e.id),
+        [3, 6],
+      )
+      for (const id of [4, 7, 8, 12, 13])
+        yield* same(
+          'scoped lookup excludes capped ancestors',
+          yield* storage.entry(entryId(id), { conversationId: grandchild }),
+          Option.none(),
+        )
+      yield* same(
+        'root entry preserves original commit sequence',
+        (yield* some(
+          'visible root entry exists',
+          yield* storage.entry(entryId(3), { conversationId: grandchild }),
+        )).commitSeq,
+        first,
+      )
+      yield* same(
+        'leaf entry preserves original commit sequence',
+        (yield* some(
+          'visible leaf entry exists',
+          yield* storage.entry(entryId(11), { conversationId: grandchild }),
+        )).commitSeq,
+        leaf,
+      )
+      yield* same(
+        'multigeneration latest head is local',
+        (yield* some('leaf head exists', yield* storage.findLatestHeadMarker(grandchild))).head,
+        10,
+      )
+      yield* same(
+        'multigeneration historical head is inherited',
+        (yield* some(
+          'ancestor head exists',
+          yield* storage.findLatestHeadMarker(grandchild, entryId(6)),
+        )).head,
+        2,
+      )
+      yield* same(
+        'cutoff before first head has no marker',
+        yield* storage.findLatestHeadMarker(grandchild, entryId(2)),
+        Option.none(),
+      )
+      // A fourth generation forks at an inherited entry, tightening all earlier caps.
+      yield* storage.commit([
+        {
+          _tag: 'conversation',
+          value: { id: inheritedFork, parent: { conversationId: grandchild, at: entryId(3) } },
+        },
+        { _tag: 'entry', value: entry(15, inheritedFork) },
+      ])
+      yield* same(
+        'fork at inherited entry tightens every ancestor cap',
+        (yield* Stream.runCollect(storage.scanEntries({ conversationId: inheritedFork }))).map(
+          (e) => e.id,
+        ),
+        [15, 3, 2],
+      )
+      yield* same(
+        'inherited fork hides immediate-parent entries',
+        yield* storage.entry(entryId(10), { conversationId: inheritedFork }),
+        Option.none(),
+      )
+    }),
+  )
+
+  core('storage: waiting and completing task records', (storage, { same: compare, some }) =>
+    Effect.gen(function* () {
+      const same = freshSame(compare)
+      const owner = task(2)
+      const waiting: Record.Task = {
+        ...task(3),
+        owner: owner.id,
+        state: {
+          status: 'waiting',
+          checkpoint: { phase: 'next' },
+          on: [owner.id],
+          policy: 'allSettled',
+        },
+        memos: { ['__proto__']: { kept: true }, saved: 1 },
+      }
+      const completing: Record.Task = {
+        ...task(4),
+        owner: owner.id,
+        state: { status: 'completing', outcome: { status: 'failed', error: { message: 'held' } } },
+      }
+      const expectedOwner = immutableExpected(owner)
+      const expectedWaiting = immutableExpected(waiting)
+      const expectedCompleting = immutableExpected(completing)
+      yield* storage.commit([
+        { _tag: 'conversation', value: { id: root } },
+        ...[owner, waiting, completing].map((value): Record.StorageWrite => ({
+          _tag: 'task',
+          value,
+        })),
+      ])
+      yield* same(
+        'waiting record retains owner checkpoint wait policy and memos',
+        yield* storage.task(expectedWaiting.id),
+        Option.some(expectedWaiting),
+      )
+      yield* same(
+        'completing record retains outcome without checkpoint or memos',
+        yield* storage.task(expectedCompleting.id),
+        Option.some(expectedCompleting),
+      )
+      yield* same(
+        'waiting status scan returns exact record',
+        yield* Stream.runCollect(storage.scanTasks({ status: 'waiting' })),
+        [expectedWaiting],
+      )
+      yield* same(
+        'completing status scan returns exact record',
+        yield* Stream.runCollect(storage.scanTasks({ status: 'completing' })),
+        [expectedCompleting],
+      )
+      yield* same(
+        'pending status scan excludes waiting and completing',
+        yield* Stream.runCollect(storage.scanTasks({ status: 'pending' })),
+        [expectedOwner],
+      )
+      const read = yield* some('waiting record exists', yield* storage.task(expectedWaiting.id))
+      Reflect.set(read.state, 'policy', 'failFast')
+      if (read.memos !== undefined) {
+        Reflect.set(read.memos, 'saved', 99)
+        const nested = read.memos.__proto__
+        if (typeof nested === 'object' && nested !== null) Reflect.set(nested, 'kept', false)
+      }
+      if (read.state.status === 'waiting') {
+        const checkpoint = read.state.checkpoint
+        if (typeof checkpoint === 'object' && checkpoint !== null)
+          Reflect.set(checkpoint, 'phase', 'read mutation')
+        if (read.state.on !== undefined) Reflect.set(read.state.on, '0', taskId(4))
+      }
+      yield* same(
+        'waiting reads detach wait state and memo values',
+        yield* storage.task(expectedWaiting.id),
+        Option.some(expectedWaiting),
+      )
+      const detachedWaiting = yield* some(
+        'waiting record still exists',
+        yield* storage.task(expectedWaiting.id),
+      )
+      yield* same(
+        'waiting reads detach wait state and memo values',
+        detachedWaiting.state.policy,
+        'allSettled',
+      )
+      yield* same(
+        'waiting reads detach wait state and memo values',
+        detachedWaiting.memos?.saved,
+        1,
+      )
+      const completingRead = yield* some(
+        'completing record exists',
+        yield* storage.task(expectedCompleting.id),
+      )
+      const outcome = completingRead.state.outcome
+      if (typeof outcome === 'object' && outcome !== null && 'error' in outcome) {
+        const error = outcome.error
+        if (typeof error === 'object' && error !== null)
+          Reflect.set(error, 'message', 'read mutation')
+      }
+      yield* same(
+        'completing reads detach nested outcome values',
+        yield* storage.task(expectedCompleting.id),
+        Option.some(expectedCompleting),
+      )
+      const resumed: Record.Task = {
+        ...task(3),
+        owner: expectedOwner.id,
+        state: { status: 'running', checkpoint: { phase: 'resumed' } },
+      }
+      const terminal: Record.Task = {
+        ...expectedCompleting,
+        state: { status: 'terminal', outcome: { status: 'failed', error: { message: 'held' } } },
+      }
+      const expectedResumed = immutableExpected(resumed)
+      const expectedTerminal = immutableExpected(terminal)
+      yield* storage.commit([
+        { _tag: 'task', value: resumed },
+        { _tag: 'task', value: terminal },
+      ])
+      yield* same(
+        'task replacement removes old wait fields and memos',
+        yield* storage.task(expectedResumed.id),
+        Option.some(expectedResumed),
+      )
+      yield* same(
+        'task replacement removes stale status index',
+        yield* Stream.runCollect(storage.scanTasks({ status: 'completing' })),
+        [],
+      )
+      yield* same(
+        'task replacement removes waiting index',
+        yield* Stream.runCollect(storage.scanTasks({ status: 'waiting' })),
+        [],
+      )
+      yield* same(
+        'terminal status scan returns exact outcome',
+        yield* Stream.runCollect(storage.scanTasks({ status: 'terminal' })),
+        [expectedTerminal],
+      )
+    }),
+  )
+
+  core('storage: passive write submission records', (storage, { same: compare, some }) =>
+    Effect.gen(function* () {
+      const same = freshSame(compare)
+      const queued: Record.WriteQueued = {
+        _tag: 'WriteQueued',
+        id: Record.SubmissionId.make(2),
+        conversationId: root,
+        requestId: Identity.RequestId.make('testing.passive.done'),
+        type: 'write',
+        status: 'queued',
+      }
+      const failed: Record.WriteQueued = {
+        ...queued,
+        id: Record.SubmissionId.make(3),
+        requestId: Identity.RequestId.make('testing.passive.failed'),
+      }
+      const expectedQueued = immutableExpected([queued, failed])
+      yield* storage.commit([
+        { _tag: 'conversation', value: { id: root } },
+        { _tag: 'submission', value: queued },
+        { _tag: 'submission', value: failed },
+      ])
+      yield* same(
+        'queued passive writes retain exact records',
+        yield* Stream.runCollect(storage.scanSubmissions({ status: 'queued' })),
+        expectedQueued,
+      )
+      const done: Record.WriteDone = {
+        ...expectedQueued[0]!,
+        _tag: 'WriteDone',
+        status: 'done',
+        entry: entryId(4),
+      }
+      const unanswered: Record.WriteUnanswered = {
+        ...expectedQueued[1]!,
+        _tag: 'WriteUnanswered',
+        status: 'unanswered',
+        reason: 'closed',
+        detail: { retryable: false },
+      }
+      const expectedDone = immutableExpected(done)
+      const expectedUnanswered = immutableExpected(unanswered)
+      yield* storage.commit([
+        { _tag: 'entry', value: entry(4) },
+        { _tag: 'submission', value: done },
+        { _tag: 'submission', value: unanswered },
+      ])
+      yield* same(
+        'passive done has entry without input answer',
+        yield* storage.submission(expectedDone.id),
+        Option.some(expectedDone),
+      )
+      yield* same(
+        'passive unanswered has detail without placement',
+        yield* storage.submission(expectedUnanswered.id),
+        Option.some(expectedUnanswered),
+      )
+      yield* same(
+        'passive request index follows done replacement',
+        yield* storage.submissionByRequest(root, expectedDone.requestId!),
+        Option.some(expectedDone),
+      )
+      yield* same(
+        'passive request index follows unanswered replacement',
+        yield* storage.submissionByRequest(root, expectedUnanswered.requestId!),
+        Option.some(expectedUnanswered),
+      )
+      yield* same(
+        'passive replacement removes queued index',
+        yield* Stream.runCollect(storage.scanSubmissions({ status: 'queued' })),
+        [],
+      )
+      yield* same(
+        'passive done status scan returns exact record',
+        yield* Stream.runCollect(storage.scanSubmissions({ status: 'done' })),
+        [expectedDone],
+      )
+      yield* same(
+        'passive unanswered status scan returns exact record',
+        yield* Stream.runCollect(storage.scanSubmissions({ status: 'unanswered' })),
+        [expectedUnanswered],
+      )
+      const read = yield* some(
+        'passive unanswered exists',
+        yield* storage.submission(expectedUnanswered.id),
+      )
+      if (read.status === 'unanswered' && typeof read.detail === 'object' && read.detail !== null)
+        Reflect.set(read.detail, 'retryable', true)
+      yield* same(
+        'passive reads detach nested detail values',
+        yield* storage.submission(expectedUnanswered.id),
+        Option.some(expectedUnanswered),
+      )
+    }),
+  )
+
+  if (options.capabilities?.history === true)
+    core('storage: long document replacement tails', (storage, { same: compare, some }) =>
+      Effect.gen(function* () {
+        const same = freshSame(compare)
+        const initial = {
+          revision: 0,
+          rows: Array.from({ length: 512 }, (_, value) => ({ value, stable: `row-${value}` })),
+        }
+        const expectedInitial = immutableExpected(initial)
+        const created = yield* storage.commit([
+          { _tag: 'conversation', value: { id: root } },
+          {
+            _tag: 'document.create',
+            record: document(2, 'rewindable'),
+            content: { _tag: 'base', version: 1, value: initial },
+          },
+        ])
+        const before = structuredClone(expectedInitial)
+        let beforeAt = created
+        for (let revision = 1; revision <= 24; revision++) {
+          const index = (revision * 17) % before.rows.length
+          before.rows[index]!.value = -revision
+          before.revision = revision
+          beforeAt = yield* storage.commit([
+            {
+              _tag: 'document.change',
+              id: documentId(2),
+              content: {
+                _tag: 'delta',
+                version: 1,
+                ops: [
+                  ['set', ['rows', index, 'value'], -revision],
+                  ['set', ['revision'], revision],
+                ],
+              },
+            },
+          ])
+        }
+        const replacement = {
+          revision: 100,
+          rows: Array.from({ length: 512 }, (_, value) => ({
+            value: 10000 + value,
+            stable: `new-${value}`,
+          })),
+        }
+        const expectedBefore = immutableExpected(before)
+        const atReplacement = immutableExpected(replacement)
+        const replaced = yield* storage.commit([
+          {
+            _tag: 'document.change',
+            id: documentId(2),
+            content: { _tag: 'delta', version: 1, ops: [['replace', replacement]] },
+          },
+        ])
+        replacement.rows[0]!.value = -999
+        const current = structuredClone(atReplacement)
+        for (let revision = 101; revision <= 124; revision++) {
+          const index = (revision * 19) % current.rows.length
+          current.rows[index]!.value = -revision
+          current.revision = revision
+          yield* storage.commit([
+            {
+              _tag: 'document.change',
+              id: documentId(2),
+              content: {
+                _tag: 'delta',
+                version: 1,
+                ops: [
+                  ['set', ['rows', index, 'value'], -revision],
+                  ['set', ['revision'], revision],
+                ],
+              },
+            },
+          ])
+        }
+        for (const [at, expected] of [
+          [created, expectedInitial],
+          [beforeAt, expectedBefore],
+          [replaced, atReplacement],
+        ] as const) {
+          const historical = yield* some(
+            'long historical document exists',
+            yield* storage.document(documentId(2), at),
+          )
+          yield* same(
+            'long tail preserves exact historical cuts around replacement',
+            historical.value,
+            expected,
+          )
+          const rows = historical.value.rows
+          if (Array.isArray(rows)) {
+            const row: unknown = rows[0]
+            if (typeof row === 'object' && row !== null) Reflect.set(row, 'stable', 'read mutation')
+          }
+          yield* same(
+            'long historical returned values remain detached',
+            (yield* some(
+              'long historical document still exists',
+              yield* storage.document(documentId(2), at),
+            )).value,
+            expected,
+          )
+        }
+        const expectedCurrent = immutableExpected(current)
+        const stored = yield* some(
+          'long current document exists',
+          yield* storage.document(documentId(2)),
+        )
+        yield* same(
+          'long replacement tail materializes current value',
+          stored.value,
+          expectedCurrent,
+        )
+        yield* same('root replacement delta retains schema version', stored.version, 1)
+        yield* same(
+          'root replacement remains a delta in retained history',
+          stored.deltasSinceBase,
+          49,
+        )
+        Reflect.set(stored.value, 'revision', -1)
+        const reread = yield* some(
+          'long current document still exists',
+          yield* storage.document(documentId(2)),
+        )
+        yield* same(
+          'long tail returned values remain detached',
+          reread.value.revision,
+          expectedCurrent.revision,
+        )
+        yield* same(
+          'long tail returned values remain detached',
+          reread.value,
+          structuredClone(expectedCurrent),
+        )
+      }),
+    )
 
   add('storage: closed scope rejects escaped service access', (fixture, { failure }) =>
     Effect.gen(function* () {
