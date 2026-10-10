@@ -292,6 +292,118 @@ describe('bounded canonical context projection', () => {
       }),
   )
 
+  for (const grouped of [true, false]) {
+    it.effect(
+      `pairs the first exact ID/name result with wrong-name orphans (${grouped ? 'grouped' : 'separate'} messages)`,
+      () =>
+        Effect.gen(function* () {
+          const result = (name: string, value: string): Schema.Json => ({
+            type: 'tool-result',
+            id: 'c',
+            name,
+            result: value,
+            isFailure: false,
+            providerExecuted: false,
+            options: { provider: { receipt: value } },
+          })
+          const parts = [
+            result('orphan', 'wrong'),
+            result('other', 'second'),
+            result('wanted', 'correct'),
+            result('wanted', 'duplicate'),
+          ]
+          const messages: Array<Schema.Json> = grouped
+            ? [{ role: 'tool', content: parts, options: { provider: { receipt: 'grouped' } } }]
+            : parts.map((part, index) => ({
+                role: 'tool',
+                content: [part],
+                options: { provider: { receipt: index } },
+              }))
+          const view = yield* Projection.project(root, [
+            entry(1, {
+              model: [
+                {
+                  role: 'assistant',
+                  content: ['wanted', 'other'].map((name) => ({
+                    type: 'tool-call',
+                    id: 'c',
+                    name,
+                    params: {},
+                    providerExecuted: false,
+                  })),
+                },
+              ],
+            }),
+            entry(2, { model: messages }),
+          ])
+          assert.deepEqual(
+            view.prompt.content.map((message) => message.role),
+            ['assistant', 'tool', 'tool'],
+          )
+          const results = view.prompt.content
+            .flatMap((message) => (message.role === 'tool' ? message.content : []))
+            .filter((part) => part.type === 'tool-result')
+          assert.deepEqual(
+            results.map((part) => [part.id, part.name, part.result, part.isFailure]),
+            [
+              ['c', 'wanted', 'correct', false],
+              ['c', 'other', 'second', false],
+            ],
+          )
+          assert.deepEqual(results[0]!.options, { provider: { receipt: 'correct' } })
+          assert.deepEqual(view.prompt.content[1]!.options, {
+            provider: { receipt: grouped ? 'grouped' : 2 },
+          })
+        }),
+    )
+  }
+
+  it.effect('reused ID/name pairs cannot borrow receipts across assistant windows', () =>
+    Effect.gen(function* () {
+      const assistant: Schema.Json = {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', id: 'c', name: 'wanted', params: {}, providerExecuted: false },
+        ],
+      }
+      const tool = (name: string, value: string): Schema.Json => ({
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            id: 'c',
+            name,
+            result: value,
+            isFailure: false,
+            providerExecuted: false,
+          },
+        ],
+      })
+      const view = yield* Projection.project(root, [
+        entry(1, { model: [assistant, tool('wanted', 'first'), tool('wanted', 'duplicate')] }),
+        entry(2, { model: [assistant, tool('orphan', 'wrong')] }),
+        entry(3, { model: [assistant, tool('wanted', 'last')] }),
+      ])
+      const results = view.prompt.content
+        .flatMap((message) => (message.role === 'tool' ? message.content : []))
+        .filter((part) => part.type === 'tool-result')
+      assert.deepEqual(
+        results.map((part) => [part.id, part.name, part.isFailure]),
+        [
+          ['c', 'wanted', false],
+          ['c', 'wanted', true],
+          ['c', 'wanted', false],
+        ],
+      )
+      assert.strictEqual(results[0]!.result, 'first')
+      assert.deepEqual(results[1]!.result, {
+        reason: 'missing_result',
+        message: 'Tool result unavailable: history ends before this call completed.',
+      })
+      assert.strictEqual(results[2]!.result, 'last')
+    }),
+  )
+
   it.effect('filters excluded assistant statuses in original and replacement facts', () =>
     Effect.gen(function* () {
       const entries = ['aborted', 'error', 'deferred'].map((stopReason, index) =>

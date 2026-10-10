@@ -305,6 +305,90 @@ describe('image policy (fake codecs; native decode/encode conformance belongs to
     }),
   )
 
+  it.effect('caps safe-integer rounding in the service result and codec request', () =>
+    Effect.gen(function* () {
+      const original = { width: 5325550218379263, height: 1 }
+      const maximum = { maxWidth: 3783683143962315, maxHeight: 1 }
+      const requests: Array<Images.EncodingRequest> = []
+      const service = Images.make({
+        capabilities: { ...capabilities, encode: ['image/png'] },
+        decode: () =>
+          Effect.succeed({
+            metadata: { ...metadata, mimeType: 'image/bmp', original },
+            encode: (request: Images.EncodingRequest) => {
+              requests.push(request)
+              return Effect.succeed(new Uint8Array([1]))
+            },
+          }),
+      })
+      const result = yield* service.prepare(new Uint8Array([9]), 'image/bmp', {
+        ...maximum,
+        maxBytes: 4,
+        maxInputPixels: Number.MAX_SAFE_INTEGER,
+      })
+      const expected = { width: maximum.maxWidth, height: 1 }
+      assert.deepStrictEqual(
+        requests.map((request) => request.dimensions),
+        [expected],
+      )
+      assert.deepStrictEqual(result.dimensions, expected)
+      assert.deepStrictEqual(result.resized, { from: original, to: expected })
+      assert.isFalse(result.passthrough)
+    }),
+  )
+
+  it.effect(
+    'keeps wide, tall and extreme fits bounded and within one pixel of exact aspect fit',
+    () =>
+      Effect.sync(() => {
+        const edge = Number.MAX_SAFE_INTEGER
+        const dimensions = [
+          1,
+          2,
+          7,
+          100,
+          94906265,
+          3783683143962315,
+          5325550218379263,
+          edge - 1,
+          edge,
+        ]
+        for (const width of dimensions) {
+          for (const height of dimensions) {
+            // Use integer arithmetic independently of the floating-point fit implementation.
+            if (BigInt(width) * BigInt(height) > BigInt(edge)) continue
+            for (const maxWidth of dimensions) {
+              for (const maxHeight of dimensions) {
+                const fitted = Images.fitDimensions({ width, height }, { maxWidth, maxHeight })
+                let numerator = 1n
+                let denominator = 1n
+                for (const [cap, original] of [
+                  [maxWidth, width],
+                  [maxHeight, height],
+                ] as const) {
+                  if (BigInt(cap) * denominator < numerator * BigInt(original)) {
+                    numerator = BigInt(cap)
+                    denominator = BigInt(original)
+                  }
+                }
+                for (const [actual, original, cap] of [
+                  [fitted.width, width, maxWidth],
+                  [fitted.height, height, maxHeight],
+                ] as const) {
+                  assert.isTrue(Number.isSafeInteger(actual))
+                  assert.isAtLeast(actual, 1)
+                  assert.isAtMost(actual, original)
+                  assert.isAtMost(actual, cap)
+                  const difference = BigInt(actual) * denominator - BigInt(original) * numerator
+                  assert.isTrue(difference >= -denominator && difference <= denominator)
+                }
+              }
+            }
+          }
+        }
+      }),
+  )
+
   it.effect('converts BMP, records resize/conversion metadata and detaches codec output', () =>
     Effect.gen(function* () {
       const encoded = new Uint8Array([1, 2, 3])

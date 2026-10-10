@@ -114,8 +114,8 @@ export const fitDimensions = (
 ): Dimensions => {
   const scale = Math.min(1, limits.maxWidth / size.width, limits.maxHeight / size.height)
   return {
-    width: Math.max(1, Math.round(size.width * scale)),
-    height: Math.max(1, Math.round(size.height * scale)),
+    width: Math.min(size.width, limits.maxWidth, Math.max(1, Math.round(size.width * scale))),
+    height: Math.min(size.height, limits.maxHeight, Math.max(1, Math.round(size.height * scale))),
   }
 }
 

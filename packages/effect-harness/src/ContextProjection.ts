@@ -263,7 +263,7 @@ const orderToolResults = (messages: ReadonlyArray<Prompt.Message>): Array<Prompt
     const calls = message.content.filter((part) => part.type === 'tool-call')
     const results = new Map<
       string,
-      { readonly part: Prompt.ToolResultPart; readonly message: Prompt.ToolMessage }
+      Map<string, { readonly part: Prompt.ToolResultPart; readonly message: Prompt.ToolMessage }>
     >()
     for (
       let next = index + 1;
@@ -272,9 +272,15 @@ const orderToolResults = (messages: ReadonlyArray<Prompt.Message>): Array<Prompt
     ) {
       const candidate = messages[next]!
       if (candidate.role !== 'tool') continue
-      for (const part of candidate.content)
-        if (part.type === 'tool-result' && !results.has(part.id))
-          results.set(part.id, { part, message: candidate })
+      for (const part of candidate.content) {
+        if (part.type !== 'tool-result') continue
+        let byName = results.get(part.id)
+        if (byName === undefined) {
+          byName = new Map()
+          results.set(part.id, byName)
+        }
+        if (!byName.has(part.name)) byName.set(part.name, { part, message: candidate })
+      }
     }
     for (const call of calls) {
       // Native provider-executed results belong inside the assistant message.
@@ -285,9 +291,9 @@ const orderToolResults = (messages: ReadonlyArray<Prompt.Message>): Array<Prompt
         )
       )
         continue
-      const found = results.get(call.id)
+      const found = results.get(call.id)?.get(call.name)
       ordered.push(
-        found === undefined || found.part.name !== call.name
+        found === undefined
           ? missingResult(call)
           : Prompt.toolMessage({ content: [found.part], options: found.message.options }),
       )
