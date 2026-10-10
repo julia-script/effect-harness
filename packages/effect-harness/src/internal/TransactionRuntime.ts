@@ -511,7 +511,26 @@ export const ensureDocument = Effect.fnUntraced(function* <S extends Document.Co
 ) {
   const address = yield* Value.address(document, target)
   const found = yield* load(state, address)
-  if (Option.isSome(found)) return yield* Value.snapshot(document, found.value.value)
+  if (Option.isSome(found)) {
+    const previous = found.value.value
+    if (
+      previous.version !== document.definition.version &&
+      state.copiedSources.has(previous.record.id)
+    )
+      return yield* error(
+        'conflict',
+        'document.migrate',
+        'A fork source cannot change in the copying transaction',
+      )
+    const migrated = yield* Value.migrate(document, previous)
+    const result = yield* Value.snapshot(document, migrated)
+    if (migrated.version !== previous.version) {
+      yield* active(state)
+      found.value.value = migrated
+      found.value.changed = true
+    }
+    return result
+  }
   yield* checkScope(state, address.scope)
   const seed =
     options?.seed === undefined ? undefined : yield* Value.copy(Schema.Json, options.seed)
@@ -583,10 +602,18 @@ export const updateDocument = Effect.fnUntraced(function* <S extends Document.Co
   target: Document.Target,
   update: (value: S['Type']) => S['Type'],
 ) {
-  const found = yield* snapshot(state, document, target)
+  const found = yield* load(state, yield* Value.address(document, target))
   if (Option.isNone(found)) return yield* error('notFound', 'document.update', 'Document is absent')
+  if (state.copiedSources.has(found.value.value.record.id))
+    return yield* error(
+      'conflict',
+      'document.update',
+      'A fork source cannot change in the copying transaction',
+    )
+  const migrated = yield* Value.migrate(document, found.value.value)
+  const current = yield* Value.snapshot(document, migrated)
   const value = yield* Effect.try({
-    try: () => update(found.value.value),
+    try: () => update(current.value),
     catch: (cause) =>
       new SessionError({
         reason: 'invalid',
@@ -595,7 +622,11 @@ export const updateDocument = Effect.fnUntraced(function* <S extends Document.Co
         cause,
       }),
   })
-  yield* setDocument(state, document, target, value)
+  const encoded = yield* Value.encode(document, value)
+  yield* Value.snapshot(document, { ...migrated, value: encoded })
+  yield* active(state)
+  found.value.value = { ...migrated, value: encoded, deltasSinceBase: 0 }
+  found.value.changed = true
 })
 
 export const retireDocument = Effect.fnUntraced(function* <S extends Document.Codec>(

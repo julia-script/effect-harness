@@ -275,7 +275,10 @@ export const snapshot: {
   ) => snapshotImpl(self, document, target),
 )
 
-/** Only rewindable conversation documents permit historical reads at a visible entry. */
+/**
+ * Only rewindable conversation documents permit historical reads at a visible entry.
+ * Use the definition matching that historical revision's version; reads never migrate.
+ */
 export const snapshotAsOf: {
   <S extends Document.Codec>(
     document: Document.Document<S>,

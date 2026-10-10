@@ -323,6 +323,8 @@ export const snapshot: {
 
 /**
  * Stages the initial value when missing. Seeds apply only to a new incarnation.
+ * Existing older versions upgrade through a declared direct migration, atomically
+ * with this commit. Failed migrations stage no replacement, even when caught.
  * New drafts have createdAt = 0 until commit assigns their persisted sequence.
  * Returned snapshots remain detached values; read the Session for committed metadata.
  */
@@ -373,7 +375,11 @@ export const setDocument: {
   ) => Runtime.use(self, (state) => Runtime.setDocument(state, document, target, value)),
 )
 
-/** Applies a pure replacement function to a detached value of an existing document. */
+/**
+ * Applies a pure replacement function to a detached value of an existing document.
+ * Declared migrations upgrade older values before calling the replacement function.
+ * Migration and replacement validate together before staging one current-version base.
+ */
 export const updateDocument: {
   <S extends Document.Codec>(
     document: Document.Document<S>,
