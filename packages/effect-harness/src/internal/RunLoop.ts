@@ -25,6 +25,7 @@ import { HookExecution } from '../HookExecution.js'
 import * as Model from '../Model.js'
 import * as Prepared from '../PreparedRequest.js'
 import * as Preparation from './RequestPreparation.js'
+import * as PreparationRestore from './PreparationRestoreFailure.js'
 import * as Plan from './ContextPlan.js'
 import * as Inventory from '../ToolInventory.js'
 import * as Settings from '../Settings.js'
@@ -474,7 +475,10 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       const model = selected?.languageModel ?? Option.getOrUndefined(nativeDefault)
       if (model === undefined) return yield* absent('model.select', 'Pinned model is unavailable')
       const configurationCodec = selected?.configuration ?? Model.emptyConfiguration
-      const configuration = yield* configurationCodec.restore(preparation.configuration)
+      const configuration = yield* PreparationRestore.restore(
+        configurationCodec,
+        preparation.configuration,
+      )
       requestContext = Context.merge(
         Context.add(context, ProviderAffinity, { id: preparation.affinity }),
         configuration,

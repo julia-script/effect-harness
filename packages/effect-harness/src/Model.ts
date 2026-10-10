@@ -3,6 +3,7 @@ import * as Usage from './Usage.js'
 import * as Identity from './Identity.js'
 /** Schema-backed model metadata and live Effect LanguageModel handles. */
 import * as Context from 'effect/Context'
+import * as Cause from 'effect/Cause'
 import * as Capability from './internal/Capability.js'
 import * as Effect from 'effect/Effect'
 import * as Clock from 'effect/Clock'
@@ -121,7 +122,7 @@ export const makeConfiguration = <S extends Schema.Constraint, R, E>(input: {
         Schema.decodeEffect(codec, { onExcessProperty: 'error' })(value).pipe(
           Effect.flatMap((value) => Effect.suspend(() => restore(value))),
           Effect.flatMap(validate),
-          Effect.mapError(configurationError),
+          Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, configurationError))),
           Effect.provideContext(context),
         ),
     }

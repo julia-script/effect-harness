@@ -27,6 +27,7 @@ import * as Run from './RunState.js'
 import * as Inbox from './Inbox.js'
 import { NativeWriteFailure } from './NativeWriteFailure.js'
 import * as Preparation from './RequestPreparation.js'
+import { PreparationRestoreFailure } from './PreparationRestoreFailure.js'
 
 interface Invocation {
   readonly record: Record.Task
@@ -59,6 +60,7 @@ export const make = (
     | import('./ContextPlan.js').ContextPlanError
     | import('../ToolInventory.js').Denial
     | import('../ToolControl.js').InvalidControl
+    | PreparationRestoreFailure
     | import('../ModelError.js').ModelError,
     NativeInvocation | TaskExecution | Scope.Scope
   > {
@@ -244,6 +246,22 @@ export const make = (
             if (Cause.hasInterruptsOnly(cause))
               return Effect.succeed<PhaseResult>({ _tag: 'interrupted' })
             const reason = cause.reasons.length === 1 ? cause.reasons[0] : undefined
+            // The accepted request remains recoverable. Existing scheduler health stops
+            // automatic retries and reports the typed cause until an explicit resume.
+            if (
+              reason !== undefined &&
+              Cause.isFailReason(reason) &&
+              reason.error instanceof PreparationRestoreFailure
+            )
+              return Effect.fail(
+                new SessionError({
+                  reason: 'invalid',
+                  operation: 'run.restore',
+                  message:
+                    'Accepted request configuration restore failed; resume its saved checkpoint',
+                  cause: reason.error.error,
+                }),
+              )
             // Callback failures retain their original errors. Only a directly escaping
             // native write carries rejection evidence; caught/nested errors cannot borrow it.
             if (
