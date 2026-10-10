@@ -147,15 +147,19 @@ const resolve = <Tools extends Record<string, Tool.Any>>(
                 ),
               )(args)
               const exit = yield* Effect.exit(Effect.scoped(Effect.suspend(() => handler(decoded))))
-              if (Cause.hasInterrupts(exit._tag === 'Failure' ? exit.cause : Cause.empty)) {
-                if (exit._tag === 'Failure') return yield* Effect.failCause(exit.cause)
-              }
               let value: unknown
               let isError = false
               if (exit._tag === 'Failure') {
+                if (
+                  Cause.hasInterrupts(exit.cause) ||
+                  Cause.hasDies(exit.cause) ||
+                  exit.cause.reasons.some(
+                    (reason) => Cause.isFailReason(reason) && isInfrastructureFailure(reason.error),
+                  )
+                )
+                  return yield* Effect.failCause(exit.cause)
                 const failure = Cause.findErrorOption(exit.cause)
                 if (Option.isNone(failure)) return yield* Effect.failCause(exit.cause)
-                if (isInfrastructureFailure(failure.value)) return yield* failure.value
                 value = yield* Schema.encodeUnknownEffect(
                   Schema.toCodecJson(
                     tool.failureSchema as unknown as Schema.ConstraintCodec<
