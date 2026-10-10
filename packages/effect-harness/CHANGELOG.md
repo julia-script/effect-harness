@@ -1,5 +1,15 @@
 # effect-harness
 
+## 0.3.0
+
+### Minor Changes
+
+- d69c6bc: Promote the schema-backed Storage and Session APIs and separate the Harness client from local execution through HarnessBackend. Add Tool/Toolkit declarations with handler Layers, scoped tool execution, persisted submissions and recovery, and static hooks/extensions/model descriptors. Replace the registry, environment, checkpoint-task, and runtime-specific storage APIs with service requirements and application-supplied Layers. Update public examples and documentation to the new API.
+
+### Patch Changes
+
+- f2cdab6: Reject SQL storage initialization and mutations inside the supplied client's ambient transaction so Session cannot publish state that an outer rollback later erases.
+
 ## 0.2.1
 
 ### Patch Changes
