@@ -29,6 +29,7 @@ import * as ToolResult from '../ToolResult.js'
 import * as Toolkit from '../Toolkit.js'
 import * as Transaction from '../Transaction.js'
 import * as Run from './RunState.js'
+import type { NativeWriteFailure } from './NativeWriteFailure.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
 import { protect, absent } from './HarnessFailure.js'
 
@@ -70,6 +71,9 @@ export interface Services {
   ) => Effect.Effect<Hook.Output<Hook.Name>, HarnessError>
   readonly write: <A, E, R>(
     change: (tx: Transaction.Transaction, task: Record.Task) => Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | import('../TaskError.js').Failure | NativeWriteFailure, R>
+  readonly writeCallback: <A, E, R>(
+    change: (tx: Transaction.Transaction, task: Record.Task) => Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | import('../TaskError.js').Failure, R>
   readonly saveState: (
     tx: Transaction.Transaction,
@@ -102,6 +106,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
     access,
     runHooks,
     write,
+    writeCallback,
     saveState,
     invocationActive,
     notify,
@@ -217,7 +222,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
               commit: (change) =>
                 guard.pipe(
                   Effect.andThen(
-                    write((tx) =>
+                    writeCallback((tx) =>
                       Effect.gen(function* () {
                         yield* guard
                         const value = yield* change(tx)
@@ -573,7 +578,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       const report = (kind: string, data: Schema.Json) =>
         guard.pipe(
           Effect.andThen(
-            write((tx) =>
+            writeCallback((tx) =>
               guard.pipe(
                 Effect.andThen(Transaction.appendEntry(tx, task.conversationId, { kind, data })),
               ),
@@ -599,7 +604,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         commit: <A, E, R>(change: (tx: Transaction.Transaction) => Effect.Effect<A, E, R>) =>
           guard.pipe(
             Effect.andThen(
-              write((tx) =>
+              writeCallback((tx) =>
                 Effect.gen(function* () {
                   yield* guard
                   const value = yield* change(tx)

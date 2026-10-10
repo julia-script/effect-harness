@@ -1,6 +1,7 @@
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
+import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -24,7 +25,8 @@ import * as Record from 'effect-harness/Record'
 import * as Registry from 'effect-harness/Registry'
 import * as Session from 'effect-harness/Session'
 import * as Storage from 'effect-harness/Storage'
-import type { StorageFormat } from 'effect-harness/StorageFormat'
+import { StorageFormat } from 'effect-harness/StorageFormat'
+import { StorageError } from 'effect-harness/StorageError'
 import * as Task from 'effect-harness/Task'
 import * as TaskHook from 'effect-harness/TaskHook'
 import { TaskExecution } from 'effect-harness/TaskExecution'
@@ -940,3 +942,152 @@ it.effect(
       }),
     ).pipe(Effect.provide([Storage.layerMemory, plainModel])),
 )
+
+for (const reused of [false, true]) {
+  for (const boundary of ['read', 'handler', 'transaction', 'combined', 'interrupted'] as const) {
+    it.effect(
+      `caught output rejection cannot authorize ${boundary} failure with ${reused ? 'reused' : 'distinct'} error`,
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const real = yield* Storage.Storage
+            const format = yield* StorageFormat
+            const rejected = new StorageError({
+              reason: 'io',
+              operation: 'probe.output',
+              message: 'proven rejected output',
+            })
+            const later = reused
+              ? rejected
+              : new StorageError({
+                  reason: 'io',
+                  operation: 'probe.read',
+                  message: 'unrelated operation',
+                })
+            let nextRead = false
+            let rejectedCount = 0
+            let readCount = 0
+            let settlementCount = 0
+            const storage = Storage.Storage.of({
+              ...real,
+              task: (...args) =>
+                Effect.suspend(() => {
+                  if (nextRead) {
+                    nextRead = false
+                    readCount++
+                    return Effect.fail(later)
+                  }
+                  return real.task(...args)
+                }),
+              commit: (input) =>
+                Effect.suspend(() => {
+                  const writes = Array.from(input)
+                  if (
+                    writes.some(
+                      (write) => write._tag === 'entry' && write.value.kind === 'tool.output',
+                    )
+                  ) {
+                    rejectedCount++
+                    return Effect.fail(rejected)
+                  }
+                  if (
+                    writes.some(
+                      (write) => write._tag === 'submission' && write.value.status === 'unanswered',
+                    )
+                  )
+                    settlementCount++
+                  return real.commit(writes).pipe(
+                    Effect.tap(() =>
+                      Effect.sync(() => {
+                        if (
+                          boundary === 'read' &&
+                          writes.some(
+                            (write) => write._tag === 'entry' && write.value.kind === 'tool.result',
+                          )
+                        )
+                          nextRead = true
+                      }),
+                    ),
+                  )
+                }),
+            })
+            const toolkit = Toolkit.make(
+              Tool.make('probe', { success: Schema.String, replay: 'safe' }),
+            )
+            const handlers = toolkit.toLayer({
+              probe: () =>
+                Effect.gen(function* () {
+                  const access = yield* ToolExecution
+                  const output = yield* access.output('reject me').pipe(Effect.result)
+                  assert.strictEqual(output._tag, 'Failure')
+                  if (output._tag === 'Failure') assert.strictEqual(output.failure, rejected)
+                  if (boundary === 'handler') return yield* later
+                  if (boundary === 'transaction')
+                    return yield* access.commit(() => Effect.fail(later))
+                  if (boundary === 'combined')
+                    return yield* Effect.failCause(
+                      Cause.combine(Cause.fail(later), Cause.die('nested failure')),
+                    )
+                  if (boundary === 'interrupted')
+                    return yield* Effect.failCause(
+                      Cause.combine(Cause.fail(later), Cause.interrupt()),
+                    )
+                  return 'caught'
+                }),
+            })
+            const native = yield* LanguageModel.make({
+              generateText: () =>
+                Effect.succeed([
+                  {
+                    type: 'tool-call',
+                    id: 'one',
+                    name: 'probe',
+                    params: {},
+                    providerExecuted: false,
+                  },
+                  finish('tool-calls'),
+                ]),
+              streamText: () => Stream.empty,
+            })
+            const runtime = yield* HarnessRuntime.make({ tools: toolkit }).pipe(
+              Effect.provideService(Storage.Storage, storage),
+              Effect.provideService(StorageFormat, { ...format, storage }),
+              Effect.provideService(LanguageModel.LanguageModel, native),
+              Effect.provide(handlers),
+            )
+            yield* runtime.backend.root
+            const job = yield* runtime.backend.submit({
+              conversationId: root,
+              draft: { type: 'input', content: 'probe' },
+            })
+            const result = yield* runtime.backend.wait(job.id).pipe(Effect.result)
+            assert.strictEqual(result._tag, 'Failure')
+            if (result._tag === 'Failure') {
+              assert.strictEqual(result.failure.operation, 'runtime.scheduler')
+              assert.include(result.failure.message, later.message)
+              if (boundary === 'combined') assert.include(result.failure.message, 'nested failure')
+            }
+            assert.strictEqual(rejectedCount, 1)
+            assert.strictEqual(readCount, boundary === 'read' ? 1 : 0)
+            assert.strictEqual(settlementCount, 0)
+            assert.strictEqual(Option.getOrThrow(yield* real.submission(job.id)).status, 'placed')
+            const tasks = yield* Stream.runCollect(real.scanTasks({ kind: 'harness.run' }))
+            assert.strictEqual(tasks.length, 1)
+            assert.strictEqual(tasks[0]?.state.status, 'running')
+            const state = yield* Run.decode(tasks[0]!.state.checkpoint)
+            assert.strictEqual(state._tag, 'tools')
+            if (state._tag === 'tools') {
+              assert.strictEqual(state.index, boundary === 'read' ? 1 : 0)
+              assert.strictEqual(state.calls[0]?.started, true)
+            }
+            const entries = yield* Stream.runCollect(real.scanEntries({ conversationId: root }))
+            assert.strictEqual(entries.filter((entry) => entry.kind === 'tool.output').length, 0)
+            assert.strictEqual(
+              entries.filter((entry) => entry.kind === 'tool.result').length,
+              boundary === 'read' ? 1 : 0,
+            )
+          }),
+        ).pipe(Effect.provide(Storage.layerMemory)),
+    )
+  }
+}

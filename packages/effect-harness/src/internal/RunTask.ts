@@ -16,7 +16,7 @@ import { StorageError } from '../StorageError.js'
 import type { ExecutionError } from '../ExecutionError.js'
 import type { HarnessError } from '../HarnessError.js'
 import * as Task from '../Task.js'
-import { TaskError } from '../TaskError.js'
+import { TaskError, type Failure as TaskFailure } from '../TaskError.js'
 import { TaskExecution } from '../TaskExecution.js'
 import * as TaskResolution from '../TaskResolution.js'
 import type * as TaskScheduler from '../TaskScheduler.js'
@@ -24,17 +24,20 @@ import * as Transaction from '../Transaction.js'
 import type { PhaseResult } from './TaskRegistry.js'
 import * as RunLoop from './RunLoop.js'
 import * as Run from './RunState.js'
+import { NativeWriteFailure } from './NativeWriteFailure.js'
 
 interface Invocation {
   readonly record: Record.Task
   readonly lease: RegistryScope.Lease
-  readonly rejectedWrites: WeakSet<StorageError>
 }
 class NativeInvocation extends Context.Service<NativeInvocation, Invocation>()(
   'effect-harness/internal/NativeRunInvocation',
 ) {}
 
-type BaseServices = Omit<RunLoop.Services, 'write' | 'saveState' | 'invocationActive' | 'complete'>
+type BaseServices = Omit<
+  RunLoop.Services,
+  'write' | 'writeCallback' | 'saveState' | 'invocationActive' | 'complete'
+>
 
 export const make = (
   services: (lease: RegistryScope.Lease) => BaseServices,
@@ -45,10 +48,10 @@ export const make = (
 } => {
   const phase = Effect.fnUntraced(function* (): Effect.fn.Return<
     void,
-    TaskScheduler.Failure | HarnessError | AiError.AiError | ExecutionError,
+    TaskScheduler.Failure | HarnessError | AiError.AiError | ExecutionError | NativeWriteFailure,
     NativeInvocation | TaskExecution | Scope.Scope
   > {
-    const { record, lease, rejectedWrites } = yield* NativeInvocation
+    const { record, lease } = yield* NativeInvocation
     const execution = yield* TaskExecution
     const base = services(lease)
     let active = true
@@ -57,43 +60,55 @@ export const make = (
         active = false
       }),
     )
-    const write: RunLoop.Services['write'] = (change) => {
-      let staged = false
-      return execution
-        .commit((tx) =>
-          Effect.gen(function* () {
-            const current = yield* Transaction.task(tx, record.id)
-            if (Option.isNone(current))
-              return yield* new TaskError({
-                reason: 'notFound',
-                operation: 'run.write',
-                message: 'Native run is absent',
-              })
-            const result = yield* change(tx, current.value)
-            staged = true
-            return result
+    const writeCallback: RunLoop.Services['writeCallback'] = (change) =>
+      execution.commit((tx) =>
+        Effect.gen(function* () {
+          const current = yield* Transaction.task(tx, record.id)
+          if (Option.isNone(current))
+            return yield* new TaskError({
+              reason: 'notFound',
+              operation: 'run.write',
+              message: 'Native run is absent',
+            })
+          return yield* change(tx, current.value)
+        }),
+      )
+    const write: RunLoop.Services['write'] = <A, E, R>(
+      change: (tx: Transaction.Transaction, task: Record.Task) => Effect.Effect<A, E, R>,
+    ) =>
+      Effect.suspend(() => {
+        let staged = false
+        return writeCallback((tx, current) =>
+          change(tx, current).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                staged = true
+              }),
+            ),
+          ),
+        ).pipe(
+          Effect.catchCause((cause): Effect.Effect<never, E | TaskFailure | NativeWriteFailure> => {
+            const reason = cause.reasons.length === 1 ? cause.reasons[0] : undefined
+            if (
+              staged &&
+              reason !== undefined &&
+              Cause.isFailReason(reason) &&
+              Schema.is(StorageError)(reason.error) &&
+              (reason.error.reason === 'io' ||
+                reason.error.reason === 'invalid' ||
+                reason.error.reason === 'conflict' ||
+                reason.error.reason === 'notFound')
+            )
+              return Effect.fail(new NativeWriteFailure({ error: reason.error }))
+            return Effect.failCause(cause)
           }),
         )
-        .pipe(
-          Effect.tapError((error) =>
-            Effect.sync(() => {
-              if (
-                staged &&
-                Schema.is(StorageError)(error) &&
-                (error.reason === 'io' ||
-                  error.reason === 'invalid' ||
-                  error.reason === 'conflict' ||
-                  error.reason === 'notFound')
-              )
-                rejectedWrites.add(error)
-            }),
-          ),
-        )
-    }
+      })
     yield* RunLoop.run(
       {
         ...base,
         write,
+        writeCallback,
         saveState: (tx, current, checkpoint) =>
           Run.encode(checkpoint).pipe(
             Effect.flatMap((wire) =>
@@ -185,34 +200,58 @@ export const make = (
       ),
     invoke: (record, mode, lease) =>
       Effect.suspend(() => {
-        // Evidence belongs to this invocation, even when an adapter reuses error objects.
-        const rejectedWrites = new WeakSet<StorageError>()
         return (
           mode === 'abort'
             ? settle(record, 'aborted')
-            : phase().pipe(
-                Effect.provideService(NativeInvocation, { record, lease, rejectedWrites }),
-              )
+            : phase().pipe(Effect.provideService(NativeInvocation, { record, lease }))
         ).pipe(
           Effect.as<PhaseResult>({ _tag: 'returned' }),
           Effect.catchCause((cause) => {
             if (Cause.hasInterruptsOnly(cause))
               return Effect.succeed<PhaseResult>({ _tag: 'interrupted' })
-            // Only a known rejected invocation write may settle on a still-usable Session.
-            // Uncertain commits poison that Session; corrupt/closed/read failures and failed
-            // settlement persistence keep scheduler health failed and the checkpoint recoverable.
             const reason = cause.reasons.length === 1 ? cause.reasons[0] : undefined
+            // Callback failures retain their original errors. Only a directly escaping
+            // native write carries rejection evidence; caught/nested errors cannot borrow it.
             if (
               reason !== undefined &&
               Cause.isFailReason(reason) &&
-              (Schema.is(StorageError)(reason.error) || Schema.is(SessionError)(reason.error))
+              reason.error instanceof NativeWriteFailure
             )
-              return Schema.is(StorageError)(reason.error) && rejectedWrites.has(reason.error)
-                ? Session.task(services(lease).session, record.id).pipe(
-                    Effect.andThen(settle(record, 'failed', Cause.pretty(cause))),
-                    Effect.as<PhaseResult>({ _tag: 'returned' }),
-                  )
-                : Effect.fail(reason.error)
+              return Session.task(services(lease).session, record.id).pipe(
+                Effect.andThen(
+                  settle(record, 'failed', Cause.pretty(Cause.fail(reason.error.error))),
+                ),
+                Effect.as<PhaseResult>({ _tag: 'returned' }),
+              )
+            // Uncertain commits poison the Session. Read, corrupt/closed, mixed failure,
+            // interruption and failed settlement retain recovery checkpoints and causes.
+            if (
+              Cause.hasInterrupts(cause) ||
+              cause.reasons.some(
+                (reason) =>
+                  Cause.isFailReason(reason) &&
+                  (reason.error instanceof NativeWriteFailure ||
+                    Schema.is(StorageError)(reason.error) ||
+                    Schema.is(SessionError)(reason.error)),
+              )
+            ) {
+              if (
+                reason !== undefined &&
+                Cause.isFailReason(reason) &&
+                (Schema.is(StorageError)(reason.error) || Schema.is(SessionError)(reason.error))
+              )
+                return Effect.fail(reason.error)
+              return Effect.fail(
+                new SessionError({
+                  reason: 'invalid',
+                  operation: 'run.invoke',
+                  message: Cause.pretty(cause),
+                  cause: Cause.map(cause, (error) =>
+                    error instanceof NativeWriteFailure ? error.error : error,
+                  ),
+                }),
+              )
+            }
             return settle(record, 'failed', Cause.pretty(cause)).pipe(
               Effect.as<PhaseResult>({ _tag: 'returned' }),
             )
