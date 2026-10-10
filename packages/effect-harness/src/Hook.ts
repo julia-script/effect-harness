@@ -116,7 +116,7 @@ export const make = <const N extends Name, E, R>(definition: {
         Effect.suspend(() => {
           if (event._tag !== spec.event) return Effect.void
           // The discriminator check proves this data input; the typed executable remains intact.
-          return definition
+          return spec
             .execute(event as Input<N>)
             .pipe(
               Effect.updateContext((input: Context.Context<HookExecution | Scope.Scope>) =>
