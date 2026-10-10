@@ -1,6 +1,6 @@
 /** Persistence capabilities and backend layers; dependencies are captured during construction. */
 import * as Context from 'effect/Context'
-import type * as Effect from 'effect/Effect'
+import * as Effect from 'effect/Effect'
 import type * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import type * as Option from 'effect/Option'
@@ -28,9 +28,16 @@ import type { StorageError } from './StorageError.js'
 import * as Memory from './internal/Memory.js'
 import * as Sql from './internal/Sql.js'
 import * as Jsonl from './internal/Jsonl.js'
+import { StorageFormat } from './StorageFormat.js'
 
 export * from './Record.js'
 export { StorageError } from './StorageError.js'
+
+/** Current document identity and stored schema version, without materializing its content. */
+export interface DocumentMetadata {
+  readonly record: DocumentRecord
+  readonly version: number
+}
 
 export class Storage extends Context.Service<
   Storage,
@@ -68,6 +75,10 @@ export class Storage extends Context.Service<
       id: Record.DocumentId,
       at?: DocumentPoint,
     ) => Effect.Effect<Option.Option<StoredDocument>, StorageError>
+    /** Optional for structural adapters; consumers must reject unavailable metadata support. */
+    readonly documentMetadata?: (
+      id: Record.DocumentId,
+    ) => Effect.Effect<Option.Option<DocumentMetadata>, StorageError>
     /** Scans hide pagination and default to ascending ID order, except entries. */
     readonly scanConversations: (
       query?: ConversationQuery,
@@ -82,19 +93,31 @@ export class Storage extends Context.Service<
   }
 >()('effect-harness/Storage') {}
 
-export const layerMemory: Layer.Layer<Storage> = Layer.effect(Storage, Memory.make)
+const services = (storage: Effect.Success<typeof Memory.make>) =>
+  Context.make(Storage, storage).pipe(Context.add(StorageFormat, storage.storageFormat))
+
+export const layerMemory: Layer.Layer<Storage | StorageFormat, StorageError> = Layer.effectContext(
+  Memory.make.pipe(Effect.map(services)),
+)
 
 /**
  * Uses the supplied SQL client with an independent durable transaction per write.
  * Initialization, commit and ID allocation reject that client's ambient transactions
  * with an invalid StorageError; invoke them outside SqlClient.withTransaction.
+ * Opening adds nullable minimum-reader metadata support without activating v2.
+ * The deliberate StorageFormat guard activates v2 under the same metadata-row lock
+ * as writes; already-open foreign readers are not fenced by that marker.
  */
-export const layerSql: Layer.Layer<Storage, StorageError, SqlClient.SqlClient> = Layer.effect(
-  Storage,
-  Sql.make,
-)
+export const layerSql: Layer.Layer<Storage | StorageFormat, StorageError, SqlClient.SqlClient> =
+  Layer.effectContext(Sql.make.pipe(Effect.map(services)))
 
+/**
+ * Scoped single-writer journal. Own one writer per file, including across processes.
+ * Format upgrades and domain writes share that writer's semaphore and synced frames.
+ * The marker rejects old readers on reopen; it cannot stop an already-open foreign
+ * writer appending a legacy frame. Such downgrade frames are corruption on reopen.
+ */
 export const layerJsonl = (options: {
   readonly filePath: string
-}): Layer.Layer<Storage, StorageError, FileSystem.FileSystem> =>
-  Layer.effect(Storage, Jsonl.make(options))
+}): Layer.Layer<Storage | StorageFormat, StorageError, FileSystem.FileSystem> =>
+  Layer.effectContext(Jsonl.make(options).pipe(Effect.map(services)))

@@ -7,6 +7,8 @@ import type * as Stream from 'effect/Stream'
 import { dual } from 'effect/Function'
 import type * as Extension from './Extension.js'
 import type * as Task from './Task.js'
+import type * as Schema from 'effect/Schema'
+import * as TaskRegistry from './internal/TaskRegistry.js'
 import type * as Tool from './Tool.js'
 import * as Toolkit from './Toolkit.js'
 import type { RegistryError } from './RegistryError.js'
@@ -40,6 +42,7 @@ export const toolkit = <Tools extends Record<string, Tool.Any>>(
     >()
     const bound = yield* self
     return {
+      extensions: [],
       tools: Object.values(self.tools).map((declaration) => ({
         declaration,
         context,
@@ -81,22 +84,44 @@ export const extension = <R, E>(
         Capability.context(declaration).pipe(Effect.map((context) => ({ declaration, context }))),
       )
       const sections = self.sections.map((declaration) => ({ declaration, context }))
-      return { tools, tasks: [], hooks, sections }
+      return { extensions: [{ declaration: self, context }], tools, tasks: [], hooks, sections }
     }).pipe(Effect.provideContext(context))
     // Capability erases its private providers; Extension's public R/E retain their exact types.
   }) as Effect.Effect<Internal.Contents, E, R | Scope.Scope>,
 })
 
-/** Add a raw task definition and captured codec/handler services. No task or migration executes. */
-export const withTask = <R, E, T extends Task.Any, RTask, ETask>(
+/** Compile executable closures while the concrete codecs, errors and requirements are known. */
+export const withTask = <
+  R,
+  E,
+  I extends Schema.Constraint,
+  C extends Task.CheckpointCodec,
+  S extends Schema.Constraint,
+  F extends Schema.Constraint,
+  H extends Task.Phases<I, C>,
+  B extends Task.Handler<I, C> | undefined,
+  RTask,
+  ETask,
+>(
   self: Registration<R, E>,
-  task: T & { readonly context: Effect.Effect<Context.Context<never>, ETask, RTask | Scope.Scope> },
+  task: Task.Task<I, C, S, F, H, B, RTask, ETask>,
 ): Registration<R | RTask, E | ETask> => ({
   definition: self.definition,
   acquire: Effect.gen(function* () {
     const contents = yield* self.acquire
-    const context = yield* task.context
-    return { ...contents, tasks: [...contents.tasks, { declaration: task, context }] }
+    const declaration = Object.freeze({ ...task, phases: Object.freeze({ ...task.phases }) })
+    const context = yield* declaration.context
+    return {
+      ...contents,
+      tasks: [
+        ...contents.tasks,
+        {
+          declaration,
+          context,
+          executable: TaskRegistry.compile(declaration, context),
+        },
+      ],
+    }
   }),
 })
 

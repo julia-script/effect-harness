@@ -19,18 +19,17 @@ const program = Effect.gen(function* () {
   let count = 0
   for (const backend of ['memory', 'sqlite', 'jsonl']) {
     const make = Effect.gen(function* () {
-      let layer = Storage.layerMemory
-      if (backend !== 'memory') {
+      const layer = yield* Effect.gen(function* () {
+        if (backend === 'memory') return Storage.layerMemory
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'storage-consumer-' })
         directories.push(directory)
         const filename = path.join(directory, 'storage')
-        layer =
-          backend === 'sqlite'
-            ? Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename })))
-            : Storage.layerJsonl({ filePath: filename }).pipe(
-                Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
-              )
-      }
+        return backend === 'sqlite'
+          ? Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename })))
+          : Storage.layerJsonl({ filePath: filename }).pipe(
+              Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
+            )
+      })
       return {
         open: Layer.build(layer).pipe(
           Effect.map((context) => Context.get(context, Storage.Storage)),

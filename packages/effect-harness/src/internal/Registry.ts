@@ -7,6 +7,7 @@ import * as PubSub from 'effect/PubSub'
 import * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
+import type * as Extension from '../Extension.js'
 import type * as Hook from '../Hook.js'
 import type * as PromptSection from '../PromptSection.js'
 import type * as Registry from '../Registry.js'
@@ -15,6 +16,8 @@ import type * as RegistryScope from '../RegistryScope.js'
 import * as Task from '../Task.js'
 import type * as Tool from '../Tool.js'
 import type * as Toolkit from '../Toolkit.js'
+import * as TaskResolution from '../TaskResolution.js'
+import type * as TaskRegistry from './TaskRegistry.js'
 import { ToolExecution } from '../ToolExecution.js'
 
 interface Captured<A> {
@@ -22,12 +25,15 @@ interface Captured<A> {
   readonly context: Context.Context<never>
 }
 export interface Contents {
+  readonly extensions?: ReadonlyArray<Captured<Extension.Any>>
   readonly tools: ReadonlyArray<
     Captured<Tool.Any> & {
       readonly invoke: Toolkit.WithHandler<Record<string, Tool.Any>>['invoke']
     }
   >
-  readonly tasks: ReadonlyArray<Captured<Task.Any>>
+  readonly tasks: ReadonlyArray<
+    Captured<Task.Any> & { readonly executable: TaskRegistry.Executable }
+  >
   readonly hooks: ReadonlyArray<Captured<Hook.Any>>
   readonly sections: ReadonlyArray<Captured<PromptSection.Any>>
 }
@@ -106,6 +112,19 @@ const copy = <A extends object>(value: A): A =>
     Object.create(Object.getPrototypeOf(value), Object.getOwnPropertyDescriptors(value)),
   )
 const ownedContents = (contents: Contents): Contents => ({
+  extensions: Object.freeze(
+    (contents.extensions ?? []).map((item) =>
+      Object.freeze({
+        ...item,
+        declaration: Object.freeze({
+          ...item.declaration,
+          tools: Object.freeze([...item.declaration.tools]),
+          hooks: Object.freeze([...item.declaration.hooks]),
+          sections: Object.freeze([...item.declaration.sections]),
+        }),
+      }),
+    ),
+  ),
   tools: Object.freeze(
     contents.tools.map((item) => Object.freeze({ ...item, declaration: copy(item.declaration) })),
   ),
@@ -144,6 +163,9 @@ const snapshot = (entries: ReadonlyArray<Entry>, generation: number): RegistrySc
   return Object.freeze({
     generation,
     registrations: Object.freeze(entries.map((entry) => entry.owner)),
+    extensions: Object.freeze(
+      entries.flatMap((entry) => items(entry, entry.contents.extensions ?? [])),
+    ),
     tools: Object.freeze([...canonical.values()]),
     bindings: Object.freeze(bindings),
     tasks: Object.freeze(entries.flatMap((entry) => items(entry, entry.contents.tasks))),
@@ -349,10 +371,61 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
           kind,
           selection,
         )
+      const useTask = <A, E, R>(
+        kind: string,
+        use: (executable: TaskRegistry.Executable) => Effect.Effect<A, E, R>,
+        selection?: RegistryScope.Selection,
+      ) =>
+        Effect.uninterruptibleMask((restore) =>
+          Effect.gen(function* () {
+            const binding = yield* check(
+              Effect.gen(function* () {
+                const item = yield* task(kind, selection)
+                const entry = pinned.entries.find((entry) => entry.owner === item.owner)!
+                const compiled = entry.contents.tasks.find(
+                  (candidate) => candidate.declaration.kind === kind,
+                )!
+                entry.leases++
+                return { entry, compiled }
+              }),
+            )
+            return yield* restore(Effect.suspend(() => use(binding.compiled.executable))).pipe(
+              Effect.ensuring(release([binding.entry])),
+            )
+          }),
+        )
       return {
         snapshot: pinned.snapshot,
         resolveTool: (name, selection) => check(tool(name, selection)),
         resolveTask: (kind, selection) => check(task(kind, selection)),
+        prepareTask: (kind, input, selection) =>
+          useTask(kind, (executable) => executable.initialize(input), selection),
+        inspectTask: (record, failure) => {
+          const item = pinned.snapshot.tasks.find((item) => item.declaration.kind === record.kind)
+          if (item === undefined) return check(TaskResolution.inspectMissing(record))
+          if (
+            !item.owner.enabled &&
+            record.state.status !== 'terminal' &&
+            record.state.status !== 'completing'
+          )
+            return check(
+              Effect.succeed({
+                _tag: 'blocked' as const,
+                error: TaskResolution.blocked(
+                  record,
+                  'disabledDefinition',
+                  'Task registration is disabled',
+                ),
+              }),
+            )
+          if (record.state.status === 'terminal' || record.state.status === 'completing')
+            return check(TaskResolution.inspectMissing(record))
+          return useTask(record.kind, (executable) => executable.inspect(record, failure))
+        },
+        upgradeTask: (tx, record) =>
+          useTask(record.kind, (executable) => executable.upgrade(tx, record.id)),
+        invokeTask: (record, mode) =>
+          useTask(record.kind, (executable) => executable.invoke(record, mode)),
         invokeTool: (call, selection) =>
           Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {

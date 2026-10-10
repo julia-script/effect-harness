@@ -33,9 +33,12 @@ export const SqlCounter = Schema.Union([
 ])
 export const SqlMetadata = Metadata.Metadata.mapFields(() => ({
   format: SqlCounter.pipe(Schema.decodeTo(Metadata.Metadata.fields.format)),
+  minimumReader: Schema.optionalKey(SqlCounter),
   nextId: SqlCounter.pipe(Schema.decodeTo(Metadata.Metadata.fields.nextId)),
   nextSeq: SqlCounter,
-})).pipe(Schema.encodeKeys({ nextId: 'next_id', nextSeq: 'next_seq' }))
+})).pipe(
+  Schema.encodeKeys({ nextId: 'next_id', nextSeq: 'next_seq', minimumReader: 'minimum_reader' }),
+)
 const PayloadRows = Schema.Array(
   Schema.Struct({
     id: SqlCounter,
@@ -121,6 +124,39 @@ export const make = Effect.gen(function* () {
     'initialize',
     sql`SELECT singleton FROM ${metadataTable} WHERE singleton = 1`,
   )
+  // Additive metadata support leaves legacy containers at format 1. Only the guard activates v2.
+  const hasMinimumReader = sql.onDialectOrElse({
+    sqlite: () =>
+      sql`PRAGMA table_info(${metadataTable})`.pipe(
+        Effect.map((rows) => rows.some((row) => row.name === 'minimum_reader')),
+      ),
+    mssql: () =>
+      sql`SELECT 1 AS present FROM sys.columns
+      WHERE object_id = OBJECT_ID(${metadataName}) AND name = 'minimum_reader'`.pipe(
+        Effect.map((rows) => rows.length > 0),
+      ),
+    mysql: () =>
+      sql`SELECT 1 AS present FROM information_schema.columns
+      WHERE table_schema = DATABASE() AND table_name = ${metadataName} AND column_name = 'minimum_reader'`.pipe(
+        Effect.map((rows) => rows.length > 0),
+      ),
+    orElse: () =>
+      sql`SELECT 1 AS present FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = ${metadataName} AND column_name = 'minimum_reader'`.pipe(
+        Effect.map((rows) => rows.length > 0),
+      ),
+  })
+  if (!(yield* io('initialize', hasMinimumReader)))
+    yield* io(
+      'initialize',
+      sql`ALTER TABLE ${metadataTable} ADD minimum_reader BIGINT NULL`.pipe(
+        Effect.catch((error) =>
+          hasMinimumReader.pipe(
+            Effect.flatMap((present) => (present ? Effect.void : Effect.fail(error))),
+          ),
+        ),
+      ),
+    )
   if (
     existingMetadata.length === 0 &&
     (yield* io('initialize', sql`SELECT id FROM ${recordsTable}`)).length > 0
@@ -175,10 +211,21 @@ export const make = Effect.gen(function* () {
   const metadata = Effect.gen(function* () {
     const rows = yield* io(
       'metadata',
-      sql`SELECT format, next_id, next_seq FROM ${metadataTable} WHERE singleton = 1`,
+      sql`SELECT format, minimum_reader, next_id, next_seq FROM ${metadataTable} WHERE singleton = 1`,
     )
-    return yield* Schema.decodeUnknownEffect(SqlMetadata)(rows[0]).pipe(
+    const row = rows[0]
+    // SQL NULL means the original format-1 marker, not an automatically upgraded reader floor.
+    const raw =
+      row === undefined
+        ? row
+        : Object.fromEntries(
+            Object.entries(row).filter(
+              ([key, value]) => key !== 'minimum_reader' || value !== null,
+            ),
+          )
+    return yield* Schema.decodeUnknownEffect(SqlMetadata)(raw).pipe(
       Effect.mapError(Errors.corrupt('metadata')),
+      Effect.flatMap(Metadata.requireSupported),
     )
   })
   yield* metadata
@@ -286,7 +333,7 @@ export const make = Effect.gen(function* () {
       }
       yield* io(
         'write',
-        sql`UPDATE ${metadataTable} SET next_id = ${counters.next_id}, next_seq = ${counters.next_seq} WHERE singleton = 1`,
+        sql`UPDATE ${metadataTable} SET format = ${counters.format}, minimum_reader = ${counters.minimum_reader ?? null}, next_id = ${counters.next_id}, next_seq = ${counters.next_seq} WHERE singleton = 1`,
       )
     }),
     exclusive: <A>(effect: Effect.Effect<A, Errors.StorageError>) =>

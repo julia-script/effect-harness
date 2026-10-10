@@ -10,9 +10,12 @@ import * as Struct from 'effect/Struct'
 import type * as Identity from '../Identity.js'
 import * as Domain from '../Record.js'
 import type * as Document from '../Document.js'
+import { MetadataSchema } from '../Document.js'
+import * as DocumentRetirement from '../DocumentRetirement.js'
 import * as Record from '../Record.js'
 import * as Sequence from '../Sequence.js'
 import type * as Session from '../Session.js'
+import type * as Storage from '../Storage.js'
 import { SessionError, type Failure } from '../SessionError.js'
 import * as Transaction from '../Transaction.js'
 import * as TaskPolicy from '../TaskPolicy.js'
@@ -30,6 +33,11 @@ interface Draft {
   retired: boolean
 }
 
+interface Retirement {
+  readonly key: string
+  readonly record: Record.DocumentRecord
+}
+
 export interface State {
   readonly runtime: Runtime.State
   readonly options: Session.CommitOptions
@@ -40,6 +48,7 @@ export interface State {
   readonly submissions: Map<Domain.SubmissionId, Domain.Submission>
   readonly documents: Map<string, Draft>
   readonly incarnations: Map<Domain.DocumentId, Draft>
+  readonly retirements: Map<Domain.DocumentId, Retirement>
   readonly copiedSources: Set<Domain.DocumentId>
   active: boolean
 }
@@ -88,6 +97,7 @@ export const make = Effect.fnUntraced(function* (
     submissions: new Map(),
     documents: new Map(),
     incarnations: new Map(),
+    retirements: new Map(),
     copiedSources: new Set(),
     active: true,
   } satisfies State
@@ -502,7 +512,7 @@ const taskDocuments = Effect.fnUntraced(function* (state: State, taskId: Domain.
     .scanDocuments({ scope: { _tag: 'task', taskId } })
     .pipe(Stream.runCollect)
   for (const record of records) {
-    if (state.incarnations.has(record.id)) continue
+    if (state.incarnations.has(record.id) || state.retirements.has(record.id)) continue
     const stored = yield* state.runtime.storage.document(record.id)
     if (Option.isNone(stored))
       return yield* error('invalid', 'task.write', 'Task document content is absent')
@@ -525,6 +535,7 @@ const load = Effect.fnUntraced(function* (state: State, address: Record.Document
   if (previous !== undefined) return previous.retired ? Option.none<Draft>() : Option.some(previous)
   const record = yield* state.runtime.storage.findDocument(address)
   if (Option.isNone(record)) return Option.none<Draft>()
+  if (state.retirements.has(record.value.id)) return Option.none<Draft>()
   const stored = yield* state.runtime.storage.document(record.value.id)
   if (Option.isNone(stored))
     return yield* error('invalid', 'document.load', 'Document content is absent')
@@ -701,6 +712,75 @@ export const retireDocument = Effect.fnUntraced(function* <S extends Document.Co
   found.value.retired = true
 })
 
+const sameAddress = Schema.toEquivalence(Record.DocumentAddressSchema)
+export const retireDocumentMetadata = Effect.fnUntraced(function* (
+  state: State,
+  input: Document.Metadata,
+  target: DocumentRetirement.Target,
+): Effect.fn.Return<void, Failure> {
+  const policy = yield* Value.copy(MetadataSchema, input)
+  const expected = yield* Value.copy(DocumentRetirement.TargetSchema, target)
+  const conflict = () =>
+    error('conflict', 'document.retireMetadata', 'Document retirement metadata does not match')
+  if (expected.address.kind !== policy.kind || expected.address.scope._tag !== policy.scope)
+    return yield* conflict()
+  const key = yield* Value.key(expected.address)
+  const draft = state.documents.get(key)
+  const found =
+    draft === undefined
+      ? yield* state.runtime.storage.findDocument(expected.address)
+      : Option.some(draft.value.record)
+  if (Option.isSome(found) && found.value.id !== expected.id) return yield* conflict()
+  let metadata: Storage.DocumentMetadata
+  if (draft !== undefined) metadata = draft.value
+  else {
+    const read = state.runtime.storage.documentMetadata
+    if (read === undefined)
+      return yield* error(
+        'invalid',
+        'document.retireMetadata',
+        'Storage does not support document metadata reads',
+      )
+    const stored = yield* read(expected.id)
+    if (Option.isNone(stored)) {
+      if (Option.isNone(found)) return
+      return yield* error(
+        'invalid',
+        'document.retireMetadata',
+        'Live document version metadata is absent',
+      )
+    }
+    metadata = stored.value
+  }
+  const { record, version } = yield* Value.copy(
+    Schema.Struct({
+      record: Record.DocumentRecordSchema,
+      version: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+    }),
+    metadata,
+  )
+  if (
+    Option.isNone(found) ||
+    record.id !== expected.id ||
+    !sameAddress(record, expected.address) ||
+    (policy.scope === 'conversation' &&
+      (record.history !== policy.history || record.fork !== policy.fork)) ||
+    version > policy.version ||
+    record.retiredAt !== undefined
+  )
+    return yield* conflict()
+  if (draft?.retired || state.retirements.has(record.id)) return
+  if (state.copiedSources.has(record.id))
+    return yield* error(
+      'conflict',
+      'document.retireMetadata',
+      'A fork source cannot retire in the copying transaction',
+    )
+  yield* active(state)
+  if (draft === undefined) state.retirements.set(record.id, { key, record })
+  else draft.retired = true
+})
+
 const sameScope = Schema.toEquivalence(Domain.Scope)
 export const scanDocuments = Effect.fnUntraced(function* (
   state: State,
@@ -719,9 +799,12 @@ export const scanDocuments = Effect.fnUntraced(function* (
     .map((draft) => draft.value.record)
   return yield* Value.copy(
     Schema.Array(Record.DocumentRecordSchema),
-    [...stored.filter((record) => !state.incarnations.has(record.id)), ...staged].sort((a, b) =>
-      query.order === 'descending' ? b.id - a.id : a.id - b.id,
-    ),
+    [
+      ...stored.filter(
+        (record) => !state.incarnations.has(record.id) && !state.retirements.has(record.id),
+      ),
+      ...staged,
+    ].sort((a, b) => (query.order === 'descending' ? b.id - a.id : a.id - b.id)),
   )
 })
 
@@ -777,8 +860,9 @@ const stageFork = Effect.fnUntraced(function* (
   for (const [key, source] of selected) {
     const pending = state.incarnations.get(source.record.id)
     if (
-      pending !== undefined &&
-      (pending.changed || pending.retired || pending.record !== undefined)
+      state.retirements.has(source.record.id) ||
+      (pending !== undefined &&
+        (pending.changed || pending.retired || pending.record !== undefined))
     )
       return yield* error(
         'conflict',
@@ -850,6 +934,7 @@ const initialize = Effect.fnUntraced(function* (
     submissions: new Map(state.submissions),
     documents: new Map(Array.from(state.documents, ([key, draft]) => [key, clone(draft)])),
     incarnations: new Map(Array.from(state.incarnations, ([id, draft]) => [id, clone(draft)])),
+    retirements: new Map(state.retirements),
     copiedSources: new Set(state.copiedSources),
   }
   const tx: Transaction.Transaction = {
@@ -889,6 +974,7 @@ const initialize = Effect.fnUntraced(function* (
   adoptMap(state.submissions, child.submissions)
   adoptMap(state.documents, child.documents)
   adoptMap(state.incarnations, child.incarnations)
+  adoptMap(state.retirements, child.retirements)
   state.copiedSources.clear()
   for (const id of child.copiedSources) state.copiedSources.add(id)
   return result
@@ -919,6 +1005,7 @@ export const writes = Effect.fnUntraced(function* (state: State) {
   for (const value of state.entries.values()) result.push({ _tag: 'entry', value })
   for (const value of state.tasks.values()) result.push({ _tag: 'task', value })
   for (const value of state.submissions.values()) result.push({ _tag: 'submission', value })
+  for (const id of state.retirements.keys()) result.push({ _tag: 'document.retire', id })
   for (const draft of state.incarnations.values()) {
     if (draft.record !== undefined) {
       if (draft.retired) continue
@@ -944,6 +1031,10 @@ export const writes = Effect.fnUntraced(function* (state: State) {
 /** Adopts values without another storage read after the atomic batch has succeeded. */
 export const adopt = Effect.fnUntraced(function* (state: State, seq: Sequence.Sequence) {
   const documents = new Map<Domain.DocumentId, Record.StoredDocument | null>()
+  for (const [id, retirement] of state.retirements) {
+    state.runtime.cache.delete(retirement.key)
+    documents.set(id, null)
+  }
   for (const draft of state.incarnations.values()) {
     if (draft.record === undefined && !draft.changed && !draft.retired) continue
     if (draft.retired) {

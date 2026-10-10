@@ -10,6 +10,7 @@ export class StorageError extends Schema.TaggedError<StorageError>()('StorageErr
     'io',
     'closed',
     'uncertain',
+    'unsupportedFormat',
   ]),
   operation: Schema.String,
   message: Schema.String,

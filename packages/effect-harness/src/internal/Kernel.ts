@@ -12,6 +12,7 @@ import * as Sequence from '../Sequence.js'
 import * as Metadata from './Metadata.js'
 import * as Row from './Row.js'
 import * as Commit from './Commit.js'
+import * as StorageFormat from '../StorageFormat.js'
 
 const WriteBatchJson = Schema.fromJsonString(Schema.Array(Data.StorageWriteSchema))
 
@@ -35,6 +36,7 @@ export interface Access {
 }
 
 export const make = Effect.fnUntraced(function* (access: Access) {
+  yield* access.metadata.pipe(Effect.flatMap(Metadata.requireSupported))
   let closed = false
   let uncertain = false
   yield* Effect.addFinalizer(() =>
@@ -272,11 +274,27 @@ export const make = Effect.fnUntraced(function* (access: Access) {
         return id as I
       }),
     )
-  return {
+  const storage = {
     commit,
     mintId,
     conversation,
     document,
+    documentMetadata: Effect.fn('Storage.documentMetadata')(function* (id: Domain.DocumentId) {
+      const row = yield* get(id)
+      if (
+        Option.isNone(row) ||
+        row.value._tag !== 'document' ||
+        row.value.value.record.retiredAt !== undefined
+      )
+        return Option.none()
+      const version = row.value.value.revisions.at(-1)?.content.version
+      if (version === undefined)
+        return yield* Errors.make('corrupt', 'documentMetadata', 'Document has no stored version')
+      const record = yield* Schema.decodeEffect(Data.DocumentRecordSchema)(
+        row.value.value.record,
+      ).pipe(Effect.mapError(Errors.corrupt('documentMetadata')))
+      return Option.some({ record: structuredClone(record), version })
+    }),
     scanEntries,
     entry: Effect.fnUntraced(function* (id, options) {
       const row = yield* get(id)
@@ -437,4 +455,36 @@ export const make = Effect.fnUntraced(function* (access: Access) {
         ),
       ),
   } satisfies Storage['Service']
+  const formatOf = (metadata: Metadata.Metadata): StorageFormat.Format => ({
+    formatVersion: metadata.format,
+    minimumReaderVersion: metadata.minimumReader ?? 1,
+  })
+  const storageFormat: StorageFormat.StorageFormat['Service'] = {
+    storage,
+    inspect: open.pipe(
+      Effect.andThen(access.metadata),
+      Effect.flatMap(Metadata.requireSupported),
+      Effect.map(formatOf),
+    ),
+    requireSupportedFormat: Effect.fn('StorageFormat.upgrade')(function* (requested) {
+      const valid = yield* StorageFormat.validate(requested)
+      yield* open
+      // Reject a known future marker before acquiring a SQL write lock; recheck under the lock.
+      yield* access.metadata.pipe(Effect.flatMap(Metadata.requireSupported))
+      return yield* mutate(
+        Effect.gen(function* () {
+          const current = yield* access.metadata.pipe(Effect.flatMap(Metadata.requireSupported))
+          if (current.format >= valid.formatVersion) return formatOf(current)
+          const next: Metadata.Metadata = {
+            ...current,
+            format: valid.formatVersion,
+            minimumReader: valid.minimumReaderVersion,
+          }
+          yield* access.save([], next)
+          return formatOf(next)
+        }),
+      )
+    }),
+  }
+  return Object.assign(storage, { storageFormat })
 })

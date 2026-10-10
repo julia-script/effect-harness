@@ -10,6 +10,7 @@ import * as Struct from 'effect/Struct'
 import type * as Identity from './Identity.js'
 import * as Record from './Record.js'
 import type * as Document from './Document.js'
+import type * as DocumentRetirement from './DocumentRetirement.js'
 import type * as StorageRecord from './Record.js'
 import type { Failure } from './SessionError.js'
 import * as Runtime from './internal/TransactionRuntime.js'
@@ -453,4 +454,36 @@ export const retireDocument: {
     document: Document.Document<S>,
     target: Document.Target,
   ) => Runtime.use(self, (state) => Runtime.retireDocument(state, document, target)),
+)
+
+/**
+ * Retires an explicitly selected incarnation using metadata only. Supply the current
+ * kind/scope/history/fork policy and a DocumentRetirement.target from a trusted snapshot.
+ * Live versions through policy.version are accepted; future versions, wrong
+ * addresses, changed incarnations and policy mismatches fail with SessionError(conflict,
+ * document.retireMetadata). Invalid metadata fails Schema validation. Absent/already
+ * retired targets are no-ops. Legacy terminal owners may be cleaned up explicitly.
+ *
+ * Does not read content or run codecs, migrations or initializers. An unloaded target
+ * requires Storage.documentMetadata; an adapter without that capability fails with
+ * SessionError(invalid, document.retireMetadata), without a content-read fallback.
+ * Missing/invalid version metadata fails rather than guessing. This operation uses
+ * Session transaction coordination; it does not add CAS against foreign raw writers.
+ * Failure stages no retirement, and prior drafts survive caught errors. Publication and
+ * watch termination occur only after storage success. Exact retireDocument is unchanged.
+ */
+export const retireDocumentMetadata: {
+  (
+    policy: Document.Metadata,
+    target: DocumentRetirement.Target,
+  ): (self: Transaction) => Effect.Effect<void, Failure>
+  (
+    self: Transaction,
+    policy: Document.Metadata,
+    target: DocumentRetirement.Target,
+  ): Effect.Effect<void, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, policy: Document.Metadata, target: DocumentRetirement.Target) =>
+    Runtime.use(self, (state) => Runtime.retireDocumentMetadata(state, policy, target)),
 )

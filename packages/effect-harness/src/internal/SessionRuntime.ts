@@ -12,6 +12,7 @@ import type * as Session from '../Session.js'
 import type * as Transaction from '../Transaction.js'
 import { SessionError, type Failure } from '../SessionError.js'
 import { Storage } from '../Storage.js'
+import * as StorageFormat from '../StorageFormat.js'
 import * as Value from './DocumentValue.js'
 
 export type Event =
@@ -29,6 +30,9 @@ export interface State {
   readonly semaphore: Semaphore.Semaphore
   readonly cache: Map<string, Option.Option<Record.StoredDocument>>
   readonly subscribers: Set<Subscriber>
+  readonly reconciliations: Set<Queue.Queue<void, Cause.Done | SessionError>>
+  readonly requireSchedulerFormat: Effect.Effect<StorageFormat.Format, StorageFormat.Failure>
+  scheduler: object | undefined
   closed: boolean
   poison: Failure | undefined
 }
@@ -162,6 +166,7 @@ export const publish = Effect.fnUntraced(function* (
   commit: Session.Commit,
   documents: ReadonlyMap<Domain.DocumentId, Record.StoredDocument | null>,
 ) {
+  for (const queue of state.reconciliations) yield* Queue.offer(queue, undefined)
   for (const subscriber of state.subscribers) {
     if (subscriber.documentId === undefined)
       yield* emit(state, subscriber, { _tag: 'commit', value: commit })
@@ -177,6 +182,8 @@ export const publish = Effect.fnUntraced(function* (
 
 export const stop = Effect.fnUntraced(function* (state: State, error?: Failure) {
   state.poison = error
+  for (const queue of state.reconciliations) yield* Queue.end(queue)
+  state.reconciliations.clear()
   for (const subscriber of state.subscribers) {
     if (error === undefined) yield* Queue.end(subscriber.queue)
     else
@@ -195,6 +202,18 @@ export const stop = Effect.fnUntraced(function* (state: State, error?: Failure) 
 
 export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Initializer> = []) {
   const storage = yield* Storage
+  const capability = yield* Effect.serviceOption(StorageFormat.StorageFormat)
+  const guardContext = Context.make(Storage, storage)
+  const guard = StorageFormat.requireSupportedFormat({
+    formatVersion: 2,
+    minimumReaderVersion: 2,
+  }).pipe(
+    Effect.updateContext((_context: Context.Context<never>) =>
+      Option.isSome(capability)
+        ? Context.add(guardContext, StorageFormat.StorageFormat, capability.value)
+        : guardContext,
+    ),
+  )
   const semaphore = yield* Semaphore.make(1)
   const state: State = {
     initializers,
@@ -202,6 +221,9 @@ export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Ini
     semaphore,
     cache: new Map(),
     subscribers: new Set(),
+    reconciliations: new Set(),
+    requireSchedulerFormat: guard,
+    scheduler: undefined,
     closed: false,
     poison: undefined,
   }
@@ -231,3 +253,19 @@ export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Ini
       }),
   )
 })
+
+/** Latest-state scheduler signals attach atomically. Overflow coalesces into a full scan. */
+export const reconcile = (self: object) =>
+  line(self, 'session.reconcile', (state) =>
+    Effect.gen(function* () {
+      const queue = yield* Queue.sliding<void, Cause.Done | SessionError>(1)
+      state.reconciliations.add(queue)
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          state.reconciliations.delete(queue)
+          yield* Queue.shutdown(queue)
+        }),
+      )
+      return queue
+    }),
+  )

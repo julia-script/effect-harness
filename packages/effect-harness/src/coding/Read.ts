@@ -6,6 +6,9 @@ import * as Path from 'effect/Path'
 import * as Schema from 'effect/Schema'
 import * as Prompt from 'effect/ai/Prompt'
 import * as FileReader from '../FileReader.js'
+import * as ImagePreparation from '../ImagePreparation.js'
+import * as ImageRead from './ImageRead.js'
+import * as ImageReadPolicy from './ImageReadPolicy.js'
 import * as Tool from '../Tool.js'
 import type * as ToolResult from '../ToolResult.js'
 import * as Toolkit from '../Toolkit.js'
@@ -46,9 +49,8 @@ export const Outcome = Schema.Struct({
 export type Outcome = typeof Outcome.Type
 
 /**
- * UTF-8 text only in this slice. Replay is safe because it causes no mutation,
- * but a replay/continuation can observe changed file contents. Image projection
- * and model image limits attach through the positional reader in a later slice.
+ * UTF-8 text. Replay is safe because it causes no mutation, but a
+ * replay/continuation can observe changed contents. withImages adds image reads.
  */
 export const tool = Tool.makeResult('read', {
   description:
@@ -98,6 +100,19 @@ export const read = Effect.fn('CodingRead.read')(function* (
   const path = yield* FilePath.resolveRead(input.path)
   const service = yield* FileReader.FileReader
   const reader = yield* service.open(path).pipe(Effect.mapError(readerError))
+  return yield* readOpened(input, options, path, reader)
+})
+
+const readOpened = Effect.fn('CodingRead.readOpened')(function* (
+  input: Parameters,
+  options: Options,
+  path: string,
+  reader: FileReader.Reader,
+) {
+  const byteCap = options.maxBytes ?? maxBytes
+  const lineCap = options.maxLines ?? maxLines
+  const offset = input.offset ?? 1
+  const limit = input.limit ?? lineCap
   for (let attempt = 0; ; attempt++) {
     const before = yield* reader.stat.pipe(Effect.mapError(readerError))
     const size = ByteSize.toBigInt(before.size)
@@ -229,4 +244,105 @@ export const layer = (options: Options = {}) => {
   return toolkit.toLayer({
     read: (input) => read(input, captured).pipe(Effect.mapError(failureOutput)),
   })
+}
+
+export interface ImageOptions extends Options {
+  /** Whole binary source allocation budget; positive safe integer at most 2^32-1. */
+  readonly maxSourceBytes: number
+}
+export const ImageOutcome = Schema.Union([Outcome, ImageRead.Outcome, ImageRead.Placeholder])
+export type ImageOutcome = typeof ImageOutcome.Type
+export const ImageFailure = Schema.Union([FailureSchema, ImageRead.Failure])
+
+/**
+ * Read text or a whole image through one scoped opened identity. Text retains
+ * pagination/BOM/CRLF behavior; offset/limit/byteOffset select text only. Image
+ * headers and filename MIME must agree. The bound preparer validates all pixels.
+ * A non-vision policy returns a text placeholder without allocating the source
+ * or invoking a codec. Image changes (including appends) retry once then fail.
+ */
+export const readWithImages = Effect.fn('CodingRead.readWithImages')(function* (
+  input: Parameters,
+  policy: ImageReadPolicy.Policy,
+  options: ImageOptions,
+) {
+  yield* ImageRead.validateSourceBudget(input.path, options.maxSourceBytes)
+  yield* positiveInteger(input.path, 'maxBytes', options.maxBytes ?? maxBytes, maxBytes)
+  yield* positiveInteger(input.path, 'maxLines', options.maxLines ?? maxLines, maxLines)
+  yield* positiveInteger(input.path, 'offset', input.offset ?? 1)
+  yield* positiveInteger(input.path, 'limit', input.limit ?? options.maxLines ?? maxLines)
+  const path = yield* FilePath.resolveRead(input.path)
+  const service = yield* FileReader.FileReader
+  const reader = yield* service.open(path).pipe(Effect.mapError(readerError))
+  for (let attempt = 0; ; attempt++) {
+    const before = yield* reader.stat.pipe(Effect.mapError(readerError))
+    const result = yield* Effect.gen(function* () {
+      const mime = yield* ImageRead.inspect(reader, path, ByteSize.toBigInt(before.size))
+      if (mime === undefined) return undefined
+      return yield* ImageRead.read(reader, path, before, mime, policy, options.maxSourceBytes)
+    }).pipe(Effect.result)
+    const after = yield* reader.stat.pipe(Effect.mapError(readerError))
+    if (
+      !unchanged(before, after) ||
+      (result._tag === 'Failure' &&
+        result.failure._tag === 'CodingFileError' &&
+        result.failure.reason === 'changed')
+    ) {
+      if (attempt === 0) continue
+      return yield* new CodingFileError({
+        reason: 'changed',
+        path,
+        message: `${path} changed while it was read`,
+      })
+    }
+    if (result._tag === 'Failure') return yield* result.failure
+    if (result.success !== undefined) return result.success
+    return yield* readOpened(input, options, path, reader)
+  }
+})
+
+/**
+ * Ready-made image-aware declarations and handlers. Supply bound FileSystem,
+ * Path, FileReader, ImagePreparation and ImageReadPolicy Layers. The policy's
+ * current Effect runs per invocation with the caller's ToolExecution. No native
+ * codec is imported here. Install either this read declaration or the text one.
+ */
+export const withImages = (options: ImageOptions) => {
+  const captured = { ...options }
+  const imageTool = Tool.makeResult('read', {
+    description:
+      'Read text (2000 lines/50 KiB) or PNG/JPEG/GIF/WebP/BMP images. Text supports continuation; images follow explicit model policy and source/output budgets. Models without vision receive a placeholder.',
+    parameters: Parameters,
+    success: ImageOutcome,
+    failure: ImageFailure,
+    replay: 'safe',
+  })
+    .addDependency(FileReader.FileReader)
+    .addDependency(FileSystem.FileSystem)
+    .addDependency(Path.Path)
+    .addDependency(ImagePreparation.ImagePreparation)
+    .addDependency(ImageReadPolicy.ImageReadPolicy)
+  const imageToolkit = Toolkit.make(imageTool)
+  const handlers = imageToolkit.toLayer({
+    read: (input) =>
+      Effect.gen(function* () {
+        const resolver = yield* ImageReadPolicy.ImageReadPolicy
+        const policy = yield* resolver.current
+        return yield* readWithImages(input, policy, captured).pipe(
+          Effect.mapError((error) => {
+            if (error._tag === 'CodingFileError') return failureOutput(error)
+            if (error._tag === 'ImageReadError') return ImageRead.failureOutput(error)
+            return ImageRead.failureOutput(
+              new ImageRead.ImageReadError({
+                reason: 'preparation',
+                path: input.path,
+                message: `Image preparation failed: ${error._tag}`,
+                cause: error,
+              }),
+            )
+          }),
+        )
+      }),
+  })
+  return { tool: imageTool, toolkit: imageToolkit, layer: handlers }
 }

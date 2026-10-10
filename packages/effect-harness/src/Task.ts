@@ -54,7 +54,7 @@ type HandlerServices<H> = H extends (...args: never[]) => Effect.Effect<infer _A
   ? R
   : never
 type Services<S extends Schema.Constraint> = S['DecodingServices'] | S['EncodingServices']
-type External<
+export type ExecutionServices<
   I extends Schema.Constraint,
   C extends CheckpointCodec,
   S extends Schema.Constraint,
@@ -189,7 +189,7 @@ export interface Task<
   F extends Schema.Constraint,
   H extends Phases<I, C>,
   B extends Handler<I, C> | undefined = undefined,
-  R = External<I, C, S, F, H, B>,
+  R = ExecutionServices<I, C, S, F, H, B>,
   EBuild = never,
 > extends Any {
   readonly [TypeId]: {
@@ -212,7 +212,7 @@ export interface Task<
    * Layer inputs and construction failures remain explicit; this does not start a task.
    */
   readonly context: Effect.Effect<
-    Context.Context<External<I, C, S, F, H, B>>,
+    Context.Context<ExecutionServices<I, C, S, F, H, B>>,
     EBuild,
     R | Scope.Scope
   >
@@ -241,7 +241,7 @@ export const make = <
   Object.freeze({
     ...definition,
     phases: Object.freeze({ ...definition.phases }),
-    context: Effect.context<External<I, C, S, F, H, B>>(),
+    context: Effect.context<ExecutionServices<I, C, S, F, H, B>>(),
     [TypeId]: {
       _Requirements: (_: never) => _,
       _Error: (_: never) => _,

@@ -12,6 +12,7 @@ import * as Memory from './Memory.js'
 import * as Errors from '../StorageError.js'
 
 const Frame = Schema.Struct({ metadata: Metadata.Metadata, rows: Schema.Array(Row.Row) })
+const Envelope = Schema.Struct({ metadata: Metadata.Metadata, rows: Schema.Array(Schema.Unknown) })
 const io = <A, E, R>(operation: string, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     Effect.mapError((cause) => Errors.make('io', operation, `JSONL ${operation} failed`, cause)),
@@ -31,14 +32,21 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
     catch: (cause) => Errors.make('corrupt', 'recover', 'JSONL contains invalid UTF-8', cause),
   })
   const frames = yield* Stream.make(complete).pipe(
-    Stream.pipeThroughChannel(Ndjson.decodeSchemaString(Frame)()),
+    Stream.pipeThroughChannel(Ndjson.decodeSchemaString(Envelope)()),
     Stream.runCollect,
     Effect.mapError(Errors.corrupt('recover')),
   )
   let previous = Metadata.initialMetadata
   const identities = new Map<number, Row.Kind>()
-  for (const frame of frames) {
+  for (const envelope of frames) {
+    // Check the container before applying any row from this frame.
+    yield* Metadata.requireSupported(envelope.metadata)
+    const frame = yield* Schema.decodeUnknownEffect(Frame)(envelope).pipe(
+      Effect.mapError(Errors.corrupt('recover')),
+    )
     if (
+      frame.metadata.format < previous.format ||
+      (frame.metadata.minimumReader ?? 1) < (previous.minimumReader ?? 1) ||
       frame.metadata.nextId < previous.nextId ||
       (frame.metadata.nextSeq !== previous.nextSeq &&
         frame.metadata.nextSeq !== previous.nextSeq + 1) ||

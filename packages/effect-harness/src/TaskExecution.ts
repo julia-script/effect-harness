@@ -1,4 +1,4 @@
-/** Invocation service contract. The scheduler must implement the gate before supplying it. */
+/** Invocation service contract supplied by TaskScheduler under its reservation gate. */
 import * as Context from 'effect/Context'
 import type * as DateTime from 'effect/DateTime'
 import type * as Effect from 'effect/Effect'
@@ -34,6 +34,8 @@ export interface ChildOptions {
  * task identity, abort intent and invocation lifetime inside that line before the callback.
  * Use the supplied Transaction within commit; nested Session calls are not permitted.
  * Returned handles and streams must revoke/terminate when the invocation Scope ends.
+ * Child ownership, conversations, agent/settings, context and hooks require the explicit
+ * TaskScheduler.Host adapter; missing host operations fail with a typed TaskError.
  */
 export interface Access {
   readonly taskId: Record.TaskId

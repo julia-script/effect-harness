@@ -1,5 +1,11 @@
-/** Text file tools and their bound filesystem services. */
+/** File and shell tools with bound filesystem, process, and image services. */
+export * as Bash from './Bash.js'
+export * as Edit from './Edit.js'
 export * as FileError from './FileError.js'
+export * as ImageRead from './ImageRead.js'
+export * as ImageReadPolicy from './ImageReadPolicy.js'
 export * as MutationCoordinator from './MutationCoordinator.js'
+export * as PowerShell from './PowerShell.js'
 export * as Read from './Read.js'
+export * as ShellProcess from './ShellProcess.js'
 export * as Write from './Write.js'
