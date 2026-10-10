@@ -253,7 +253,11 @@ export const scanDocuments: {
     ),
 )
 
-/** Loads a detached committed revision on demand; never creates a missing document. */
+/**
+ * Loads a detached committed revision on demand; never creates a missing document.
+ * Automatically retired task documents return None. Legacy terminal task documents
+ * remain readable until explicitly retired; reads do not migrate or sweep storage.
+ */
 export const snapshot: {
   <S extends Document.Codec>(
     document: Document.Document<S>,

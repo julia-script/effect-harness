@@ -402,7 +402,14 @@ export const putTask = Effect.fnUntraced(function* (state: State, input: Domain.
     )
   if (sameTask(previous.value, value)) return
   yield* validateTask(state, value)
+  const retiring = value.state.status === 'terminal' ? yield* taskDocuments(state, value.id) : []
   yield* active(state)
+  // Prepare every retirement before staging anything: callers may catch storage errors.
+  for (const draft of retiring) {
+    draft.retired = true
+    if (!state.documents.has(draft.key)) state.documents.set(draft.key, draft)
+    state.incarnations.set(draft.value.record.id, draft)
+  }
   state.tasks.set(value.id, value)
 })
 
@@ -464,8 +471,39 @@ export const putSubmission = Effect.fnUntraced(function* (state: State, input: D
 
 const checkScope = Effect.fnUntraced(function* (state: State, scope: Domain.Scope) {
   if (scope._tag === 'conversation') yield* requireConversation(state, scope.conversationId)
-  if (scope._tag === 'task' && Option.isNone(yield* task(state, scope.taskId)))
-    return yield* error('notFound', 'document.scope', 'Document task is absent')
+  if (scope._tag === 'task') {
+    const owner = yield* task(state, scope.taskId)
+    if (Option.isNone(owner))
+      return yield* error('notFound', 'document.scope', 'Document task is absent')
+    if (owner.value.state.status === 'terminal')
+      return yield* error('conflict', 'document.scope', 'Document task is terminal')
+  }
+})
+
+const taskDocuments = Effect.fnUntraced(function* (state: State, taskId: Domain.TaskId) {
+  const retiring = Array.from(state.incarnations.values()).filter(
+    (draft) =>
+      draft.value.record.scope._tag === 'task' && draft.value.record.scope.taskId === taskId,
+  )
+  const records = yield* state.runtime.storage
+    .scanDocuments({ scope: { _tag: 'task', taskId } })
+    .pipe(Stream.runCollect)
+  for (const record of records) {
+    if (state.incarnations.has(record.id)) continue
+    const stored = yield* state.runtime.storage.document(record.id)
+    if (Option.isNone(stored))
+      return yield* error('invalid', 'task.write', 'Task document content is absent')
+    retiring.push({
+      key: yield* Value.key(record),
+      original: stored,
+      record: undefined,
+      source: undefined,
+      value: stored.value,
+      changed: false,
+      retired: false,
+    })
+  }
+  return retiring
 })
 
 const load = Effect.fnUntraced(function* (state: State, address: Record.DocumentAddress) {
@@ -510,6 +548,7 @@ export const ensureDocument = Effect.fnUntraced(function* <S extends Document.Co
   options?: { readonly seed?: Schema.Json },
 ) {
   const address = yield* Value.address(document, target)
+  yield* checkScope(state, address.scope)
   const found = yield* load(state, address)
   if (Option.isSome(found)) {
     const previous = found.value.value
@@ -531,7 +570,6 @@ export const ensureDocument = Effect.fnUntraced(function* <S extends Document.Co
     }
     return result
   }
-  yield* checkScope(state, address.scope)
   const seed =
     options?.seed === undefined ? undefined : yield* Value.copy(Schema.Json, options.seed)
   const initial = yield* Effect.try({
@@ -581,6 +619,7 @@ export const setDocument = Effect.fnUntraced(function* <S extends Document.Codec
   value: S['Type'],
 ) {
   const address = yield* Value.address(document, target)
+  yield* checkScope(state, address.scope)
   const found = yield* load(state, address)
   if (Option.isNone(found)) return yield* error('notFound', 'document.update', 'Document is absent')
   yield* Value.compatible(document, found.value.value)
@@ -602,7 +641,9 @@ export const updateDocument = Effect.fnUntraced(function* <S extends Document.Co
   target: Document.Target,
   update: (value: S['Type']) => S['Type'],
 ) {
-  const found = yield* load(state, yield* Value.address(document, target))
+  const address = yield* Value.address(document, target)
+  yield* checkScope(state, address.scope)
+  const found = yield* load(state, address)
   if (Option.isNone(found)) return yield* error('notFound', 'document.update', 'Document is absent')
   if (state.copiedSources.has(found.value.value.record.id))
     return yield* error(

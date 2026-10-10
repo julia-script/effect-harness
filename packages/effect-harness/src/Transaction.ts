@@ -272,6 +272,12 @@ export const createTask: {
     Runtime.use(self, (state) => Runtime.createTask(state, value)),
 )
 
+/**
+ * Stages a task replacement. Becoming terminal retires all active task documents
+ * in the same commit, including drafts created earlier in this callback.
+ * Retirement preparation failure stages neither replacement nor retirement, even if caught.
+ * Terminal receipts remain immutable; this does not sweep legacy terminal tasks.
+ */
 export const putTask: {
   (value: Record.Task): (self: Transaction) => Effect.Effect<void, Failure>
   (self: Transaction, value: Record.Task): Effect.Effect<void, Failure>
@@ -327,6 +333,9 @@ export const snapshot: {
  * with this commit. Failed migrations stage no replacement, even when caught.
  * New drafts have createdAt = 0 until commit assigns their persisted sequence.
  * Returned snapshots remain detached values; read the Session for committed metadata.
+ * Task owners must exist and be nonterminal, even for existing legacy documents.
+ * Terminal owners fail with SessionError(reason: 'conflict', operation: 'document.scope')
+ * before initialization or migration. Settlement cannot be undone by reusing a target.
  */
 export const ensureDocument: {
   <S extends Document.Codec>(
@@ -352,7 +361,10 @@ export const ensureDocument: {
   ) => Runtime.use(self, (state) => Runtime.ensureDocument(state, document, target, options)),
 )
 
-/** Replaces an existing document with a value encoded through its definition's schema. */
+/**
+ * Replaces an existing document with a value encoded through its definition's schema.
+ * Terminal task owners fail with SessionError(reason: 'conflict', operation: 'document.scope').
+ */
 export const setDocument: {
   <S extends Document.Codec>(
     document: Document.Document<S>,
@@ -379,6 +391,7 @@ export const setDocument: {
  * Applies a pure replacement function to a detached value of an existing document.
  * Declared migrations upgrade older values before calling the replacement function.
  * Migration and replacement validate together before staging one current-version base.
+ * Terminal task owners conflict before migration or replacement callbacks run.
  */
 export const updateDocument: {
   <S extends Document.Codec>(
@@ -404,7 +417,11 @@ export const updateDocument: {
   ) => Runtime.use(self, (state) => Runtime.updateDocument(state, document, target, update)),
 )
 
-/** Retires the current incarnation; a later ensureDocument allocates a fresh identity. */
+/**
+ * Retires the current incarnation; a later ensureDocument allocates a fresh identity
+ * when its owner is still nonterminal. May explicitly clean up legacy terminal documents.
+ * A new draft retired in its creation transaction is omitted from persistence.
+ */
 export const retireDocument: {
   <S extends Document.Codec>(
     document: Document.Document<S>,

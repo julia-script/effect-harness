@@ -19,7 +19,12 @@ const identity = {
   version: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
 }
 
-/** Session/task documents have no history policy; only rewindable documents support asOf. */
+/**
+ * Session/task documents have no history policy; only rewindable documents support asOf.
+ * A task's transition to terminal through Transaction.putTask retires its active documents.
+ * Acquisition and replacement reject terminal owners, including legacy terminal tasks.
+ * Detached snapshots remain values; legacy documents are readable until explicitly retired.
+ */
 export const MetadataSchema = Schema.Union([
   Schema.Struct({ ...identity, scope: Schema.tag('session') }),
   Schema.Struct({ ...identity, scope: Schema.tag('task') }),
