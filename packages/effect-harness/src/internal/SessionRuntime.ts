@@ -32,6 +32,7 @@ export interface State {
   readonly subscribers: Set<Subscriber>
   readonly reconciliations: Set<Queue.Queue<void, Cause.Done | SessionError>>
   readonly requireSchedulerFormat: Effect.Effect<StorageFormat.Format, StorageFormat.Failure>
+  readonly requireDocumentPatchFormat: Effect.Effect<StorageFormat.Format, StorageFormat.Failure>
   scheduler: object | undefined
   closed: boolean
   poison: Failure | undefined
@@ -204,16 +205,17 @@ export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Ini
   const storage = yield* Storage
   const capability = yield* Effect.serviceOption(StorageFormat.StorageFormat)
   const guardContext = Context.make(Storage, storage)
-  const guard = StorageFormat.requireSupportedFormat({
-    formatVersion: 2,
-    minimumReaderVersion: 2,
-  }).pipe(
-    Effect.updateContext((_context: Context.Context<never>) =>
-      Option.isSome(capability)
-        ? Context.add(guardContext, StorageFormat.StorageFormat, capability.value)
-        : guardContext,
-    ),
-  )
+  const guard = (version: 2 | 3) =>
+    StorageFormat.requireSupportedFormat({
+      formatVersion: version,
+      minimumReaderVersion: version,
+    }).pipe(
+      Effect.updateContext((_context: Context.Context<never>) =>
+        Option.isSome(capability)
+          ? Context.add(guardContext, StorageFormat.StorageFormat, capability.value)
+          : guardContext,
+      ),
+    )
   const semaphore = yield* Semaphore.make(1)
   const state: State = {
     initializers,
@@ -222,7 +224,8 @@ export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Ini
     cache: new Map(),
     subscribers: new Set(),
     reconciliations: new Set(),
-    requireSchedulerFormat: guard,
+    requireSchedulerFormat: guard(2),
+    requireDocumentPatchFormat: guard(3),
     scheduler: undefined,
     closed: false,
     poison: undefined,

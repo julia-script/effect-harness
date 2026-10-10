@@ -14,6 +14,14 @@ import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as Record from '../Record.js'
+import * as Settings from '../Settings.js'
+import * as ContextProjection from '../ContextProjection.js'
+import { ExecutionError, type Failure as ExecutionFailure } from '../ExecutionError.js'
+import { HookExecution } from '../HookExecution.js'
+import type * as TaskHook from '../TaskHook.js'
+import * as AgentState from './AgentState.js'
+import * as Supervision from './TaskSupervision.js'
+import * as Tree from './TaskTree.js'
 import { RegistryError } from '../RegistryError.js'
 import { StorageFormatError } from '../StorageFormat.js'
 import { Registry } from '../Registry.js'
@@ -56,35 +64,7 @@ const invocationFailure = (failure: Scheduler.Failure): import('../TaskError.js'
     : failure
 const sameJson = Schema.toEquivalence(Schema.Json)
 
-/** Hold receipts until ordinary direct tasks and work in owned conversations have drained. */
-const ownedLive = Effect.fnUntraced(function* (
-  tx: Transaction.Transaction,
-  id: Record.TaskId,
-  includeBackground = false,
-) {
-  const conversations = yield* Transaction.scanConversations(tx, { ownerTaskId: id }).pipe(
-    Stream.runCollect,
-  )
-  const ownedConversations = new Set(conversations.map((conversation) => conversation.id))
-  const tasks = yield* Transaction.scanTasks(tx).pipe(Stream.runCollect)
-  return tasks.some(
-    (candidate) =>
-      candidate.state.status !== 'terminal' &&
-      (includeBackground || !candidate.background) &&
-      (candidate.owner === id || ownedConversations.has(candidate.conversationId)),
-  )
-})
-const hold = Effect.fnUntraced(function* (
-  tx: Transaction.Transaction,
-  current: Record.Task,
-  outcome: Record.TaskOutcome,
-) {
-  const state: Record.TaskState = {
-    status: (yield* ownedLive(tx, current.id)) ? 'completing' : 'terminal',
-    outcome,
-  }
-  yield* Transaction.putTask(tx, TaskPolicy.withState(current, state))
-})
+const { ownedLive, hold } = Supervision
 
 export const make = Effect.fnUntraced(function* <R = never>(
   session: Session.Session,
@@ -95,6 +75,12 @@ export const make = Effect.fnUntraced(function* <R = never>(
   const ownerScope = yield* Scope.make()
   const hostContext = yield* Effect.context<R>()
   const state = yield* SessionRuntime.get(session)
+  const reopened = new Set(
+    (yield* Session.scanTasks(session).pipe(Stream.runCollect)).map((record) => record.id),
+  )
+  let recovered = false
+  const settings = yield* Settings.getOrDefault
+  const liveSettings = yield* Effect.serviceOption(Settings.Settings)
   const identity = {}
   yield* SessionRuntime.line(session, 'scheduler.make', () =>
     Effect.gen(function* () {
@@ -108,6 +94,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
     }),
   )
   const invocations = new Map<Record.TaskId, Invocation>()
+  const supervisorDone = yield* Deferred.make<void>()
   const migrations = new Map<Record.TaskId, TaskResolution.MigrationFailure>()
   const signals = yield* SessionRuntime.reconcile(session)
   const publications = yield* PubSub.sliding<void>(1)
@@ -132,6 +119,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
       enabled = false
       // Sealing is synchronous before waiting for any invocation cleanup.
       for (const invocation of invocations.values()) invocation.ended = true
+      yield* Deferred.succeed(supervisorDone, undefined)
       yield* Scope.close(ownerScope, Exit.void)
       if (state.scheduler === identity) state.scheduler = undefined
       yield* PubSub.shutdown(publications)
@@ -197,14 +185,16 @@ export const make = Effect.fnUntraced(function* <R = never>(
                 invocations.has(record.id)
               )
                 continue
-              // Restart abandonment needs the later host's ownership cascade; do not silently run it.
-              if (TaskPolicy.restartPolicy(record) === 'abandon' && !record.abortRequested) continue
-              const recovered = TaskPolicy.recover(record)
-              yield* Transaction.putTask(tx, recovered)
+              let next = record
+              if (!recovered && reopened.has(record.id)) next = TaskPolicy.recover(record)
+              else if (record.state.status === 'running')
+                next = { ...record, state: { ...record.state, status: 'pending' } }
+              if (next !== record) yield* Transaction.putTask(tx, next)
             }
           }),
         ),
       )
+      recovered = true
       failed = undefined
       enabled = true
       yield* wake
@@ -225,6 +215,208 @@ export const make = Effect.fnUntraced(function* <R = never>(
       }),
     )
 
+  const waitForTask = (id: Record.TaskId) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* check
+        const subscription = yield* PubSub.subscribe(publications)
+        yield* resume
+        for (;;) {
+          const record = yield* read(id)
+          yield* check
+          if (record.state.status === 'terminal') return record
+          if (failed !== undefined) return yield* failed
+          yield* PubSub.take(subscription)
+        }
+      }),
+    )
+  const outcomes = (ids: ReadonlyArray<Record.TaskId>) =>
+    check.pipe(
+      Effect.andThen(
+        Session.commit(session, (tx) =>
+          Effect.forEach(ids, (id) =>
+            Effect.gen(function* () {
+              const record = yield* task(tx, id)
+              if (record.state.status !== 'terminal')
+                return yield* error(
+                  'invalidCheckpoint',
+                  'task.outcomes',
+                  'Task receipt is not terminal',
+                )
+              return yield* Task.decode(Record.TaskOutcome, record.state.outcome)
+            }),
+          ),
+        ),
+      ),
+    )
+  const abortSet = (
+    id: Record.TaskId,
+    includeSelf: boolean,
+    abortOptions?: { readonly includeBackground?: boolean },
+    gate?: (tx: Transaction.Transaction) => Effect.Effect<void, import('../TaskError.js').Failure>,
+  ) =>
+    Effect.gen(function* () {
+      yield* resume
+      const captured = yield* Session.commit(session, (tx) =>
+        Effect.gen(function* () {
+          yield* check
+          if (gate !== undefined) yield* gate(tx)
+          const root = yield* task(tx, id)
+          const tree = yield* Tree.load(tx)
+          const members = Tree.owned(tree, id, abortOptions?.includeBackground).filter(
+            (record) => record.state.status !== 'terminal',
+          )
+          if (includeSelf && root.state.status !== 'terminal') members.unshift(root)
+          for (const record of members)
+            yield* Transaction.putTask(tx, TaskPolicy.requestAbort(record))
+          return members.map((record) => record.id)
+        }),
+      )
+      enabled = true
+      yield* wake
+      for (const member of captured) yield* waitForTask(member)
+    }).pipe(Effect.mapError(invocationFailure))
+  const abort: Scheduler.Service['abort'] = (id, options) => abortSet(id, true, options)
+  const abortConversation: Scheduler.Service['abortConversation'] = (id, options) =>
+    Effect.gen(function* () {
+      yield* resume
+      const captured = yield* Session.commit(session, (tx) =>
+        Effect.gen(function* () {
+          yield* check
+          if (Option.isNone(yield* Transaction.conversation(tx, id)))
+            return yield* error('notFound', 'task.abortConversation', 'Conversation is absent')
+          const tree = yield* Tree.load(tx)
+          const members = [...tree.tasks.values()].filter(
+            (record) =>
+              record.state.status !== 'terminal' &&
+              Tree.inConversation(tree, record, id, options?.includeBackground),
+          )
+          for (const record of members)
+            yield* Transaction.putTask(tx, TaskPolicy.requestAbort(record))
+          const submissions = yield* Transaction.scanSubmissions(tx, { status: 'queued' }).pipe(
+            Stream.runCollect,
+          )
+          for (const submission of submissions) {
+            if (submission._tag !== 'InputQueued') continue
+            const ownerId = tree.conversations.get(submission.conversationId)?.owner?.taskId
+            const owner = ownerId === undefined ? undefined : tree.tasks.get(ownerId)
+            const included =
+              submission.conversationId === id ||
+              (owner !== undefined &&
+                Tree.inConversation(tree, owner, id, options?.includeBackground))
+            if (included)
+              yield* Transaction.putSubmission(tx, {
+                ...submission,
+                _tag: 'InputUnanswered',
+                status: 'unanswered',
+                reason: 'aborted',
+              })
+          }
+          return members.map((record) => record.id)
+        }),
+      )
+      yield* wake
+      for (const member of captured) yield* waitForTask(member)
+    })
+  const graph = check.pipe(
+    Effect.andThen(
+      Session.commit(session, (tx) => Tree.load(tx).pipe(Effect.map(Supervision.graph))),
+    ),
+  )
+  const watchGraph = Stream.unwrap(
+    Effect.gen(function* () {
+      yield* check
+      const captured = yield* SessionRuntime.line(session, 'task.watchGraph', (state) =>
+        Effect.gen(function* () {
+          const subscriber = yield* SessionRuntime.subscribe(state)
+          const tasks = yield* state.storage.scanTasks().pipe(Stream.runCollect)
+          const conversations = yield* state.storage.scanConversations().pipe(Stream.runCollect)
+          return { subscriber, tasks, conversations }
+        }),
+      )
+      const tasks = new Map(captured.tasks.map((record) => [record.id, record]))
+      const conversations = new Map(captured.conversations.map((record) => [record.id, record]))
+      const snapshot = () => Supervision.graph({ tasks, conversations })
+      return Stream.concat(
+        Stream.succeed<Scheduler.GraphFrame>({ snapshot: snapshot() }),
+        Stream.fromQueue(captured.subscriber.queue).pipe(
+          Stream.filter((event) => event._tag === 'commit'),
+          Stream.map((event): Scheduler.GraphFrame => {
+            for (const change of event.value.changes) {
+              if (change._tag === 'task') tasks.set(change.value.id, change.value)
+              else if (change._tag === 'conversation')
+                conversations.set(change.value.id, change.value)
+            }
+            return { snapshot: snapshot(), seq: event.value.seq }
+          }),
+        ),
+      )
+    }),
+  ).pipe(
+    Stream.interruptWhen(
+      Deferred.await(supervisorDone).pipe(
+        Effect.andThen(
+          Effect.fail(error('revoked', 'task.watchGraph', 'Task supervisor scope has ended')),
+        ),
+      ),
+    ),
+  )
+
+  const createRegistered = Effect.fnUntraced(function* <T extends Task.Any>(
+    tx: Transaction.Transaction,
+    lease: RegistryScope.Lease,
+    definition: T,
+    input: Task.Input<T>,
+    options: {
+      readonly conversationId: Record.ConversationId
+      readonly owner?: Record.TaskId
+      readonly background: boolean
+      readonly restartPolicy?: TaskPolicy.RestartPolicy
+    },
+  ): Effect.fn.Return<Task.Ref<T>, import('../TaskError.js').Failure> {
+    if (options.owner !== undefined) {
+      const owner = yield* task(tx, options.owner)
+      if (options.background || options.conversationId !== owner.conversationId)
+        return yield* error(
+          'invalidDefinition',
+          'task.createChild',
+          'Owned children must share their owner conversation and cannot be background',
+        )
+    }
+    const installed = yield* lease
+      .resolveTask(definition.kind)
+      .pipe(Effect.mapError(invocationFailure))
+    const contract = installed.declaration
+    if (
+      contract.version !== definition.version ||
+      contract.input !== definition.input ||
+      contract.checkpoint !== definition.checkpoint ||
+      contract.success !== definition.success ||
+      contract.failure !== definition.failure
+    )
+      return yield* error(
+        'invalidDefinition',
+        'task.createChild',
+        'Child requires the installed task contract',
+      )
+    const wire = yield* lease
+      .prepareTask(definition.kind, input)
+      .pipe(Effect.mapError(invocationFailure))
+    const created = yield* Transaction.createTask(tx, {
+      conversationId: options.conversationId,
+      ...(options.owner === undefined ? {} : { owner: options.owner }),
+      kind: definition.kind,
+      version: definition.version,
+      input: wire.input,
+      state: { status: 'pending', checkpoint: wire.checkpoint },
+      background: options.background,
+      restartPolicy: options.restartPolicy ?? 'resume',
+      schedulerFormat: { version: 1, minimumReader: 1 },
+      abortRequested: false,
+    })
+    return { id: created.id, definition }
+  })
+
   const current = (tx: Transaction.Transaction, invocation: Invocation) =>
     Effect.gen(function* () {
       if (closed || invocations.get(invocation.taskId) !== invocation)
@@ -233,6 +425,60 @@ export const make = Effect.fnUntraced(function* <R = never>(
       yield* Transitions.gate(record, invocation)
       return record
     })
+  const executionFailure = (failure: import('../TaskError.js').Failure): ExecutionFailure =>
+    Schema.is(TaskError)(failure)
+      ? new ExecutionError({
+          reason: failure.reason === 'revoked' ? 'revoked' : 'invalid',
+          operation: failure.operation,
+          message: failure.message,
+          cause: failure,
+        })
+      : failure
+  const hookAccess = (
+    invocation: Invocation,
+    native: Access,
+  ): Context.Service.Shape<typeof HookExecution> => {
+    const available = check.pipe(
+      Effect.andThen(
+        Effect.suspend(() =>
+          invocations.get(invocation.taskId) === invocation
+            ? Effect.void
+            : Effect.fail(error('revoked', 'task.hookAccess', 'Task hook invocation has ended')),
+        ),
+      ),
+      Effect.mapError(executionFailure),
+    )
+    return {
+      taskId: invocation.taskId,
+      conversationId: invocation.conversationId,
+      snapshot: (document, target) =>
+        available.pipe(Effect.andThen(Session.snapshot(session, document, target))),
+      watch: (document, target) =>
+        Stream.unwrap(available.pipe(Effect.as(Session.watch(session, document, target)))).pipe(
+          Stream.interruptWhen(
+            Deferred.await(invocation.done).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new ExecutionError({
+                    reason: 'revoked',
+                    operation: 'task.hookWatch',
+                    message: 'Task hook invocation has ended',
+                  }),
+                ),
+              ),
+            ),
+          ),
+        ),
+      commit: (change) =>
+        native
+          .commit(change)
+          .pipe(
+            Effect.mapError((failure) =>
+              Schema.is(TaskError)(failure) ? executionFailure(failure) : failure,
+            ),
+          ),
+    }
+  }
   const access = (
     invocation: Invocation,
     lease: RegistryScope.Lease,
@@ -281,7 +527,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
               'Progress contract differs from the reservation',
             ),
           )
-    return {
+    const native: Access = {
       taskId: invocation.taskId,
       conversationId: invocation.conversationId,
       registry: {
@@ -290,8 +536,20 @@ export const make = Effect.fnUntraced(function* <R = never>(
         tools: lease.snapshot.tools.map((item) => item.declaration),
         hooks: lease.snapshot.hooks.map((item) => item.declaration),
       },
-      agent: withRead(host.agent ?? Effect.fail(unavailable('agent'))),
-      settings: withRead(host.settings ?? Effect.fail(unavailable('settings'))),
+      agent: withRead(
+        host.agent ??
+          Session.snapshot(
+            session,
+            AgentState.document,
+            AgentState.target(invocation.conversationId),
+          ).pipe(
+            Effect.map(Option.match({ onNone: () => ({}), onSome: (snapshot) => snapshot.value })),
+          ),
+      ),
+      settings: withRead(
+        host.settings ??
+          (Option.isSome(liveSettings) ? liveSettings.value.get : Effect.succeed(settings)),
+      ),
       conversation: (id) =>
         withRead(
           host.conversation === undefined
@@ -345,8 +603,8 @@ export const make = Effect.fnUntraced(function* <R = never>(
               next.checkpoint,
             )
             if (next.status === 'waiting') {
-              if (host.validateWait === undefined) return yield* unavailable('validateWait')
-              yield* host.validateWait(tx, record, next)
+              yield* Supervision.validateWait(tx, record, next)
+              if (host.validateWait !== undefined) yield* host.validateWait(tx, record, next)
             }
             yield* Transaction.putTask(
               tx,
@@ -379,20 +637,55 @@ export const make = Effect.fnUntraced(function* <R = never>(
         }),
       createChild: (tx, definition, input, options) =>
         transaction(tx).pipe(
-          Effect.andThen(
-            host.createChild === undefined
-              ? Effect.fail(unavailable('createChild'))
-              : host.createChild(tx, definition, input, options),
+          Effect.flatMap((record) =>
+            createRegistered(tx, lease, definition, input, {
+              conversationId: options?.conversationId ?? record.conversationId,
+              owner: record.id,
+              background: options?.background ?? false,
+              ...(options?.restartPolicy === undefined
+                ? {}
+                : { restartPolicy: options.restartPolicy }),
+            }),
           ),
         ),
-      createConversation: (tx) =>
+      createBackgroundSupervisor: (tx, definition, input, options) =>
         transaction(tx).pipe(
-          Effect.andThen(
-            host.createConversation === undefined
-              ? Effect.fail(unavailable('createConversation'))
-              : host.createConversation(tx),
+          Effect.flatMap((record) =>
+            createRegistered(tx, lease, definition, input, {
+              conversationId: record.conversationId,
+              background: true,
+              ...(options?.restartPolicy === undefined
+                ? {}
+                : { restartPolicy: options.restartPolicy }),
+            }),
           ),
         ),
+      createConversation: (tx, options) =>
+        transaction(tx).pipe(
+          Effect.flatMap((record) => Supervision.createConversation(tx, record, options)),
+        ),
+      createConversationTask: (tx, conversationId, definition, input, options) =>
+        transaction(tx).pipe(
+          Effect.flatMap((record) =>
+            Effect.gen(function* () {
+              const conversation = yield* Transaction.conversation(tx, conversationId)
+              if (Option.isNone(conversation) || conversation.value.owner?.taskId !== record.id)
+                return yield* error(
+                  'invalidDefinition',
+                  'task.createConversationTask',
+                  'Conversation must be owned by the invoking task',
+                )
+              return yield* createRegistered(tx, lease, definition, input, {
+                conversationId,
+                background: options?.background ?? false,
+                ...(options?.restartPolicy === undefined
+                  ? {}
+                  : { restartPolicy: options.restartPolicy }),
+              })
+            }),
+          ),
+        ),
+      outcomes: (ids) => withRead(outcomes(ids)),
       outcome: (ref) => withRead(outcome(ref)).pipe(Effect.mapError(invocationFailure)),
       wait: (ref) =>
         Effect.raceFirst(
@@ -400,14 +693,31 @@ export const make = Effect.fnUntraced(function* <R = never>(
           Deferred.await(invocation.done).pipe(Effect.andThen(Effect.interrupt)),
         ),
       abort: (id, options) =>
-        withRead(
-          host.abort === undefined ? Effect.fail(unavailable('abort')) : host.abort(id, options),
+        Effect.raceFirst(
+          withRead(
+            abortSet(id, true, options, (tx) =>
+              Effect.gen(function* () {
+                yield* current(tx, invocation)
+                const record = yield* task(tx, id)
+                if (record.owner !== invocation.taskId)
+                  return yield* error(
+                    'invalidDefinition',
+                    'task.abortOwned',
+                    'Abort requires a directly owned task',
+                  )
+              }),
+            ),
+          ),
+          Deferred.await(invocation.done).pipe(Effect.andThen(Effect.interrupt)),
         ),
       abortOwned: (options) =>
-        withRead(
-          host.abortOwned === undefined
-            ? Effect.fail(unavailable('abortOwned'))
-            : host.abortOwned(options),
+        Effect.raceFirst(
+          withRead(
+            abortSet(invocation.taskId, false, options, (tx) =>
+              current(tx, invocation).pipe(Effect.asVoid),
+            ),
+          ),
+          Deferred.await(invocation.done).pipe(Effect.andThen(Effect.interrupt)),
         ),
       entry: (id) =>
         withRead(
@@ -418,7 +728,15 @@ export const make = Effect.fnUntraced(function* <R = never>(
       entries: scopedStream(
         Session.scanEntries(session, { conversationId: invocation.conversationId }),
       ),
-      context: withRead(host.context ?? Effect.fail(unavailable('context'))),
+      context: withRead(
+        host.context ??
+          ContextProjection.read(session, invocation.conversationId).pipe(
+            Effect.map((view) => view.activeEntries),
+            Effect.mapError((cause) =>
+              error('faulted', 'task.context', 'Context projection failed', cause),
+            ),
+          ),
+      ),
       snapshot: (document, target) => withRead(Session.snapshot(session, document, target)),
       snapshotAsOf: (document, target, at) =>
         withRead(Session.snapshotAsOf(session, document, target, at)),
@@ -426,7 +744,12 @@ export const make = Effect.fnUntraced(function* <R = never>(
       dispatchHook: (event) =>
         withRead(
           host.dispatchHook === undefined
-            ? Effect.fail(unavailable('dispatchHook'))
+            ? lease.dispatchHook(event).pipe(
+                Effect.provideService(HookExecution, hookAccess(invocation, native)),
+                Effect.mapError((cause) =>
+                  error('faulted', 'task.dispatchHook', 'Native hook dispatch failed', cause),
+                ),
+              )
             : host.dispatchHook(event),
         ),
       sleepUntil: (instant) =>
@@ -444,6 +767,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
           Deferred.await(invocation.done).pipe(Effect.andThen(Effect.interrupt)),
         ),
     }
+    return native
   }
 
   const finish = (invocation: Invocation, before: Record.Task, result: TaskRegistry.PhaseResult) =>
@@ -513,13 +837,36 @@ export const make = Effect.fnUntraced(function* <R = never>(
                     ),
                   ),
               )
+        const native = access(invocation, lease, host)
+        const checkpoint = yield* Task.decode(
+          Schema.Struct({ phase: Schema.NonEmptyString }),
+          record.state.checkpoint,
+        )
+        // These notifications describe an invocation's lifecycle, including a held
+        // completion. Task terminal state remains exclusively a persisted transition.
+        const lifecycle = (stage: TaskHook.Stage, detail?: Schema.Json) =>
+          lease
+            .dispatchTaskHook({
+              kind: record.kind,
+              phase: checkpoint.phase,
+              stage,
+              taskId: record.id,
+              conversationId: record.conversationId,
+              input: record.input,
+              checkpoint: record.state.checkpoint!,
+              ...(detail === undefined ? {} : { detail }),
+            })
+            .pipe(
+              Effect.provideService(HookExecution, hookAccess(invocation, native)),
+              Effect.mapError((cause) =>
+                error('faulted', 'task.lifecycleHook', 'Native task lifecycle hook failed', cause),
+              ),
+            )
+        yield* restore(lifecycle(invocation.mode === 'abort' ? 'abort' : 'beforePhase'))
         const exit = yield* restore(
           lease
             .invokeTask(record, invocation.mode)
-            .pipe(
-              Effect.provideService(TaskExecution, access(invocation, lease, host)),
-              Scope.provide(invocation.scope),
-            ),
+            .pipe(Effect.provideService(TaskExecution, native), Scope.provide(invocation.scope)),
         ).pipe(Effect.exit)
         if (
           Exit.isFailure(exit) &&
@@ -537,7 +884,20 @@ export const make = Effect.fnUntraced(function* <R = never>(
             _tag: 'outcome',
             outcome: { status: 'faulted', error: { message: Cause.pretty(exit.cause) } },
           }
+        const after = yield* read(invocation.taskId)
+        const detail = result._tag === 'outcome' ? result.outcome : after.state.outcome
+        yield* restore(
+          lifecycle(
+            detail !== undefined &&
+              Schema.is(Record.TaskOutcome)(detail) &&
+              detail.status !== 'completed'
+              ? 'failure'
+              : 'afterPhase',
+            detail,
+          ),
+        )
         yield* finish(invocation, record, result)
+        yield* restore(lifecycle('settled', (yield* read(invocation.taskId)).state.outcome))
         if (result._tag === 'interrupted' && !closed) {
           const latest = yield* read(invocation.taskId)
           if (!latest.abortRequested)
@@ -595,6 +955,20 @@ export const make = Effect.fnUntraced(function* <R = never>(
                 if (closed || !enabled || failed !== undefined || invocations.has(id)) return
                 let record = yield* task(tx, id)
                 if (record.state.status === 'terminal' || record.kind === 'harness.run') return
+                // An ancestor may have committed a cancellation since the reconciliation
+                // pass. Mark it on this same line before admitting any phase.
+                const owner = Tree.cancellingOwner(yield* Tree.load(tx), record)
+                if (owner !== undefined) {
+                  const marked = Tree.mark(
+                    record,
+                    TaskPolicy.abortIntent(owner)?._tag === 'restart' && !Tree.failedOutcome(owner),
+                  )
+                  if (marked !== record) {
+                    yield* Transaction.putTask(tx, marked)
+                    return
+                  }
+                }
+                if (record.abortRequested && (yield* ownedLive(tx, id))) return
                 if (record.state.status === 'completing') {
                   if (!(yield* ownedLive(tx, id)))
                     yield* Transaction.putTask(tx, {
@@ -604,7 +978,14 @@ export const make = Effect.fnUntraced(function* <R = never>(
                   return
                 }
                 const inspection = yield* lease.inspectTask(record, migrations.get(id))
-                if (inspection._tag === 'blocked' || inspection._tag === 'inactive') return
+                if (inspection._tag === 'blocked' || inspection._tag === 'inactive') {
+                  if (record.abortRequested && TaskPolicy.abortIntent(record)?._tag === 'request')
+                    yield* hold(tx, record, {
+                      status: 'orphaned',
+                      reason: inspection._tag === 'blocked' ? inspection.error.reason : 'inactive',
+                    })
+                  return
+                }
                 if (inspection._tag === 'migrationRequired') {
                   const migrated = yield* lease.upgradeTask(tx, record).pipe(
                     Effect.catchCauseIf(
@@ -629,6 +1010,14 @@ export const make = Effect.fnUntraced(function* <R = never>(
                         definition: inspection.definition,
                         error: migrated.failure,
                       })
+                      if (
+                        record.abortRequested &&
+                        TaskPolicy.abortIntent(record)?._tag === 'request'
+                      )
+                        yield* hold(tx, record, {
+                          status: 'orphaned',
+                          reason: migrated.failure.reason,
+                        })
                       return
                     }
                     return yield* migrated.failure
@@ -637,16 +1026,8 @@ export const make = Effect.fnUntraced(function* <R = never>(
                   // the upgraded record on the next pass; never combine migration with running.
                   return
                 }
-                // Ownership-dependent admission must be supplied by an explicit supervisor.
-                const conversation = yield* Transaction.conversation(tx, record.conversationId)
-                const requiresHost =
-                  (Option.isSome(conversation) && conversation.value.owner !== undefined) ||
-                  record.owner !== undefined ||
-                  record.state.status === 'waiting' ||
-                  (TaskPolicy.restartPolicy(record) === 'abandon' && !record.abortRequested) ||
-                  (record.abortRequested && (yield* ownedLive(tx, id, true)))
-                if (requiresHost) {
-                  if (options.host?.reconcile === undefined) return
+                if (record.state.status === 'waiting' && !record.abortRequested) return
+                if (options.host?.reconcile !== undefined) {
                   if (
                     !(yield* options.host
                       .reconcile(tx, record)
@@ -663,12 +1044,11 @@ export const make = Effect.fnUntraced(function* <R = never>(
                     return
                   record = yield* task(tx, id)
                   if (
-                    record.state.status === 'waiting' ||
                     record.state.status === 'terminal' ||
-                    record.state.status === 'completing'
+                    record.state.status === 'completing' ||
+                    (record.state.status === 'waiting' && !record.abortRequested)
                   )
                     return
-                  // A supplied adapter may change version, identity or abort intent.
                   if ((yield* lease.inspectTask(record, migrations.get(id)))._tag !== 'compatible')
                     return
                 }
@@ -719,6 +1099,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
     yield* notify
     if (!enabled || closed || failed !== undefined) return
     yield* guard
+    yield* Session.commit(session, Supervision.reconcile)
     const records = yield* Session.scanTasks(session).pipe(Stream.runCollect)
     for (const record of records) {
       const invocation = invocations.get(record.id)
@@ -751,14 +1132,19 @@ export const make = Effect.fnUntraced(function* <R = never>(
 
   return {
     resume,
+    waitForTask,
+    outcomes,
+    abort,
+    abortConversation,
+    graph,
+    watchGraph,
     wait,
     outcome,
     start: (definition, input, startOptions) =>
       Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           yield* restore(guard)
-          if (startOptions.restartPolicy === 'abandon' && options.host?.reconcile === undefined)
-            return yield* unavailable('restartAbandonment')
+          if (!recovered) yield* restore(resume)
           const ref = yield* Effect.scoped(
             Effect.gen(function* () {
               const lease = yield* registry.acquire
@@ -776,13 +1162,6 @@ export const make = Effect.fnUntraced(function* <R = never>(
                   'task.start',
                   'Start requires the installed task contract',
                 )
-              const conversation = yield* Session.conversation(session, startOptions.conversationId)
-              if (
-                options.host?.reconcile === undefined &&
-                Option.isSome(conversation) &&
-                conversation.value.owner !== undefined
-              )
-                return yield* unavailable('ownedConversationAdmission')
               const wire = yield* restore(lease.prepareTask(definition.kind, input))
               const created = yield* Session.commit(session, (tx) =>
                 check.pipe(
@@ -792,7 +1171,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
                       kind: contract.kind,
                       version: contract.version,
                       input: wire.input,
-                      background: false,
+                      background: startOptions.background ?? false,
                       abortRequested: false,
                       restartPolicy: startOptions.restartPolicy ?? 'resume',
                       schedulerFormat: { version: 1, minimumReader: 1 },
@@ -815,41 +1194,25 @@ export const make = Effect.fnUntraced(function* <R = never>(
           Effect.scoped(
             Effect.gen(function* () {
               const lease = yield* registry.acquire
-              const record = yield* read(id)
-              let resolution = yield* lease.inspectTask(record, migrations.get(id))
-              if (
-                options.host?.reconcile === undefined &&
-                (resolution._tag === 'compatible' || resolution._tag === 'migrationRequired')
-              ) {
-                const conversation = yield* Session.conversation(session, record.conversationId)
-                let requiresHost =
-                  (Option.isSome(conversation) && conversation.value.owner !== undefined) ||
-                  record.owner !== undefined ||
-                  record.state.status === 'waiting' ||
-                  TaskPolicy.restartPolicy(record) === 'abandon'
-                if (!requiresHost && record.abortRequested) {
-                  const conversations = yield* Session.scanConversations(session, {
-                    ownerTaskId: id,
-                  }).pipe(Stream.runCollect)
-                  const owned = new Set(conversations.map((conversation) => conversation.id))
-                  const children = yield* Session.scanTasks(session).pipe(Stream.runCollect)
-                  requiresHost = children.some(
-                    (child) =>
-                      child.state.status !== 'terminal' &&
-                      (child.owner === id || owned.has(child.conversationId)),
+              const { record, tree } = yield* Session.commit(session, (tx) =>
+                Effect.gen(function* () {
+                  return { record: yield* task(tx, id), tree: yield* Tree.load(tx) }
+                }),
+              )
+              const resolution = yield* lease.inspectTask(record, migrations.get(id))
+              const invoking = invocations.has(id)
+              const waitingOn = record.abortRequested
+                ? Tree.liveOwned(tree, id).map((child) => child.id)
+                : (record.state.on ?? []).filter(
+                    (member) => tree.tasks.get(member)?.state.status !== 'terminal',
                   )
-                }
-                if (requiresHost)
-                  resolution = {
-                    _tag: 'blocked',
-                    error: TaskResolution.blocked(
-                      record,
-                      'incompatible',
-                      'Task requires the supplied ownership supervisor for children, joins, abort cascades or restart abandonment',
-                    ),
-                  }
-              }
-              return { record, resolution, invoking: invocations.has(id) }
+              let scheduling: Scheduler.Inspection['scheduling'] = 'ready'
+              if (record.state.status === 'terminal') scheduling = 'terminal'
+              else if (record.state.status === 'completing') scheduling = 'completing'
+              else if (invoking) scheduling = 'running'
+              else if (resolution._tag === 'blocked') scheduling = 'blocked'
+              else if (waitingOn.length > 0) scheduling = 'waiting'
+              return { record, resolution, invoking, scheduling, waitingOn }
             }),
           ),
         ),

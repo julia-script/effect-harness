@@ -45,7 +45,10 @@ const old = Document.define({
 const migration: Document.Migration = (value) =>
   Schema.decodeUnknownEffect(Legacy)(value).pipe(Effect.map(({ legacy }) => ({ count: legacy })))
 const current = Document.define({
-  ...old.definition,
+  kind: old.definition.kind,
+  scope: 'conversation',
+  history: 'rewindable',
+  fork: 'asOf',
   version: 3,
   schema: Current,
   initial: () => ({ count: 0 }),

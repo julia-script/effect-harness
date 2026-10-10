@@ -1,5 +1,6 @@
 /** Registry-owned installation scopes, snapshot publication and invocation resource pins. */
 import * as Context from 'effect/Context'
+import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
@@ -9,6 +10,12 @@ import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 import type * as Extension from '../Extension.js'
 import type * as Hook from '../Hook.js'
+import * as HookReducer from '../HookReducer.js'
+import * as TaskHook from '../TaskHook.js'
+import type * as ToolWrapper from '../ToolWrapper.js'
+import type * as PromptSectionWrapper from '../PromptSectionWrapper.js'
+import * as Schema from 'effect/Schema'
+import * as ToolResult from '../ToolResult.js'
 import type * as PromptSection from '../PromptSection.js'
 import type * as Registry from '../Registry.js'
 import { RegistryError } from '../RegistryError.js'
@@ -29,6 +36,7 @@ export interface Contents {
   readonly tools: ReadonlyArray<
     Captured<Tool.Any> & {
       readonly invoke: Toolkit.WithHandler<Record<string, Tool.Any>>['invoke']
+      readonly codec?: RegistryScope.ToolCodec
     }
   >
   readonly tasks: ReadonlyArray<
@@ -36,12 +44,23 @@ export interface Contents {
   >
   readonly hooks: ReadonlyArray<Captured<Hook.Any>>
   readonly sections: ReadonlyArray<Captured<PromptSection.Any>>
+  readonly toolWrappers?: ReadonlyArray<ToolWrapper.Compiled>
+  readonly sectionWrappers?: ReadonlyArray<PromptSectionWrapper.Compiled>
+  readonly taskHooks?: ReadonlyArray<TaskHook.Compiled>
 }
 
 interface Entry {
   readonly owner: RegistryScope.Owner
   readonly scope: Scope.Closeable
   readonly contents: Contents
+  leases: number
+  retired: boolean
+}
+interface Publication {
+  readonly snapshot: RegistryScope.Snapshot
+  readonly tools: ReadonlyArray<ToolWrapper.Item>
+  readonly sections: ReadonlyArray<PromptSectionWrapper.Item>
+  readonly scope: Scope.Closeable
   leases: number
   retired: boolean
 }
@@ -90,8 +109,17 @@ const validate = Effect.fnUntraced(function* (contents: Contents, id: string) {
         `Invalid, duplicate or reserved section key ${declaration.key}`,
         id,
       )
+    if (typeof declaration.bind !== 'function')
+      return yield* error(
+        'invalidSection',
+        'Leased sections require typed PromptSection.make/bind; legacy static render remains supported by Harness',
+        id,
+      )
     sections.add(declaration.key)
   }
+  for (const { declaration } of contents.hooks)
+    if (typeof declaration.bind !== 'function')
+      return yield* error('invalidRegistration', 'Leased hooks require typed Hook.make/bind', id)
   for (const { declaration } of contents.tasks)
     yield* Task.validate(declaration).pipe(
       Effect.mapError(
@@ -112,6 +140,9 @@ const copy = <A extends object>(value: A): A =>
     Object.create(Object.getPrototypeOf(value), Object.getOwnPropertyDescriptors(value)),
   )
 const ownedContents = (contents: Contents): Contents => ({
+  toolWrappers: Object.freeze((contents.toolWrappers ?? []).map(copy)),
+  sectionWrappers: Object.freeze((contents.sectionWrappers ?? []).map(copy)),
+  taskHooks: Object.freeze((contents.taskHooks ?? []).map(copy)),
   extensions: Object.freeze(
     (contents.extensions ?? []).map((item) =>
       Object.freeze({
@@ -149,7 +180,12 @@ const ownedContents = (contents: Contents): Contents => ({
   ),
 })
 
-const snapshot = (entries: ReadonlyArray<Entry>, generation: number): RegistryScope.Snapshot => {
+const snapshot = (
+  entries: ReadonlyArray<Entry>,
+  generation: number,
+  transformedTools?: ReadonlyArray<ToolWrapper.Item>,
+  transformedSections?: ReadonlyArray<PromptSectionWrapper.Item>,
+): RegistryScope.Snapshot => {
   const items = <A>(entry: Entry, list: ReadonlyArray<Captured<A>>) =>
     list.map((item) =>
       Object.freeze({
@@ -158,7 +194,12 @@ const snapshot = (entries: ReadonlyArray<Entry>, generation: number): RegistrySc
         owner: entry.owner,
       }),
     )
-  const bindings = entries.flatMap((entry) => items(entry, entry.contents.tools))
+  const bindings =
+    transformedTools === undefined
+      ? entries.flatMap((entry) => items(entry, entry.contents.tools))
+      : transformedTools.map(({ declaration, owner, context, codec }) =>
+          Object.freeze({ declaration, owner, context, ...(codec === undefined ? {} : { codec }) }),
+        )
   const canonical = new Map(bindings.map((item) => [item.declaration.name, item]))
   return Object.freeze({
     generation,
@@ -170,15 +211,32 @@ const snapshot = (entries: ReadonlyArray<Entry>, generation: number): RegistrySc
     bindings: Object.freeze(bindings),
     tasks: Object.freeze(entries.flatMap((entry) => items(entry, entry.contents.tasks))),
     hooks: Object.freeze(entries.flatMap((entry) => items(entry, entry.contents.hooks))),
-    sections: Object.freeze(entries.flatMap((entry) => items(entry, entry.contents.sections))),
+    sections: Object.freeze(
+      transformedSections === undefined
+        ? entries.flatMap((entry) => items(entry, entry.contents.sections))
+        : transformedSections.map(({ declaration, owner, context }) =>
+            Object.freeze({ declaration, owner, context }),
+          ),
+    ),
+    taskHooks: Object.freeze(
+      entries.flatMap((entry) =>
+        (entry.contents.taskHooks ?? []).map(({ kind, version, phase, stage, context }) =>
+          Object.freeze({
+            declaration: Object.freeze({ kind, version, phase, stage }),
+            context: context as Context.Context<unknown>,
+            owner: entry.owner,
+          }),
+        ),
+      ),
+    ),
   })
 }
 
-const selected = <A>(
-  item: RegistryScope.Item<A> | undefined,
+const selected = <A extends RegistryScope.Item<unknown>>(
+  item: A | undefined,
   name: string,
   selection: RegistryScope.Selection,
-): Effect.Effect<RegistryScope.Item<A>, RegistryError> => {
+): Effect.Effect<A, RegistryError> => {
   if (item === undefined)
     return Effect.fail(error('notFound', `No binding for ${name}`, selection.binding))
   if (!item.owner.enabled || selection.disabled?.includes(item.owner.id))
@@ -192,6 +250,164 @@ const selected = <A>(
   return Effect.succeed(item)
 }
 
+/** Each transformation generation has its own Scope; failure closes only unpublished resources. */
+const materialize = (
+  entries: ReadonlyArray<Entry>,
+  generation: number,
+): Effect.Effect<Publication, RegistryError> =>
+  Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      let complete = false
+      return yield* restore(
+        Scope.provide(
+          Effect.gen(function* () {
+            let tools: ReadonlyArray<ToolWrapper.Item> = entries.flatMap((entry) =>
+              entry.contents.tools.map((binding) => ({
+                declaration: binding.declaration,
+                owner: entry.owner,
+                context: binding.context as Context.Context<unknown>,
+                ...(binding.codec === undefined ? {} : { codec: binding.codec }),
+                invoke: (call: import('../Tool.js').Call) =>
+                  Effect.suspend(() => binding.invoke(call)).pipe(
+                    Effect.updateContext((input: Context.Context<ToolExecution | Scope.Scope>) =>
+                      Context.add(
+                        Context.add(
+                          binding.context,
+                          ToolExecution,
+                          Context.get(input, ToolExecution),
+                        ),
+                        Scope.Scope,
+                        Context.get(input, Scope.Scope),
+                      ),
+                    ),
+                  ),
+              })),
+            )
+            const canonicalSections = new Map<string, PromptSectionWrapper.Item>()
+            for (const entry of entries)
+              for (const binding of entry.contents.sections)
+                canonicalSections.set(binding.declaration.key, {
+                  declaration: binding.declaration,
+                  owner: entry.owner,
+                  context: binding.context as Context.Context<unknown>,
+                  render: binding.declaration.bind!(binding.context),
+                })
+            let sections = [...canonicalSections.values()]
+            for (const entry of entries) {
+              if (!entry.owner.enabled) continue
+              for (const wrapper of entry.contents.toolWrappers ?? [])
+                tools = yield* Effect.forEach(tools, (item) => {
+                  if (item.declaration.name !== wrapper.name) return Effect.succeed(item)
+                  return Effect.suspend(() => wrapper.apply(item)).pipe(
+                    Effect.flatMap((wrapped) => {
+                      if (
+                        wrapped.declaration.name !== item.declaration.name ||
+                        typeof wrapped.invoke !== 'function' ||
+                        !Schema.isSchema(wrapped.declaration.parametersSchema) ||
+                        !Schema.isSchema(wrapped.declaration.successSchema) ||
+                        !Schema.isSchema(wrapped.declaration.failureSchema)
+                      )
+                        return Effect.fail(
+                          error(
+                            'invalidRegistration',
+                            `Wrapper must preserve tool ${item.declaration.name} and its executable schemas`,
+                            entry.owner.id,
+                          ),
+                        )
+                      return Effect.succeed(
+                        Object.freeze({
+                          ...wrapped,
+                          declaration: copy(wrapped.declaration),
+                          owner: item.owner,
+                          context: wrapped.context,
+                          ...(wrapped.codec === undefined ? {} : { codec: wrapped.codec }),
+                        }),
+                      )
+                    }),
+                  )
+                })
+              for (const wrapper of entry.contents.sectionWrappers ?? [])
+                sections = yield* Effect.forEach(sections, (item) => {
+                  if (item.declaration.key !== wrapper.key) return Effect.succeed(item)
+                  return Effect.suspend(() => wrapper.apply(item)).pipe(
+                    Effect.flatMap((wrapped) => {
+                      if (
+                        wrapped.declaration.key !== item.declaration.key ||
+                        typeof wrapped.render !== 'function'
+                      )
+                        return Effect.fail(
+                          error(
+                            'invalidRegistration',
+                            `Wrapper must preserve section ${item.declaration.key}`,
+                            entry.owner.id,
+                          ),
+                        )
+                      return Effect.succeed(
+                        Object.freeze({
+                          ...wrapped,
+                          declaration: copy(wrapped.declaration),
+                          owner: item.owner,
+                          context: item.context,
+                        }),
+                      )
+                    }),
+                  )
+                })
+            }
+            for (const entry of entries)
+              for (const hook of entry.contents.taskHooks ?? []) {
+                const task = entries
+                  .flatMap((owner) => owner.contents.tasks)
+                  .find(({ declaration }) => declaration.kind === hook.kind)
+                if (
+                  hook.kind.length === 0 ||
+                  !Number.isSafeInteger(hook.version) ||
+                  hook.version < 1 ||
+                  !Schema.is(TaskHook.StageSchema)(hook.stage) ||
+                  typeof hook.execute !== 'function' ||
+                  hook.phase.length === 0 ||
+                  (task !== undefined &&
+                    (task.declaration.version !== hook.version ||
+                      !Object.hasOwn(task.declaration.phases, hook.phase)))
+                )
+                  return yield* error(
+                    'invalidTask',
+                    'Task hook must match its task contract version and phase',
+                    entry.owner.id,
+                  )
+              }
+            const result = {
+              snapshot: snapshot(entries, generation, tools, sections),
+              tools: Object.freeze(tools),
+              sections: Object.freeze(sections),
+              scope,
+              leases: 0,
+              retired: false,
+            }
+            complete = true
+            return result
+          }),
+          scope,
+        ),
+      ).pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterrupts(cause))
+            return Effect.failCause(cause as Cause.Cause<RegistryError>)
+          return Effect.fail(
+            new RegistryError({
+              reason: 'invalidRegistration',
+              operation: 'registry.wrap',
+              message: 'Snapshot transformation failed',
+              cause,
+            }),
+          )
+        }),
+        Effect.onExit((exit) => (complete ? Effect.void : Scope.close(scope, exit))),
+      )
+    }),
+  )
+
 export const make = Effect.gen(function* (): Effect.fn.Return<
   Registry.Service,
   never,
@@ -200,31 +416,44 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
   const mutex = yield* Semaphore.make(1)
   const publications = yield* PubSub.sliding<RegistryScope.Snapshot>(1)
   let entries: ReadonlyArray<Entry> = []
-  let current = snapshot(entries, 0)
+  let publication = yield* materialize(entries, 0).pipe(Effect.orDie)
+  let current = publication.snapshot
   let closed = false
   const locked = <A, E, R>(effect: Effect.Effect<A, E, R>) => mutex.withPermit(effect)
   const closeRetired = (entry: Entry) =>
     Effect.suspend(() =>
       entry.retired && entry.leases === 0 ? Scope.close(entry.scope, Exit.void) : Effect.void,
     )
-  const release = (list: ReadonlyArray<Entry>) =>
+  const closePublication = (value: Publication) =>
+    Effect.suspend(() =>
+      value.retired && value.leases === 0 ? Scope.close(value.scope, Exit.void) : Effect.void,
+    )
+  const release = (list: ReadonlyArray<Entry>, value?: Publication) =>
     Effect.uninterruptible(
       Effect.gen(function* () {
         yield* locked(
           Effect.sync(() => {
             for (const entry of list) entry.leases--
+            if (value !== undefined) value.leases--
           }),
         )
+        if (value !== undefined) yield* closePublication(value)
         yield* Effect.forEach(list, closeRetired, { discard: true })
       }),
     )
   const publish = (next: ReadonlyArray<Entry>) =>
-    Effect.gen(function* () {
-      entries = next
-      current = snapshot(entries, current.generation + 1)
-      yield* PubSub.publish(publications, current)
-      return current
-    })
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const nextPublication = yield* restore(materialize(next, current.generation + 1))
+        const previousPublication = publication
+        entries = next
+        publication = nextPublication
+        current = publication.snapshot
+        previousPublication.retired = true
+        yield* PubSub.publish(publications, current)
+        return { published: current, previousPublication }
+      }),
+    )
 
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
@@ -233,11 +462,13 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
           closed = true
           const retired = entries
           entries = []
+          publication.retired = true
           for (const entry of retired) entry.retired = true
           return retired
         }),
       )
       yield* PubSub.shutdown(publications)
+      yield* closePublication(publication)
       yield* Effect.forEach(retired, closeRetired, { discard: true })
     }),
   )
@@ -295,12 +526,13 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
                     )
                   kinds.add(declaration.kind)
                 }
-              const published = yield* publish(next)
+              const { published, previousPublication } = yield* restore(publish(next))
               committed = true
               if (previous !== undefined) previous.retired = true
-              return { published, previous }
+              return { published, previous, previousPublication }
             }),
           )
+          yield* closePublication(result.previousPublication)
           if (result.previous !== undefined) yield* closeRetired(result.previous)
           return result.published
         }).pipe(Effect.onExit((exit) => (committed ? Effect.void : Scope.close(scope, exit))))
@@ -308,18 +540,23 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
     )
 
   const uninstall: Registry.Service['uninstall'] = (id) =>
-    Effect.uninterruptible(
+    Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const result = yield* locked(
           Effect.gen(function* () {
             if (closed) return yield* error('revoked', 'Registry Scope has closed')
             const previous = entries.find((entry) => entry.owner.id === id)
-            if (previous === undefined) return { published: current, previous }
-            const published = yield* publish(entries.filter((entry) => entry !== previous))
+            if (previous === undefined)
+              return { published: current, previous, previousPublication: undefined }
+            const { published, previousPublication } = yield* restore(
+              publish(entries.filter((entry) => entry !== previous)),
+            )
             previous.retired = true
-            return { published, previous }
+            return { published, previous, previousPublication }
           }),
         )
+        if (result.previousPublication !== undefined)
+          yield* closePublication(result.previousPublication)
         if (result.previous !== undefined) yield* closeRetired(result.previous)
         return result.published
       }),
@@ -331,7 +568,8 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
         Effect.gen(function* () {
           if (closed) return yield* error('revoked', 'Registry Scope has closed')
           for (const entry of entries) entry.leases++
-          return { entries, snapshot: current }
+          publication.leases++
+          return { entries, snapshot: current, publication }
         }),
       )
       let active = true
@@ -342,7 +580,7 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
               active = false
             }),
           )
-          yield* release(pinned.entries)
+          yield* release(pinned.entries, pinned.publication)
         }),
       )
       const check = <A, E>(effect: Effect.Effect<A, E>) =>
@@ -394,9 +632,27 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
             )
           }),
         )
+      const withPublication = <A, E, R>(effect: Effect.Effect<A, E, R | Scope.Scope>) =>
+        Effect.uninterruptibleMask((restore) =>
+          Effect.gen(function* () {
+            yield* check(
+              Effect.sync(() => {
+                for (const entry of pinned.entries) entry.leases++
+                pinned.publication.leases++
+              }),
+            )
+            return yield* restore(Effect.scoped(effect)).pipe(
+              Effect.ensuring(release(pinned.entries, pinned.publication)),
+            )
+          }),
+        )
       return {
         snapshot: pinned.snapshot,
         resolveTool: (name, selection) => check(tool(name, selection)),
+        withTool: (name, use, selection) =>
+          withPublication(
+            Effect.flatMap(tool(name, selection), (item) => Effect.suspend(() => use(item))),
+          ),
         resolveTask: (kind, selection) => check(task(kind, selection)),
         prepareTask: (kind, input, selection) =>
           useTask(kind, (executable) => executable.initialize(input), selection),
@@ -427,37 +683,138 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
         invokeTask: (record, mode) =>
           useTask(record.kind, (executable) => executable.invoke(record, mode)),
         invokeTool: (call, selection) =>
-          Effect.uninterruptibleMask((restore) =>
+          withPublication(
             Effect.gen(function* () {
-              const selected = yield* check(
-                Effect.gen(function* () {
-                  const item = yield* tool(call.name, selection)
-                  const entry = pinned.entries.find((entry) => entry.owner === item.owner)!
-                  const binding = entry.contents.tools.find(
-                    (binding) => binding.declaration.name === call.name,
-                  )!
-                  entry.leases++
-                  return { entry, binding }
-                }),
+              const item = yield* tool(call.name, selection)
+              const binding = pinned.publication.tools.find(
+                (candidate) =>
+                  candidate.owner === item.owner && candidate.declaration.name === call.name,
+              )!
+              if (item.codec !== undefined) yield* item.codec.validateParameters(call.arguments)
+              const result = yield* Effect.suspend(() => binding.invoke(call))
+              return yield* Schema.decodeEffect(Schema.toType(ToolResult.ResultSchema))(result, {
+                onExcessProperty: 'error',
+              })
+            }),
+          ),
+        renderSection: (key, prompt, selection = {}) =>
+          withPublication(
+            Effect.gen(function* () {
+              const item = yield* selected(
+                pinned.snapshot.sections.find(
+                  (candidate) =>
+                    candidate.declaration.key === key &&
+                    (selection.binding === undefined || candidate.owner.id === selection.binding),
+                ),
+                key,
+                selection,
               )
-              // Captured backend and codec services win over ambient caller services. Only
-              // invocation access and Scope are fresh; Toolkit's own merge must see this context.
-              const invoke = Effect.scoped(
-                Effect.suspend(() => selected.binding.invoke(call)).pipe(
-                  Effect.updateContext((input: Context.Context<ToolExecution | Scope.Scope>) =>
-                    Context.add(
-                      Context.add(
-                        Context.merge(input, selected.binding.context),
-                        ToolExecution,
-                        Context.get(input, ToolExecution),
-                      ),
-                      Scope.Scope,
-                      Context.get(input, Scope.Scope),
+              const binding = pinned.publication.sections.find(
+                (candidate) => candidate.owner === item.owner && candidate.declaration.key === key,
+              )!
+              return yield* binding.render(prompt)
+            }),
+          ),
+        dispatchHook: (event, options = {}) =>
+          withPublication(
+            Effect.gen(function* () {
+              const callbacks = pinned.entries
+                .filter(
+                  (entry) =>
+                    entry.owner.enabled &&
+                    (options.registrations === undefined ||
+                      options.registrations.includes(entry.owner.id)),
+                )
+                .flatMap((entry) =>
+                  entry.contents.hooks.map(({ declaration, context }) => ({
+                    event: declaration.event,
+                    execute: declaration.bind(context),
+                  })),
+                )
+              const input: Hook.Event = event
+              let validateArguments: HookReducer.Options<
+                typeof options extends HookReducer.Options<infer E, infer _R>
+                  ? E | Schema.SchemaError
+                  : never,
+                typeof options extends HookReducer.Options<infer _E, infer R> ? R : never
+              >['validateArguments'] = options.validateArguments
+              if (input._tag === 'beforeTool') {
+                const item = yield* tool(input.call.name, options.selection)
+                const schema = Schema.toCodecJson(
+                  item.declaration.parametersSchema as unknown as Schema.ConstraintCodec<
+                    unknown,
+                    unknown,
+                    never,
+                    never
+                  >,
+                )
+                validateArguments = (arguments_) =>
+                  (item.codec === undefined
+                    ? Schema.decodeEffect(schema)(arguments_).pipe(
+                        Effect.provideContext(item.context),
+                        Effect.asVoid,
+                      )
+                    : item.codec.validateParameters(arguments_)
+                  ).pipe(
+                    Effect.andThen(
+                      options.validateArguments === undefined
+                        ? Effect.void
+                        : options.validateArguments(arguments_),
                     ),
-                  ),
+                  )
+              }
+              return yield* HookReducer.dispatch(callbacks, event, {
+                ...options,
+                ...(validateArguments === undefined ? {} : { validateArguments }),
+              })
+            }),
+          ),
+        dispatchTaskHook: (event, options = {}) =>
+          withPublication(
+            Effect.gen(function* () {
+              const checked = yield* Schema.decodeEffect(TaskHook.EventSchema)(event).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new HookReducer.HookFailure({
+                      event: 'task',
+                      reason: 'validation',
+                      message: 'Invalid task hook event',
+                      cause,
+                    }),
                 ),
               )
-              return yield* restore(invoke).pipe(Effect.ensuring(release([selected.entry])))
+              const definition = yield* task(checked.kind)
+              for (const entry of pinned.entries) {
+                if (
+                  !entry.owner.enabled ||
+                  (options.registrations !== undefined &&
+                    !options.registrations.includes(entry.owner.id))
+                )
+                  continue
+                for (const hook of entry.contents.taskHooks ?? []) {
+                  if (
+                    hook.kind !== checked.kind ||
+                    hook.phase !== checked.phase ||
+                    hook.stage !== checked.stage
+                  )
+                    continue
+                  if (hook.version !== definition.declaration.version)
+                    return yield* error(
+                      'incompatibleVersion',
+                      'Task hook contract version changed',
+                      entry.owner.id,
+                    )
+                  yield* HookReducer.protect(
+                    'task.' + checked.stage,
+                    Effect.suspend(() => hook.execute(checked)),
+                  ).pipe(
+                    Effect.catchIf(
+                      (failure) => failure.reason !== 'critical' && options.report !== undefined,
+                      (failure) => options.report!(failure),
+                    ),
+                  )
+                }
+              }
             }),
           ),
       } satisfies RegistryScope.Lease

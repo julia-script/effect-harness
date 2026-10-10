@@ -11,8 +11,8 @@ export interface Format {
   readonly minimumReaderVersion: number
 }
 
-/** This reader understands the legacy container and the explicitly activated v2 container. */
-export const readerVersion = 2
+/** This reader understands legacy containers and explicitly activated v2/v3 containers. */
+export const readerVersion = 3
 
 export class StorageFormatError extends Schema.TaggedError<StorageFormatError>()(
   'StorageFormatError',
@@ -59,6 +59,7 @@ export const inspect: Effect.Effect<Format, Failure, Storage> = capability.pipe(
  * Explicitly enables a supported format before emitting or executing work that requires it.
  * Built-ins preserve ID/sequence counters and never downgrade. v2 persists format=2, so
  * the previous format=1 reader schema rejects on reopen before replaying tasks.
+ * v3 enables compact document splices and rejects format2 readers before replay.
  *
  * This is a reopen barrier, not fencing of foreign writers that already opened the store.
  * Stop old processes before activation. JSONL requires one owning writer per file;
@@ -76,15 +77,15 @@ export const requireSupportedFormat = Effect.fn('StorageFormat.requireSupportedF
 export const validate = (format: Format): Effect.Effect<Format, StorageFormatError> =>
   Schema.decodeUnknownEffect(
     Schema.Struct({
-      formatVersion: Schema.Literals([1, 2]),
-      minimumReaderVersion: Schema.Literals([1, 2]),
+      formatVersion: Schema.Literals([1, 2, 3]),
+      minimumReaderVersion: Schema.Literals([1, 2, 3]),
     }).check(Schema.makeFilter((marker) => marker.formatVersion === marker.minimumReaderVersion)),
   )(format).pipe(
     Effect.mapError(
       () =>
         new StorageFormatError({
           reason: 'unsupported',
-          message: 'Only container/reader pairs 1/1 and 2/2 are supported',
+          message: 'Only container/reader pairs 1/1, 2/2 and 3/3 are supported',
         }),
     ),
     Effect.map(({ formatVersion, minimumReaderVersion }) => ({

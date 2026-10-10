@@ -15,6 +15,65 @@ import type { RegistryError } from './RegistryError.js'
 import type * as RegistryScope from './RegistryScope.js'
 import * as Capability from './internal/Capability.js'
 import * as Internal from './internal/Registry.js'
+import type * as Hook from './Hook.js'
+import type * as ToolWrapper from './ToolWrapper.js'
+import type * as PromptSectionWrapper from './PromptSectionWrapper.js'
+import type * as TaskHook from './TaskHook.js'
+
+const emptyContents: Internal.Contents = {
+  extensions: [],
+  tools: [],
+  tasks: [],
+  hooks: [],
+  sections: [],
+}
+
+/** Independently scoped wrapper registration; absent targets are inert until installed. */
+export const toolWrapper = <R, E>(
+  definition: Definition,
+  wrapper: ToolWrapper.Wrapper<R, E>,
+): Registration<R, E> => ({
+  definition: Object.freeze({ ...definition }),
+  acquire: wrapper.acquire.pipe(
+    Effect.map((compiled) => ({ ...emptyContents, toolWrappers: [compiled] })),
+  ),
+})
+
+export const promptSectionWrapper = <R, E>(
+  definition: Definition,
+  wrapper: PromptSectionWrapper.Wrapper<R, E>,
+): Registration<R, E> => ({
+  definition: Object.freeze({ ...definition }),
+  acquire: wrapper.acquire.pipe(
+    Effect.map((compiled) => ({ ...emptyContents, sectionWrappers: [compiled] })),
+  ),
+})
+
+/** Hook construction services remain visible until install captures the hook's own Layers. */
+export const hook = <N extends Hook.Name, ECall, R, EBuild>(
+  definition: Definition,
+  self: Hook.Hook<N, ECall, R, EBuild>,
+): Registration<Exclude<R, import('./HookExecution.js').HookExecution | Scope.Scope>, EBuild> => ({
+  definition: Object.freeze({ ...definition }),
+  acquire: Capability.context(self).pipe(
+    Effect.map((context) => ({ ...emptyContents, hooks: [{ declaration: self, context }] })),
+  ) as Effect.Effect<
+    Internal.Contents,
+    EBuild,
+    Exclude<R, import('./HookExecution.js').HookExecution | Scope.Scope> | Scope.Scope
+  >,
+})
+
+/** Keyed typed phase observers can be installed separately from their task definition. */
+export const taskHook = <R, E>(
+  definition: Definition,
+  self: TaskHook.Registration<R, E>,
+): Registration<R, E> => ({
+  definition: Object.freeze({ ...definition }),
+  acquire: self.acquire.pipe(
+    Effect.map((compiled) => ({ ...emptyContents, taskHooks: [compiled] })),
+  ),
+})
 
 export interface Definition {
   readonly id: string
@@ -43,11 +102,18 @@ export const toolkit = <Tools extends Record<string, Tool.Any>>(
     const bound = yield* self
     return {
       extensions: [],
-      tools: Object.values(self.tools).map((declaration) => ({
-        declaration,
-        context,
-        invoke: (call: Tool.Call) => bound.invoke(call),
-      })),
+      tools: yield* Effect.forEach(
+        Object.values(self.tools) as Array<Tools[keyof Tools]>,
+        (declaration) =>
+          Toolkit.compileCodec(declaration).pipe(
+            Effect.map((codec) => ({
+              declaration,
+              context,
+              codec,
+              invoke: (call: Tool.Call) => bound.invoke(call),
+            })),
+          ),
+      ),
       tasks: [],
       hooks: [],
       sections: [],
@@ -75,11 +141,23 @@ export const extension = <R, E>(
         R
       >
       const bound = yield* resolved
-      const tools = self.tools.map((declaration) => ({
-        declaration,
-        context,
-        invoke: bound.invoke,
-      }))
+      const tools = yield* Effect.forEach(self.tools, (declaration) =>
+        Toolkit.compileCodec(
+          declaration as unknown as Tool.Tool<
+            string,
+            Schema.Codec<unknown, unknown, never, never>,
+            Schema.Codec<unknown, unknown, never, never>,
+            Schema.Codec<unknown, unknown, never, never>
+          >,
+        ).pipe(
+          Effect.map((codec) => ({
+            declaration,
+            context,
+            codec,
+            invoke: bound.invoke,
+          })),
+        ),
+      )
       const hooks = yield* Effect.forEach(self.hooks, (declaration) =>
         Capability.context(declaration).pipe(Effect.map((context) => ({ declaration, context }))),
       )

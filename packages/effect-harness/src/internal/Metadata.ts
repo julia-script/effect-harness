@@ -18,14 +18,18 @@ export const initialMetadata: Metadata = { format: 1, nextId: 2, nextSeq: 1 }
 
 /** Validate before any record replay, including metadata supplied by another SQL writer. */
 export const requireSupported = Effect.fnUntraced(function* (metadata: Metadata) {
-  if (metadata.format > 2 || (metadata.minimumReader ?? 1) > 2)
+  if (metadata.format > 3 || (metadata.minimumReader ?? 1) > 3)
     return yield* Errors.make(
       'unsupportedFormat',
       'metadata',
       'Storage requires an unsupported reader',
     )
-  if (metadata.format === 2 && metadata.minimumReader !== 2)
-    return yield* Errors.make('corrupt', 'metadata', 'Format 2 requires minimum reader 2')
+  if (metadata.format >= 2 && metadata.minimumReader !== metadata.format)
+    return yield* Errors.make(
+      'corrupt',
+      'metadata',
+      'Container format requires its matching reader',
+    )
   if (metadata.format === 1 && (metadata.minimumReader ?? 1) !== 1)
     return yield* Errors.make('corrupt', 'metadata', 'Legacy format requires minimum reader 1')
   return metadata

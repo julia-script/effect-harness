@@ -13,6 +13,7 @@ import * as Metadata from './Metadata.js'
 import * as Row from './Row.js'
 import * as Commit from './Commit.js'
 import * as StorageFormat from '../StorageFormat.js'
+import * as DocumentPatch from './DocumentPatch.js'
 
 const WriteBatchJson = Schema.fromJsonString(Schema.Array(Data.StorageWriteSchema))
 
@@ -347,6 +348,12 @@ export const make = Effect.fnUntraced(function* (access: Access) {
           Commit.stateOf(metadata, loaded.values()),
           domainWrites,
         ).pipe(Effect.mapError(Commit.mapError('commit')))
+        if (DocumentPatch.requiresFormat3(writes) && metadata.format < 3)
+          return yield* Errors.make(
+            'unsupportedFormat',
+            'commit',
+            'Compact document splices require StorageFormat activation 3/3',
+          )
         const sequence = yield* Schema.decodeEffect(Sequence.SequenceSchema)(metadata.nextSeq).pipe(
           Effect.mapError(Errors.invalid('commit')),
         )

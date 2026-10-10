@@ -205,13 +205,11 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                     .pipe(Stream.runCollect)
                   assert.strictEqual(historical.length, 2)
                   assert.isTrue(historical.every((record) => record.retiredAt === batch.seq))
-                  const replacement = batch.changes.find(
-                    (write) => write._tag === 'document.change',
-                  )
-                  assert.deepEqual(replacement?.content, {
-                    _tag: 'base',
+                  const change = batch.changes.find((write) => write._tag === 'document.change')
+                  assert.deepEqual(change?.content, {
+                    _tag: 'delta',
                     version: 1,
-                    value: { count: 1 },
+                    ops: [['set', ['count'], 1]],
                   })
                   assert.deepEqual(before.value, { count: 0 })
                   assert.deepEqual(saved.value, { count: 0 })

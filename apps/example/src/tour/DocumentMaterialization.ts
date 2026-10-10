@@ -16,7 +16,8 @@ const legacy = Document.define({
   initial: () => ({ calls: 2 }),
 })
 const current = Document.define({
-  ...legacy.definition,
+  kind: legacy.definition.kind,
+  scope: 'session',
   version: 3,
   schema: Schema.Struct({ count: Schema.Natural }),
   initial: () => ({ count: 0 }),

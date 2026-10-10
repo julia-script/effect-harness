@@ -66,6 +66,19 @@ export type Definition<S extends Codec> = Metadata & {
    * Forks preserve their selected revision's version and upgrade on later acquisition.
    */
   readonly migrations?: { readonly [version: number]: Migration | undefined }
+  /**
+   * Selects a storage base instead of the candidate delta after all mutations validate.
+   * Receives the detached decoded final value, ordered encoded JSON operations and the
+   * prior persisted delta count (excluding this batch). A true result resets that count;
+   * false increments it once. Exceptions fail commit preparation before storage writes.
+   * New documents, migrations and explicit set/replace already write bases and skip this
+   * predicate. Keep this callback pure; external side effects cannot be rolled back.
+   */
+  readonly checkpointWhen?: (
+    value: S['Type'],
+    operations: ReadonlyArray<Record.Op>,
+    info: { readonly deltasSinceBase: number },
+  ) => boolean
 }
 
 export interface Document<S extends Codec> extends Pipeable.Pipeable {

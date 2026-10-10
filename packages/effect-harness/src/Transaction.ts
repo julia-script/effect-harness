@@ -405,7 +405,10 @@ export const setDocument: {
 /**
  * Applies a pure replacement function to a detached value of an existing document.
  * Declared migrations upgrade older values before calling the replacement function.
- * Migration and replacement validate together before staging one current-version base.
+ * Migrations and updates validate together; version upgrades persist one current-version base.
+ * Compatible ordinary updates derive validated encoded JSON operations, including compact
+ * splices for inserted/removed array spans. Equal values avoid a write; setDocument and
+ * explicit replace operations select bases. checkpointWhen may select a base at preparation.
  * Terminal task owners conflict before migration or replacement callbacks run.
  */
 export const updateDocument: {
@@ -430,6 +433,38 @@ export const updateDocument: {
     target: Document.Target,
     update: (value: S['Type']) => S['Type'],
   ) => Runtime.use(self, (state) => Runtime.updateDocument(state, document, target, update)),
+)
+
+/**
+ * Applies ordered operations to the encoded JSON representation of an existing document.
+ * Paths refer to encoded fields, even for transformed codecs. Both codec directions validate
+ * before adoption; caught failures leave earlier drafts intact. Repeated calls combine once
+ * per incarnation/batch. Explicit replace selects a base; other changes write deltas unless
+ * checkpointWhen elects a base. Splices activate storage format3 before persistence, after
+ * preparation succeeds; custom storage must supply the matching StorageFormat capability.
+ */
+export const patchDocument: {
+  <S extends Document.Codec>(
+    document: Document.Document<S>,
+    target: Document.Target,
+    operations: ReadonlyArray<Record.Op>,
+  ): (
+    self: Transaction,
+  ) => Effect.Effect<void, Failure, S['DecodingServices'] | S['EncodingServices']>
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+    operations: ReadonlyArray<Record.Op>,
+  ): Effect.Effect<void, Failure, S['DecodingServices'] | S['EncodingServices']>
+} = dual(
+  (args) => isTransaction(args[0]),
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+    operations: ReadonlyArray<Record.Op>,
+  ) => Runtime.use(self, (state) => Runtime.patchDocument(state, document, target, operations)),
 )
 
 /**

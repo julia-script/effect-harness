@@ -17,7 +17,7 @@ import * as Storage from 'effect-harness/Storage'
 import * as Task from 'effect-harness/Task'
 import { TaskError } from 'effect-harness/TaskError'
 import { TaskExecution } from 'effect-harness/TaskExecution'
-import * as TaskScheduler from 'effect-harness/TaskScheduler'
+import * as TaskScheduler from '../src/TaskScheduler.js'
 import * as Toolkit from 'effect-harness/Toolkit'
 import * as Transaction from 'effect-harness/Transaction'
 import * as SessionRuntime from '../src/internal/SessionRuntime.js'
@@ -412,7 +412,7 @@ describe('scheduler captured services and supplied boundaries', () => {
   )
 
   it.effect(
-    'missing host operations fail explicitly; a supplied invocation host uses captured services and Scope',
+    'native ownership operations work; missing transport is explicit and supplied services remain captured',
     () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -440,15 +440,13 @@ describe('scheduler captured services and supplied boundaries', () => {
                 Effect.gen(function* () {
                   const access = yield* TaskExecution
                   assert.strictEqual((yield* access.agent).instructions, 'backend:12')
-                  for (const operation of [
-                    access.abort(access.taskId),
-                    access.abortOwned(),
-                    access.conversation(root),
-                  ]) {
-                    const missing = yield* operation.pipe(Effect.flip)
-                    assert.isTrue(missing instanceof TaskError)
-                    assert.include(missing.message, 'supplied host capability')
-                  }
+                  yield* access.abortOwned()
+                  const denied = yield* access.abort(access.taskId).pipe(Effect.flip)
+                  assert.isTrue(denied instanceof TaskError)
+                  assert.include(denied.message, 'directly owned')
+                  const missing = yield* access.conversation(root).pipe(Effect.flip)
+                  assert.isTrue(missing instanceof TaskError)
+                  assert.include(missing.message, 'supplied host capability')
                   yield* finish(12)
                 }),
               two: () => Effect.void,
@@ -465,81 +463,76 @@ describe('scheduler captured services and supplied boundaries', () => {
         }),
       ).pipe(Effect.provide(Storage.layerMemory)),
   )
-  it.effect(
-    'leaves abort cascades including background children blocked without an ownership supervisor',
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const { session, registry, scheduler } = yield* open
-          let calls = 0
-          const definition = Task.make({
-            ...contract,
-            initial: () => ({ phase: 'one' as const }),
-            phases: {
-              one: () =>
-                Effect.sync(() => {
-                  calls++
-                }),
-              two: () => Effect.void,
-            },
-            abort: () =>
+  it.effect('native ordinary abort leaves conversation-owned background work independent', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { session, registry, scheduler } = yield* open
+        let calls = 0
+        const definition = Task.make({
+          ...contract,
+          initial: () => ({ phase: 'one' as const }),
+          phases: {
+            one: () =>
               Effect.sync(() => {
                 calls++
               }),
-          })
-          yield* registry.install(
-            Registry.withTask(
-              Registry.toolkit({ id: 'owned', version: 1 }, Toolkit.make()),
-              definition,
-            ),
-          )
-          const records = yield* Session.commit(session, (tx) =>
-            Effect.gen(function* () {
-              const parent = yield* Transaction.createTask(tx, {
-                kind: contract.kind,
-                version: 1,
-                conversationId: root,
-                input: 0,
-                background: false,
-                abortRequested: false,
-                state: { status: 'running', checkpoint: { phase: 'one' } },
-              })
-              const conversation = yield* Transaction.createConversation(tx, {
-                ownership: { _tag: 'task', taskId: parent.id },
-              })
-              const child = yield* Transaction.createTask(tx, {
-                kind: contract.kind,
-                version: 1,
-                conversationId: conversation.id,
-                input: 0,
-                background: true,
-                abortRequested: false,
-                state: { status: 'pending', checkpoint: { phase: 'one' } },
-              })
-              return [parent, child]
+            two: () => Effect.void,
+          },
+          abort: () =>
+            Effect.sync(() => {
+              calls++
             }),
-          )
-          yield* Session.commit(session, (tx) => Transaction.requestTaskAbort(tx, records[0]!.id))
-          yield* scheduler.resume
-          yield* settle
-          assert.strictEqual(calls, 0)
-          for (const record of records) {
-            const inspection = yield* scheduler.inspect(record.id)
-            assert.strictEqual(inspection.resolution._tag, 'blocked')
-            if (inspection.resolution._tag === 'blocked')
-              assert.strictEqual(inspection.resolution.error.reason, 'incompatible')
-            assert.strictEqual(inspection.record.state.status, 'pending')
-          }
-          assert.isTrue(Option.isNone(yield* scheduler.failure))
-          assert.strictEqual(
-            (yield* scheduler
-              .start(definition, 0, { conversationId: root, restartPolicy: 'abandon' })
-              .pipe(Effect.flip))._tag,
-            'TaskError',
-          )
-          assert.strictEqual((yield* Session.scanTasks(session).pipe(Stream.runCollect)).length, 2)
-        }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+        })
+        yield* registry.install(
+          Registry.withTask(
+            Registry.toolkit({ id: 'owned', version: 1 }, Toolkit.make()),
+            definition,
+          ),
+        )
+        const records = yield* Session.commit(session, (tx) =>
+          Effect.gen(function* () {
+            const parent = yield* Transaction.createTask(tx, {
+              kind: contract.kind,
+              version: 1,
+              conversationId: root,
+              input: 0,
+              background: false,
+              abortRequested: false,
+              state: { status: 'running', checkpoint: { phase: 'one' } },
+            })
+            const conversation = yield* Transaction.createConversation(tx, {
+              ownership: { _tag: 'task', taskId: parent.id },
+            })
+            const child = yield* Transaction.createTask(tx, {
+              kind: contract.kind,
+              version: 1,
+              conversationId: conversation.id,
+              input: 0,
+              background: true,
+              abortRequested: false,
+              state: { status: 'pending', checkpoint: { phase: 'one' } },
+            })
+            return [parent, child]
+          }),
+        )
+        yield* Session.commit(session, (tx) => Transaction.requestTaskAbort(tx, records[0]!.id))
+        yield* scheduler.resume
+        yield* settle
+        assert.strictEqual((yield* scheduler.waitForTask(records[0]!.id)).state.status, 'terminal')
+        assert.strictEqual((yield* scheduler.waitForTask(records[1]!.id)).state.status, 'terminal')
+        assert.strictEqual(calls, 2)
+        assert.isTrue((yield* scheduler.inspect(records[0]!.id)).record.abortRequested)
+        assert.isFalse((yield* scheduler.inspect(records[1]!.id)).record.abortRequested)
+        assert.isTrue(Option.isNone(yield* scheduler.failure))
+        const created = yield* scheduler.start(definition, 0, {
+          conversationId: root,
+          restartPolicy: 'abandon',
+        })
+        yield* scheduler.waitForTask(created.id)
+        assert.isFalse((yield* scheduler.inspect(created.id)).record.abortRequested)
+        assert.strictEqual((yield* Session.scanTasks(session).pipe(Stream.runCollect)).length, 3)
+      }),
+    ).pipe(Effect.provide(Storage.layerMemory)),
   )
 
   it.effect(
@@ -592,7 +585,8 @@ describe('scheduler captured services and supplied boundaries', () => {
             if (failure.value._tag === 'SessionError')
               assert.strictEqual(failure.value.reason, 'conflict')
           }
-          assert.strictEqual((yield* scheduler.inspect(record.id)).record.state.status, 'waiting')
+          // Native reconciliation releases an empty wait before the supplied boundary runs.
+          assert.strictEqual((yield* scheduler.inspect(record.id)).record.state.status, 'pending')
         }),
       ).pipe(Effect.provide(Storage.layerMemory)),
   )

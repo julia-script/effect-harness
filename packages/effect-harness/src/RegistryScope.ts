@@ -18,6 +18,11 @@ import type { TaskError } from './TaskError.js'
 import type { TaskExecution } from './TaskExecution.js'
 import type * as Scope from 'effect/Scope'
 import type { PhaseResult } from './internal/TaskRegistry.js'
+import type * as HookReducer from './HookReducer.js'
+import type * as TaskHook from './TaskHook.js'
+import type * as Prompt from 'effect/ai/Prompt'
+import type { HookExecution } from './HookExecution.js'
+import type * as Toolkit from './Toolkit.js'
 
 /** Stable application-supplied contract version, independent of publication generation. */
 export interface Owner {
@@ -33,10 +38,13 @@ export interface Item<A> {
   readonly context: Context.Context<unknown>
 }
 export type BoundExtension = Item<Extension.Any>
-export type BoundTool = Item<Tool.Any>
+/** Already compiled with concrete schemas and their independently captured services. */
+export type ToolCodec = Toolkit.BoundCodec
+export type BoundTool = Item<Tool.Any> & { readonly codec?: ToolCodec }
 export type BoundTask = Item<Task.Any>
 export type BoundHook = Item<Hook.Any>
 export type BoundSection = Item<PromptSection.Any>
+export type BoundTaskHook = Item<Pick<TaskHook.Compiled, 'kind' | 'version' | 'phase' | 'stage'>>
 
 /** Inspection is read-only and does not acquire resources or run task migrations. */
 export interface Snapshot {
@@ -50,6 +58,7 @@ export interface Snapshot {
   readonly tasks: ReadonlyArray<BoundTask>
   readonly hooks: ReadonlyArray<BoundHook>
   readonly sections: ReadonlyArray<BoundSection>
+  readonly taskHooks: ReadonlyArray<BoundTaskHook>
 }
 
 export interface Selection {
@@ -73,6 +82,12 @@ export interface Lease {
     name: string,
     selection?: Selection,
   ) => Effect.Effect<BoundTool, RegistryError>
+  /** Keep the exact owner and transformed publication pinned through codecs and final admission. */
+  readonly withTool: <A, E, R>(
+    name: string,
+    use: (item: BoundTool) => Effect.Effect<A, E, R>,
+    selection?: Selection,
+  ) => Effect.Effect<A, E | RegistryError, R>
   readonly resolveTask: (
     kind: string,
     selection?: Selection,
@@ -81,6 +96,29 @@ export interface Lease {
     call: Tool.Call,
     selection?: Selection,
   ) => Effect.Effect<ToolResult.Result, RegistryError | Failure, ToolExecution>
+  /** Real leased dispatch, with independent captured contexts and fresh invocation access. */
+  readonly dispatchHook: <N extends Hook.Name, E = never, R = never>(
+    event: Hook.Input<N>,
+    options?: HookReducer.Options<E, R> & {
+      readonly selection?: Selection
+      readonly registrations?: ReadonlyArray<string>
+    },
+  ) => Effect.Effect<
+    Hook.Output<N>,
+    RegistryError | HookReducer.HookFailure | Failure | E,
+    HookExecution | R
+  >
+  readonly dispatchTaskHook: <E = never, R = never>(
+    event: TaskHook.Event,
+    options?: Pick<HookReducer.Options<E, R>, 'report'> & {
+      readonly registrations?: ReadonlyArray<string>
+    },
+  ) => Effect.Effect<void, RegistryError | HookReducer.HookFailure | E, HookExecution | R>
+  readonly renderSection: (
+    key: string,
+    prompt: Prompt.Prompt,
+    selection?: Selection,
+  ) => Effect.Effect<string | undefined, RegistryError | Failure, HookExecution>
   /** Wire entry points compiled at typed registration, retaining resources until each call settles. */
   readonly prepareTask: (
     kind: string,

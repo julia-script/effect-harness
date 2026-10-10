@@ -13,6 +13,7 @@ import type * as Hook from './Hook.js'
 import type * as Record from './Record.js'
 import type * as Settings from './Settings.js'
 import type * as Task from './Task.js'
+import type * as TaskPolicy from './TaskPolicy.js'
 import type { Failure } from './TaskError.js'
 import type * as Tool from './Tool.js'
 import type * as Transaction from './Transaction.js'
@@ -27,6 +28,11 @@ export interface Registry {
 export interface ChildOptions {
   readonly conversationId?: Record.ConversationId
   readonly background?: boolean
+  readonly restartPolicy?: TaskPolicy.RestartPolicy
+}
+export interface ConversationOptions {
+  readonly agent?: Agent.Change
+  readonly fork?: { readonly conversationId: Record.ConversationId; readonly at: Record.EntryId }
 }
 
 /**
@@ -34,8 +40,9 @@ export interface ChildOptions {
  * task identity, abort intent and invocation lifetime inside that line before the callback.
  * Use the supplied Transaction within commit; nested Session calls are not permitted.
  * Returned handles and streams must revoke/terminate when the invocation Scope ends.
- * Child ownership, conversations, agent/settings, context and hooks require the explicit
- * TaskScheduler.Host adapter; missing host operations fail with a typed TaskError.
+ * Child ownership, raw conversation creation, agent/settings and context are native.
+ * External conversation request capabilities require a TaskScheduler.Host adapter;
+ * missing operations fail with a typed TaskError.
  */
 export interface Access {
   readonly taskId: Record.TaskId
@@ -76,7 +83,27 @@ export interface Access {
   ) => Effect.Effect<Task.Ref<T>, Failure, Task.CreationServices<T>>
   readonly createConversation: (
     tx: Transaction.Transaction,
+    options?: ConversationOptions,
   ) => Effect.Effect<Record.Conversation, Failure>
+  /** A conversation-owned background task may own its own conversation; direct children cannot. */
+  readonly createBackgroundSupervisor: <T extends Task.Any>(
+    tx: Transaction.Transaction,
+    definition: T,
+    input: Task.Input<T>,
+    options?: { readonly restartPolicy?: TaskPolicy.RestartPolicy },
+  ) => Effect.Effect<Task.Ref<T>, Failure, Task.CreationServices<T>>
+  /** Admit registered work in a conversation owned by this invocation's task. */
+  readonly createConversationTask: <T extends Task.Any>(
+    tx: Transaction.Transaction,
+    conversationId: Record.ConversationId,
+    definition: T,
+    input: Task.Input<T>,
+    options?: { readonly background?: boolean; readonly restartPolicy?: TaskPolicy.RestartPolicy },
+  ) => Effect.Effect<Task.Ref<T>, Failure, Task.CreationServices<T>>
+  /** Terminal wire receipts in caller order, including duplicates. Nonterminal members fail. */
+  readonly outcomes: (
+    ids: ReadonlyArray<Record.TaskId>,
+  ) => Effect.Effect<ReadonlyArray<Record.TaskOutcome>, Failure>
   readonly outcome: <T extends Task.Any>(
     ref: Task.Ref<T>,
   ) => Effect.Effect<
@@ -125,7 +152,7 @@ export interface Access {
   readonly sleepUntil: (instant: DateTime.Utc) => Effect.Effect<void, Failure>
 }
 
-/** Supplied to one phase or fresh abort invocation; no default scheduler implementation exists. */
+/** Native access supplied to one phase or fresh abort invocation by TaskScheduler. */
 export class TaskExecution extends Context.Service<TaskExecution, Access>()(
   'effect-harness/TaskExecution',
 ) {}

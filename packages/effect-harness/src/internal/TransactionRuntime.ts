@@ -21,7 +21,10 @@ import * as Transaction from '../Transaction.js'
 import * as TaskPolicy from '../TaskPolicy.js'
 import * as TaskTransitions from './TaskTransitions.js'
 import * as Value from './DocumentValue.js'
-import type * as Runtime from './SessionRuntime.js'
+import * as Runtime from './SessionRuntime.js'
+import * as Records from './records.js'
+import * as Patch from './DocumentPatch.js'
+import * as Json from '../Json.js'
 
 interface Draft {
   readonly key: string
@@ -31,6 +34,12 @@ interface Draft {
   value: Record.StoredDocument
   changed: boolean
   retired: boolean
+  /** Undefined selects a base; immutable arrays keep initializer savepoints isolated. */
+  operations?: ReadonlyArray<Record.Op>
+  checkpoint?: (
+    operations: ReadonlyArray<Record.Op>,
+    priorCount: number,
+  ) => Effect.Effect<boolean, SessionError>
 }
 
 interface Retirement {
@@ -269,13 +278,17 @@ const requireConversation = Effect.fnUntraced(function* (state: State, id: Domai
     return yield* error('notFound', 'conversation.access', 'Conversation is absent')
 })
 
-const liveTask = Effect.fnUntraced(function* (state: State, id: Domain.TaskId) {
+const liveTask = Effect.fnUntraced(function* (
+  state: State,
+  id: Domain.TaskId,
+  mode: 'admission' | 'settlement' = 'admission',
+) {
   const found = yield* task(state, id)
   if (Option.isNone(found)) return yield* error('notFound', 'task.owner', 'Task is absent')
   if (
     found.value.abortRequested ||
     found.value.state.status === 'terminal' ||
-    found.value.state.status === 'completing'
+    (mode === 'admission' && found.value.state.status === 'completing')
   )
     return yield* error('conflict', 'task.owner', 'Task cannot accept owned work')
   return found.value
@@ -545,6 +558,7 @@ const load = Effect.fnUntraced(function* (state: State, address: Record.Document
     record: undefined,
     source: undefined,
     value: stored.value,
+    operations: [],
     changed: false,
     retired: false,
   }
@@ -591,6 +605,8 @@ export const ensureDocument = Effect.fnUntraced(function* <S extends Document.Co
       yield* active(state)
       found.value.value = migrated
       found.value.changed = true
+      delete found.value.operations
+      delete found.value.checkpoint
     }
     return result
   }
@@ -657,6 +673,8 @@ export const setDocument = Effect.fnUntraced(function* <S extends Document.Codec
   yield* active(state)
   found.value.value = { ...found.value.value, value: encoded, deltasSinceBase: 0 }
   found.value.changed = true
+  delete found.value.operations
+  delete found.value.checkpoint
 })
 
 export const updateDocument = Effect.fnUntraced(function* <S extends Document.Codec>(
@@ -688,10 +706,98 @@ export const updateDocument = Effect.fnUntraced(function* <S extends Document.Co
       }),
   })
   const encoded = yield* Value.encode(document, value)
-  yield* Value.snapshot(document, { ...migrated, value: encoded })
+  const candidate = yield* Value.snapshot(document, { ...migrated, value: encoded })
+  const draft = found.value
+  let operations: ReadonlyArray<Record.Op> | undefined
+  if (migrated.version === draft.value.version && draft.operations !== undefined) {
+    operations = yield* Value.copy(Schema.Array(Record.Op), Patch.diff(migrated.value, encoded))
+    const replayed = yield* Records.applyOps(migrated.value, operations)
+    if (!Json.equals(replayed, encoded))
+      return yield* error(
+        'invalid',
+        'document.update',
+        'Derived document operations do not reproduce the candidate',
+      )
+    if (operations.length === 0) return
+  }
   yield* active(state)
-  found.value.value = { ...migrated, value: encoded, deltasSinceBase: 0 }
-  found.value.changed = true
+  draft.value = { ...migrated, value: encoded }
+  draft.changed = true
+  if (operations === undefined) {
+    delete draft.operations
+    delete draft.checkpoint
+    draft.value = { ...draft.value, deltasSinceBase: 0 }
+  } else {
+    draft.operations = [...(draft.operations ?? []), ...operations]
+    draft.checkpoint = checkpoint(document, candidate.value)
+  }
+})
+
+/** Capture the detached, validated decoded candidate without retaining codec services. */
+const checkpoint =
+  <S extends Document.Codec>(document: Document.Document<S>, value: S['Type']) =>
+  (
+    operations: ReadonlyArray<Record.Op>,
+    priorCount: number,
+  ): Effect.Effect<boolean, SessionError> =>
+    Effect.try({
+      try: () =>
+        document.definition.checkpointWhen?.(value, operations, { deltasSinceBase: priorCount }) ??
+        false,
+      catch: (cause) =>
+        new SessionError({
+          reason: 'invalid',
+          operation: 'document.checkpoint',
+          message: 'Document checkpoint predicate failed',
+          cause,
+        }),
+    })
+
+export const patchDocument = Effect.fnUntraced(function* <S extends Document.Codec>(
+  state: State,
+  document: Document.Document<S>,
+  target: Document.Target,
+  input: ReadonlyArray<Record.Op>,
+) {
+  const address = yield* Value.address(document, target)
+  yield* checkScope(state, address.scope)
+  const found = yield* load(state, address)
+  if (Option.isNone(found)) return yield* error('notFound', 'document.patch', 'Document is absent')
+  const draft = found.value
+  yield* Value.compatible(document, draft.value)
+  if (state.copiedSources.has(draft.value.record.id))
+    return yield* error(
+      'conflict',
+      'document.patch',
+      'A fork source cannot change in the copying transaction',
+    )
+  const operations = yield* Value.copy(Schema.Array(Record.Op), input)
+  const encoded = yield* Records.applyOps(draft.value.value, operations).pipe(
+    Effect.mapError(
+      (cause) =>
+        new SessionError({
+          reason: 'invalid',
+          operation: 'document.patch',
+          message: 'Invalid document patch',
+          cause,
+        }),
+    ),
+  )
+  const candidate = yield* Value.snapshot(document, { ...draft.value, value: encoded })
+  // Validate both directions of transformed/serviceful codecs before adopting the overlay.
+  yield* Value.encode(document, candidate.value)
+  if (operations.length === 0) return
+  yield* active(state)
+  draft.value = { ...draft.value, value: encoded }
+  draft.changed = true
+  if (draft.operations === undefined || operations.some((op) => op[0] === 'replace')) {
+    delete draft.operations
+    delete draft.checkpoint
+    draft.value = { ...draft.value, deltasSinceBase: 0 }
+  } else {
+    draft.operations = [...draft.operations, ...operations]
+    draft.checkpoint = checkpoint(document, candidate.value)
+  }
 })
 
 export const retireDocument = Effect.fnUntraced(function* <S extends Document.Codec>(
@@ -998,8 +1104,11 @@ export const forkConversation = (
 
 export const writes = Effect.fnUntraced(function* (state: State) {
   const result: Array<Record.StorageWrite> = []
+  const candidates: Array<{ readonly draft: Draft; readonly index: number }> = []
   for (const value of state.conversations.values()) {
-    if (value.owner !== undefined) yield* liveTask(state, value.owner.taskId)
+    // Creation already checked admission. A held completion preserves that owned work;
+    // terminal owners and abort requests still reject the entire prepared batch.
+    if (value.owner !== undefined) yield* liveTask(state, value.owner.taskId, 'settlement')
     result.push({ _tag: 'conversation', value })
   }
   for (const value of state.entries.values()) result.push({ _tag: 'entry', value })
@@ -1017,15 +1126,63 @@ export const writes = Effect.fnUntraced(function* (state: State) {
           record: draft.record,
           content: { _tag: 'base', version: draft.value.version, value: draft.value.value },
         })
-    } else if (draft.changed)
+    } else if (draft.changed) {
+      candidates.push({ draft, index: result.length })
       result.push({
         _tag: 'document.change',
         id: draft.value.record.id,
-        content: { _tag: 'base', version: draft.value.version, value: draft.value.value },
+        content:
+          draft.operations === undefined
+            ? { _tag: 'base', version: draft.value.version, value: draft.value.value }
+            : { _tag: 'delta', version: draft.value.version, ops: draft.operations },
       })
+    }
     if (draft.retired) result.push({ _tag: 'document.retire', id: draft.value.record.id })
   }
-  return yield* Value.copy(Schema.Array(Record.StorageWriteSchema), result)
+  const validated = [...(yield* Value.copy(Schema.Array(Record.StorageWriteSchema), result))]
+  const counts = new Map<Draft, number>()
+  for (const { draft, index } of candidates) {
+    const write = validated[index]
+    if (write?._tag !== 'document.change' || write.content._tag !== 'delta') {
+      counts.set(draft, 0)
+      continue
+    }
+    const priorCount = Option.isSome(draft.original) ? draft.original.value.deltasSinceBase : 0
+    const operations = write.content.ops
+    const checkpointOps = yield* Value.copy(Schema.Array(Record.Op), operations)
+    const chooseBase =
+      draft.checkpoint === undefined ? false : yield* draft.checkpoint(checkpointOps, priorCount)
+    if (chooseBase) {
+      validated[index] = {
+        ...write,
+        content: { _tag: 'base', version: draft.value.version, value: draft.value.value },
+        publicationOps: operations,
+      }
+      counts.set(draft, 0)
+    } else counts.set(draft, priorCount + 1)
+  }
+  // Activation follows all patch/schema/predicate preparation; no opcode can precede it.
+  if (Patch.requiresFormat3(validated)) {
+    yield* state.runtime.requireDocumentPatchFormat.pipe(
+      Effect.mapError((cause) =>
+        cause._tag === 'StorageFormatError'
+          ? new SessionError({
+              reason: 'invalid',
+              operation: 'document.format',
+              message: cause.message,
+              cause,
+            })
+          : cause,
+      ),
+      Effect.tapError((cause) =>
+        cause._tag === 'StorageError' && cause.reason === 'uncertain'
+          ? Runtime.stop(state.runtime, cause)
+          : Effect.void,
+      ),
+    )
+  }
+  for (const [draft, deltasSinceBase] of counts) draft.value = { ...draft.value, deltasSinceBase }
+  return validated
 })
 
 /** Adopts values without another storage read after the atomic batch has succeeded. */

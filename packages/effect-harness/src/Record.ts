@@ -514,6 +514,9 @@ export type Address = Pick<Document, 'kind' | 'scope' | 'key'>
 export type Point = Seq | 'current'
 /**
  * Serializable operations keep exact structural no-ops and root replacements observable.
+ * Splice tuples address an existing encoded array, then specify a safe nonnegative index,
+ * deletion count and inserted JSON items. The range must stay within the current array;
+ * inserting at its length is allowed. Persisting splices requires storage format 3/3.
  *
  * @category schemas
  */
@@ -528,6 +531,14 @@ export const Op = Schema.Union([
     Schema.NonEmptyArray(Schema.Union([Schema.String, Schema.Finite])),
   ]),
   Schema.Tuple([Schema.Literal('replace'), Schema.JsonObject]),
+  // Requires the explicitly activated container/reader format 3/3.
+  Schema.Tuple([
+    Schema.Literal('splice'),
+    Schema.NonEmptyArray(Schema.Union([Schema.String, Schema.Finite])),
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
+    Schema.Array(Schema.Json),
+  ]),
 ])
 /**
  * Persisted object/array mutation or full document replacement.

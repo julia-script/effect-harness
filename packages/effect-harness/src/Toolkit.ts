@@ -15,6 +15,77 @@ import { SessionError } from './SessionError.js'
 import { StorageError } from './StorageError.js'
 import type { ToolExecution } from './ToolExecution.js'
 import * as ToolResult from './ToolResult.js'
+import * as ToolControl from './ToolControl.js'
+
+/**
+ * Validate encoded final channels after hook replacement using the exact admitted declaration.
+ * Schema services remain explicit for direct consumers; registry consumers supply owner context.
+ */
+export const validateResult = <T extends Tool.Any>(
+  tool: T,
+  value: unknown,
+  availableTools: ReadonlyArray<string> = [],
+): Effect.Effect<
+  ToolResult.Result,
+  Schema.SchemaError | ToolControl.InvalidControl,
+  Tool.CodecServices<T>
+> =>
+  Effect.gen(function* () {
+    const result = yield* Schema.decodeUnknownEffect(ToolResult.ResultSchema)(value, {
+      onExcessProperty: 'error',
+    })
+    if (result.control !== undefined) yield* ToolControl.validate(result.control, availableTools)
+    if (Tool.hasResultChannels(tool)) {
+      const schema = result.isError ? tool.failureSchema : tool.successSchema
+      // Dynamic declarations erase only schema values; the public codec service union owns this boundary.
+      const codec = Schema.toCodecJson(
+        schema as unknown as Schema.ConstraintCodec<
+          unknown,
+          unknown,
+          Tool.CodecServices<T>,
+          Tool.CodecServices<T>
+        >,
+      )
+      const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.ResultSchema))(
+        result,
+      )
+      const decoded = yield* Schema.decodeEffect(codec)(encoded)
+      yield* Schema.encodeEffect(codec)(decoded)
+    }
+    return result
+  })
+
+/** Concrete codec operations captured before declarations enter an erased registry snapshot. */
+export interface BoundCodec {
+  readonly validateParameters: (args: Schema.JsonObject) => Effect.Effect<void, Schema.SchemaError>
+  readonly validateResult: (
+    value: unknown,
+    availableTools: ReadonlyArray<string>,
+  ) => Effect.Effect<ToolResult.Result, Schema.SchemaError | ToolControl.InvalidControl>
+}
+
+/** Capture only this declaration's services; outer wrappers never merge delegate contexts. */
+export const compileCodec = <T extends Tool.Any>(
+  declaration: T,
+): Effect.Effect<BoundCodec, never, Tool.CodecServices<T>> =>
+  Effect.gen(function* () {
+    const context = yield* Effect.context<Tool.CodecServices<T>>()
+    // Only schema values cross this boundary. Concrete T keeps every codec service visible.
+    const parameters = Schema.toCodecJson(
+      declaration.parametersSchema as unknown as Schema.ConstraintCodec<
+        unknown,
+        unknown,
+        Tool.CodecServices<T>,
+        Tool.CodecServices<T>
+      >,
+    )
+    return {
+      validateParameters: (args) =>
+        Schema.decodeEffect(parameters)(args).pipe(Effect.asVoid, Effect.setContext(context)),
+      validateResult: (value, availableTools) =>
+        validateResult(declaration, value, availableTools).pipe(Effect.setContext(context)),
+    }
+  })
 
 export interface Handler<Name extends string> {
   readonly name: Name

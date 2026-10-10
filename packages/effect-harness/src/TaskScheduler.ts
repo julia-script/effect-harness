@@ -21,9 +21,12 @@ export type Failure = TaskExecution.Failure | RegistryError | StorageFormat.Fail
 
 /**
  * Supplied host capabilities. Each open runs in a fresh invocation Scope; returned
- * conversation handles must revoke on that Scope's closure. Child ownership, joins,
- * abort cascades, agent/settings selection, context interpretation and hook composition
- * belong to the supplying host. Missing capabilities fail with a typed TaskError.
+ * conversation handles must revoke on that Scope's closure. Native ownership, joins,
+ * abort cascades and restart policies are always enforced by the scheduler. Agent,
+ * settings and context have native defaults; external conversation requests require
+ * a supplied adapter and fail with a typed TaskError when unavailable. Hooks dispatch
+ * through the pinned native registry; task lifecycle notifications describe invocation
+ * settlement, including outcomes held until owned work drains.
  * This standalone scheduler does not replace Harness.run or supervise legacy runs.
  */
 export type HostAccess = Partial<
@@ -49,10 +52,9 @@ export type HostAccess = Partial<
 }
 export interface Host<R = never> {
   /**
-   * Optional ownership supervisor, called on Session's line. Return true only after
-   * resolving owned admission/joins, abort cascades and restart policy, staging any
-   * state changes in this Transaction. False leaves the task blocked. This boundary
-   * must coordinate the whole ownership tree; the standalone scheduler does not.
+   * Optional additional admission policy, called on Session's line after native
+   * ownership reconciliation. Stage changes in this Transaction; nested Session
+   * coordination is rejected. False leaves the task blocked.
    */
   readonly reconcile?: (
     tx: import('./Transaction.js').Transaction,
@@ -70,6 +72,30 @@ export interface Inspection {
   readonly record: Record.Task
   readonly resolution: TaskResolution.Inspection<Task.Any>
   readonly invoking: boolean
+  readonly scheduling: 'ready' | 'running' | 'waiting' | 'completing' | 'terminal' | 'blocked'
+  readonly waitingOn: ReadonlyArray<Record.TaskId>
+}
+export interface GraphNode {
+  readonly id: Record.TaskId
+  readonly conversationId: Record.ConversationId
+  readonly owner?: Record.TaskId
+  readonly kind: string
+  readonly version: number
+  readonly background: boolean
+  readonly abortRequested: boolean
+  readonly status: Record.TaskState['status']
+  readonly phase?: string
+  readonly on: ReadonlyArray<Record.TaskId>
+  readonly ownedConversations: ReadonlyArray<Record.ConversationId>
+}
+export interface Graph {
+  readonly tasks: ReadonlyArray<GraphNode>
+  readonly conversations: ReadonlyArray<Record.Conversation>
+}
+export interface GraphFrame {
+  readonly snapshot: Graph
+  /** Absent only on the atomically attached initial snapshot. Later frames name committed batches. */
+  readonly seq?: import('./Sequence.js').Sequence
 }
 export interface Service {
   /** Validate the selected registered contract, create once, then enable scheduling. */
@@ -79,6 +105,8 @@ export interface Service {
     options: {
       readonly conversationId: Record.ConversationId
       readonly restartPolicy?: TaskPolicy.RestartPolicy
+      /** Conversation-owned background supervisors are independent of ordinary parent drains. */
+      readonly background?: boolean
     },
   ) => Effect.Effect<Task.Ref<T>, Failure>
   /** Recover stranded running records and wake dispatch; existing invocations stay reserved. */
@@ -104,6 +132,22 @@ export interface Service {
   readonly failure: Effect.Effect<Option.Option<Failure>>
   /** Slow observers coalesce state notifications and never delay Session commits. */
   readonly changes: Stream.Stream<void>
+  readonly waitForTask: (id: Record.TaskId) => Effect.Effect<Record.Task, Failure>
+  readonly outcomes: (
+    ids: ReadonlyArray<Record.TaskId>,
+  ) => Effect.Effect<ReadonlyArray<Record.TaskOutcome>, Failure>
+  /** Capture descendants in the marking commit, then await that exact set's cleanup. */
+  readonly abort: (
+    id: Record.TaskId,
+    options?: { readonly includeBackground?: boolean },
+  ) => Effect.Effect<void, Failure>
+  readonly abortConversation: (
+    id: Record.ConversationId,
+    options?: { readonly includeBackground?: boolean },
+  ) => Effect.Effect<void, Failure>
+  readonly graph: Effect.Effect<Graph, Failure>
+  /** Full snapshots in commit order. Slow consumers fail with SessionError overflow and must reattach. */
+  readonly watchGraph: Stream.Stream<GraphFrame, Failure>
 }
 
 /**

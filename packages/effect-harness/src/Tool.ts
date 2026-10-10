@@ -4,6 +4,8 @@ import * as Schema from 'effect/Schema'
 import * as AiTool from 'effect/ai/Tool'
 import * as Record from './Record.js'
 import * as ToolResult from './ToolResult.js'
+import * as ProgressPolicy from './ProgressPolicy.js'
+import * as OutputRetention from './OutputRetention.js'
 
 export const ReplaySchema = Schema.Literals(['safe', 'unsafe'])
 export type Replay = typeof ReplaySchema.Type
@@ -17,6 +19,31 @@ export type Policy = typeof PolicySchema.Type
 export const Policy = Context.Reference<Policy>('effect-harness/Tool/Policy', {
   defaultValue: () => ({ replay: 'unsafe', executionMode: 'sequential' }),
 })
+/** Retention/progress declarations are policies, not runtime activation or ambient settings. */
+export const Progress = Context.Reference<ProgressPolicy.Policy>('effect-harness/Tool/Progress', {
+  defaultValue: () => ProgressPolicy.defaultPolicy,
+})
+export const Retention = Context.Reference<OutputRetention.Policy>(
+  'effect-harness/Tool/Retention',
+  {
+    defaultValue: () => OutputRetention.defaultPolicy,
+  },
+)
+export const progress = (tool: Any): ProgressPolicy.Policy =>
+  Context.get(tool.annotations, Progress)
+export const outputRetention = (tool: Any): OutputRetention.Policy =>
+  Context.get(tool.annotations, Retention)
+
+export const CallerSchema = Schema.Literals(['model', 'tools'])
+export type Caller = typeof CallerSchema.Type
+export const CallersSchema = Schema.Array(CallerSchema)
+export const Callers = Context.Reference<ReadonlyArray<Caller>>('effect-harness/Tool/Callers', {
+  defaultValue: () => ['model', 'tools'],
+})
+export const callers = (tool: Any): ReadonlyArray<Caller> => Context.get(tool.annotations, Callers)
+/** Legacy intents are model-issued. This metadata does not activate a new runtime protocol. */
+export const caller = (intent: Intent): Caller => intent.caller ?? 'model'
+
 export const CallSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
@@ -28,6 +55,7 @@ export const IntentSchema = Schema.Struct({
   taskId: Record.TaskId,
   call: CallSchema,
   replay: ReplaySchema,
+  caller: Schema.optionalKey(CallerSchema),
 })
 export type Intent = typeof IntentSchema.Type
 export type Any = AiTool.Any
@@ -69,12 +97,22 @@ export const make = <
     readonly failure?: F
     readonly replay?: Replay
     readonly executionMode?: ExecutionMode
+    readonly callers?: ReadonlyArray<Caller>
+    readonly progress?: ProgressPolicy.Policy
+    readonly outputRetention?: OutputRetention.Policy
   },
 ): Tool<Name, P, S, F> =>
-  AiTool.make(name, options).annotate(Policy, {
-    replay: options?.replay ?? 'unsafe',
-    executionMode: options?.executionMode ?? 'sequential',
-  })
+  AiTool.make(name, options)
+    .annotate(Policy, {
+      replay: options?.replay ?? 'unsafe',
+      executionMode: options?.executionMode ?? 'sequential',
+    })
+    .annotate(Callers, Object.freeze([...(options?.callers ?? ['model', 'tools'])]))
+    .annotate(Progress, Object.freeze({ ...(options?.progress ?? ProgressPolicy.defaultPolicy) }))
+    .annotate(
+      Retention,
+      Object.freeze({ ...(options?.outputRetention ?? OutputRetention.defaultPolicy) }),
+    )
 export const policy = (tool: Any): Policy => Context.get(tool.annotations, Policy)
 
 /** Marks schema-backed handler envelopes; ordinary native tools keep value-style results. */
@@ -84,38 +122,79 @@ export const ResultChannels = Context.Reference<boolean>('effect-harness/Tool/Re
 export const hasResultChannels = (tool: Any): boolean =>
   Context.get(tool.annotations, ResultChannels)
 
+/** Whether nested projection uses a declared channel or native content fallback. */
+export const StructuredOutput = Context.Reference<boolean>('effect-harness/Tool/StructuredOutput', {
+  defaultValue: () => false,
+})
+export const hasStructuredOutput = (tool: Any): boolean =>
+  Context.get(tool.annotations, StructuredOutput)
+
+type ResultOptions<
+  P extends Schema.Constraint,
+  S extends Schema.Constraint,
+  F extends Schema.Constraint,
+> = {
+  readonly description?: string
+  readonly parameters?: P
+  readonly success?: S
+  readonly failure?: F
+  readonly replay?: Replay
+  readonly executionMode?: ExecutionMode
+  readonly callers?: ReadonlyArray<Caller>
+  readonly progress?: ProgressPolicy.Policy
+  readonly outputRetention?: OutputRetention.Policy
+}
+
 /**
- * Declare a tool whose handlers return independent content, structuredOutput and details.
- * success/failure validate only their respective structured output; without a schema,
- * that channel accepts JSON. Omission is allowed even when a schema is declared.
- * Fail with the same envelope shape to choose error content independently.
- * Codecs encode programmatic values to JSON in receipts, hooks and durable history;
- * callers can decode structuredOutput with the declared schema after recovery.
- * Hooks may replace or omit any channel; their final values are validated before saving.
+ * Independent model content, programmatic data and UI details. The legacy default permits
+ * omitted structuredOutput, including with a declared schema. resultValidation: 'strict'
+ * requires it on success; errors may omit it. Without a schema, legacy JSON remains valid
+ * and nested results fall back to native content only when structuredOutput is absent.
+ * Codecs own receipt encoding. Hooks must revalidate their final channels before saving.
  */
-export const makeResult = <
+export function makeResult<
   const Name extends string,
   P extends Schema.Constraint = typeof AiTool.EmptyParams,
   S extends Schema.Constraint = typeof Schema.Json,
   F extends Schema.Constraint = typeof Schema.Json,
 >(
   name: Name,
-  options?: {
-    readonly description?: string
-    readonly parameters?: P
-    readonly success?: S
-    readonly failure?: F
-    readonly replay?: Replay
-    readonly executionMode?: ExecutionMode
-  },
-): Tool<Name, P, ToolResult.OutputSchema<S>, ToolResult.OutputSchema<F>> => {
-  // Defaults are JSON codecs; generic callers retain their explicitly supplied schemas.
+  options: ResultOptions<P, S, F> & { readonly resultValidation: 'strict' },
+): Tool<Name, P, ToolResult.StrictOutputSchema<S>, ToolResult.OutputSchema<F>>
+export function makeResult<
+  const Name extends string,
+  P extends Schema.Constraint = typeof AiTool.EmptyParams,
+  S extends Schema.Constraint = typeof Schema.Json,
+  F extends Schema.Constraint = typeof Schema.Json,
+>(
+  name: Name,
+  options?: ResultOptions<P, S, F> & { readonly resultValidation?: 'optional' },
+): Tool<Name, P, ToolResult.OutputSchema<S>, ToolResult.OutputSchema<F>>
+export function makeResult<
+  const Name extends string,
+  P extends Schema.Constraint = typeof AiTool.EmptyParams,
+  S extends Schema.Constraint = typeof Schema.Json,
+  F extends Schema.Constraint = typeof Schema.Json,
+>(
+  name: Name,
+  options?: ResultOptions<P, S, F> & { readonly resultValidation?: 'optional' | 'strict' },
+) {
+  // Defaults are JSON codecs; generic callers retain explicitly supplied schemas.
   const success = (options?.success ?? Schema.Json) as S
   const failure = (options?.failure ?? Schema.Json) as F
+  const successOutput =
+    options?.resultValidation === 'strict'
+      ? ToolResult.strictOutputSchema(success)
+      : ToolResult.outputSchema(success)
   return make(name, {
     ...options,
-    success: ToolResult.outputSchema(success),
+    success: successOutput,
     failure: ToolResult.outputSchema(failure),
-  }).annotate(ResultChannels, true)
+  })
+    .annotate(ResultChannels, true)
+    .annotate(
+      StructuredOutput,
+      options?.success !== undefined || options?.resultValidation === 'strict',
+    )
 }
 export type { Parameters, Success, Failure, Name } from 'effect/ai/Tool'
