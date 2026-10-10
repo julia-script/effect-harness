@@ -212,7 +212,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
             requesting.agent.tools === undefined || requesting.agent.tools.includes(tool.name),
         )
         .filter((tool) => {
-          const owner = extensions.find((extension) => extension.tools.includes(tool))
+          const owner = extensions.findLast((extension) => extension.tools.includes(tool))
           return (
             owner === undefined ||
             requesting.agent.extensions === undefined ||
@@ -402,8 +402,9 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
     }
     let call = pending.call
     let result: import('../ToolResult.js').Result | undefined
+    let explicitEnvelope = false
     const definition = allTools.find((tool) => tool.name === call.name)
-    const extension = extensions.find(
+    const extension = extensions.findLast(
       (extension) => definition !== undefined && extension.tools.includes(definition),
     )
     const currentlyAllowed =
@@ -506,6 +507,13 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           }),
         ),
       )
+      // A handler may already return the canonical media envelope. Expose its native
+      // content to result hooks before the final model-visible projection is encoded.
+      const envelope = Schema.decodeUnknownOption(jsonCodec(ToolResult.Envelope))(result.details)
+      if (Option.isSome(envelope)) {
+        result = { ...result, content: envelope.value.content }
+        explicitEnvelope = true
+      }
     }
     const after = yield* runHooks(
       task.conversationId,
@@ -514,6 +522,16 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       task.id,
     )
     if (after !== undefined && 'isError' in after) result = after
+    const plainText = result.content.flatMap((part) =>
+      part.type === 'text' && Object.keys(part.options).length === 0 ? [part.text] : [],
+    )
+    const modelResult =
+      !explicitEnvelope && plainText.length === result.content.length
+        ? plainText.join('\n')
+        : yield* Schema.encodeEffect(jsonCodec(ToolResult.Envelope))({
+            _tag: '@effect-harness/ToolContent',
+            content: result.content,
+          })
     const output = Prompt.toolMessage({
       content: [
         Prompt.toolResultPart({
@@ -521,12 +539,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           name: call.name,
           providerExecuted: false,
           isFailure: result.isError,
-          result:
-            result.details !== undefined
-              ? result.details
-              : result.content
-                  .map((part) => (part.type === 'text' ? part.text : '[media]'))
-                  .join('\n'),
+          result: modelResult,
         }),
       ],
     })

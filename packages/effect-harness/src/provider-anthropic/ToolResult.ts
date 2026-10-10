@@ -145,6 +145,8 @@ const requestImpl = Effect.fnUntraced(function* (
 const clientImpl = (self: AnthropicClient.Service): AnthropicClient.Service =>
   AnthropicClient.AnthropicClient.of({
     ...self,
+    client: self.client,
+    streamRequest: self.streamRequest.bind(self),
     createMessage: Effect.fnUntraced(function* (options) {
       const translated = yield* request(options)
       return yield* self.createMessage(translated)

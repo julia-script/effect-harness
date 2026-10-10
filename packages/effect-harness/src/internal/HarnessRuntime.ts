@@ -75,8 +75,13 @@ export const make = Effect.fnUntraced(function* <
       const wakeups = yield* Queue.make<void>({ capacity: 1, strategy: 'dropping' })
       const topTools = Object.values(options.tools?.tools ?? {})
       const extensions = options.extensions ?? []
-      const allTools = [...topTools, ...extensions.flatMap((extension) => extension.tools)]
-      const toolkit = Toolkit.make(...allTools)
+      const toolkit = Toolkit.make(
+        ...topTools,
+        ...extensions.flatMap((extension) => extension.tools),
+      )
+      // The native toolkit resolves duplicate names last-wins. Policy and admission must
+      // use those same declarations as the captured handler bindings.
+      const allTools = Object.values(toolkit.tools)
       const hooks: Array<BoundHook> = []
       const sections: Array<RunLoop.BoundSection> = []
       let handlerContext: Context.Context<never> = context

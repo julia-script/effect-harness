@@ -24,6 +24,8 @@ const ToolsLive = tools.toLayer(
 
 Handlers receive decoded parameters. The toolkit encodes their success values and declared domain failures through the schemas. A domain failure becomes a failed tool result visible to the model. Infrastructure failures and defects fail execution rather than pretending to be domain results.
 
+`ToolResult.Result.content` is the model-visible text and media. After-tool hooks can replace this content without deleting `details`: details remain durable application data and do not override the model-visible content. Plain text without provider options remains a string, with multiple parts joined by newlines. Media and text with provider options are encoded in `ToolResult.Envelope`; the provider adapters expand it into native tool-result blocks. Handlers whose success schema is `ToolResult.Envelope` expose that envelope's content to after-tool hooks before projection and retain the tagged protocol even for plain text.
+
 Each handler invocation has its own Scope. The runtime supplies `ToolExecution`, which exposes the current conversation, task and call identifiers; durable output and diagnostics; document snapshots and watches; and `commit` for atomic entries/document changes. These capabilities are revoked when the invocation ends.
 
 Tools default to unsafe replay and sequential scheduling metadata. Set `replay: 'safe'` only when repeating the entire handler after a crash is safe. A durable document update alone does not make an arbitrary handler replay safe.
