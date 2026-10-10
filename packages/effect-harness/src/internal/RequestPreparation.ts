@@ -2,6 +2,7 @@
 import * as Effect from 'effect/Effect'
 import * as Equal from 'effect/Equal'
 import * as Schema from 'effect/Schema'
+import * as Prompt from 'effect/ai/Prompt'
 import * as NativeTool from 'effect/ai/Tool'
 import type * as Model from '../Model.js'
 import * as Prepared from '../PreparedRequest.js'
@@ -11,6 +12,86 @@ import { HarnessError } from '../HarnessError.js'
 import * as Inventory from '../ToolInventory.js'
 import * as Tool from '../Tool.js'
 import type * as Agent from '../Agent.js'
+import * as Projection from '../ContextProjection.js'
+import * as Record from '../Record.js'
+import * as Plan from './ContextPlan.js'
+
+/** Preview facts with local identities only; no native writes or format activation occur here. */
+export const preview = Effect.fnUntraced(function* (
+  view: Projection.ContextView,
+  entries: ReadonlyArray<Record.Entry>,
+  plan: Plan.Plan,
+  positioning: Plan.Positioning,
+) {
+  const drafts = yield* Effect.forEach(plan.drafts, (draft, index) =>
+    Schema.decodeEffect(Record.Entry)({
+      ...draft,
+      id: (view.bounds.tail ?? 0) + index + 1,
+      conversationId: view.bounds.conversationId,
+    }),
+  )
+  const projected = yield* Projection.project(view.bounds.conversationId, [...entries, ...drafts], {
+    legacyInterpretation: view.bounds.legacyInterpretation,
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new HarnessError({
+          reason: 'invalid',
+          operation: 'request.context',
+          message: 'Cannot preview request context',
+          cause,
+        }),
+    ),
+  )
+  return {
+    identities: drafts.map((entry) => entry.id),
+    translation: yield* Plan.translate(projected, positioning),
+  }
+})
+
+/** Keep accepted native messages intact; ambiguous/missing/reordered markers fail explicitly. */
+export const align = Effect.fnUntraced(function* (
+  translation: Plan.Translation,
+  input: Prompt.Prompt,
+) {
+  const prompt = yield* Value.copy(Schema.toCodecJson(Prompt.Prompt), input)
+  if (Equal.equals(translation.prompt.content, prompt.content)) return { ...translation, prompt }
+  const indices = new Set(translation.toolPositions.map((position) => position.messageIndex))
+  if (translation.positioning.sections === 'positional')
+    translation.prompt.content.forEach((message, index) => {
+      if (message.role === 'system') indices.add(index)
+    })
+  const mapped = new Map<number, number>()
+  let previous = -1
+  for (const index of [...indices].sort((left, right) => left - right)) {
+    const marker = translation.prompt.content[index]
+    const matches = prompt.content.flatMap((message, candidate) =>
+      Equal.equals(marker, message) ? [candidate] : [],
+    )
+    const position = matches[0]
+    if (
+      marker === undefined ||
+      matches.length !== 1 ||
+      position === undefined ||
+      position <= previous
+    )
+      return yield* new HarnessError({
+        reason: 'invalid',
+        operation: 'request.positioning',
+        message: 'Final prompt must retain unique positional markers in their original order',
+      })
+    mapped.set(index, position)
+    previous = position
+  }
+  return {
+    ...translation,
+    prompt,
+    toolPositions: translation.toolPositions.map((position) => ({
+      ...position,
+      messageIndex: mapped.get(position.messageIndex) ?? position.messageIndex,
+    })),
+  }
+})
 
 /** Legacy extension filters deny the canonical owner; explicit toolkit selection defines its own order. */
 export const inventory = (

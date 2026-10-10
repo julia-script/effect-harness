@@ -5,6 +5,7 @@ import * as Usage from '../Usage.js'
 import type * as Document from '../Document.js'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
+import * as Equal from 'effect/Equal'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
@@ -350,23 +351,27 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           ...new Map(allInventory.map((item) => [item.declaration.name, item])).values(),
         ]
         const allToolFacts = yield* Effect.forEach(allBindings, Preparation.declaration)
-        const translation = yield* write((tx) =>
+        const planned = yield* write((tx) =>
           Effect.gen(function* () {
             const view = yield* Inbox.project(tx, task.conversationId)
             const plan = yield* Plan.plan(view, {
               sections: desiredSections,
               tools: offeredTools.map((tool) => tool.declaration),
             })
-            yield* services.requireRequestFormat
-            for (const draft of plan.drafts)
-              yield* Transaction.appendEntry(tx, task.conversationId, draft)
-            return yield* Plan.translate(
-              yield* Inbox.project(tx, task.conversationId),
+            const entries = yield* Transaction.scanEntries(tx, {
+              conversationId: task.conversationId,
+              order: 'ascending',
+            }).pipe(Stream.runCollect)
+            const preview = yield* Preparation.preview(
+              view,
+              entries,
+              plan,
               selected?.positioning ?? { sections: 'leading', tools: 'latest' },
             )
+            return { view, plan, ...preview }
           }),
         )
-        prompt = translation.prompt
+        prompt = planned.translation.prompt
         const before = yield* runHooks(
           task.conversationId,
           requesting.agent,
@@ -374,11 +379,12 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           task.id,
         )
         if (before !== undefined && 'content' in before) prompt = before as Prompt.Prompt
+        const translation = yield* Preparation.align(planned.translation, prompt)
         const preparation = yield* Preparation.own({
           requestId,
           ordinal,
           attempt,
-          prompt,
+          prompt: translation.prompt,
           agent: requesting.agent,
           settings,
           affinity,
@@ -407,11 +413,41 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           allTools: allToolFacts,
           translation,
         })
-        requesting = { ...requesting, preparation }
-        yield* write((tx, current) =>
+        requesting = yield* write((tx, current) =>
           Effect.gen(function* () {
+            const view = yield* Inbox.project(tx, task.conversationId)
+            if (!Equal.equals(view, planned.view))
+              return yield* new HarnessError({
+                reason: 'invalid',
+                operation: 'request.context',
+                message: 'Context changed while validating the final request',
+              })
+            const identities = new Map<Record.EntryId, Record.EntryId>()
+            for (const [index, draft] of planned.plan.drafts.entries()) {
+              const entry = yield* Transaction.appendEntry(tx, task.conversationId, draft)
+              const previewId = planned.identities[index]
+              if (previewId !== undefined) identities.set(previewId, entry.id)
+            }
+            const published = yield* Preparation.own({
+              ...preparation,
+              translation: {
+                ...preparation.translation,
+                frames: preparation.translation.frames.map((frame) => ({
+                  ...frame,
+                  entryId: identities.get(frame.entryId) ?? frame.entryId,
+                })),
+                toolPositions: preparation.translation.toolPositions.map((position) => ({
+                  ...position,
+                  entryId: identities.get(position.entryId) ?? position.entryId,
+                })),
+              },
+            })
+            const next = { ...requesting, preparation: published }
+            // Checkpoint encoding/staging validates before the reader barrier; Session
+            // publishes the accepted facts and immutable checkpoint in one native commit.
+            yield* saveState(tx, current, next)
             yield* services.requireRequestFormat
-            yield* saveState(tx, current, requesting)
+            return next
           }),
         )
         state = requesting
