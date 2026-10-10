@@ -73,7 +73,7 @@ const model = (deferred: Model.Deferred) =>
       }),
   )
 
-it.live('saves a handle and polls the same prepared attempt rather than streaming', () =>
+it.effect('saves a handle and polls the same prepared attempt rather than streaming', () =>
   Effect.scoped(
     Effect.gen(function* () {
       let starts = 0
@@ -91,10 +91,11 @@ it.live('saves a handle and polls the same prepared attempt rather than streamin
               nextPollAt: (yield* Clock.currentTimeMillis) + 1,
             }
           }),
-        poll: (handle, _previous, request) =>
+        poll: (handle, previous, request) =>
           Effect.sync(() => {
             polls++
             assert.strictEqual(handle, 'same-handle')
+            assert.strictEqual(previous, 1)
             ids.push({ requestId: request.requestId, attempt: request.attempt })
             return complete
           }),
@@ -109,7 +110,26 @@ it.live('saves a handle and polls the same prepared attempt rather than streamin
         conversationId: root,
         draft: { type: 'input', content: 'go' },
       })
-      assert.strictEqual((yield* runtime.backend.wait(job.id)).status, 'done')
+      const waiting = yield* Effect.forkChild(runtime.backend.wait(job.id))
+      const checkpoint = (yield* Effect.raceFirst(
+        saved(runtime, 'deferred'),
+        Fiber.join(waiting).pipe(
+          Effect.andThen(Effect.die('Deferred request settled before saving its handle')),
+        ),
+      )).checkpoint
+      assert.strictEqual(checkpoint['handle'], 'same-handle')
+      assert.strictEqual(checkpoint['pollAt'], 1)
+      assert.strictEqual(checkpoint['attempt'], ids[0]?.attempt)
+      const preparation = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ requestId: Schema.String, execution: Schema.Literal('deferred') }),
+      )(checkpoint['preparation'])
+      assert.strictEqual(preparation.requestId, ids[0]?.requestId)
+      assert.strictEqual((yield* StorageFormat.inspect).minimumReaderVersion, 7)
+      assert.strictEqual(yield* Clock.currentTimeMillis, 0)
+      assert.strictEqual(starts, 1)
+      assert.strictEqual(polls, 0)
+      yield* TestClock.adjust(1)
+      assert.strictEqual((yield* Fiber.join(waiting)).status, 'done')
       assert.strictEqual(starts, 1)
       assert.strictEqual(polls, 1)
       assert.deepEqual(ids[1], ids[0])
