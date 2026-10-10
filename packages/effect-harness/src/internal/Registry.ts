@@ -223,7 +223,13 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
   const install: Registry.Service['install'] = (registration) =>
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
-        yield* validDefinition(registration.definition)
+        const definition = registration.definition
+        const owner = Object.freeze({
+          id: definition.id,
+          version: definition.version,
+          enabled: definition.enabled ?? true,
+        })
+        yield* validDefinition(owner)
         const scope = yield* Scope.make()
         const memoMap = yield* Layer.makeMemoMap
         let committed = false
@@ -235,13 +241,9 @@ export const make = Effect.gen(function* (): Effect.fn.Return<
               ),
             ),
           )
-          yield* validate(contents, registration.definition.id)
+          yield* validate(contents, owner.id)
           const candidate: Entry = {
-            owner: Object.freeze({
-              id: registration.definition.id,
-              version: registration.definition.version,
-              enabled: registration.definition.enabled ?? true,
-            }),
+            owner,
             scope,
             contents,
             leases: 0,

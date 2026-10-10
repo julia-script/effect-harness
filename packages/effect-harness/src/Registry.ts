@@ -23,6 +23,7 @@ export interface Definition {
 
 /** Acquisition retains missing services and Layer failures until install actually succeeds. */
 export interface Registration<R = never, E = never> {
+  /** Install captures these values before acquisition; later caller mutations cannot change its owner. */
   readonly definition: Definition
   readonly acquire: Effect.Effect<Internal.Contents, E, R | Scope.Scope>
 }

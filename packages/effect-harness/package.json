@@ -87,6 +87,7 @@
   },
   "optionalDependencies": {
     "@cf-wasm/photon": "0.4.0",
+    "jpeg-js": "0.4.4",
     "sharp": "0.35.5"
   }
 }

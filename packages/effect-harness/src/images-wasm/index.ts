@@ -6,6 +6,8 @@ import { ImageDecodeFailed, ImageEncodeFailed } from '../ImagePreparationError.j
 import * as Headers from './Headers.js'
 import { additionalFrames } from './Frames.js'
 import * as Pixels from './Pixels.js'
+import * as Png from './Png.js'
+import * as Jpeg from './Jpeg.js'
 
 /** Initialized Photon API. Its WebP output is lossless; JPEG accepts quality, PNG is lossless.
  * Supply an independently initialized implementation or the package's once-initialized glue.
@@ -59,10 +61,15 @@ export const makeAdapter = (photon: PhotonApi): ImagePreparation.Adapter => ({
   capabilities,
   decode: Effect.fn('ImagesWasm.decode')(function* (bytes, mimeType, maxInputPixels) {
     const header = yield* Headers.inspect(bytes, mimeType, maxInputPixels)
+    if (mimeType === 'image/jpeg') yield* Jpeg.validate(bytes, header.dimensions, maxInputPixels)
+    let firstPixels: Uint8Array | undefined
     let active = true
     const source = yield* Effect.acquireRelease(
       Effect.try({
-        try: () => photon.PhotonImage.new_from_byteslice(bytes),
+        try: () =>
+          photon.PhotonImage.new_from_byteslice(
+            header.png?.frames.length ? Png.image(header.png) : bytes,
+          ),
         catch: (cause) =>
           new ImageDecodeFailed({ mimeType, message: 'Photon decode failed', cause }),
       }),
@@ -72,6 +79,45 @@ export const makeAdapter = (photon: PhotonApi): ImagePreparation.Adapter => ({
           image.free()
         }),
     )
+    if (header.png) {
+      for (const frame of header.png.frames) {
+        yield* Effect.acquireUseRelease(
+          Effect.try({
+            try: () => photon.PhotonImage.new_from_byteslice(Png.image(header.png!, frame)),
+            catch: (cause) =>
+              new ImageDecodeFailed({
+                mimeType,
+                message: 'Photon APNG frame decode failed',
+                cause,
+              }),
+          }),
+          (image) =>
+            Effect.try({
+              try: () => {
+                const pixels = image.get_raw_pixels()
+                if (
+                  image.get_width() !== frame.width ||
+                  image.get_height() !== frame.height ||
+                  pixels.length !== frame.width * frame.height * 4
+                )
+                  throw new ImageDecodeFailed({
+                    mimeType,
+                    message: 'Invalid APNG decoded frame dimensions',
+                  })
+                if (frame === header.png!.frames[0])
+                  firstPixels = Png.firstCanvas(pixels, frame, header.dimensions)
+              },
+              catch: (cause) =>
+                new ImageDecodeFailed({
+                  mimeType,
+                  message: 'Photon APNG pixel validation failed',
+                  cause,
+                }),
+            }),
+          (image) => Effect.sync(() => image.free()),
+        )
+      }
+    }
     const metadata = yield* Effect.try({
       try: () => {
         if (
@@ -83,7 +129,7 @@ export const makeAdapter = (photon: PhotonApi): ImagePreparation.Adapter => ({
             message: 'Decoded dimensions disagree with header',
           })
         }
-        const pixels = source.get_raw_pixels()
+        const pixels = firstPixels ?? source.get_raw_pixels()
         if (pixels.length !== header.dimensions.width * header.dimensions.height * 4) {
           throw new ImageDecodeFailed({ mimeType, message: 'Decoder returned invalid RGBA pixels' })
         }
@@ -139,7 +185,7 @@ export const makeAdapter = (photon: PhotonApi): ImagePreparation.Adapter => ({
             Effect.try({
               try: () => {
                 const pixels = Pixels.orient(
-                  source.get_raw_pixels(),
+                  firstPixels ?? source.get_raw_pixels(),
                   metadata.original,
                   request.orientation,
                 )

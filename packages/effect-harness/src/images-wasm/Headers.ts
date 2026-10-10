@@ -1,4 +1,5 @@
 import * as Effect from 'effect/Effect'
+import * as Png from './Png.js'
 import type { Dimensions, InputMimeType, Orientation } from '../ImagePreparation.js'
 import { ImageDecodeFailed, ImageInputPixelsExceeded } from '../ImagePreparationError.js'
 
@@ -6,6 +7,7 @@ export interface Header {
   readonly dimensions: Dimensions
   readonly orientation: Orientation
   readonly animated: boolean
+  readonly png?: Png.Container
 }
 
 // Header parsing has no pixel allocations. All reads are bounded by the borrowed input.
@@ -85,13 +87,14 @@ const read = (bytes: Uint8Array, mimeType: InputMimeType, maxInputPixels: number
   if (mimeType === 'image/png') {
     if (text(0, 8) !== '\x89PNG\r\n\x1a\n' || text(12, 4) !== 'IHDR' || u32(8) !== 13) fail()
     const size = dimensions(u32(16), u32(20))
+    const png = Png.read(bytes, maxInputPixels)
     let ended = false
     for (let offset = 8; offset < bytes.length;) {
       const length = u32(offset)
       need(offset + 8, length + 4)
       const kind = text(offset + 4, 4)
       if (kind === 'eXIf') orientation = exif(offset + 8, length)
-      if (kind === 'acTL') animated = u32(offset + 8) > 1
+      if (kind === 'acTL') animated = true
       if (kind === 'fcTL') dimensions(u32(offset + 12), u32(offset + 16))
       offset += length + 12
       if (kind === 'IEND') {
@@ -100,7 +103,7 @@ const read = (bytes: Uint8Array, mimeType: InputMimeType, maxInputPixels: number
       }
     }
     if (!ended) fail()
-    return { dimensions: size, orientation, animated }
+    return { dimensions: size, orientation, animated, png }
   }
   if (mimeType === 'image/jpeg') {
     if (u16(0) !== 0xffd8 || u16(bytes.length - 2) !== 0xffd9) fail()
