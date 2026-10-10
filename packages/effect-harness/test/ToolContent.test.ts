@@ -171,10 +171,7 @@ describe('model-visible tool content', () => {
         const { observed, persisted } = yield* execute(toolkit, [hook]).pipe(
           Effect.provide(toolkit.toLayer({ work: () => Effect.succeed('original text') })),
         )
-        const envelope = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(ToolResult.Envelope))(
-          observed,
-        )
-        assert.deepEqual(envelope.content, [Prompt.textPart({ text: 'redacted' })])
+        assert.strictEqual(observed, 'redacted')
         assert.notInclude(JSON.stringify(observed), 'original text')
         const persistedResult = yield* Schema.decodeUnknownEffect(
           Schema.toCodecJson(ToolResult.ResultSchema),
@@ -212,6 +209,84 @@ describe('model-visible tool content', () => {
           observed,
         )
         assert.deepEqual(envelope.content, [image])
+      }),
+    ),
+  )
+
+  it.effect('ordinary string success remains directly visible to a custom native model', () =>
+    run(
+      Effect.gen(function* () {
+        const toolkit = Toolkit.make(Tool.make('work', { success: Schema.String }))
+        const { observed } = yield* execute(toolkit, []).pipe(
+          Effect.provide(toolkit.toLayer({ work: () => Effect.succeed('HELLO') })),
+        )
+        assert.strictEqual(observed, 'HELLO')
+      }),
+    ),
+  )
+
+  it.effect('plain text hook parts preserve the newline convention', () =>
+    run(
+      Effect.gen(function* () {
+        const toolkit = Toolkit.make(Tool.make('work', { success: Schema.String }))
+        const hook = Hook.make({
+          event: 'afterTool',
+          execute: ({ result }) =>
+            Effect.succeed({
+              ...result,
+              content: [Prompt.textPart({ text: 'first' }), Prompt.textPart({ text: 'second' })],
+            }),
+        })
+        const { observed } = yield* execute(toolkit, [hook]).pipe(
+          Effect.provide(toolkit.toLayer({ work: () => Effect.succeed('original') })),
+        )
+        assert.strictEqual(observed, 'first\nsecond')
+      }),
+    ),
+  )
+
+  it.effect('text provider options select the envelope without losing their metadata', () =>
+    run(
+      Effect.gen(function* () {
+        const toolkit = Toolkit.make(Tool.make('work', { success: Schema.String }))
+        const part = Prompt.textPart({
+          text: 'cached',
+          options: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+        })
+        const hook = Hook.make({
+          event: 'afterTool',
+          execute: ({ result }) => Effect.succeed({ ...result, content: [part] }),
+        })
+        const { observed } = yield* execute(toolkit, [hook]).pipe(
+          Effect.provide(toolkit.toLayer({ work: () => Effect.succeed('original') })),
+        )
+        const envelope = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(ToolResult.Envelope))(
+          observed,
+        )
+        assert.deepEqual(envelope.content, [part])
+        assert.deepEqual(yield* AnthropicResult.content(envelope.content), [
+          { type: 'text', text: 'cached', cache_control: { type: 'ephemeral' } },
+        ])
+      }),
+    ),
+  )
+
+  it.effect('explicit all-text envelopes retain their tagged result protocol', () =>
+    run(
+      Effect.gen(function* () {
+        const toolkit = Toolkit.make(Tool.make('work', { success: ToolResult.Envelope }))
+        const content = [Prompt.textPart({ text: 'explicit' })]
+        const { observed } = yield* execute(toolkit, []).pipe(
+          Effect.provide(
+            toolkit.toLayer({
+              work: () => Effect.succeed({ _tag: '@effect-harness/ToolContent' as const, content }),
+            }),
+          ),
+        )
+        const envelope = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(ToolResult.Envelope))(
+          observed,
+        )
+        assert.deepEqual(envelope.content, content)
       }),
     ),
   )
