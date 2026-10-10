@@ -43,7 +43,8 @@ import * as ToolResult from '../ToolResult.js'
 import * as Transaction from '../Transaction.js'
 import * as Run from './RunState.js'
 import * as Inbox from './Inbox.js'
-import type { NativeWriteFailure } from './NativeWriteFailure.js'
+import { NativeWriteFailure } from './NativeWriteFailure.js'
+import { StreamPublicationFailure } from './StreamPublicationFailure.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
 import { protect, absent } from './HarnessFailure.js'
 
@@ -643,6 +644,23 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       if (Exit.isFailure(streamed.exit)) {
         const cause = streamed.exit.cause
         const reason = cause.reasons.length === 1 ? cause.reasons[0] : undefined
+        // Publication failures never enter provider retry/receipt writes. Only a direct,
+        // deterministic native rejection can carry this invocation's observed usage.
+        if (streamed.publicationFailure) {
+          if (
+            reason !== undefined &&
+            Cause.isFailReason(reason) &&
+            reason.error instanceof NativeWriteFailure &&
+            streamed.partial?.usage !== undefined
+          )
+            return yield* new StreamPublicationFailure({
+              error: reason.error,
+              requestId: preparation.requestId,
+              attempt,
+              usage: streamed.partial.usage,
+            })
+          return yield* Effect.failCause(cause)
+        }
         const error =
           reason !== undefined && Cause.isFailReason(reason) && AiError.isAiError(reason.error)
             ? reason.error

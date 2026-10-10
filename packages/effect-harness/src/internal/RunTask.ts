@@ -28,6 +28,7 @@ import * as LiveState from '../LiveState.js'
 import * as Usage from '../Usage.js'
 import * as Inbox from './Inbox.js'
 import { NativeWriteFailure } from './NativeWriteFailure.js'
+import { StreamPublicationFailure } from './StreamPublicationFailure.js'
 import * as Preparation from './RequestPreparation.js'
 import { PreparationRestoreFailure } from './PreparationRestoreFailure.js'
 
@@ -59,6 +60,7 @@ export const make = (
     | AiError.AiError
     | ExecutionError
     | NativeWriteFailure
+    | StreamPublicationFailure
     | import('./ContextPlan.js').ContextPlanError
     | import('../ToolInventory.js').Denial
     | import('../ToolControl.js').InvalidControl
@@ -162,6 +164,7 @@ export const make = (
     record: Record.Task,
     reason: string,
     message?: string,
+    observed?: StreamPublicationFailure,
   ) {
     const execution = yield* TaskExecution
     yield* execution.commit((tx) =>
@@ -180,6 +183,11 @@ export const make = (
               receipt.identity.purpose === 'generation',
           )
         ) {
+          const usage =
+            observed?.requestId === checkpoint.preparation.requestId &&
+            observed.attempt === checkpoint.attempt
+              ? observed.usage
+              : checkpoint.partial?.usage
           yield* Usage.record(tx, {
             conversationId: record.conversationId,
             identity: {
@@ -192,7 +200,7 @@ export const make = (
               reason === 'aborted'
                 ? { _tag: 'interrupted', reason }
                 : { _tag: 'failed', error: { message: message ?? reason } },
-            ...(checkpoint.partial?.usage === undefined ? {} : { usage: checkpoint.partial.usage }),
+            ...(usage === undefined ? {} : { usage }),
           })
         }
         const live = yield* Transaction.snapshot(
@@ -284,7 +292,19 @@ export const make = (
             : phase().pipe(Effect.provideService(NativeInvocation, { record, lease }))
         ).pipe(
           Effect.as<PhaseResult>({ _tag: 'returned' }),
-          Effect.catchCause((cause) => {
+          Effect.catchCause((escaping) => {
+            const escaped = escaping.reasons.length === 1 ? escaping.reasons[0] : undefined
+            const observed =
+              escaped !== undefined &&
+              Cause.isFailReason(escaped) &&
+              escaped.error instanceof StreamPublicationFailure
+                ? escaped.error
+                : undefined
+            // Unwrap only our private publication envelope; original failures and every
+            // mixed reason continue through the same health/recovery classification.
+            const cause = Cause.map(escaping, (error) =>
+              error instanceof StreamPublicationFailure ? error.error : error,
+            )
             if (Cause.hasInterruptsOnly(cause))
               return Effect.succeed<PhaseResult>({ _tag: 'interrupted' })
             const reason = cause.reasons.length === 1 ? cause.reasons[0] : undefined
@@ -313,7 +333,7 @@ export const make = (
             )
               return Session.task(services(lease).session, record.id).pipe(
                 Effect.andThen(
-                  settle(record, 'failed', Cause.pretty(Cause.fail(reason.error.error))),
+                  settle(record, 'failed', Cause.pretty(Cause.fail(reason.error.error)), observed),
                 ),
                 Effect.as<PhaseResult>({ _tag: 'returned' }),
               )

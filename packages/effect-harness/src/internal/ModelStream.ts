@@ -116,6 +116,7 @@ export const consume = Effect.fnUntraced(function* <E, R, R2>(
       AiError.AiError | HarnessError | Schema.SchemaError | E
     >
     readonly partial: LiveState.Partial | undefined
+    readonly publicationFailure?: true
   },
   E | Schema.SchemaError | AiError.AiError | HarnessError,
   R | R2 | Scope.Scope
@@ -290,10 +291,13 @@ export const consume = Effect.fnUntraced(function* <E, R, R2>(
       yield* Fiber.join(worker)
     }),
   )
-  if (failure !== undefined) return yield* Effect.failCause(failure)
+  if (failure !== undefined)
+    return { exit: Exit.failCause(failure), partial: latest, publicationFailure: true }
   if (Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause))
     return yield* Effect.failCause(exit.cause)
-  yield* save
+  const saved = yield* Effect.exit(save)
+  if (Exit.isFailure(saved))
+    return { exit: Exit.failCause(saved.cause), partial: latest, publicationFailure: true }
   active = false
   if (Exit.isFailure(exit)) return { exit: Exit.failCause(exit.cause), partial: latest }
   if (
