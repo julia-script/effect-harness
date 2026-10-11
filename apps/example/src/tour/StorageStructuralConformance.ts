@@ -6,7 +6,8 @@ import * as Storage from 'effect-harness/Storage'
 import * as Testing from 'effect-harness/Testing'
 
 // Replace layerMemory with your own scoped adapter Layer. Each case gets a fresh store.
-// History is explicit: disabling it omits historical reconstruction and long-tail checks.
+// Persistent adapters can enable reopen to close and rebuild the actual structural fixtures.
+// Core allocation also checks safe-integer exhaustion. History is explicit: disabling it omits historical reconstruction and long-tail checks.
 const cases = Testing.storageConformance({
   make: Effect.succeed({
     open: Layer.build(Storage.layerMemory).pipe(Effect.map((c) => Context.get(c, Storage.Storage))),

@@ -15,7 +15,7 @@ declare const make: Effect.Effect<
   Scope.Scope | AdapterConfig
 >
 test('structural cases retain adapter requirements and factory/open errors', () => {
-  const cases = Testing.storageConformance({ make, capabilities: { history: true } })
+  const cases = Testing.storageConformance({ make, capabilities: { history: true, reopen: true } })
   expect(cases).type.toBe<
     ReadonlyArray<Testing.StorageConformanceCase<'factory failed' | 'open failed', AdapterConfig>>
   >()

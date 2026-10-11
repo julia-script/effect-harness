@@ -211,7 +211,15 @@ export const make = Effect.gen(function* () {
   const metadata = Effect.gen(function* () {
     const rows = yield* io(
       'metadata',
-      sql`SELECT format, minimum_reader, next_id, next_seq FROM ${metadataTable} WHERE singleton = 1`,
+      sql.onDialectOrElse({
+        // Node SQLite refuses numeric reads above MAX_SAFE_INTEGER. The valid
+        // exhausted sentinel is decoded losslessly by SqlCounter from decimal text.
+        sqlite: () => sql`SELECT format, minimum_reader,
+          CAST(next_id AS TEXT) AS next_id, CAST(next_seq AS TEXT) AS next_seq
+          FROM ${metadataTable} WHERE singleton = 1`,
+        orElse: () => sql`SELECT format, minimum_reader, next_id, next_seq
+          FROM ${metadataTable} WHERE singleton = 1`,
+      }),
     )
     const row = rows[0]
     // SQL NULL means the original format-1 marker, not an automatically upgraded reader floor.

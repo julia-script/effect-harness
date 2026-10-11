@@ -21,6 +21,7 @@ const names = [
   'storage: waiting and completing task records',
   'storage: passive write submission records',
   'storage: long document replacement tails',
+  'storage: safe-integer allocator exhaustion',
 ]
 const memory = Effect.succeed({
   open: Layer.build(Storage.layerMemory).pipe(Effect.map((c) => Context.get(c, Storage.Storage))),
@@ -46,14 +47,11 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
     const make = backend === 'memory' ? memory : persistent(backend, directories)
     const cases = Testing.storageConformance({
       make,
-      capabilities: { history: true },
+      capabilities: { history: true, reopen: backend !== 'memory' },
     }).filter((c) => names.includes(c.name))
     it.effect('exposes every structural case exactly once', () =>
       Effect.sync(() => {
-        assert.deepEqual(
-          cases.map((c) => c.name),
-          names,
-        )
+        assert.deepEqual(cases.map((c) => c.name).toSorted(), names.toSorted())
       }),
     )
     for (const mode of ['reuse-current', 'reuse-current-row', 'fresh-copy'] as const)
@@ -540,4 +538,55 @@ it.effect('rejects submitted initial historical JSON changed during commit', () 
       return s.commit(batch)
     },
   })),
+)
+
+for (const mode of ['success', 'wrong-error'] as const)
+  it.effect(`rejects exhausted allocator: ${mode}`, () =>
+    broken(
+      'storage: safe-integer allocator exhaustion',
+      'exhausted allocator rejects repeated mint attempts',
+      (s) => ({
+        ...s,
+        mintId:
+          mode === 'success'
+            ? () => Effect.succeed(2 as never)
+            : () =>
+                Effect.fail(
+                  new Storage.StorageError({
+                    reason: 'conflict',
+                    operation: 'mintId',
+                    message: 'wrong exhaustion error',
+                  }),
+                ),
+      }),
+    ),
+  )
+
+it.live('reopen checks reject a cold surrogate index collapse', () =>
+  Effect.gen(function* () {
+    let opens = 0
+    const cases = Testing.storageConformance({
+      make: persistent('jsonl', []).pipe(
+        Effect.map((fixture) => ({
+          open: fixture.open.pipe(
+            Effect.map((storage) => {
+              opens++
+              return opens === 1
+                ? storage
+                : {
+                    ...storage,
+                    scanTasks: (query) => storage.scanTasks({ ...query, kind: '\ud800' }),
+                  }
+            }),
+          ),
+        })),
+      ),
+      capabilities: { reopen: true },
+    })
+    const result = yield* cases.find((c) => c.name === names[1])!.run.pipe(Effect.flip)
+    assert.instanceOf(result, Testing.StorageConformanceError)
+    if (result instanceof Testing.StorageConformanceError)
+      assert.strictEqual(result.assertion, 'reopen keeps surrogate task index')
+    assert.strictEqual(opens, 2)
+  }).pipe(Effect.provide(NodeServices.layer)),
 )
