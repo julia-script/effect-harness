@@ -551,12 +551,14 @@ export const make = (registry: Registry.Service) => {
           input,
         )
         if (found.result !== undefined) return yield* Round.invalid('The tool slot already settled')
+        // A cold binding denial hides the saved result, but cannot erase its observed charge.
+        const spend = denied ? observedSpend : result.spend
         const usage: Usage.Record | undefined =
           invoked && !interrupted
             ? {
                 _tag: 'tool',
                 name: call.name,
-                ...(result.spend === undefined ? {} : { cost: result.spend }),
+                ...(spend === undefined ? {} : { cost: spend }),
               }
             : undefined
         const entry = yield* Transaction.appendEntry(tx, execution.conversationId, {
