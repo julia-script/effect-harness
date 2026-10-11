@@ -19,6 +19,12 @@ import * as Domain from '../Record.js'
 import * as TaskTransitions from './TaskTransitions.js'
 import type * as RegistryScope from '../RegistryScope.js'
 
+const nativeReason = (
+  reason: Cause.Reason<unknown>,
+): reason is Cause.Fail<StorageError | SessionError> =>
+  Cause.isFailReason(reason) &&
+  (Schema.is(StorageError)(reason.error) || Schema.is(SessionError)(reason.error))
+
 /** Closed over exactly one typed registration's services. No Task.Any callback is invoked. */
 export interface Executable {
   readonly initialize: (
@@ -69,9 +75,9 @@ export const compile = <
     // Mixed causes retain their entire diagnostic; a defect must never become an abort.
     if (cause.reasons.length !== 1 || !Cause.isFailReason(cause.reasons[0]!))
       return Effect.succeed(fault(Cause.pretty(cause)))
-    const failure = cause.reasons[0].error
-    if (Schema.is(StorageError)(failure) || Schema.is(SessionError)(failure))
-      return Effect.fail(failure)
+    const reason = cause.reasons[0]
+    if (nativeReason(reason)) return Effect.failCause(Cause.fromReasons([reason]))
+    const failure = reason.error
     return Schema.encodeUnknownEffect(Schema.toCodecJson(self.failure))(failure).pipe(
       Effect.map((result): PhaseResult => ({
         _tag: 'outcome',

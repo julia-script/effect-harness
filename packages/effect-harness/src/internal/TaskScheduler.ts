@@ -28,9 +28,15 @@ import { Registry } from '../Registry.js'
 import type * as RegistryScope from '../RegistryScope.js'
 import * as Session from '../Session.js'
 import { TaskError } from '../TaskError.js'
+import { StorageError } from '../StorageError.js'
+import { SessionError } from '../SessionError.js'
 import * as Task from '../Task.js'
 import * as ToolInvocation from '../ToolInvocation.js'
 import * as NestedInvocation from './NestedInvocation.js'
+import * as ConversationInvocation from './ConversationInvocation.js'
+import * as Inbox from './Inbox.js'
+import * as Subagent from '../Subagent.js'
+import { HarnessError } from '../HarnessError.js'
 import { TaskExecution, type Access } from '../TaskExecution.js'
 import * as TaskPolicy from '../TaskPolicy.js'
 import * as TaskResolution from '../TaskResolution.js'
@@ -46,6 +52,7 @@ interface Invocation extends Transitions.Invocation {
   readonly done: Deferred.Deferred<void>
   readonly transactions: WeakSet<Transaction.Transaction>
   toolInvocation?: ToolInvocation.Access
+  subagent?: Subagent.Access
   fiber?: Fiber.Fiber<void, never>
 }
 const error = (reason: TaskError['reason'], operation: string, message: string, cause?: unknown) =>
@@ -61,15 +68,47 @@ const task = Effect.fnUntraced(function* (tx: Transaction.Transaction, id: Recor
   if (Option.isNone(found)) return yield* error('notFound', 'task.read', 'Task is absent')
   return found.value
 })
+const nativeReason = (
+  reason: Cause.Reason<unknown>,
+): reason is Cause.Fail<StorageError | SessionError> =>
+  Cause.isFailReason(reason) &&
+  (Schema.is(StorageError)(reason.error) || Schema.is(SessionError)(reason.error))
 const invocationFailure = (failure: Scheduler.Failure): import('../TaskError.js').Failure =>
   Schema.is(RegistryError)(failure) || Schema.is(StorageFormatError)(failure)
     ? error('faulted', 'task.hostBoundary', 'Task scheduler boundary failed', failure)
     : failure
+const nativeBoundary = <A, E extends Scheduler.Failure, R>(effect: Effect.Effect<A, E, R>) => {
+  const identity = (
+    reason: Cause.Reason<Scheduler.Failure>,
+  ): reason is Cause.Fail<import('../TaskError.js').Failure> =>
+    Cause.isFailReason(reason) &&
+    !Schema.is(RegistryError)(reason.error) &&
+    !Schema.is(StorageFormatError)(reason.error)
+  return effect.pipe(
+    Effect.catchCause((cause) =>
+      Effect.failCause(
+        Cause.fromReasons<import('../TaskError.js').Failure>(
+          cause.reasons.map((reason) => {
+            if (!Cause.isFailReason(reason)) return reason
+            if (identity(reason)) return reason
+            return Cause.makeFailReason(invocationFailure(reason.error))
+          }),
+        ),
+      ),
+    ),
+  )
+}
 const toolInvocationFailure = (
   failure: ToolInvocation.Failure,
 ): import('../TaskError.js').Failure =>
   Schema.is(ToolInvocation.InvocationError)(failure) || Schema.is(ExecutionError)(failure)
     ? error('faulted', 'task.toolInvocation', failure.message, failure)
+    : invocationFailure(failure)
+const subagentFailure = (failure: Subagent.Failure): import('../TaskError.js').Failure =>
+  Schema.is(Subagent.SubagentError)(failure) ||
+  Schema.is(HarnessError)(failure) ||
+  Schema.is(ExecutionError)(failure)
+    ? error('faulted', 'task.subagent', failure.message, failure)
     : invocationFailure(failure)
 const sameJson = Schema.toEquivalence(Schema.Json)
 
@@ -135,10 +174,105 @@ export const make = Effect.fnUntraced(function* <R = never>(
       : Effect.void,
   )
   const notify = PubSub.publish(publications, undefined).pipe(Effect.asVoid)
-  const health = (failure: Scheduler.Failure) =>
+  const reconciliationIdentity = {}
+  let reconciliationEnded = false
+  let pendingCoordinatorEnd:
+    | {
+        readonly token: object
+        readonly coordinator: typeof reconciliationIdentity
+        readonly session: typeof state
+        readonly poison: StorageError | SessionError
+        readonly cause: Cause.Cause<unknown>
+      }
+    | undefined
+  type Occurrence = {
+    readonly token: object
+    readonly diagnostic: TaskError
+    readonly session: typeof state
+    readonly operation: 'task.read' | 'task.scan' | 'task.conversationGuard'
+    readonly cause: Cause.Cause<unknown>
+  }
+  let nativeDiagnostic:
+    | {
+        readonly provenance: object
+        readonly cause: Cause.Cause<unknown>
+        readonly diagnostic: TaskError
+        readonly occurrences: WeakMap<Cause.Fail<unknown>, Occurrence>
+        readonly poison: StorageError | SessionError | undefined
+      }
+    | undefined
+  const samePoison = () =>
+    nativeDiagnostic !== undefined &&
+    failed === nativeDiagnostic.diagnostic &&
+    nativeDiagnostic.poison !== undefined &&
+    state.poison === nativeDiagnostic.poison
+  const health = (failure: Scheduler.Failure, occurrence?: Occurrence) =>
     Effect.sync(() => {
+      if (
+        occurrence !== undefined &&
+        occurrence.session === state &&
+        occurrence.diagnostic === nativeDiagnostic?.diagnostic &&
+        samePoison() &&
+        failure === nativeDiagnostic?.poison
+      )
+        return
+      if (failure !== nativeDiagnostic?.diagnostic) nativeDiagnostic = undefined
       failed = failure
     }).pipe(Effect.andThen(notify))
+  const observeProjection =
+    (operation: Occurrence['operation']) =>
+    <A, E>(exit: Exit.Exit<A, E>): Effect.Effect<void> =>
+      Effect.sync(() => {
+        const diagnostic = nativeDiagnostic
+        if (diagnostic === undefined || !samePoison() || Exit.isSuccess(exit)) return
+        if (exit.cause.reasons.length !== 1) return
+        const reason = exit.cause.reasons[0]!
+        if (!nativeReason(reason) || reason.error !== diagnostic.poison) return
+        diagnostic.occurrences.set(reason, {
+          token: {},
+          diagnostic: diagnostic.diagnostic,
+          session: state,
+          operation,
+          cause: exit.cause,
+        })
+      }).pipe(Effect.ignoreCause)
+  const occurrence = (reason: Cause.Reason<unknown>): Occurrence | undefined => {
+    if (!Cause.isFailReason(reason)) return undefined
+    const found = nativeDiagnostic?.occurrences.get(reason)
+    nativeDiagnostic?.occurrences.delete(reason)
+    return found
+  }
+  const observeCommit =
+    (provenance: object, operation: 'task.commit' | 'task.conversationCommit') =>
+    <A, E>(exit: Exit.Exit<A, E>): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (Exit.isSuccess(exit) || exit.cause.reasons.length < 2) return
+        const native = exit.cause.reasons.flatMap((reason) =>
+          Cause.isFailReason(reason) &&
+          (Schema.is(StorageError)(reason.error) || Schema.is(SessionError)(reason.error))
+            ? [reason.error]
+            : [],
+        )
+        if (native.length === 0) return
+        const diagnostic = error('faulted', operation, Cause.pretty(exit.cause), exit.cause)
+        const poison = native.find((failure) => failure === state.poison)
+        if (poison !== undefined && !reconciliationEnded)
+          pendingCoordinatorEnd = {
+            token: {},
+            coordinator: reconciliationIdentity,
+            session: state,
+            poison,
+            cause: exit.cause,
+          }
+        nativeDiagnostic = {
+          provenance,
+          cause: exit.cause,
+          diagnostic,
+          occurrences: new WeakMap(),
+          poison,
+        }
+        yield* health(diagnostic)
+      }).pipe(Effect.ignoreCause)
 
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
@@ -155,6 +289,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
 
   const read = (id: Record.TaskId) =>
     Session.task(session, id).pipe(
+      Effect.onExit(observeProjection('task.read')),
       Effect.flatMap((found) =>
         Effect.fromOption(found).pipe(
           Effect.mapError(() => error('notFound', 'task.read', 'Task is absent')),
@@ -304,46 +439,54 @@ export const make = Effect.fnUntraced(function* <R = never>(
       for (const member of captured) yield* waitForTask(member)
     }).pipe(Effect.mapError(invocationFailure))
   const abort: Scheduler.Service['abort'] = (id, options) => abortSet(id, true, options)
+  const markConversation = (
+    tx: Transaction.Transaction,
+    id: Record.ConversationId,
+    options?: { readonly includeBackground?: boolean },
+    gate?: (tx: Transaction.Transaction) => Effect.Effect<void, import('../TaskError.js').Failure>,
+  ) =>
+    Effect.gen(function* () {
+      if (gate !== undefined) yield* gate(tx)
+      yield* check
+      if (Option.isNone(yield* Transaction.conversation(tx, id)))
+        return yield* error('notFound', 'task.abortConversation', 'Conversation is absent')
+      const tree = yield* Tree.load(tx)
+      const members = [...tree.tasks.values()].filter(
+        (record) =>
+          record.state.status !== 'terminal' &&
+          Tree.inConversation(tree, record, id, options?.includeBackground),
+      )
+      for (const record of members) yield* Transaction.putTask(tx, TaskPolicy.requestAbort(record))
+      const submissions = yield* Transaction.scanSubmissions(tx, { status: 'queued' }).pipe(
+        Stream.runCollect,
+      )
+      for (const submission of submissions) {
+        if (submission._tag !== 'InputQueued') continue
+        const ownerId = tree.conversations.get(submission.conversationId)?.owner?.taskId
+        const owner = ownerId === undefined ? undefined : tree.tasks.get(ownerId)
+        const included =
+          submission.conversationId === id ||
+          (owner !== undefined && Tree.inConversation(tree, owner, id, options?.includeBackground))
+        if (included)
+          yield* Transaction.putSubmission(tx, {
+            ...submission,
+            _tag: 'InputUnanswered',
+            status: 'unanswered',
+            reason: 'aborted',
+          })
+      }
+      return members.map((record) => record.id)
+    })
+  const joinMarked = (ids: ReadonlyArray<Record.TaskId>) =>
+    Effect.gen(function* () {
+      yield* wake
+      for (const id of ids) yield* waitForTask(id)
+    })
   const abortConversation: Scheduler.Service['abortConversation'] = (id, options) =>
     Effect.gen(function* () {
       yield* resume
-      const captured = yield* Session.commit(session, (tx) =>
-        Effect.gen(function* () {
-          yield* check
-          if (Option.isNone(yield* Transaction.conversation(tx, id)))
-            return yield* error('notFound', 'task.abortConversation', 'Conversation is absent')
-          const tree = yield* Tree.load(tx)
-          const members = [...tree.tasks.values()].filter(
-            (record) =>
-              record.state.status !== 'terminal' &&
-              Tree.inConversation(tree, record, id, options?.includeBackground),
-          )
-          for (const record of members)
-            yield* Transaction.putTask(tx, TaskPolicy.requestAbort(record))
-          const submissions = yield* Transaction.scanSubmissions(tx, { status: 'queued' }).pipe(
-            Stream.runCollect,
-          )
-          for (const submission of submissions) {
-            if (submission._tag !== 'InputQueued') continue
-            const ownerId = tree.conversations.get(submission.conversationId)?.owner?.taskId
-            const owner = ownerId === undefined ? undefined : tree.tasks.get(ownerId)
-            const included =
-              submission.conversationId === id ||
-              (owner !== undefined &&
-                Tree.inConversation(tree, owner, id, options?.includeBackground))
-            if (included)
-              yield* Transaction.putSubmission(tx, {
-                ...submission,
-                _tag: 'InputUnanswered',
-                status: 'unanswered',
-                reason: 'aborted',
-              })
-          }
-          return members.map((record) => record.id)
-        }),
-      )
-      yield* wake
-      for (const member of captured) yield* waitForTask(member)
+      const captured = yield* Session.commit(session, (tx) => markConversation(tx, id, options))
+      yield* joinMarked(captured)
     })
   const graph = check.pipe(
     Effect.andThen(
@@ -511,6 +654,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
     lease: RegistryScope.Lease,
     host: Scheduler.HostAccess,
   ): Access => {
+    const provenance = {}
     const active = check.pipe(
       Effect.andThen(
         Effect.suspend(() =>
@@ -558,6 +702,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
           )
     const native: Access = {
       invocation: ToolInvocation.unsupported,
+      subagent: Subagent.unsupported,
       taskId: invocation.taskId,
       conversationId: invocation.conversationId,
       registry: {
@@ -603,7 +748,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
                   )
                 }),
               { taskId: invocation.taskId, conversationId: invocation.conversationId },
-            ),
+            ).pipe(Effect.onExit(observeCommit(provenance, 'task.commit'))),
           ),
         ),
       progress: <T extends Task.Contract>(
@@ -625,6 +770,10 @@ export const make = Effect.fnUntraced(function* <R = never>(
               invocation.toolInvocation ?? ToolInvocation.unsupported,
               tx,
             ).pipe(Effect.mapError(toolInvocationFailure))
+            if (next.outcome.status !== 'completed')
+              yield* ConversationInvocation.stageClose(invocation.subagent, tx).pipe(
+                Effect.mapError(subagentFailure),
+              )
             const encoded = yield* Task.encode(
               Task.outcomeSchema<T['success'], T['failure']>(definition),
               next.outcome,
@@ -720,10 +869,10 @@ export const make = Effect.fnUntraced(function* <R = never>(
           ),
         ),
       outcomes: (ids) => withRead(outcomes(ids)),
-      outcome: (ref) => withRead(outcome(ref)).pipe(Effect.mapError(invocationFailure)),
+      outcome: (ref) => nativeBoundary(withRead(outcome(ref))),
       wait: (ref) =>
         Effect.raceFirst(
-          withRead(wait(ref)).pipe(Effect.mapError(invocationFailure)),
+          nativeBoundary(withRead(wait(ref))),
           Deferred.await(invocation.done).pipe(Effect.andThen(Effect.interrupt)),
         ),
       abort: (id, options) =>
@@ -802,6 +951,67 @@ export const make = Effect.fnUntraced(function* <R = never>(
         ),
     }
     NestedInvocation.registerGate(native, (tx) => transaction(tx).pipe(Effect.asVoid))
+    ConversationInvocation.registerControl(native, {
+      gate: (tx) => transaction(tx).pipe(Effect.asVoid),
+      savepoint: (tx, run) =>
+        transaction(tx).pipe(
+          Effect.andThen(
+            Inbox.atomic(tx, (derived) =>
+              Effect.gen(function* () {
+                invocation.transactions.add(derived)
+                return yield* transaction(derived).pipe(
+                  Effect.andThen(Effect.suspend(() => run(derived))),
+                  Effect.tap(() => transaction(derived)),
+                  Effect.ensuring(Effect.sync(() => invocation.transactions.delete(derived))),
+                )
+              }),
+            ),
+          ),
+        ),
+      mutation: (change) =>
+        Effect.suspend(() => {
+          let callbackEntered = false
+          return Session.commit(session, (tx) =>
+            Effect.gen(function* () {
+              callbackEntered = true
+              yield* current(tx, invocation)
+              invocation.transactions.add(tx)
+              return yield* Effect.suspend(() => change(tx)).pipe(
+                Effect.tap(() => current(tx, invocation)),
+                Effect.ensuring(Effect.sync(() => invocation.transactions.delete(tx))),
+              )
+            }),
+          ).pipe(
+            Effect.onExit(observeCommit(provenance, 'task.conversationCommit')),
+            Effect.onExit((exit) =>
+              callbackEntered ? Effect.void : observeProjection('task.conversationGuard')(exit),
+            ),
+          )
+        }),
+      markConversation: (tx, id, options) =>
+        Effect.gen(function* () {
+          yield* transaction(tx)
+          const tree = yield* Tree.load(tx)
+          if (
+            Tree.inConversation(
+              tree,
+              yield* task(tx, invocation.taskId),
+              id,
+              options?.includeBackground,
+            )
+          )
+            return yield* error(
+              'invalidDefinition',
+              'task.abortConversation',
+              'Abort would wait for its own caller',
+            )
+          const ids = yield* markConversation(tx, id, options, (tx) =>
+            transaction(tx).pipe(Effect.asVoid),
+          )
+          return { ids, join: joinMarked(ids).pipe(Effect.mapError(invocationFailure)) }
+        }),
+      ended: Deferred.await(invocation.done),
+    })
     return native
   }
 
@@ -884,7 +1094,29 @@ export const make = Effect.fnUntraced(function* <R = never>(
                   Effect.mapError(toolInvocationFailure),
                 ),
               )
-        const native: Access = { ...reserved, invocation: toolInvocation }
+        const subagent =
+          options.subagent === undefined
+            ? Subagent.unsupported
+            : yield* restore(
+                options.subagent.open(reserved, lease, invocation.mode).pipe(
+                  Effect.updateContext((_context: Context.Context<never>) =>
+                    Context.add(hostContext, Scope.Scope, invocation.scope),
+                  ),
+                  Effect.mapError(subagentFailure),
+                ),
+              )
+        const native: Access = {
+          ...reserved,
+          invocation: toolInvocation,
+          subagent,
+          ...(options.subagent === undefined
+            ? {}
+            : {
+                conversation: (id: Record.ConversationId) =>
+                  subagent.conversation(id).pipe(Effect.mapError(subagentFailure)),
+              }),
+        }
+        invocation.subagent = subagent
         invocation.toolInvocation = toolInvocation
         const checkpoint = yield* Task.decode(
           Schema.Struct({ phase: Schema.NonEmptyString }),
@@ -928,7 +1160,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
           exit.cause.reasons.length === 1 &&
           Cause.isFailReason(exit.cause.reasons[0]!)
         ) {
-          yield* health(exit.cause.reasons[0].error)
+          yield* health(exit.cause.reasons[0].error, occurrence(exit.cause.reasons[0]))
           return
         }
         let result: TaskRegistry.PhaseResult
@@ -947,6 +1179,14 @@ export const make = Effect.fnUntraced(function* <R = never>(
           ).pipe(Effect.mapError(toolInvocationFailure)),
         )
         const detail = result._tag === 'outcome' ? result.outcome : after.state.outcome
+        yield* restore(
+          ConversationInvocation.close(
+            native.subagent,
+            detail !== undefined &&
+              Schema.is(Record.TaskOutcome)(detail) &&
+              detail.status !== 'completed',
+          ).pipe(Effect.mapError(subagentFailure)),
+        )
         yield* restore(
           lifecycle(
             detail !== undefined &&
@@ -977,12 +1217,15 @@ export const make = Effect.fnUntraced(function* <R = never>(
           cleanupExit = exit
         }),
       ),
-      Effect.catch((failure) => health(failure)),
-      Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause)
+      Effect.catchCause((cause) => {
+        if (cause.reasons.length === 1 && Cause.isFailReason(cause.reasons[0]!)) {
+          const reason = cause.reasons[0]
+          return health(reason.error, occurrence(reason))
+        }
+        return Cause.hasInterruptsOnly(cause)
           ? Effect.void
-          : health(error('faulted', 'scheduler.invoke', Cause.pretty(cause), cause)),
-      ),
+          : health(error('faulted', 'scheduler.invoke', Cause.pretty(cause), cause))
+      }),
       Effect.ensuring(
         Effect.uninterruptible(
           Effect.gen(function* () {
@@ -1164,7 +1407,10 @@ export const make = Effect.fnUntraced(function* <R = never>(
     if (!enabled || closed || failed !== undefined) return
     yield* guard
     yield* Session.commit(session, Supervision.reconcile)
-    const records = yield* Session.scanTasks(session).pipe(Stream.runCollect)
+    const records = yield* Session.scanTasks(session).pipe(
+      Stream.runCollect,
+      Effect.onExit(observeProjection('task.scan')),
+    )
     for (const record of records) {
       const invocation = invocations.get(record.id)
       if (invocation !== undefined) {
@@ -1188,11 +1434,21 @@ export const make = Effect.fnUntraced(function* <R = never>(
   yield* Stream.fromQueue(signals).pipe(
     Stream.runForEach(() => reconcile.pipe(Effect.andThen(Effect.yieldNow))),
     Effect.ensuring(
-      Effect.suspend(() =>
-        closed
-          ? Effect.void
-          : health(error('revoked', 'scheduler.session', 'Session coordinator has ended')),
-      ),
+      Effect.suspend(() => {
+        const proof = pendingCoordinatorEnd
+        pendingCoordinatorEnd = undefined
+        reconciliationEnded = true
+        if (closed) return Effect.void
+        if (
+          proof !== undefined &&
+          proof.coordinator === reconciliationIdentity &&
+          proof.session === state &&
+          proof.poison === state.poison &&
+          failed !== undefined
+        )
+          return notify
+        return health(error('revoked', 'scheduler.session', 'Session coordinator has ended'))
+      }),
     ),
     Effect.forkIn(ownerScope),
   )

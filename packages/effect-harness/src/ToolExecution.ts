@@ -16,6 +16,8 @@ export class ToolExecution extends Context.Service<
     readonly callId: string
     /** Native owned tool calls. Direct reporting-only services may omit this capability. */
     readonly invocation?: import('./ToolInvocation.js').Access
+    /** Borrowed for this handler only, including every returned conversation/submission. */
+    readonly subagent?: import('./Subagent.js').Access
     /** Request-pinned selected model policy; absent for direct toolkit execution. */
     readonly imageReadPolicy?: import('./coding/ImageReadPolicy.js').Policy | undefined
     readonly output: (chunk: string) => Effect.Effect<void, Failure>

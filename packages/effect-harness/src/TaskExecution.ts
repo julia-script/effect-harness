@@ -45,6 +45,8 @@ export interface ConversationOptions {
  * missing operations fail with a typed TaskError.
  */
 export interface Access {
+  /** Native supervised conversations; direct/older standalone services may omit it. */
+  readonly subagent?: import('./Subagent.js').Access
   /** Reservation-bound programmatic calls; unsupported on schedulers without native integration. */
   readonly invocation: import('./ToolInvocation.js').Access
   readonly taskId: Record.TaskId

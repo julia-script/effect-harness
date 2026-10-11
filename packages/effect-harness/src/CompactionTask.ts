@@ -9,6 +9,7 @@ import * as Request from './CompactionRequest.js'
 import { HarnessBackend } from './HarnessBackend.js'
 import { HarnessError } from './HarnessError.js'
 import * as Plan from './internal/CompactionPlan.js'
+import { compactionBackend } from './internal/ConversationInvocation.js'
 
 export const kind = 'harness.compaction'
 export const HandleSchema = Schema.Struct({
@@ -74,24 +75,24 @@ const unsupported = () =>
     operation: 'compaction.task',
     message: 'Backend does not support compaction task handles',
   })
-/** Read the actual durable task, retaining pending/waiting/completing state. */
+/** Read the actual durable task. Native returned identities retain caller authority; copied DTOs use the ambient backend. */
 export const read = (handle: Handle): Effect.Effect<Record.Task, HarnessError, HarnessBackend> =>
   Effect.gen(function* () {
-    const backend = yield* HarnessBackend
+    const backend = compactionBackend(handle) ?? (yield* HarnessBackend)
     if (backend.compactionTask === undefined) return yield* unsupported()
     return yield* backend.compactionTask(handle)
   })
 /** Observer interruption never cancels durable compaction. Queued means admission, not successful placement. */
 export const wait = (handle: Handle): Effect.Effect<Outcome, HarnessError, HarnessBackend> =>
   Effect.gen(function* () {
-    const backend = yield* HarnessBackend
+    const backend = compactionBackend(handle) ?? (yield* HarnessBackend)
     if (backend.waitCompaction === undefined) return yield* unsupported()
     return yield* backend.waitCompaction(handle)
   })
 /** Request native supervised cancellation and wait for cleanup. */
 export const abort = (handle: Handle): Effect.Effect<void, HarnessError, HarnessBackend> =>
   Effect.gen(function* () {
-    const backend = yield* HarnessBackend
+    const backend = compactionBackend(handle) ?? (yield* HarnessBackend)
     if (backend.abortCompaction === undefined) return yield* unsupported()
     yield* backend.abortCompaction(handle)
   })

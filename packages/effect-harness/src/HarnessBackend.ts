@@ -48,6 +48,11 @@ export const WatchSchema = Schema.Struct({
 export type Watch = typeof WatchSchema.Type
 
 export interface HarnessBackendService {
+  /** Native adapters validate caller authority before preparing a reset payload. */
+  readonly reset?: (
+    conversationId: Record.ConversationId,
+    options?: ResetOptions,
+  ) => Effect.Effect<SubmissionRef, HarnessError>
   readonly compact?: (
     conversationId: Record.ConversationId,
     options?: import('./CompactionTask.js').Options,

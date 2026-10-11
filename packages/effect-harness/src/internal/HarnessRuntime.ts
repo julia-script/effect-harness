@@ -41,6 +41,8 @@ import * as RunTask from './RunTask.js'
 import * as ToolTask from './ToolTask.js'
 import * as NestedInvocation from './NestedInvocation.js'
 import * as NestedToolTask from './NestedToolTask.js'
+import * as ConversationInvocation from './ConversationInvocation.js'
+import * as SubagentTask from './SubagentTask.js'
 import * as Transaction from '../Transaction.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
 import { protect, absent } from './HarnessFailure.js'
@@ -475,7 +477,207 @@ export const make = Effect.fnUntraced(function* <
         registry.uninstall('native-runtime-compaction').pipe(Effect.ignore),
       )
       yield* Effect.addFinalizer(() => registry.uninstall('native-runtime-run').pipe(Effect.ignore))
-      const scheduler = yield* TaskScheduler.make(session, {
+      const admitSubmission = Effect.fnUntraced(function* (
+        tx: Transaction.Transaction,
+        input: typeof SubmitSchema.Type,
+        place: boolean,
+      ) {
+        const { conversationId, draft } = yield* Value.copy(Schema.toCodecJson(SubmitSchema), input)
+        const requestId =
+          draft.requestId === undefined
+            ? undefined
+            : yield* Schema.decodeEffect(Identity.RequestId)(draft.requestId)
+        yield* requireConversation(tx, conversationId)
+        if (requestId !== undefined) {
+          const existing = yield* Transaction.submissionByRequest(tx, conversationId, requestId)
+          if (Option.isSome(existing)) {
+            if (existing.value.type !== draft.type)
+              return yield* new HarnessError({
+                reason: 'conflict',
+                operation: 'conversation.submit',
+                message: 'Request already identifies a different submission type',
+              })
+            return existing.value
+          }
+        }
+        const tasks = yield* Transaction.scanTasks(tx, {
+          conversationId,
+          kind: runKind,
+        }).pipe(Stream.runCollect)
+        const busy = tasks.some(
+          (task) => task.state.status !== 'terminal' && task.state.status !== 'completing',
+        )
+        if (busy && draft.type === 'input' && draft.whenBusy === 'reject')
+          return yield* new HarnessError({
+            reason: 'conflict',
+            operation: 'conversation.busy',
+            message: 'Conversation has an active run',
+          })
+        if (draft.type === 'write') {
+          if (draft.entry.model !== undefined)
+            yield* Schema.decodeEffect(Run.Messages)(draft.entry.model)
+          for (const edit of draft.entry.edits ?? []) {
+            if (edit._tag === 'replace') yield* Schema.decodeEffect(Run.Messages)(edit.messages)
+            if (Option.isNone(yield* Transaction.entry(tx, edit.target, { conversationId })))
+              return yield* new HarnessError({
+                reason: 'invalid',
+                operation: 'conversation.submit',
+                message: 'Write edit target is not visible in this conversation',
+              })
+          }
+          if (
+            typeof draft.entry.head === 'number' &&
+            Option.isNone(yield* Transaction.entry(tx, draft.entry.head, { conversationId }))
+          )
+            return yield* new HarnessError({
+              reason: 'invalid',
+              operation: 'conversation.submit',
+              message: 'Write head is not visible in this conversation',
+            })
+        }
+        yield* requireSubmissionFormat
+        yield* Inbox.ensureContext(tx, conversationId)
+        let mode: Inbox.Draft['mode'] = 'write'
+        if (draft.type === 'input') mode = draft.whenBusy === 'steer' ? 'steer' : 'followUp'
+        const submission = yield* Inbox.admit(tx, conversationId, {
+          mode,
+          payload:
+            draft.type === 'write'
+              ? draft.entry
+              : {
+                  kind: 'input',
+                  model: yield* Schema.encodeEffect(Run.Messages)([
+                    Inbox.importInput(draft.content),
+                  ]),
+                },
+          ...(requestId === undefined ? {} : { requestId }),
+        })
+        if (place && !busy) {
+          yield* Inbox.reconcile(tx, conversationId)
+          yield* Inbox.boundary(tx, conversationId, { boundary: 'final' }).pipe(
+            Effect.provideContext(context),
+          )
+        }
+        return submission
+      })
+      const configureAgent = Effect.fnUntraced(function* (
+        tx: Transaction.Transaction,
+        input: typeof ConfigureSchema.Type,
+      ) {
+        const { conversationId, change } = yield* Schema.decodeEffect(ConfigureSchema)(input)
+        yield* requireConversation(tx, conversationId)
+        const snapshot = yield* Transaction.ensureDocument(
+          tx,
+          agentDocument,
+          agentTarget(conversationId),
+        )
+        const value = { ...snapshot.value }
+        for (const key of [
+          'model',
+          'extensions',
+          'tools',
+          'modelTools',
+          'toolkits',
+          'instructions',
+        ] as const) {
+          if (change[key] === null) delete value[key]
+          else if (change[key] !== undefined) Object.assign(value, { [key]: change[key] })
+        }
+        yield* Transaction.appendEntry(tx, conversationId, {
+          kind: 'agent.configure',
+        })
+        yield* Transaction.setDocument(tx, agentDocument, agentTarget(conversationId), value)
+      })
+      const withdrawSubmission = Effect.fnUntraced(function* (
+        tx: Transaction.Transaction,
+        id: Record.SubmissionId,
+      ) {
+        yield* checkOpen
+        const found = yield* Transaction.submission(tx, id)
+        if (Option.isNone(found))
+          return yield* absent('submission.withdraw', 'Submission does not exist')
+        if (found.value.status === 'placed') return 'already_placed' as const
+        if (found.value.status === 'done' || found.value.status === 'unanswered')
+          return 'settled' as const
+        const queue = yield* Transaction.snapshot(
+          tx,
+          RunControl.inbox,
+          RunControl.target(found.value.conversationId),
+        )
+        if (Option.isSome(queue)) yield* Inbox.withdraw(tx, found.value.conversationId, id)
+        const remaining = yield* Transaction.submission(tx, id)
+        if (Option.isSome(remaining) && remaining.value.status === 'queued')
+          yield* Transaction.putSubmission(
+            tx,
+            remaining.value.type === 'input'
+              ? {
+                  ...remaining.value,
+                  _tag: 'InputUnanswered',
+                  status: 'unanswered',
+                  reason: 'withdrawn',
+                }
+              : {
+                  ...remaining.value,
+                  _tag: 'WriteUnanswered',
+                  status: 'unanswered',
+                  reason: 'withdrawn',
+                },
+          )
+        const tasks = yield* Stream.runCollect(
+          Transaction.scanTasks(tx, {
+            conversationId: found.value.conversationId,
+            kind: runKind,
+          }),
+        )
+        for (const task of tasks) {
+          if (task.state.status === 'terminal') continue
+          const state = yield* Run.decode(task.state.checkpoint)
+          if (state.submissionId === id)
+            yield* Transaction.putTask(tx, {
+              ...task,
+              state: {
+                status: 'terminal',
+                outcome: { status: 'aborted', reason: 'withdrawn' },
+              },
+            })
+        }
+        return 'aborted' as const
+      })
+      const subagentDefinition = SubagentTask.make()
+      yield* registry.install(
+        Registry.withTask(
+          {
+            definition: { id: 'native-runtime-subagent', version: 1 },
+            acquire: Effect.succeed({
+              tools: [],
+              tasks: [],
+              hooks: [],
+              sections: [],
+              extensions: [],
+            }),
+          },
+          subagentDefinition,
+        ),
+      )
+      yield* Effect.addFinalizer(() =>
+        registry.uninstall('native-runtime-subagent').pipe(Effect.ignore),
+      )
+      const createdConversations = new Set<Record.ConversationId>()
+      const notifyCreated = (id: Record.ConversationId) =>
+        Effect.suspend(() => {
+          if (createdConversations.has(id)) return Effect.void
+          createdConversations.add(id)
+          return protect(
+            'conversation.created',
+            snapshotAgent(id).pipe(
+              Effect.flatMap((agent) =>
+                runHooks(id, agent, { _tag: 'conversationCreated', conversationId: id }),
+              ),
+              Effect.asVoid,
+            ),
+          )
+        })
+      const scheduler: TaskScheduler.Service = yield* TaskScheduler.make(session, {
         invocation: {
           open: (access, lease, mode) =>
             NestedInvocation.make(
@@ -486,6 +688,38 @@ export const make = Effect.fnUntraced(function* <
               nestedFormat,
               inspectNestedFormat,
             ),
+        },
+        subagent: {
+          open: (access, _lease, mode) =>
+            ConversationInvocation.make(access, mode, subagentDefinition, {
+              backend: () => backend,
+              submit: (tx, id, draft) =>
+                protect(
+                  'conversation.submit',
+                  admitSubmission(tx, { conversationId: id, draft }, false),
+                ),
+              configure: (tx, id, change) =>
+                protect(
+                  'conversation.configure',
+                  configureAgent(tx, { conversationId: id, change }),
+                ),
+              compact: (tx, id, input = {}) =>
+                protect(
+                  'conversation.compact',
+                  Effect.gen(function* () {
+                    const options = yield* Value.copy(CompactionTask.OptionsSchema, input)
+                    const record = yield* CompactionRuntime.admit(tx, id, {
+                      reason: 'manual',
+                      blocking: false,
+                      ...options,
+                    })
+                    return { id: record.id, conversationId: id }
+                  }),
+                ),
+              withdraw: (tx, id) => protect('submission.withdraw', withdrawSubmission(tx, id)),
+              created: notifyCreated,
+              wake: protect('runtime.activate', activate),
+            }),
         },
         nativeRun: native.adapter,
         host: {
@@ -552,9 +786,19 @@ export const make = Effect.fnUntraced(function* <
         ),
         Effect.forkIn(schedulerScope),
       )
-      yield* Session.commits(session).pipe(
-        Stream.runForEach(() =>
-          protect('runtime.publication', notify()).pipe(Effect.catch(failScheduler)),
+      const publicationPull = yield* Stream.toPull(Session.commits(session))
+      yield* Stream.fromEffectRepeat(publicationPull).pipe(
+        Stream.flatMap((events) => Stream.fromIterable(events)),
+        Stream.runForEach((event) =>
+          protect(
+            'runtime.publication',
+            Effect.gen(function* () {
+              for (const change of event.changes)
+                if (change._tag === 'conversation' && change.value.owner !== undefined)
+                  yield* notifyCreated(change.value.id)
+              yield* notify()
+            }),
+          ).pipe(Effect.catch(failScheduler)),
         ),
         Effect.forkIn(schedulerScope),
       )
@@ -681,100 +925,9 @@ export const make = Effect.fnUntraced(function* <
             'conversation.submit',
             Effect.gen(function* () {
               yield* checkOpen
-              const { conversationId, draft } = yield* Value.copy(
-                Schema.toCodecJson(SubmitSchema),
-                input,
-              )
-              const requestId =
-                draft.requestId === undefined
-                  ? undefined
-                  : yield* Schema.decodeEffect(Identity.RequestId)(draft.requestId)
+              const request = yield* Value.copy(Schema.toCodecJson(SubmitSchema), input)
               const result = yield* Session.commit(session, (tx) =>
-                Effect.gen(function* () {
-                  yield* requireConversation(tx, conversationId)
-                  if (requestId !== undefined) {
-                    const existing = yield* Transaction.submissionByRequest(
-                      tx,
-                      conversationId,
-                      requestId,
-                    )
-                    if (Option.isSome(existing)) {
-                      if (existing.value.type !== draft.type)
-                        return yield* new HarnessError({
-                          reason: 'conflict',
-                          operation: 'conversation.submit',
-                          message: 'Request already identifies a different submission type',
-                        })
-                      return existing.value
-                    }
-                  }
-                  const tasks = yield* Transaction.scanTasks(tx, {
-                    conversationId,
-                    kind: runKind,
-                  }).pipe(Stream.runCollect)
-                  const busy = tasks.some(
-                    (task) =>
-                      task.state.status !== 'terminal' && task.state.status !== 'completing',
-                  )
-                  if (busy && draft.type === 'input' && draft.whenBusy === 'reject')
-                    return yield* new HarnessError({
-                      reason: 'conflict',
-                      operation: 'conversation.busy',
-                      message: 'Conversation has an active run',
-                    })
-                  if (draft.type === 'write') {
-                    if (draft.entry.model !== undefined)
-                      yield* Schema.decodeEffect(Run.Messages)(draft.entry.model)
-                    for (const edit of draft.entry.edits ?? []) {
-                      if (edit._tag === 'replace')
-                        yield* Schema.decodeEffect(Run.Messages)(edit.messages)
-                      if (
-                        Option.isNone(yield* Transaction.entry(tx, edit.target, { conversationId }))
-                      )
-                        return yield* new HarnessError({
-                          reason: 'invalid',
-                          operation: 'conversation.submit',
-                          message: 'Write edit target is not visible in this conversation',
-                        })
-                    }
-                    if (
-                      typeof draft.entry.head === 'number' &&
-                      Option.isNone(
-                        yield* Transaction.entry(tx, draft.entry.head, { conversationId }),
-                      )
-                    )
-                      return yield* new HarnessError({
-                        reason: 'invalid',
-                        operation: 'conversation.submit',
-                        message: 'Write head is not visible in this conversation',
-                      })
-                  }
-                  yield* requireSubmissionFormat
-                  yield* Inbox.ensureContext(tx, conversationId)
-                  let mode: Inbox.Draft['mode'] = 'write'
-                  if (draft.type === 'input')
-                    mode = draft.whenBusy === 'steer' ? 'steer' : 'followUp'
-                  const submission = yield* Inbox.admit(tx, conversationId, {
-                    mode,
-                    payload:
-                      draft.type === 'write'
-                        ? draft.entry
-                        : {
-                            kind: 'input',
-                            model: yield* Schema.encodeEffect(Run.Messages)([
-                              Inbox.importInput(draft.content),
-                            ]),
-                          },
-                    ...(requestId === undefined ? {} : { requestId }),
-                  })
-                  if (!busy) {
-                    yield* Inbox.reconcile(tx, conversationId)
-                    yield* Inbox.boundary(tx, conversationId, { boundary: 'final' }).pipe(
-                      Effect.provideContext(context),
-                    )
-                  }
-                  return submission
-                }),
+                admitSubmission(tx, request, true),
               )
               yield* activate
               return { id: result.id, conversationId: result.conversationId }
@@ -786,37 +939,7 @@ export const make = Effect.fnUntraced(function* <
             Effect.gen(function* () {
               yield* checkOpen
               const { conversationId, change } = yield* Schema.decodeEffect(ConfigureSchema)(input)
-              yield* Session.commit(session, (tx) =>
-                Effect.gen(function* () {
-                  yield* requireConversation(tx, conversationId)
-                  const snapshot = yield* Transaction.ensureDocument(
-                    tx,
-                    agentDocument,
-                    agentTarget(conversationId),
-                  )
-                  const value = { ...snapshot.value }
-                  for (const key of [
-                    'model',
-                    'extensions',
-                    'tools',
-                    'modelTools',
-                    'toolkits',
-                    'instructions',
-                  ] as const) {
-                    if (change[key] === null) delete value[key]
-                    else if (change[key] !== undefined) Object.assign(value, { [key]: change[key] })
-                  }
-                  yield* Transaction.appendEntry(tx, conversationId, {
-                    kind: 'agent.configure',
-                  })
-                  yield* Transaction.setDocument(
-                    tx,
-                    agentDocument,
-                    agentTarget(conversationId),
-                    value,
-                  )
-                }),
-              )
+              yield* Session.commit(session, (tx) => configureAgent(tx, { conversationId, change }))
             }),
           ),
         agent: (id) =>
@@ -896,61 +1019,7 @@ export const make = Effect.fnUntraced(function* <
           protect(
             'submission.withdraw',
             Effect.gen(function* () {
-              const result = yield* Session.commit(session, (tx) =>
-                Effect.gen(function* () {
-                  yield* checkOpen
-                  const found = yield* Transaction.submission(tx, id)
-                  if (Option.isNone(found))
-                    return yield* absent('submission.withdraw', 'Submission does not exist')
-                  if (found.value.status === 'placed') return 'already_placed' as const
-                  if (found.value.status === 'done' || found.value.status === 'unanswered')
-                    return 'settled' as const
-                  const queue = yield* Transaction.snapshot(
-                    tx,
-                    RunControl.inbox,
-                    RunControl.target(found.value.conversationId),
-                  )
-                  if (Option.isSome(queue))
-                    yield* Inbox.withdraw(tx, found.value.conversationId, id)
-                  const remaining = yield* Transaction.submission(tx, id)
-                  if (Option.isSome(remaining) && remaining.value.status === 'queued')
-                    yield* Transaction.putSubmission(
-                      tx,
-                      remaining.value.type === 'input'
-                        ? {
-                            ...remaining.value,
-                            _tag: 'InputUnanswered',
-                            status: 'unanswered',
-                            reason: 'withdrawn',
-                          }
-                        : {
-                            ...remaining.value,
-                            _tag: 'WriteUnanswered',
-                            status: 'unanswered',
-                            reason: 'withdrawn',
-                          },
-                    )
-                  const tasks = yield* Stream.runCollect(
-                    Transaction.scanTasks(tx, {
-                      conversationId: found.value.conversationId,
-                      kind: runKind,
-                    }),
-                  )
-                  for (const task of tasks) {
-                    if (task.state.status === 'terminal') continue
-                    const state = yield* Run.decode(task.state.checkpoint)
-                    if (state.submissionId === id)
-                      yield* Transaction.putTask(tx, {
-                        ...task,
-                        state: {
-                          status: 'terminal',
-                          outcome: { status: 'aborted', reason: 'withdrawn' },
-                        },
-                      })
-                  }
-                  return 'aborted' as const
-                }),
-              )
+              const result = yield* Session.commit(session, (tx) => withdrawSubmission(tx, id))
               yield* notify()
               yield* wake
               return result

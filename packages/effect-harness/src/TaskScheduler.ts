@@ -82,6 +82,17 @@ export interface NativeRunAdapter<R = never> {
   ) => Effect.Effect<PhaseResult, Failure, R | TaskExecution.TaskExecution | Scope.Scope>
 }
 export interface Options<R = never> {
+  readonly subagent?: {
+    readonly open: (
+      access: TaskExecution.Access,
+      lease: RegistryScope.Lease,
+      mode: 'run' | 'abort',
+    ) => Effect.Effect<
+      import('./Subagent.js').Access,
+      import('./Subagent.js').Failure,
+      R | Scope.Scope
+    >
+  }
   /** Construct only after fresh reserved Access exists; Scope is the operation's fresh Scope. */
   readonly invocation?: {
     readonly open: (

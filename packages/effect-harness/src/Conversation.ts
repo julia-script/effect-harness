@@ -18,6 +18,7 @@ import type { HarnessBackendService, Watch } from './HarnessBackend.js'
 import type * as Submission from './Submission.js'
 import * as ConversationHost from './internal/ConversationHost.js'
 import { ConversationTypeId } from './internal/ClientHandle.js'
+import { observation } from './internal/ConversationInvocation.js'
 
 export { ForkOptionsSchema, type ForkOptions } from './HarnessBackend.js'
 import type { ForkOptions, AbortOptions, ResetOptions } from './HarnessBackend.js'
@@ -104,6 +105,11 @@ export const reset: {
   (args) => typeof args[0] === 'object' && args[0] !== null && TypeId in args[0],
   (self: Conversation, options: ResetOptions = {}) =>
     Effect.gen(function* () {
+      const service = backend(self)
+      if (service.reset !== undefined) {
+        const ref = yield* service.reset(self.id, options)
+        return ConversationHost.submission(service, ref.id, ref.conversationId)
+      }
       const model =
         options.handoff === undefined
           ? undefined
@@ -167,18 +173,22 @@ export const snapshot: {
     self: Conversation,
     document: Document.Document<S>,
     target: Document.Target,
-  ) =>
-    backend(self)
-      .snapshot({ kind: document.definition.kind, ...target })
-      .pipe(
-        Effect.flatMap((value) =>
-          Option.isSome(value)
-            ? Schema.decodeEffect(Document.SnapshotSchema(document.definition.schema))(
-                value.value,
-              ).pipe(Effect.asSome)
-            : Effect.succeedNone,
-        ),
-      ),
+  ) => {
+    const service = backend(self)
+    const read = () =>
+      service
+        .snapshot({ kind: document.definition.kind, ...target })
+        .pipe(
+          Effect.flatMap((value) =>
+            Option.isSome(value)
+              ? Schema.decodeEffect(Document.SnapshotSchema(document.definition.schema))(
+                  value.value,
+                ).pipe(Effect.asSome)
+              : Effect.succeedNone,
+          ),
+        )
+    return observation(service)?.observe(read) ?? read()
+  },
 )
 export const watch: {
   <S extends Document.Codec>(
@@ -198,14 +208,29 @@ export const watch: {
     self: Conversation,
     document: Document.Document<S>,
     target: Document.Target,
-  ) =>
-    backend(self)
+  ) => {
+    const service = backend(self)
+    const observed = observation(service)
+    if (observed !== undefined)
+      return Stream.unwrap(
+        observed.observe(() =>
+          Effect.sync(() => service.watch({ kind: document.definition.kind, ...target })),
+        ),
+      ).pipe(
+        Stream.mapEffect((value) =>
+          observed.observe(() =>
+            Schema.decodeEffect(Document.SnapshotSchema(document.definition.schema))(value),
+          ),
+        ),
+      )
+    return service
       .watch({ kind: document.definition.kind, ...target })
       .pipe(
         Stream.mapEffect((value) =>
           Schema.decodeEffect(Document.SnapshotSchema(document.definition.schema))(value),
         ),
-      ),
+      )
+  },
 )
 
 /**

@@ -72,7 +72,7 @@ type DocumentDraft = Runtime.State['documents'] extends Map<string, infer D> ? D
  * Parent permit prevents concurrent transaction operations from observing child drafts.
  * Mutable document aliases must share the same clone. IDs may have gaps after rollback.
  */
-const atomic = <A, E, R>(
+export const atomic = <A, E, R>(
   tx: Transaction.Transaction,
   run: (child: Transaction.Transaction) => Effect.Effect<A, E, R>,
 ) =>

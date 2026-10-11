@@ -32,6 +32,7 @@ import type * as Prepared from '../PreparedRequest.js'
 import type * as ImageReadPolicy from '../coding/ImageReadPolicy.js'
 import type * as TaskExecutionAccess from '../TaskExecution.js'
 import * as Nested from './NestedInvocation.js'
+import * as ConversationInvocation from './ConversationInvocation.js'
 export const contract = {
   kind: 'harness.tool',
   version: 1,
@@ -283,6 +284,11 @@ export const pipeline = (registry: Registry.Service) => {
       callId: input.call.id,
       ...(input.imageReadPolicy === undefined ? {} : { imageReadPolicy: input.imageReadPolicy }),
       invocation: Nested.borrow(execution.invocation, reportGuard),
+      subagent: ConversationInvocation.borrow(
+        execution.subagent,
+        reportGuard,
+        input.replay === 'safe' ? 'resume' : 'abandon',
+      ),
       output: (chunk) =>
         reportGuard.pipe(Effect.andThen(writer.output(chunk)), Effect.mapError(reportingFailure)),
       details: (value) =>
@@ -436,14 +442,24 @@ export const pipeline = (registry: Registry.Service) => {
               )
               invoked = true
               reporting = true
-              result = yield* Inventory.invoke(lease, call, input.caller, options).pipe(
+              const handled = yield* Inventory.invoke(lease, call, input.caller, options).pipe(
                 Effect.provideService(ToolExecution, access),
-                Effect.ensuring(
-                  Effect.sync(() => {
-                    reporting = false
-                  }),
-                ),
+                Effect.exit,
               )
+              reporting = false
+              const released = yield* ConversationInvocation.close(access.subagent, true).pipe(
+                Effect.exit,
+              )
+              if (Exit.isFailure(handled) && Exit.isFailure(released))
+                return yield* Effect.failCause(
+                  Cause.fromReasons<
+                    | Effect.Error<ReturnType<typeof Inventory.invoke>>
+                    | import('../Subagent.js').Failure
+                  >([...handled.cause.reasons, ...released.cause.reasons]),
+                )
+              if (Exit.isFailure(released)) return yield* Effect.failCause(released.cause)
+              if (Exit.isFailure(handled)) return yield* Effect.failCause(handled.cause)
+              result = handled.value
               const envelope = Tool.hasResultChannels(item.declaration)
                 ? Option.none()
                 : Schema.decodeUnknownOption(Schema.toCodecJson(ToolResult.Envelope))(
