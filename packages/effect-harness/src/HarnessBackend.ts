@@ -48,6 +48,19 @@ export const WatchSchema = Schema.Struct({
 export type Watch = typeof WatchSchema.Type
 
 export interface HarnessBackendService {
+  readonly compact?: (
+    conversationId: Record.ConversationId,
+    options?: import('./CompactionTask.js').Options,
+  ) => Effect.Effect<import('./CompactionTask.js').Handle, HarnessError>
+  readonly compactionTask?: (
+    handle: import('./CompactionTask.js').Handle,
+  ) => Effect.Effect<Record.Task, HarnessError>
+  readonly waitCompaction?: (
+    handle: import('./CompactionTask.js').Handle,
+  ) => Effect.Effect<import('./CompactionTask.js').Outcome, HarnessError>
+  readonly abortCompaction?: (
+    handle: import('./CompactionTask.js').Handle,
+  ) => Effect.Effect<void, HarnessError>
   /** Optional for older transports. Undefined is unsupported, never a zero usage report. */
   readonly usage?: (
     conversationId?: Record.ConversationId,

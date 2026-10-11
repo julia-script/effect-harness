@@ -49,27 +49,38 @@ export const protect = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
 ): Effect.Effect<A, HookFailure, R> =>
   effect.pipe(
-    Effect.mapError(
-      (cause) =>
+    Effect.catchCause((original) => {
+      const cause = Cause.map(
+        original,
+        (error) =>
+          new HookFailure({
+            event,
+            reason:
+              critical(error) || (Schema.is(HookFailure)(error) && error.reason === 'critical')
+                ? 'critical'
+                : 'callback',
+            message: 'Hook callback failed',
+            cause: error,
+          }),
+      )
+      if (Cause.hasInterrupts(cause)) return Effect.failCause(cause)
+      if (
+        cause.reasons.some(
+          (reason) => Cause.isFailReason(reason) && reason.error.reason === 'critical',
+        )
+      )
+        return Effect.failCause(cause)
+      // Keep ordinary callback reporting's first-error policy; critical compounds
+      // above must retain every typed reason, defect and interruption.
+      const first = cause.reasons.find(Cause.isFailReason)
+      const reported = first === undefined ? cause : Cause.fail(first.error)
+      return Effect.fail(
         new HookFailure({
           event,
-          reason:
-            critical(cause) || (Schema.is(HookFailure)(cause) && cause.reason === 'critical')
-              ? 'critical'
-              : 'callback',
-          message: 'Hook callback failed',
-          cause,
+          reason: 'callback',
+          message: Cause.pretty(reported),
+          cause: reported,
         }),
-    ),
-    Effect.catchCause((cause) => {
-      if (Cause.hasInterrupts(cause)) return Effect.failCause(cause)
-      const criticalFailure = cause.reasons.find(
-        (reason) => Cause.isFailReason(reason) && reason.error.reason === 'critical',
-      )
-      if (criticalFailure !== undefined && Cause.isFailReason(criticalFailure))
-        return Effect.fail(criticalFailure.error)
-      return Effect.fail(
-        new HookFailure({ event, reason: 'callback', message: Cause.pretty(cause), cause }),
       )
     }),
   )
@@ -124,16 +135,25 @@ export const dispatch = <N extends Hook.Name, E = never, R = never>(
         event._tag,
         Effect.suspend(() => callback.execute(event)),
       ).pipe(
-        Effect.matchEffect({
+        Effect.matchCauseEffect({
           onSuccess: (value) => Effect.succeed({ _tag: 'value' as const, value }),
           onFailure: (
-            failure,
+            cause,
           ): Effect.Effect<
             { readonly _tag: 'failed'; readonly failure: HookFailure },
             E | HookFailure,
             R
           > => {
-            if (failure.reason === 'critical') return Effect.fail(failure)
+            if (
+              Cause.hasInterrupts(cause) ||
+              cause.reasons.some(
+                (reason) => Cause.isFailReason(reason) && reason.error.reason === 'critical',
+              )
+            )
+              return Effect.failCause(cause)
+            const first = cause.reasons.find(Cause.isFailReason)
+            if (first === undefined) return Effect.failCause(cause)
+            const failure = first.error
             const report =
               options.report === undefined ? Effect.logError(failure) : options.report(failure)
             return report.pipe(Effect.as({ _tag: 'failed' as const, failure }))

@@ -17,6 +17,8 @@ import { SessionError } from '../SessionError.js'
 import * as Transaction from '../Transaction.js'
 import * as Runtime from './TransactionRuntime.js'
 import * as Value from './DocumentValue.js'
+import * as CompactionPlan from './CompactionPlan.js'
+import { CompactionError } from '../CompactionError.js'
 
 export const ModeSchema = RunControl.ModeSchema
 export const ItemSchema = RunControl.InboxItemSchema
@@ -29,6 +31,7 @@ export const DraftSchema = Schema.Struct({
   mode: ModeSchema,
   payload: Transaction.EntryDraftSchema,
   requestId: Schema.optionalKey(Identity.RequestId),
+  compaction: Schema.optionalKey(CompactionPlan.FingerprintSchema),
 })
 export type Draft = typeof DraftSchema.Type
 export const QueueModesSchema = RunControl.QueueModesSchema
@@ -136,14 +139,34 @@ export const initialize = (tx: Transaction.Transaction, conversationId: Record.C
   )
 
 /** Queue data only: no task scheduling, model request, or application callback. */
-export const admit = (
+export function admit(
+  tx: Transaction.Transaction,
+  conversationId: Record.ConversationId,
+  input: Draft & { readonly compaction?: undefined },
+): Effect.Effect<Record.Submission, import('../SessionError.js').Failure>
+export function admit(
   tx: Transaction.Transaction,
   conversationId: Record.ConversationId,
   input: Draft,
-) =>
-  atomic(tx, (child) =>
+): Effect.Effect<
+  Record.Submission,
+  | import('../SessionError.js').Failure
+  | CompactionError
+  | import('../ContextProjectionError.js').ContextProjectionError
+>
+export function admit(
+  tx: Transaction.Transaction,
+  conversationId: Record.ConversationId,
+  input: Draft,
+) {
+  return atomic(tx, (child) =>
     Effect.gen(function* () {
       const draft = yield* Value.copy(DraftSchema, input)
+      if (draft.compaction !== undefined) {
+        yield* validateCompaction(child, conversationId, draft.compaction)
+        if (draft.mode !== 'write' || draft.payload.head !== draft.compaction.firstKept)
+          return yield* conflict('inbox.admit', 'Compaction fence does not match its write')
+      }
       const type = draft.mode === 'write' ? 'write' : 'input'
       if (draft.requestId !== undefined) {
         const duplicate = yield* Transaction.submissionByRequest(
@@ -169,12 +192,18 @@ export const admit = (
       yield* Transaction.setDocument(child, document, target(conversationId), {
         items: [
           ...snapshot.value.items,
-          { submissionId: submission.id, mode: draft.mode, payload: draft.payload },
+          {
+            submissionId: submission.id,
+            mode: draft.mode,
+            payload: draft.payload,
+            ...(draft.compaction === undefined ? {} : { compaction: draft.compaction }),
+          },
         ].sort((a, b) => a.submissionId - b.submissionId),
       })
       return submission
     }),
   )
+}
 
 /** Withdrawal of an already placed/settled item is a no-op; abort can retain writes. */
 export const withdraw = (
@@ -298,10 +327,27 @@ export const select = (
         if (receipt._tag !== 'WriteQueued')
           return yield* conflict('inbox.select', 'Write is no longer queued')
         consumed.add(item.submissionId)
+        const valid =
+          item.compaction === undefined
+            ? true
+            : yield* validateCompaction(child, conversationId, item.compaction).pipe(
+                Effect.as(true),
+                Effect.catch((error) =>
+                  error instanceof CompactionError && error.reason === 'stale'
+                    ? Effect.succeed(false)
+                    : Effect.fail(
+                        new SessionError({
+                          reason: 'invalid',
+                          operation: 'inbox.compaction',
+                          message: 'Invalid compaction fence',
+                          cause: error,
+                        }),
+                      ),
+                ),
+              )
         if (
-          typeof item.payload.head === 'number' &&
-          head !== undefined &&
-          item.payload.head < head
+          !valid ||
+          (typeof item.payload.head === 'number' && head !== undefined && item.payload.head < head)
         ) {
           const value: Record.WriteUnanswered = {
             ...receipt,
@@ -449,6 +495,21 @@ export const project = Effect.fnUntraced(function* (
         }),
     ),
   )
+})
+
+/** Apply later append-only edits before restricting the pinned range, inside the placement transaction. */
+export const validateCompaction = Effect.fnUntraced(function* (
+  tx: Transaction.Transaction,
+  id: Record.ConversationId,
+  fingerprint: CompactionPlan.Fingerprint,
+) {
+  const protocol = yield* ensureContext(tx, id)
+  const entries = yield* Transaction.scanEntries(tx, {
+    conversationId: id,
+    order: 'ascending',
+  }).pipe(Stream.runCollect)
+  const view = yield* ContextProtocol.project(id, entries, protocol)
+  return yield* CompactionPlan.validate(fingerprint, { protocol, entries, view })
 })
 
 const createRun = Effect.fnUntraced(function* (

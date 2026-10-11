@@ -4,6 +4,7 @@ import * as Document from './Document.js'
 import * as Record from './Record.js'
 import * as Transaction from './Transaction.js'
 import * as ContextProtocol from './internal/ContextProtocol.js'
+import * as CompactionPlan from './internal/CompactionPlan.js'
 
 /** Serializable queue policy; steering never interrupts active tools. */
 export const ModeSchema = Schema.Literals(['followUp', 'steer', 'write'])
@@ -11,6 +12,8 @@ export const InboxItemSchema = Schema.Struct({
   submissionId: Record.SubmissionId,
   mode: ModeSchema,
   payload: Transaction.EntryDraftSchema,
+  /** Internal admission only. Older readers cannot safely ignore this placement condition. */
+  compaction: Schema.optionalKey(Schema.toCodecJson(CompactionPlan.FingerprintSchema)),
 })
 export type InboxItem = typeof InboxItemSchema.Type
 export const InboxSchema = Schema.Struct({

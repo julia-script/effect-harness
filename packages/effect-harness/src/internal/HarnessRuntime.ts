@@ -46,6 +46,10 @@ import * as Inbox from './Inbox.js'
 import * as RunControl from '../RunControl.js'
 import * as StorageFormat from '../StorageFormat.js'
 import * as Value from './DocumentValue.js'
+import * as CompactionRuntime from './CompactionRuntime.js'
+import * as CompactionTask from '../CompactionTask.js'
+import * as CompactionStatus from '../CompactionStatus.js'
+import * as Task from '../Task.js'
 
 const rootOptions = { ownership: { _tag: 'ownerless' } } as const
 const runKind = 'harness.run'
@@ -73,9 +77,14 @@ export const make = Effect.fnUntraced(function* <
         initializers: [
           ConversationInitializer.make({
             execute: (tx, record) =>
-              Transaction.ensureDocument(tx, agentDocument, agentTarget(record.id)).pipe(
-                Effect.asVoid,
-              ),
+              Effect.gen(function* () {
+                yield* Transaction.ensureDocument(tx, agentDocument, agentTarget(record.id))
+                yield* Transaction.ensureDocument(
+                  tx,
+                  CompactionStatus.document,
+                  CompactionStatus.target(record.id),
+                )
+              }),
           }),
           ...(options.initializers ?? []),
         ],
@@ -362,6 +371,17 @@ export const make = Effect.fnUntraced(function* <
           checkOpen,
           access,
           runHooks: (id, agent, event, taskId) => dispatchHooks(lease, id, agent, event, taskId),
+          compaction: {
+            context,
+            models,
+            nativeDefault,
+            nativeModel: options.nativeModel ?? { id: 'effect/ai/LanguageModel', version: 1 },
+            ...(options.nativeCompaction === undefined
+              ? {}
+              : { nativeCompaction: options.nativeCompaction }),
+            defaultAgent,
+            runHooks,
+          },
           notify: notify(),
         }),
         registry,
@@ -372,6 +392,35 @@ export const make = Effect.fnUntraced(function* <
         },
       )
       yield* registry.install(native.registration)
+      const compactionDefinition = CompactionRuntime.make({
+        context,
+        models,
+        nativeDefault,
+        nativeModel: options.nativeModel ?? { id: 'effect/ai/LanguageModel', version: 1 },
+        ...(options.nativeCompaction === undefined
+          ? {}
+          : { nativeCompaction: options.nativeCompaction }),
+        defaultAgent,
+        runHooks,
+      })
+      yield* registry.install(
+        Registry.withTask(
+          {
+            definition: { id: 'native-runtime-compaction', version: 1 },
+            acquire: Effect.succeed({
+              tools: [],
+              tasks: [],
+              hooks: [],
+              sections: [],
+              extensions: [],
+            }),
+          },
+          compactionDefinition,
+        ),
+      )
+      yield* Effect.addFinalizer(() =>
+        registry.uninstall('native-runtime-compaction').pipe(Effect.ignore),
+      )
       yield* Effect.addFinalizer(() => registry.uninstall('native-runtime-run').pipe(Effect.ignore))
       const scheduler = yield* TaskScheduler.make(session, {
         nativeRun: native.adapter,
@@ -494,6 +543,62 @@ export const make = Effect.fnUntraced(function* <
         return record.id
       })
       const backend: HarnessBackendService = {
+        compact: (conversationId, input = {}) =>
+          protect(
+            'conversation.compact',
+            Effect.gen(function* () {
+              yield* checkOpen
+              const options = yield* Value.copy(CompactionTask.OptionsSchema, input)
+              const record = yield* Session.commit(session, (tx) =>
+                Effect.gen(function* () {
+                  yield* requireConversation(tx, conversationId)
+                  return yield* CompactionRuntime.admit(tx, conversationId, {
+                    reason: 'manual',
+                    blocking: false,
+                    ...options,
+                  })
+                }),
+              )
+              yield* activate
+              return { id: record.id, conversationId }
+            }),
+          ),
+        compactionTask: (handle) =>
+          protect(
+            'compaction.read',
+            Effect.gen(function* () {
+              yield* checkOpen
+              const value = yield* Value.copy(CompactionTask.HandleSchema, handle)
+              const record = yield* Session.task(session, value.id)
+              if (
+                Option.isNone(record) ||
+                record.value.kind !== CompactionTask.kind ||
+                record.value.conversationId !== value.conversationId
+              )
+                return yield* absent('compaction.read', 'Compaction task handle is unavailable')
+              return record.value
+            }),
+          ),
+        waitCompaction: (handle) =>
+          protect(
+            'compaction.wait',
+            Effect.gen(function* () {
+              const record = yield* backend.compactionTask!(handle)
+              yield* activate
+              const terminal = yield* scheduler.waitForTask(record.id)
+              if (terminal.state.status !== 'terminal')
+                return yield* absent('compaction.wait', 'Task is not terminal')
+              return yield* Task.decode(CompactionTask.OutcomeSchema, terminal.state.outcome)
+            }),
+          ),
+        abortCompaction: (handle) =>
+          protect(
+            'compaction.abort',
+            Effect.gen(function* () {
+              const record = yield* backend.compactionTask!(handle)
+              yield* scheduler.abort(record.id)
+            }),
+          ),
         usage: (id) =>
           protect('harness.usage', checkOpen.pipe(Effect.andThen(Session.usage(session, id)))),
         root: protect('harness.root', initialize(true)),

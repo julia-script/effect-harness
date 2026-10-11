@@ -47,7 +47,13 @@ class NativeInvocation extends Context.Service<NativeInvocation, Invocation>()(
 
 type BaseServices = Omit<
   RunLoop.Services,
-  'write' | 'writeCallback' | 'saveState' | 'invocationActive' | 'complete' | 'refresh'
+  | 'write'
+  | 'writeCallback'
+  | 'saveState'
+  | 'invocationActive'
+  | 'complete'
+  | 'refresh'
+  | 'waitCompaction'
 >
 
 export const make = (
@@ -71,7 +77,9 @@ export const make = (
     | import('../ToolInventory.js').Denial
     | import('../ToolControl.js').InvalidControl
     | PreparationRestoreFailure
-    | import('../ModelError.js').ModelError,
+    | import('../ModelError.js').ModelError
+    | import('../CompactionError.js').CompactionError
+    | import('../ContextProjectionError.js').ContextProjectionError,
     NativeInvocation | TaskExecution | Scope.Scope
   > {
     const { record, lease } = yield* NativeInvocation
@@ -144,6 +152,17 @@ export const make = (
           ),
         complete: (tx, outcome) =>
           execution.progress(tx, definition, { status: 'completing', outcome }),
+        waitCompaction: (tx, checkpoint) =>
+          Effect.gen(function* () {
+            // Task progress encodes its definition directly; use the same safe wire boundary.
+            const safe = yield* Run.encode(checkpoint).pipe(Effect.flatMap(Run.decode))
+            yield* execution.progress(tx, definition, {
+              status: 'waiting',
+              checkpoint: safe,
+              on: [checkpoint.child],
+              policy: 'allSettled',
+            })
+          }),
         invocationActive: () => active,
       },
       record,
@@ -172,6 +191,7 @@ export const make = (
       'deferred-start': phase,
       deferred: phase,
       tools: phase,
+      compaction: phase,
     },
   })
   const settle = Effect.fnUntraced(function* (

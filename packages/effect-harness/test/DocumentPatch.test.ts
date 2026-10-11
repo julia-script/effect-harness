@@ -454,8 +454,8 @@ it.effect(
         assert.strictEqual(some(yield* storage.document(id)).deltasSinceBase, 2)
         assert.strictEqual(
           (yield* Metadata.requireSupported({
-            format: 8,
-            minimumReader: 8,
+            format: 9,
+            minimumReader: 9,
             nextId: 3,
             nextSeq: 1,
           }).pipe(Effect.flip)).reason,

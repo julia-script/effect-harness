@@ -44,6 +44,10 @@ import * as Transaction from '../Transaction.js'
 import * as Run from './RunState.js'
 import * as DeferredExecution from './DeferredExecution.js'
 import * as Inbox from './Inbox.js'
+import * as Compaction from '../Compaction.js'
+import * as CompactionTask from '../CompactionTask.js'
+import * as CompactionRuntime from './CompactionRuntime.js'
+import { TaskExecution } from '../TaskExecution.js'
 import { NativeWriteFailure } from './NativeWriteFailure.js'
 import { StreamPublicationFailure } from './StreamPublicationFailure.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
@@ -55,6 +59,11 @@ export interface BoundSection {
   readonly registration: string
 }
 export interface Services {
+  readonly compaction: CompactionRuntime.Services
+  readonly waitCompaction: (
+    tx: Transaction.Transaction,
+    checkpoint: Extract<Run.RunState, { _tag: 'compaction' }>,
+  ) => Effect.Effect<void, import('../TaskError.js').Failure>
   readonly cancellationCleanup: import('effect/Scope').Closeable
   readonly nativeModel: Prepared.Binding
   readonly requireStreamFormat: Services['requireSubmissionFormat']
@@ -196,6 +205,39 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
   const nextAttempt = (attempt: number) => Schema.decodeEffect(Usage.AttemptId)(attempt + 1)
   while (true) {
     yield* checkOpen
+    if (state._tag === 'compaction') {
+      const waiting = state
+      const execution = yield* TaskExecution
+      const [outcome] = yield* execution.outcomes([waiting.child])
+      if (
+        waiting.overflow !== undefined &&
+        (outcome?.status !== 'completed' ||
+          !Schema.is(
+            Schema.TaggedStruct('Placed', {
+              entryId: CompactionTask.ResultSchema.members[1].fields.entryId,
+            }),
+          )(outcome.result))
+      )
+        return yield* waiting.overflow
+      const {
+        child: _child,
+        preparation: _preparation,
+        attempt: _attempt,
+        retries: _retries,
+        ...unprepared
+      } = waiting
+      state = {
+        ...unprepared,
+        _tag: 'request',
+        phase: 'request',
+        compacted: waiting.child,
+        prompt: yield* write((tx) =>
+          Inbox.project(tx, task.conversationId).pipe(Effect.map((view) => view.prompt)),
+        ),
+      }
+      yield* write((tx, current) => saveState(tx, current, state))
+      continue
+    }
     if (state._tag === 'retry') {
       const retry = state
       let remaining = retry.until - (yield* Clock.currentTimeMillis)
@@ -210,6 +252,31 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
     }
     if (state._tag === 'streaming') {
       const interrupted = state
+      const recorded = yield* write((tx) =>
+        Usage.receipts(tx, task.conversationId).pipe(
+          Effect.map((receipts) =>
+            receipts.find(
+              (receipt) =>
+                receipt.identity._tag === 'requestAttempt' &&
+                receipt.identity.requestId === interrupted.preparation.requestId &&
+                receipt.identity.attempt === interrupted.attempt &&
+                receipt.identity.purpose === 'generation' &&
+                receipt.outcome._tag === 'failed',
+            ),
+          ),
+        ),
+      )
+      // A terminal observation can precede overflow preflight or an uncertain
+      // acknowledgement. Its committed receipt is authoritative on cold recovery.
+      if (recorded?.outcome._tag === 'failed')
+        return yield* new HarnessError({
+          reason: 'failed',
+          operation: 'model.recover',
+          message: Schema.is(Schema.Struct({ message: Schema.String }))(recorded.outcome.error)
+            ? recorded.outcome.error.message
+            : 'Recorded generation attempt failed before runtime settlement',
+          cause: recorded.outcome.error,
+        })
       const attempt = yield* nextAttempt(interrupted.attempt)
       state = yield* write((tx, current) =>
         Effect.gen(function* () {
@@ -293,7 +360,10 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         const settings = Option.isSome(settingsService)
           ? yield* settingsService.value.get
           : { ...Settings.defaults, maxTurns }
-        const ordinal = (requesting.ordinal ?? 0) + 1
+        const ordinal =
+          requesting.compacted === undefined
+            ? (requesting.ordinal ?? 0) + 1
+            : (requesting.ordinal ?? 1)
         if (!Number.isSafeInteger(ordinal) || ordinal > settings.maxTurns)
           return yield* new HarnessError({
             reason: 'failed',
@@ -502,6 +572,55 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           }),
         )
         prompt = planned.translation.prompt
+        if (requesting.compacted === undefined) {
+          const selection = yield* Compaction.select(planned.view, settings.compaction, {
+            reason: 'threshold',
+            ...(selected?.definition.contextWindow === undefined
+              ? {}
+              : { contextWindow: selected.definition.contextWindow }),
+            extra: prompt.content.slice(planned.view.prompt.content.length),
+          }).pipe(Effect.provideContext(context))
+          if (selection._tag === 'Selected') {
+            const ready = yield* CompactionRuntime.prepare(
+              services.compaction,
+              task.conversationId,
+              { reason: 'threshold', blocking: selection.mode === 'blocking' },
+              (change) => write((tx) => change(tx)),
+              task.id,
+              Identity.RequestId.make(`summary:${requestId}`),
+              selection,
+            )
+            if (ready._tag !== 'Noop') {
+              const blocking = selection.mode === 'blocking'
+              const waiting = yield* write((tx) =>
+                Effect.gen(function* () {
+                  const child = yield* CompactionRuntime.admit(
+                    tx,
+                    task.conversationId,
+                    { reason: 'threshold', blocking },
+                    blocking ? task.id : undefined,
+                    ready,
+                  )
+                  yield* CompactionRuntime.activateFormat(services.compaction)
+                  if (!blocking) return undefined
+                  const checkpoint: Extract<Run.RunState, { _tag: 'compaction' }> = {
+                    ...requesting,
+                    _tag: 'compaction',
+                    phase: 'compaction',
+                    child: child.id,
+                  }
+                  yield* services.waitCompaction(tx, checkpoint)
+                  yield* CompactionRuntime.activateFormat(services.compaction)
+                  return checkpoint
+                }),
+              )
+              if (waiting !== undefined) {
+                state = waiting
+                return
+              }
+            }
+          }
+        }
         const before = yield* runHooks(
           task.conversationId,
           requesting.agent,
@@ -630,6 +749,86 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
       )
       const attempt = requesting.attempt ?? preparation.attempt
       const retries = requesting.retries ?? 0
+      const overflow = (error: AiError.AiError) =>
+        (selected?.compaction ?? services.compaction.nativeCompaction)?.isOverflow(error) === true
+      const recoverOverflow = Effect.fnUntraced(function* <E>(
+        cause: Cause.Cause<E>,
+        known?: Usage.Record,
+      ) {
+        const reason = cause.reasons.length === 1 ? cause.reasons[0] : undefined
+        if (
+          reason === undefined ||
+          !Cause.isFailReason(reason) ||
+          !AiError.isAiError(reason.error) ||
+          !overflow(reason.error) ||
+          requesting.compacted !== undefined
+        )
+          return false
+        const error = reason.error
+        if (preparation.execution !== 'deferred') {
+          observed =
+            known === undefined
+              ? undefined
+              : { requestId: preparation.requestId, attempt, usage: known }
+          // The generation already failed. Persist its charge before any summary
+          // selection, hook or configuration can fail or be interrupted. The existing
+          // write boundary carries only this operation's deterministic rejection.
+          yield* write((tx) =>
+            Usage.record(tx, {
+              conversationId: task.conversationId,
+              identity: identity(preparation, attempt),
+              outcome: { _tag: 'failed', error: { message: Cause.pretty(cause) } },
+              ...(known === undefined ? {} : { usage: known }),
+            }),
+          ).pipe(Effect.uninterruptible)
+        }
+        const policy = yield* Settings.getOrDefault.pipe(Effect.provideContext(context))
+        if (!policy.compaction.enabled) return false
+        const immutable = yield* write((tx) => Inbox.project(tx, task.conversationId))
+        const selection = yield* Compaction.select(immutable, policy.compaction, {
+          reason: 'overflow',
+          extra: preparation.prompt.content.slice(immutable.prompt.content.length),
+        }).pipe(Effect.provideContext(context))
+        if (selection._tag === 'Noop') return false
+        const ready = yield* CompactionRuntime.prepare(
+          services.compaction,
+          task.conversationId,
+          { reason: 'overflow', blocking: true },
+          (change) => write((tx) => change(tx)),
+          task.id,
+          Identity.RequestId.make(`summary:${preparation.requestId}`),
+          selection,
+        )
+        if (ready._tag === 'Noop') return false
+        yield* write((tx) =>
+          Effect.gen(function* () {
+            if (preparation.execution === 'deferred')
+              yield* Usage.record(tx, {
+                conversationId: task.conversationId,
+                identity: identity(preparation, attempt),
+                outcome: { _tag: 'failed', error: { message: Cause.pretty(cause) } },
+                ...(known === undefined ? {} : { usage: known }),
+              })
+            const child = yield* CompactionRuntime.admit(
+              tx,
+              task.conversationId,
+              { reason: 'overflow', blocking: true },
+              task.id,
+              ready,
+            )
+            yield* services.waitCompaction(tx, {
+              ...requesting,
+              _tag: 'compaction',
+              phase: 'compaction',
+              child: child.id,
+              overflow: error,
+            })
+            yield* clearLive(tx)
+            yield* CompactionRuntime.activateFormat(services.compaction)
+          }),
+        )
+        return true
+      })
       let response: LanguageModel.GenerateTextResponse<Record<string, NativeTool.Any>, 'encoded'>
       if (preparation.execution === 'deferred') {
         if (selected === undefined)
@@ -647,45 +846,57 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
                 retries,
                 expiresAt: yield* DeferredExecution.expiry(preparation.settings),
               }
-        const outcome = yield* DeferredExecution.run(
-          initial,
-          adapter,
-          {
-            requestId: preparation.requestId,
-            attempt,
-            prompt: (yield* Preparation.own(preparation)).prompt,
-            toolkit: nativeToolkit,
-            configuration,
-          },
-          (next) =>
-            write((tx, current) =>
-              Effect.gen(function* () {
-                yield* services.requireDeferredFormat
-                yield* saveState(tx, current, next)
-                yield* Transaction.ensureDocument(
-                  tx,
-                  LiveState.document,
-                  LiveState.target(task.conversationId),
-                )
-                yield* Transaction.setDocument(
-                  tx,
-                  LiveState.document,
-                  LiveState.target(task.conversationId),
-                  {
-                    generation: {
-                      requestId: preparation.requestId,
-                      attempt,
-                      revision: 0,
-                      retryAt: next._tag === 'deferred' ? next.pollAt : next.expiresAt,
+        const deferred = yield* Effect.exit(
+          DeferredExecution.run(
+            initial,
+            adapter,
+            {
+              requestId: preparation.requestId,
+              attempt,
+              prompt: (yield* Preparation.own(preparation)).prompt,
+              toolkit: nativeToolkit,
+              configuration,
+            },
+            (next) =>
+              write((tx, current) =>
+                Effect.gen(function* () {
+                  yield* services.requireDeferredFormat
+                  yield* saveState(tx, current, next)
+                  yield* Transaction.ensureDocument(
+                    tx,
+                    LiveState.document,
+                    LiveState.target(task.conversationId),
+                  )
+                  yield* Transaction.setDocument(
+                    tx,
+                    LiveState.document,
+                    LiveState.target(task.conversationId),
+                    {
+                      generation: {
+                        requestId: preparation.requestId,
+                        attempt,
+                        revision: 0,
+                        retryAt: next._tag === 'deferred' ? next.pollAt : next.expiresAt,
+                      },
                     },
-                  },
-                )
-                state = next
-              }),
-            ),
-          Settings.getOrDefault.pipe(Effect.provideContext(context)),
-          requesting._tag === 'request',
-        ).pipe(Effect.provideContext(requestContext))
+                  )
+                  state = next
+                }),
+              ),
+            Settings.getOrDefault.pipe(Effect.provideContext(context)),
+            requesting._tag === 'request',
+          ).pipe(Effect.provideContext(requestContext)),
+        )
+        if (Exit.isFailure(deferred)) {
+          const reason = deferred.cause.reasons.length === 1 ? deferred.cause.reasons[0] : undefined
+          const known =
+            reason !== undefined && Cause.isFailReason(reason) && AiError.isAiError(reason.error)
+              ? ModelStream.errorUsage(reason.error, preparation)
+              : undefined
+          if (yield* recoverOverflow(deferred.cause, known)) return
+          return yield* Effect.failCause(deferred.cause)
+        }
+        const outcome = deferred.value
         response = new LanguageModel.GenerateTextResponse(outcome.response.content)
         observed = {
           requestId: preparation.requestId,
@@ -787,7 +998,10 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           const known =
             streamed.partial?.usage ??
             (error === undefined ? undefined : ModelStream.errorUsage(error, preparation))
-          const followingAttempt = until === undefined ? undefined : yield* nextAttempt(attempt)
+          const isOverflow = error !== undefined && overflow(error)
+          if (isOverflow && (yield* recoverOverflow(cause, known))) return
+          const followingAttempt =
+            until === undefined || isOverflow ? undefined : yield* nextAttempt(attempt)
           const next: Run.RunState | undefined =
             until === undefined || followingAttempt === undefined
               ? undefined
@@ -931,6 +1145,8 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
             preparation: _preparation,
             attempt: _attempt,
             retries: _retries,
+            compacted: _compacted,
+            overflow: _overflow,
             ...unprepared
           } = requesting
           const next: Run.RunState = {

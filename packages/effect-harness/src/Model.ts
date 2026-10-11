@@ -157,6 +157,54 @@ export interface PreparationPolicy {
   readonly settings: Settings.Snapshot
 }
 
+/** Explicit summary adapter contract. Its configuration codec must encode every returned native tag. */
+export interface CompactionCapability {
+  readonly binding: Prepared.Binding
+  readonly configuration: Configuration
+  readonly configure: (
+    configured: Context.Context<never>,
+    policy: PreparationPolicy & import('./CompactionRequest.js').Policy,
+  ) => Effect.Effect<Context.Context<never>, ModelError>
+  /** Only supported structured provider evidence qualifies; an ordinary invalid request is not overflow. */
+  readonly isOverflow: (error: AiError.AiError) => boolean
+}
+
+/** Capture the summary callback's declared services once; fresh restore/acquisition uses the operation Scope. */
+export const makeCompaction = <R>(input: {
+  readonly binding: Prepared.Binding
+  readonly configuration?: Configuration
+  readonly configure: (
+    configured: Context.Context<never>,
+    policy: PreparationPolicy & import('./CompactionRequest.js').Policy,
+  ) => Effect.Effect<Context.Context<never>, ModelError, R>
+  readonly isOverflow?: (error: AiError.AiError) => boolean
+}): Effect.Effect<CompactionCapability, Schema.SchemaError, R> =>
+  Effect.gen(function* () {
+    const binding = yield* Schema.decodeEffect(
+      Schema.Struct({
+        id: Schema.NonEmptyString,
+        version: Schema.Int.check(
+          Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+        ),
+      }),
+    )(input.binding)
+    const captured = yield* Effect.context<R>()
+    const { configure, isOverflow } = input
+    return {
+      binding: Object.freeze({ ...binding }),
+      configuration: input.configuration ?? emptyConfiguration,
+      isOverflow: isOverflow ?? (() => false),
+      configure: (configured, policy) =>
+        Effect.flatMap(Effect.serviceOption(Scope.Scope), (scope) =>
+          Effect.suspend(() => configure(configured, policy)).pipe(
+            Effect.provideContext(
+              Option.isSome(scope) ? Context.add(captured, Scope.Scope, scope.value) : captured,
+            ),
+          ),
+        ),
+    }
+  })
+
 /** Immutable prepared-work identity, distinct from provider attempt and durable logical ordinal. */
 export const DeferredIdentitySchema = Schema.Struct({
   requestId: Identity.RequestId,
@@ -394,6 +442,7 @@ export interface Any extends Pipeable.Pipeable {
   readonly options: Schema.Constraint
   readonly configure: (options: never, preparation: PreparationPolicy) => unknown
   readonly deferred?: Deferred | undefined
+  readonly compaction?: CompactionCapability | undefined
   /** Stable provider construction contract. Increase on incompatible callback/default changes. */
   readonly version?: number | undefined
   readonly configuration?: Configuration | undefined
@@ -428,6 +477,7 @@ export const make: <Options extends Schema.Constraint, R>(input: {
   readonly languageModel: typeof LanguageModel.LanguageModel.Service
   readonly options: Options
   readonly deferred?: Deferred | undefined
+  readonly compaction?: CompactionCapability | undefined
   readonly version?: number | undefined
   readonly configuration?: Configuration | undefined
   readonly positioning?: Prepared.Snapshot['translation']['positioning'] | undefined

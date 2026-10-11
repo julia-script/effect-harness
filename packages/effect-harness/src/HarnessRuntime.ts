@@ -52,6 +52,8 @@ export interface Options<
   readonly maxTurns?: number
   /** Stable raw native provider construction contract; bump version on incompatible defaults/callbacks. */
   readonly nativeModel?: import('./PreparedRequest.js').Binding
+  /** Raw native summary support is explicit; the adapter must consume CompactionRequest on its actual wire. */
+  readonly nativeCompaction?: Model.CompactionCapability
 }
 export type Requirements<
   T extends Record<string, Tool.Any>,

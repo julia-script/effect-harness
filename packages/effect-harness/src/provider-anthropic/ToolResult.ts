@@ -1,4 +1,5 @@
 import type {} from '@effect/ai-anthropic/AnthropicLanguageModel'
+import { CompactionRequest } from '../CompactionRequest.js'
 /**
  * Canonical tool-media translation at the captured native client boundary.
  */
@@ -148,10 +149,43 @@ const clientImpl = (self: AnthropicClient.Service): AnthropicClient.Service =>
     client: self.client,
     streamRequest: self.streamRequest.bind(self),
     createMessage: Effect.fnUntraced(function* (options) {
-      const translated = yield* request(options)
+      const summary = yield* Effect.serviceOption(CompactionRequest)
+      let input = options
+      if (Option.isSome(summary)) {
+        const strip = <A extends object>(value: A): A => {
+          const owned = { ...value }
+          Reflect.deleteProperty(owned, 'cache_control')
+          return owned
+        }
+        const { tools: _tools, tool_choice: _choice, ...ordinary } = options.payload
+        input = {
+          ...options,
+          payload: {
+            ...strip(ordinary),
+            max_tokens: summary.value.maxOutputTokens,
+            ...(options.payload.system === undefined
+              ? {}
+              : {
+                  system:
+                    typeof options.payload.system === 'string'
+                      ? options.payload.system
+                      : options.payload.system.map(strip),
+                }),
+            messages: options.payload.messages.map((message) => ({
+              ...message,
+              content:
+                typeof message.content === 'string' ? message.content : message.content.map(strip),
+            })),
+          },
+        }
+      }
+      const translated = yield* request(input)
       return yield* self.createMessage(translated)
     }),
     createMessageStream: Effect.fnUntraced(function* (options) {
+      const summary = yield* Effect.serviceOption(CompactionRequest)
+      if (Option.isSome(summary))
+        return yield* invalid('Compaction requires nondeferred nonstreaming summary execution')
       const translated = yield* request(options)
       return yield* self.createMessageStream(translated)
     }),

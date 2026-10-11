@@ -490,7 +490,7 @@ describe('transactional conversation initialization', () => {
             .filter((write) => write._tag === 'document.create')
             .map((write) => write.record.kind)
             .sort(),
-          ['harness.agent', 'harness.provider', 'initialization.state'],
+          ['harness.agent', 'harness.compactionStatus', 'harness.provider', 'initialization.state'],
         )
         assert.isTrue(Option.isSome(yield* Session.conversation(runtime.session, root)))
         yield* runtime.backend.root

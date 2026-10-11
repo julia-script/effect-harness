@@ -34,6 +34,22 @@ export interface Conversation extends Pipeable.Pipeable {
   readonly id: Record.ConversationId
 }
 const backend = (self: Conversation) => self[ConversationHost.Backend]
+/** Start manual durable compaction even when automatic compaction is disabled. Wait on its task handle. */
+export const compact = (
+  self: Conversation,
+  options?: import('./CompactionTask.js').Options,
+): Effect.Effect<import('./CompactionTask.js').Handle, HarnessError> => {
+  const service = backend(self)
+  return service.compact === undefined
+    ? Effect.fail(
+        new HarnessError({
+          reason: 'invalid',
+          operation: 'conversation.compact',
+          message: 'Backend does not support compaction',
+        }),
+      )
+    : service.compact(self.id, options)
+}
 export const submit: {
   (
     draft: Submission.Draft,
