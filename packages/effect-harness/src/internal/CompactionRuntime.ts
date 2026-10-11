@@ -183,15 +183,29 @@ export const prepare = Effect.fnUntraced(function* (
   suppliedSelection?: Compaction.Selected,
 ) {
   const settings = yield* Settings.getOrDefault.pipe(Effect.provideContext(services.context))
-  const current = yield* read((tx) =>
+  const selected = yield* read((tx) =>
     Effect.gen(function* () {
       const saved = yield* Transaction.snapshot(tx, agentDocument, agentTarget(id))
-      return {
+      const current = {
         agent: { ...services.defaultAgent, ...(Option.isSome(saved) ? saved.value.value : {}) },
         ...(yield* canonical(tx, id)),
       }
+      const selection =
+        suppliedSelection ??
+        (yield* Compaction.select(current.view, settings.compaction, {
+          reason: input.reason,
+          ...(input.instructions === undefined ? {} : { instructions: input.instructions }),
+        }).pipe(Effect.provideContext(services.context)))
+      if (selection._tag === 'Noop') return { _tag: 'Noop' as const, reason: selection.reason }
+      const fingerprint = yield* Plan.capture(selection, current)
+      // Capture the compatible interpretation before hooks can append context. Noop or
+      // invalid selection leaves no activation; later summary failure leaves only this fact.
+      yield* Inbox.ensureContext(tx, id)
+      return { _tag: 'Selected' as const, current, selection, fingerprint }
     }),
   )
+  if (selected._tag === 'Noop') return selected
+  const { current, selection, fingerprint } = selected
   const descriptor =
     current.agent.model === undefined
       ? services.models[0]
@@ -201,14 +215,6 @@ export const prepare = Effect.fnUntraced(function* (
             current.agent.model!.ref,
           ),
         )
-  const selection =
-    suppliedSelection ??
-    (yield* Compaction.select(current.view, settings.compaction, {
-      reason: input.reason,
-      ...(input.instructions === undefined ? {} : { instructions: input.instructions }),
-    }).pipe(Effect.provideContext(services.context)))
-  if (selection._tag === 'Noop') return { _tag: 'Noop' as const, reason: selection.reason }
-  const fingerprint = yield* Plan.capture(selection, current)
   const hook = yield* services.runHooks(
     id,
     current.agent,
