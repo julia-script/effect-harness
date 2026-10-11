@@ -62,7 +62,7 @@ vi.mock('node:fs', async (importOriginal) => {
 })
 
 it.effect(
-  'settles startup coverage at 500ms while forwarding native ancestor coverage immediately',
+  'settles startup coverage at exactly 500ms while verifying real burst content and handle cleanup',
   () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -75,10 +75,6 @@ it.effect(
         const firstHandle = observations.handles.length
         const sleeps: Array<Fiber.Fiber<void>> = []
         const ready = yield* Deferred.make<{ start: number; duration: number }>()
-        const ancestor = yield* Deferred.make<{
-          callback: NativeCallback
-          events: Array<FileWatch.Event>
-        }>()
         const events: Array<{
           event: FileWatch.Event
           native: NativeCallback | undefined
@@ -90,23 +86,6 @@ it.effect(
                 !native && event._tag === 'Rescan' && event.reason === 'coverage',
             )
             .map(({ event }) => event)
-        observations.afterCallback = (callback) => {
-          if (callback.filename !== null && resolve(callback.path, callback.filename) === root)
-            Deferred.doneUnsafe(
-              ancestor,
-              Effect.succeed({
-                callback,
-                events: events
-                  .filter(({ native }) => native === callback)
-                  .map(({ event }) => event),
-              }),
-            )
-        }
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            observations.afterCallback = undefined
-          }),
-        )
         // Start the actual TestClock sleep synchronously before acknowledging admission.
         // The joined child remains owned by the settling worker and its subscription Scope.
         const observedClock: Clock.Clock = {
@@ -143,17 +122,6 @@ it.effect(
         assert.deepStrictEqual(yield* Deferred.await(ready), { start: 0, duration: 500 })
         assert.deepStrictEqual(settling(), [])
 
-        // An actual ancestor callback is valid before the settling deadline.
-        // Capture its complete synchronous output instead of filtering by stack strings.
-        yield* fs.chmod(root, 0o750)
-        const immediate = yield* Deferred.await(ancestor)
-        assert.strictEqual(clock.currentTimeMillisUnsafe(), 0)
-        assert.deepStrictEqual(immediate.events, [
-          { _tag: 'Change', path: root, kind: immediate.callback.kind },
-          { _tag: 'Rescan', paths: [root], reason: 'coverage' },
-        ])
-        assert.deepStrictEqual(settling(), [])
-
         yield* Effect.forEach(
           Array.from({ length: 128 }, (_, index) => index),
           (index) => fs.writeFileString(`${root}/burst-${index}`, `burst:${index}`),
@@ -187,4 +155,68 @@ it.effect(
         )
       }),
     ).pipe(Effect.provide([NodeFileSystem.layer, FileWatchNode.adapter])),
+)
+
+// OS readiness has no TestClock acknowledgement. Exercise real callbacks on the live Clock.
+it.live('forwards a genuine ancestor callback and its complete synchronous coverage output', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: 'native-ancestor-' })
+      const adapter = yield* FileWatch.Adapter
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer((exit) => Scope.close(scope, exit))
+      const firstHandle = observations.handles.length
+      const settled = yield* Deferred.make<void>()
+      const ancestor = yield* Deferred.make<{
+        callback: NativeCallback
+        events: Array<FileWatch.Event>
+      }>()
+      const events: Array<{ event: FileWatch.Event; native: NativeCallback | undefined }> = []
+      observations.afterCallback = (callback) => {
+        if (callback.filename !== null && resolve(callback.path, callback.filename) === root)
+          Deferred.doneUnsafe(
+            ancestor,
+            Effect.succeed({
+              callback,
+              events: events.filter(({ native }) => native === callback).map(({ event }) => event),
+            }),
+          )
+      }
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          observations.afterCallback = undefined
+        }),
+      )
+      yield* adapter
+        .subscribe(
+          [{ path: root }],
+          {
+            emit: (event) => {
+              events.push({ event, native: observations.active })
+              if (!observations.active && event._tag === 'Rescan' && event.reason === 'coverage')
+                Deferred.doneUnsafe(settled, Effect.void)
+            },
+            fail: (error) => assert.fail(error.message),
+          },
+          {},
+        )
+        .pipe(Effect.provideService(Scope.Scope, scope))
+      yield* Deferred.await(settled).pipe(Effect.timeout('2 seconds'))
+      yield* fs.chmod(root, 0o750)
+      const immediate = yield* Deferred.await(ancestor).pipe(Effect.timeout('2 seconds'))
+      assert.deepStrictEqual(immediate.events, [
+        { _tag: 'Change', path: root, kind: immediate.callback.kind },
+        { _tag: 'Rescan', paths: [root], reason: 'coverage' },
+      ])
+      yield* Scope.close(scope, Exit.void)
+      const handles = observations.handles.slice(firstHandle)
+      assert.isAbove(handles.length, 0)
+      for (const handle of handles) assert.strictEqual(handle.closed, 1)
+      const boundary = events.length
+      yield* fs.writeFileString(`${root}/after-close`, 'closed')
+      for (const handle of handles) handle.forward('rename', basename(root))
+      assert.strictEqual(events.length, boundary, 'Closed subscriptions reject native callbacks')
+    }),
+  ).pipe(Effect.provide([NodeFileSystem.layer, FileWatchNode.adapter])),
 )

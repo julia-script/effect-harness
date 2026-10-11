@@ -1,6 +1,7 @@
 import { assert, describe, it } from '@effect/vitest'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as NodePath from '@effect/platform-node/NodePath'
+import * as Clock from 'effect/Clock'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
@@ -11,10 +12,138 @@ import * as Path from 'effect/Path'
 import * as Result from 'effect/Result'
 import * as Stream from 'effect/Stream'
 import * as TestClock from 'effect/testing/TestClock'
+import { vi } from 'vitest'
 import * as DirectoryReader from '../src/DirectoryReader.ts'
 import * as DirectoryReaderNode from '../src/DirectoryReaderNode.ts'
 import * as FileWatch from '../src/FileWatch.ts'
 import * as FileWatchNode from '../src/FileWatchNode.ts'
+
+interface NativeHandle {
+  readonly path: string
+  closed: number
+}
+const nativeObservations = vi.hoisted((): { callback: boolean; handles: Array<NativeHandle> } => ({
+  callback: false,
+  handles: [],
+}))
+vi.mock('node:fs', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs')>()
+  const watch = (
+    path: import('node:fs').PathLike,
+    options: import('node:fs').WatchOptionsWithStringEncoding,
+    listener: import('node:fs').WatchListener<string>,
+  ) => {
+    const handle = { path: path.toString(), closed: 0 }
+    const watcher = fs.watch(path, options, (kind, filename) => {
+      const previous = nativeObservations.callback
+      nativeObservations.callback = true
+      try {
+        listener(kind, filename)
+      } finally {
+        nativeObservations.callback = previous
+      }
+    })
+    nativeObservations.handles.push(handle)
+    const close = watcher.close.bind(watcher)
+    watcher.close = () => {
+      handle.closed++
+      close()
+    }
+    return watcher
+  }
+  return { ...fs, watch }
+})
+
+// Observe real handles and the existing settling fiber; callback rescans are never readiness.
+const observeNativeReadiness = (holdStartup = false) =>
+  Effect.gen(function* () {
+    const clock = yield* Clock.Clock
+    const startup = yield* Deferred.make<void>()
+    let held = yield* Deferred.make<void>()
+    const callbackCoverage = yield* Deferred.make<void>()
+    const firstHandle = nativeObservations.handles.length
+    const settled = new Map<string, NativeHandle>()
+    let changed = Deferred.makeUnsafe<void>()
+    let worker: number | undefined
+    let release: (() => void) | undefined
+    let holding = holdStartup
+    const observedClock: Clock.Clock = {
+      currentTimeMillisUnsafe: () => clock.currentTimeMillisUnsafe(),
+      currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
+      monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+      currentTimeMillis: clock.currentTimeMillis,
+      currentTimeNanos: clock.currentTimeNanos,
+      monotonicTimeNanos: clock.monotonicTimeNanos,
+      sleep: (duration) =>
+        Effect.withFiber((fiber) => {
+          worker = fiber.id
+          return clock.sleep(duration)
+        }),
+    }
+    const adapter = Layer.effect(
+      FileWatch.Adapter,
+      Effect.map(FileWatch.Adapter, (native) => ({
+        subscribe: (targets, observer, options) =>
+          native
+            .subscribe(
+              targets,
+              {
+                fail: observer.fail,
+                emit: (event) => {
+                  if (event._tag === 'Rescan' && event.reason === 'coverage') {
+                    if (nativeObservations.callback)
+                      Deferred.doneUnsafe(callbackCoverage, Effect.void)
+                    else if (worker !== undefined && Fiber.getCurrent()?.id === worker) {
+                      const publish = () => {
+                        for (const handle of nativeObservations.handles.slice(firstHandle))
+                          if (handle.closed === 0) settled.set(handle.path, handle)
+                        observer.emit(event)
+                        Deferred.doneUnsafe(startup, Effect.void)
+                        const previous = changed
+                        changed = Deferred.makeUnsafe<void>()
+                        Deferred.doneUnsafe(previous, Effect.void)
+                      }
+                      if (holding) {
+                        release = publish
+                        Deferred.doneUnsafe(held, Effect.void)
+                      } else publish()
+                      return
+                    }
+                  }
+                  observer.emit(event)
+                },
+              },
+              options,
+            )
+            .pipe(Effect.provideService(Clock.Clock, observedClock)),
+      })),
+    ).pipe(Layer.provide(FileWatchNode.adapter))
+    const awaitAttachment = (path: string): Effect.Effect<void> =>
+      Effect.suspend(() => {
+        const handle = nativeObservations.handles
+          .slice(firstHandle)
+          .findLast((handle) => handle.path === path && handle.closed === 0)
+        if (handle && settled.get(path) === handle) return Effect.void
+        return Deferred.await(changed).pipe(Effect.andThen(awaitAttachment(path)))
+      })
+    return {
+      adapter,
+      startup,
+      held,
+      hold: Effect.sync(() => {
+        holding = true
+        held = Deferred.makeUnsafe<void>()
+        return held
+      }),
+      callbackCoverage,
+      awaitAttachment,
+      release: Effect.sync(() => {
+        holding = false
+        release?.()
+      }),
+      handles: () => nativeObservations.handles.slice(firstHandle),
+    }
+  })
 
 const files = Layer.merge(NodeFileSystem.layer, NodePath.layer)
 const temporary = Effect.gen(function* () {
@@ -63,21 +192,19 @@ const expectInvalidation = <A, E, R, E2, R2>(
     )
   })
 
-const collectInvalidations = (watcher: FileWatch.Watch, events: Array<FileWatch.Event>) =>
+const collectInvalidations = (
+  watcher: FileWatch.Watch,
+  events: Array<FileWatch.Event>,
+  readiness: Deferred.Deferred<void>,
+) =>
   Effect.gen(function* () {
-    const startup = yield* Deferred.make<void>()
     const consumer = yield* watcher.events.pipe(
-      Stream.runForEach((event) =>
-        Effect.gen(function* () {
-          events.push(event)
-          if (event._tag === 'Rescan' && event.reason === 'coverage')
-            yield* Deferred.succeed(startup, undefined)
-        }),
-      ),
+      Stream.runForEach((event) => Effect.sync(() => events.push(event))),
       Effect.forkScoped,
     )
-    // Consume the initial settling invalidation before marking any mutation's event boundary.
-    yield* Deferred.await(startup).pipe(Effect.timeout('2 seconds'))
+    // A callback can request a rescan before reconciliation/settling has completed.
+    yield* Deferred.await(readiness).pipe(Effect.timeout('2 seconds'))
+    yield* Effect.yieldNow
     return consumer
   })
 
@@ -270,12 +397,92 @@ describe('DirectoryReader replaceable backends', () => {
 })
 
 describe('FileWatch native coverage', () => {
+  it.live('keeps callback coverage behind the actual settling readiness fence', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const root = yield* temporary
+        const readiness = yield* observeNativeReadiness(true)
+        const watcher = yield* Effect.flatMap(FileWatch.FileWatch, (service) =>
+          service.open([{ path: '.' }, { path: 'skills', recursive: true }]),
+        ).pipe(
+          Effect.provide(
+            FileWatch.layer({ root }).pipe(Layer.provide([readiness.adapter, NodePath.layer])),
+          ),
+        )
+        yield* Deferred.await(readiness.held).pipe(Effect.timeout('2 seconds'))
+        const events: Array<FileWatch.Event> = []
+        const collecting = yield* collectInvalidations(watcher, events, readiness.startup).pipe(
+          Effect.forkChild,
+        )
+        yield* Effect.yieldNow
+        yield* fs.chmod(root, 0o750)
+        yield* Deferred.await(readiness.callbackCoverage).pipe(Effect.timeout('2 seconds'))
+        yield* Effect.yieldNow
+        assert.isUndefined(
+          collecting.pollUnsafe(),
+          'A genuine callback-origin coverage rescan must not release settling readiness',
+        )
+        yield* readiness.release
+        const consumer = yield* Fiber.join(collecting)
+        const created = yield* readiness.hold
+        yield* fs.makeDirectory(`${root}/skills`)
+        yield* fs.writeFileString(`${root}/skills/value`, 'created')
+        yield* Deferred.await(created).pipe(Effect.timeout('2 seconds'))
+        const firstAttachment = readiness.handles().findLast((h) => h.path === `${root}/skills`)
+        assert.isDefined(firstAttachment, 'The real recursive target handle must be installed')
+        const attaching = yield* readiness.awaitAttachment(`${root}/skills`).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        assert.isUndefined(attaching.pollUnsafe(), 'Installation alone must not release settling')
+        yield* readiness.release
+        yield* Fiber.join(attaching).pipe(Effect.timeout('2 seconds'))
+        const firstIdentity = yield* fs.stat(`${root}/skills`)
+        const recreated = yield* readiness.hold
+        yield* fs.rename(`${root}/skills`, `${root}/old-skills`)
+        yield* fs.makeDirectory(`${root}/skills`)
+        yield* fs.writeFileString(`${root}/skills/value`, 'recreated')
+        yield* Deferred.await(recreated).pipe(Effect.timeout('2 seconds'))
+        const secondAttachment = readiness.handles().findLast((h) => h.path === `${root}/skills`)
+        assert.isDefined(secondAttachment)
+        assert.notStrictEqual(secondAttachment, firstAttachment)
+        assert.strictEqual(firstAttachment?.closed, 1)
+        const reattaching = yield* readiness
+          .awaitAttachment(`${root}/skills`)
+          .pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        assert.isUndefined(
+          reattaching.pollUnsafe(),
+          'A replacement handle must receive subsequent worker coverage before the next mutation',
+        )
+        yield* readiness.release
+        yield* Fiber.join(reattaching).pipe(Effect.timeout('2 seconds'))
+        const secondIdentity = yield* fs.stat(`${root}/skills`)
+        assert.notStrictEqual(
+          Option.getOrThrow(firstIdentity.ino),
+          Option.getOrThrow(secondIdentity.ino),
+        )
+        yield* expectInvalidation(
+          events,
+          `${root}/skills/value`,
+          fs.writeFileString(`${root}/skills/value`, 'continued'),
+          fs
+            .readFileString(`${root}/skills/value`)
+            .pipe(Effect.map((content) => assert.strictEqual(content, 'continued'))),
+        )
+        yield* watcher.close
+        yield* Fiber.join(consumer).pipe(Effect.timeout('2 seconds'))
+        for (const handle of readiness.handles()) assert.strictEqual(handle.closed, 1)
+      }),
+    ).pipe(Effect.provide(files)),
+  )
+
   it.live('re-reads each mutation when the real native adapter delivers only rescans', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const root = yield* temporary
         const events: Array<FileWatch.Event> = []
+        const readiness = yield* observeNativeReadiness()
         // Normalize actual host callbacks, retaining native acquisition, coverage and finalizers.
         // This exercises the valid Rescan-only contract without depending on FSEvents coalescing.
         const rescans = Layer.effect(
@@ -296,7 +503,7 @@ describe('FileWatch native coverage', () => {
                 options,
               ),
           })),
-        ).pipe(Layer.provide(FileWatchNode.adapter))
+        ).pipe(Layer.provide(readiness.adapter))
         const watcher = yield* Effect.flatMap(FileWatch.FileWatch, (service) =>
           service.open([{ path: 'skills', recursive: true }]),
         ).pipe(
@@ -309,7 +516,7 @@ describe('FileWatch native coverage', () => {
           symlinks: 'file-targets',
           reliability: 'best-effort',
         })
-        const consumer = yield* collectInvalidations(watcher, events)
+        const consumer = yield* collectInvalidations(watcher, events, readiness.startup)
         const content = (name: string, expected: string) =>
           fs
             .readFileString(`${root}/${name}`)
@@ -322,6 +529,8 @@ describe('FileWatch native coverage', () => {
             .pipe(Effect.andThen(fs.writeFileString(`${root}/skills/value`, 'created:1'))),
           content('skills/value', 'created:1'),
         )
+        yield* readiness.awaitAttachment(`${root}/skills`).pipe(Effect.timeout('2 seconds'))
+        const firstAttachment = readiness.handles().findLast((h) => h.path === `${root}/skills`)
         yield* expectInvalidation(
           events,
           `${root}/skills/value`,
@@ -348,6 +557,12 @@ describe('FileWatch native coverage', () => {
             yield* content('skills/value', 'recreated:3')
           }),
         )
+        yield* readiness.awaitAttachment(`${root}/skills`).pipe(Effect.timeout('2 seconds'))
+        assert.notStrictEqual(
+          readiness.handles().findLast((h) => h.path === `${root}/skills`),
+          firstAttachment,
+        )
+        assert.strictEqual(firstAttachment?.closed, 1)
         yield* expectInvalidation(
           events,
           `${root}/skills/value`,
@@ -358,6 +573,7 @@ describe('FileWatch native coverage', () => {
         yield* watcher.close
         yield* watcher.close
         yield* Fiber.join(consumer).pipe(Effect.timeout('2 seconds'))
+        for (const handle of readiness.handles()) assert.strictEqual(handle.closed, 1)
         assert.deepStrictEqual(yield* watcher.events.pipe(Stream.runCollect), [])
         const count = events.length
         yield* fs.writeFileString(`${root}/skills/value`, 'after-close:5')
@@ -375,6 +591,7 @@ describe('FileWatch native coverage', () => {
           const fs = yield* FileSystem.FileSystem
           const root = yield* temporary
           const events: Array<FileWatch.Event> = []
+          const readiness = yield* observeNativeReadiness()
           const watcher = yield* Effect.flatMap(FileWatch.FileWatch, (s) =>
             s.open(
               [
@@ -388,11 +605,15 @@ describe('FileWatch native coverage', () => {
               ],
               { queueCapacity: 16 },
             ),
-          ).pipe(Effect.provide(FileWatchNode.layer({ root })))
+          ).pipe(
+            Effect.provide(
+              FileWatch.layer({ root }).pipe(Layer.provide([readiness.adapter, NodePath.layer])),
+            ),
+          )
           assert.strictEqual(watcher.coverage.mode, 'native')
           assert.strictEqual(watcher.coverage.ancestors, 'native')
           assert.strictEqual(watcher.coverage.recursive, 'native')
-          const consumer = yield* collectInvalidations(watcher, events)
+          const consumer = yield* collectInvalidations(watcher, events, readiness.startup)
           const expectUpdate = <A, E, E2>(
             suffix: string,
             mutate: Effect.Effect<A, E>,
@@ -413,6 +634,7 @@ describe('FileWatch native coverage', () => {
               ),
             content('missing/deep/file', 'missing-created:1'),
           )
+          yield* readiness.awaitAttachment(`${root}/missing/deep`).pipe(Effect.timeout('2 seconds'))
           yield* expectUpdate(
             'missing/deep/file',
             fs.remove(`${root}/missing/deep/file`),
@@ -432,7 +654,8 @@ describe('FileWatch native coverage', () => {
               .pipe(Effect.andThen(fs.writeFileString(`${root}/skills/a/x`, 'skills-created:3'))),
             content('skills/a/x', 'skills-created:3'),
           )
-          yield* Effect.sleep('600 millis')
+          yield* readiness.awaitAttachment(`${root}/skills`).pipe(Effect.timeout('2 seconds'))
+          const firstAttachment = readiness.handles().findLast((h) => h.path === `${root}/skills`)
           yield* expectUpdate(
             'skills/a/y',
             fs.writeFileString(`${root}/skills/a/y`, 'skills-child:4'),
@@ -481,7 +704,12 @@ describe('FileWatch native coverage', () => {
               yield* content('skills/generation', 'skills-recreated:6')
             }),
           )
-          yield* Effect.sleep('600 millis')
+          yield* readiness.awaitAttachment(`${root}/skills`).pipe(Effect.timeout('2 seconds'))
+          assert.notStrictEqual(
+            readiness.handles().findLast((h) => h.path === `${root}/skills`),
+            firstAttachment,
+          )
+          assert.strictEqual(firstAttachment?.closed, 1)
           yield* expectUpdate(
             'skills/new',
             fs.writeFileString(`${root}/skills/new`, 'skills-child-after-recreation:7'),
@@ -516,6 +744,7 @@ describe('FileWatch native coverage', () => {
           yield* watcher.close
           yield* watcher.close
           yield* Fiber.join(consumer).pipe(Effect.timeout('2 seconds'))
+          for (const handle of readiness.handles()) assert.strictEqual(handle.closed, 1)
           assert.deepStrictEqual(yield* watcher.events.pipe(Stream.runCollect), [])
           const length = events.length
           yield* fs.writeFileString(`${root}/skills/after-close`, 'closed')
