@@ -49,6 +49,7 @@ export const WatchSchema = Schema.Struct({
 export type Watch = typeof WatchSchema.Type
 
 export interface HarnessBackendService {
+  readonly documents?: import('./RemoteDocument.js').Capabilities
   readonly observations?: Observation.Capabilities
   /** Native adapters validate caller authority before preparing a reset payload. */
   readonly reset?: (

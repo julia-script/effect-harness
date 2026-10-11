@@ -16,6 +16,7 @@ import * as StorageFormat from '../StorageFormat.js'
 import { StorageError } from '../StorageError.js'
 import * as Value from './DocumentValue.js'
 import type * as ObservationRuntime from './ObservationRuntime.js'
+import type * as DocumentBackend from './DocumentBackend.js'
 
 export type Event =
   | { readonly _tag: 'commit'; readonly value: Session.Commit }
@@ -34,6 +35,7 @@ export interface State {
   readonly subscribers: Set<Subscriber>
   readonly reconciliations: Set<Queue.Queue<void, Cause.Done | SessionError>>
   readonly observations: Map<string, ObservationRuntime.Mount>
+  readonly documentMounts: Set<DocumentBackend.Mount>
   observationCommitSeq: Session.Commit['seq'] | undefined
   readonly requireSchedulerFormat: Effect.Effect<StorageFormat.Format, StorageFormat.Failure>
   readonly requireDocumentPatchFormat: Effect.Effect<StorageFormat.Format, StorageFormat.Failure>
@@ -173,6 +175,7 @@ export const publish = Effect.fnUntraced(function* (
   documents: ReadonlyMap<Domain.DocumentId, Record.StoredDocument | null>,
 ) {
   state.observationCommitSeq = commit.seq
+  for (const mount of state.documentMounts) yield* mount.publish(documents)
   for (const mount of state.observations.values()) yield* mount.publish(commit, documents)
   for (const queue of state.reconciliations) yield* Queue.offer(queue, undefined)
   for (const subscriber of state.subscribers) {
@@ -190,6 +193,8 @@ export const publish = Effect.fnUntraced(function* (
 
 export const stop = Effect.fnUntraced(function* (state: State, error?: Failure) {
   state.poison = error
+  for (const mount of state.documentMounts) yield* mount.close(error)
+  state.documentMounts.clear()
   for (const mount of state.observations.values()) yield* mount.close(error)
   state.observations.clear()
   for (const queue of state.reconciliations) yield* Queue.end(queue)
@@ -279,6 +284,7 @@ export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Ini
     subscribers: new Set(),
     reconciliations: new Set(),
     observations: new Map(),
+    documentMounts: new Set(),
     observationCommitSeq: undefined,
     requireSchedulerFormat: guard(2),
     requireDocumentPatchFormat: guard(3),

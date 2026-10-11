@@ -10,6 +10,9 @@ import * as Stream from 'effect/Stream'
 import * as Scope from 'effect/Scope'
 import type * as ObservationProtocol from '../Observation.js'
 import type * as ObservationRuntime from './ObservationRuntime.js'
+import type * as RemoteDocument from '../RemoteDocument.js'
+import type * as DocumentBackend from './DocumentBackend.js'
+import * as DocumentLifetime from './RemoteDocumentLifetime.js'
 import * as Agent from '../Agent.js'
 import * as Document from '../Document.js'
 import * as Subagent from '../Subagent.js'
@@ -82,6 +85,17 @@ export const registerControl = (execution: TaskExecution.Access, control: Contro
   return true
 }
 export interface Operations {
+  readonly readDocument: (
+    tx: Transaction.Transaction,
+    request: RemoteDocument.ReadRequest,
+    at?: Record.EntryId,
+  ) => Effect.Effect<Option.Option<Record.StoredDocument>, RemoteDocument.Failure>
+  readonly attachDocument: (
+    tx: Transaction.Transaction,
+    request: RemoteDocument.ReadRequest,
+    scope: Scope.Scope,
+    options?: ObservationProtocol.WatchOptions,
+  ) => Effect.Effect<DocumentBackend.Attachment, RemoteDocument.Failure>
   readonly attachObservation: (
     tx: Transaction.Transaction,
     id: Record.ConversationId,
@@ -705,6 +719,53 @@ export const make = Effect.fnUntraced(function* (
         return yield* Value.copy(CompactionTask.HandleSchema, handle)
       })
     const backend: HarnessBackendService = {
+      documents: {
+        snapshot: (request) =>
+          observeDecoded(() =>
+            protect(
+              'document.remote.snapshot',
+              change((tx) =>
+                Effect.gen(function* () {
+                  yield* addressTarget(tx, request.address)
+                  return yield* operations.readDocument(tx, request)
+                }),
+              ),
+            ),
+          ),
+        snapshotAsOf: (request) =>
+          observeDecoded(() =>
+            protect(
+              'document.remote.history',
+              change((tx) =>
+                Effect.gen(function* () {
+                  yield* addressTarget(tx, request.address)
+                  return yield* operations.readDocument(tx, request, request.at)
+                }),
+              ),
+            ),
+          ),
+        watch: (request, options) =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const scope = yield* Scope.Scope
+              let attached: DocumentBackend.Attachment | undefined
+              return yield* protect(
+                'document.remote.watch',
+                change((tx) =>
+                  Effect.gen(function* () {
+                    yield* addressTarget(tx, request.address)
+                    attached = yield* operations.attachDocument(tx, request, scope, options)
+                    return attached.stream
+                  }),
+                ),
+              ).pipe(
+                Effect.onExit((exit) =>
+                  Exit.isFailure(exit) && attached !== undefined ? attached.detach : Effect.void,
+                ),
+              )
+            }),
+          ).pipe(Stream.interruptWhen(ended)),
+      },
       observations: {
         conversationSnapshot: (id) =>
           Effect.scoped(
@@ -1023,6 +1084,12 @@ export const make = Effect.fnUntraced(function* (
       ),
     }
     observations.set(backend, { observe: observeDecoded })
+    DocumentLifetime.registerAuthorization(backend, (request) =>
+      protect(
+        'document.remote.authorize',
+        change((tx) => addressTarget(tx, request.address)),
+      ).pipe(Effect.asVoid),
+    )
     const read = (handle: Subagent.Handle) =>
       change((tx) =>
         Effect.gen(function* () {
