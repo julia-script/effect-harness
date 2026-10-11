@@ -22,10 +22,17 @@ interface NativeHandle {
   readonly path: string
   closed: number
 }
-const nativeObservations = vi.hoisted((): { callback: boolean; handles: Array<NativeHandle> } => ({
-  callback: false,
-  handles: [],
-}))
+const nativeObservations = vi.hoisted(
+  (): {
+    callback: boolean
+    handles: Array<NativeHandle>
+    changed: Set<() => void>
+  } => ({
+    callback: false,
+    handles: [],
+    changed: new Set(),
+  }),
+)
 vi.mock('node:fs', async (importOriginal) => {
   const fs = await importOriginal<typeof import('node:fs')>()
   const watch = (
@@ -44,10 +51,12 @@ vi.mock('node:fs', async (importOriginal) => {
       }
     })
     nativeObservations.handles.push(handle)
+    for (const changed of nativeObservations.changed) changed()
     const close = watcher.close.bind(watcher)
     watcher.close = () => {
       handle.closed++
       close()
+      for (const changed of nativeObservations.changed) changed()
     }
     return watcher
   }
@@ -64,6 +73,16 @@ const observeNativeReadiness = (holdStartup = false) =>
     const firstHandle = nativeObservations.handles.length
     const settled = new Map<string, NativeHandle>()
     let changed = Deferred.makeUnsafe<void>()
+    let handlesChanged = Deferred.makeUnsafe<void>()
+    const observeHandles = () => {
+      const previous = handlesChanged
+      handlesChanged = Deferred.makeUnsafe<void>()
+      Deferred.doneUnsafe(previous, Effect.void)
+    }
+    nativeObservations.changed.add(observeHandles)
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => nativeObservations.changed.delete(observeHandles)),
+    )
     let worker: number | undefined
     let release: (() => void) | undefined
     let holding = holdStartup
@@ -94,8 +113,12 @@ const observeNativeReadiness = (holdStartup = false) =>
                     if (nativeObservations.callback)
                       Deferred.doneUnsafe(callbackCoverage, Effect.void)
                     else if (worker !== undefined && Fiber.getCurrent()?.id === worker) {
+                      const attached = nativeObservations.handles
+                        .slice(firstHandle)
+                        .filter((handle) => handle.closed === 0)
                       const publish = () => {
-                        for (const handle of nativeObservations.handles.slice(firstHandle))
+                        // Held coverage cannot settle a handle acquired after that worker emission.
+                        for (const handle of attached)
                           if (handle.closed === 0) settled.set(handle.path, handle)
                         observer.emit(event)
                         Deferred.doneUnsafe(startup, Effect.void)
@@ -118,6 +141,20 @@ const observeNativeReadiness = (holdStartup = false) =>
             .pipe(Effect.provideService(Clock.Clock, observedClock)),
       })),
     ).pipe(Layer.provide(FileWatchNode.adapter))
+    const awaitAcquisition = (path: string, previous?: NativeHandle): Effect.Effect<NativeHandle> =>
+      Effect.suspend(() => {
+        const handle = nativeObservations.handles
+          .slice(firstHandle)
+          .findLast((handle) => handle.path === path && handle.closed === 0 && handle !== previous)
+        if (handle) return Effect.succeed(handle)
+        return Deferred.await(handlesChanged).pipe(Effect.andThen(awaitAcquisition(path, previous)))
+      })
+    const awaitClosed = (handle: NativeHandle): Effect.Effect<void> =>
+      Effect.suspend(() =>
+        handle.closed > 0
+          ? Effect.void
+          : Deferred.await(handlesChanged).pipe(Effect.andThen(awaitClosed(handle))),
+      )
     const awaitAttachment = (path: string): Effect.Effect<void> =>
       Effect.suspend(() => {
         const handle = nativeObservations.handles
@@ -136,6 +173,8 @@ const observeNativeReadiness = (holdStartup = false) =>
         return held
       }),
       callbackCoverage,
+      awaitAcquisition,
+      awaitClosed,
       awaitAttachment,
       release: Effect.sync(() => {
         holding = false
@@ -429,7 +468,9 @@ describe('FileWatch native coverage', () => {
         yield* fs.makeDirectory(`${root}/skills`)
         yield* fs.writeFileString(`${root}/skills/value`, 'created')
         yield* Deferred.await(created).pipe(Effect.timeout('2 seconds'))
-        const firstAttachment = readiness.handles().findLast((h) => h.path === `${root}/skills`)
+        const firstAttachment = yield* readiness
+          .awaitAcquisition(`${root}/skills`)
+          .pipe(Effect.timeout('2 seconds'))
         assert.isDefined(firstAttachment, 'The real recursive target handle must be installed')
         const attaching = yield* readiness.awaitAttachment(`${root}/skills`).pipe(Effect.forkChild)
         yield* Effect.yieldNow
@@ -439,10 +480,24 @@ describe('FileWatch native coverage', () => {
         const firstIdentity = yield* fs.stat(`${root}/skills`)
         const recreated = yield* readiness.hold
         yield* fs.rename(`${root}/skills`, `${root}/old-skills`)
+        yield* readiness.awaitClosed(firstAttachment).pipe(Effect.timeout('2 seconds'))
+        // No replacement can be admitted while its target is absent. The old record still exists.
+        assert.strictEqual(
+          readiness.handles().findLast((h) => h.path === `${root}/skills`),
+          firstAttachment,
+        )
+        const acquiring = yield* readiness
+          .awaitAcquisition(`${root}/skills`, firstAttachment)
+          .pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        assert.isUndefined(
+          acquiring.pollUnsafe(),
+          'A closed prior target must not satisfy replacement acquisition before admission',
+        )
         yield* fs.makeDirectory(`${root}/skills`)
         yield* fs.writeFileString(`${root}/skills/value`, 'recreated')
         yield* Deferred.await(recreated).pipe(Effect.timeout('2 seconds'))
-        const secondAttachment = readiness.handles().findLast((h) => h.path === `${root}/skills`)
+        const secondAttachment = yield* Fiber.join(acquiring).pipe(Effect.timeout('2 seconds'))
         assert.isDefined(secondAttachment)
         assert.notStrictEqual(secondAttachment, firstAttachment)
         assert.strictEqual(firstAttachment?.closed, 1)
