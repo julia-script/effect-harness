@@ -48,6 +48,7 @@ import * as Compaction from '../Compaction.js'
 import * as CompactionTask from '../CompactionTask.js'
 import * as CompactionRuntime from './CompactionRuntime.js'
 import { TaskExecution } from '../TaskExecution.js'
+import * as NestedInvocation from './NestedInvocation.js'
 import { NativeWriteFailure } from './NativeWriteFailure.js'
 import { StreamPublicationFailure } from './StreamPublicationFailure.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
@@ -1569,7 +1570,9 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         modelDefinition?.capabilities.images === true && modelDefinition.imageLimits !== undefined
           ? { vision: true, limits: modelDefinition.imageLimits }
           : { vision: false }
+      const nativeExecution = yield* TaskExecution
       const toolAccess = {
+        invocation: NestedInvocation.borrow(nativeExecution.invocation, guard),
         ...access(task.conversationId),
         ...(toolState.preparation === undefined ? {} : { imageReadPolicy }),
         snapshot: <S extends Document.Codec>(
@@ -1638,6 +1641,17 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
           Effect.sync(() => {
             toolActive = false
           }),
+        ),
+      )
+      yield* NestedInvocation.close(toolAccess.invocation, true).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ExecutionError({
+              reason: 'invalid',
+              operation: 'tool.children',
+              message: 'Nested tool cleanup failed',
+              cause,
+            }),
         ),
       )
       // A handler may already return the canonical media envelope. Expose its native

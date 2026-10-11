@@ -45,6 +45,8 @@ export interface ConversationOptions {
  * missing operations fail with a typed TaskError.
  */
 export interface Access {
+  /** Reservation-bound programmatic calls; unsupported on schedulers without native integration. */
+  readonly invocation: import('./ToolInvocation.js').Access
   readonly taskId: Record.TaskId
   readonly conversationId: Record.ConversationId
   readonly registry: Registry

@@ -39,6 +39,8 @@ import type * as RegistryScope from '../RegistryScope.js'
 import * as TaskScheduler from '../TaskScheduler.js'
 import * as RunTask from './RunTask.js'
 import * as ToolTask from './ToolTask.js'
+import * as NestedInvocation from './NestedInvocation.js'
+import * as NestedToolTask from './NestedToolTask.js'
 import * as Transaction from '../Transaction.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
 import { protect, absent } from './HarnessFailure.js'
@@ -324,6 +326,31 @@ export const make = Effect.fnUntraced(function* <
             return yield* dispatchHooks(lease, id, agent, event, taskId)
           }),
         )
+      const nestedFormat = StorageFormat.requireSupportedFormat({
+        formatVersion: 10,
+        minimumReaderVersion: 10,
+      }).pipe(Effect.provideContext(context))
+      const inspectNestedFormat = StorageFormat.inspect.pipe(Effect.provideContext(context))
+      const nestedDefinition = NestedToolTask.make(registry, inspectNestedFormat)
+      yield* registry.install(
+        Registry.withTask(
+          {
+            definition: { id: 'native-runtime-nested', version: 1 },
+            acquire: Effect.succeed({
+              tools: [],
+              tasks: [],
+              hooks: [],
+              sections: [],
+              extensions: [],
+            }),
+          },
+          nestedDefinition,
+        ),
+      )
+      yield* Effect.addFinalizer(() =>
+        registry.uninstall('native-runtime-nested').pipe(Effect.ignore),
+      )
+      yield* Effect.addFinalizer(() => Effect.sync(() => NestedToolTask.clear(nestedDefinition)))
       const toolDefinition = ToolTask.make(registry)
       yield* registry.install(
         Registry.withTask(
@@ -449,6 +476,17 @@ export const make = Effect.fnUntraced(function* <
       )
       yield* Effect.addFinalizer(() => registry.uninstall('native-runtime-run').pipe(Effect.ignore))
       const scheduler = yield* TaskScheduler.make(session, {
+        invocation: {
+          open: (access, lease, mode) =>
+            NestedInvocation.make(
+              access,
+              lease,
+              mode,
+              nestedDefinition,
+              nestedFormat,
+              inspectNestedFormat,
+            ),
+        },
         nativeRun: native.adapter,
         host: {
           open: () => Effect.succeed({}),

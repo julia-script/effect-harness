@@ -28,6 +28,10 @@ import * as Round from './ToolRound.js'
 import * as Progress from './ToolProgress.js'
 import * as Preparation from './RequestPreparation.js'
 
+import type * as Prepared from '../PreparedRequest.js'
+import type * as ImageReadPolicy from '../coding/ImageReadPolicy.js'
+import type * as TaskExecutionAccess from '../TaskExecution.js'
+import * as Nested from './NestedInvocation.js'
 export const contract = {
   kind: 'harness.tool',
   version: 1,
@@ -57,17 +61,70 @@ const reportingFailure = (
         cause: error,
       })
 
-const disposals = new WeakMap<Task.Any, () => void>()
-export const clear = (definition: Task.Any) => disposals.get(definition)?.()
-export const make = (registry: Registry.Service) => {
+export interface PipelineInput {
+  readonly call: Tool.Call
+  readonly replay: Tool.Replay
+  readonly offered?: typeof Prepared.ToolSchema.Type
+  readonly options: Inventory.Options
+  readonly currentOptions?: Inventory.Options
+  readonly resultContract?: { readonly resultChannels: boolean; readonly structuredOutput: boolean }
+  readonly caller: Tool.Caller
+  readonly retention: import('../OutputRetention.js').Policy
+  readonly progress: import('../ProgressPolicy.js').Policy
+  readonly progressEnabled: boolean
+  readonly imageReadPolicy?: ImageReadPolicy.Policy
+}
+export interface Completion {
+  readonly call: Tool.Call
+  readonly attempt: Usage.AttemptId
+  readonly invoked: boolean
+  readonly interrupted: boolean
+  readonly denied: boolean
+  readonly explicitEnvelope: boolean
+  readonly observedSpend: Usage.Cost | undefined
+  readonly disposition: import('../ToolControl.js').Receipt['status']
+}
+type SinkFailure = import('../ToolInvocation.js').Failure
+export interface Sink {
+  readonly assert: (tx: Transaction.Transaction) => Effect.Effect<unknown, SinkFailure>
+  readonly recordAttempt: (
+    tx: Transaction.Transaction,
+    attempt: Usage.AttemptId,
+  ) => Effect.Effect<unknown, SinkFailure>
+  readonly fatal: (
+    tx: Transaction.Transaction,
+    result: ToolResult.Result,
+    error: {
+      readonly message: string
+      readonly branches: ReadonlyArray<{ readonly kind: string; readonly message: string }>
+    },
+    spend: Usage.Cost | undefined,
+    attempt: Usage.AttemptId,
+  ) => Effect.Effect<void, SinkFailure>
+  readonly complete: (
+    tx: Transaction.Transaction,
+    result: ToolResult.Result,
+    meta: Completion,
+  ) => Effect.Effect<void, SinkFailure>
+  readonly cancel: (
+    tx: Transaction.Transaction,
+    result: ToolResult.Result,
+    spend: Usage.Cost | undefined,
+    attempt: Usage.AttemptId,
+    started: boolean,
+  ) => Effect.Effect<void, SinkFailure>
+}
+/** ONE implementation of leased hooks/codecs/replay/reporting for both native definitions. */
+export const pipeline = (registry: Registry.Service) => {
   const cancelled = new Map<
     Record.TaskId,
     { readonly snapshot: ToolProgress.Snapshot; readonly spend?: Usage.Cost }
   >()
-  const execute = Effect.fnUntraced(function* ({
-    input,
-    checkpoint,
-  }: Task.PhaseInput<typeof Round.InputSchema, typeof Round.CheckpointSchema, 'execute'>) {
+  const execute = Effect.fnUntraced(function* (
+    input: PipelineInput,
+    checkpoint: Round.Checkpoint,
+    sink: Sink,
+  ) {
     const execution = yield* TaskExecution
     if (
       (checkpoint.acceptedCall !== undefined &&
@@ -78,9 +135,7 @@ export const make = (registry: Registry.Service) => {
     )
       return yield* Round.invalid('The persisted invocation does not match its original call')
     const lease = yield* registry.acquire
-    const offered = input.preparation.tools.find(
-      (item) => item.declaration.name === input.call.name,
-    )
+    const offered = input.offered
     const binding = offered?.binding
     const bound = lease.snapshot.bindings.find(
       (item) =>
@@ -88,46 +143,36 @@ export const make = (registry: Registry.Service) => {
         item.owner.version === binding.version &&
         item.declaration.name === input.call.name,
     )
-    const options: Inventory.Options = {
-      agent: {
-        ...input.preparation.agent,
-        toolkits: {
-          ...input.preparation.agent.toolkits,
-          inherit: false,
-          registrations: input.preparation.requiredBindings.map((item) => item.id),
-          bindings: Object.fromEntries(
-            input.preparation.allTools.map((item) => [
-              item.declaration.name,
-              { binding: item.binding.id, version: item.binding.version },
-            ]),
-          ),
-        },
-      },
-    }
+    const options = input.options
+    const savedAdmission = Inventory.inspect(lease.snapshot, input.call.name, input.caller, options)
+    const currentAdmission = Inventory.inspect(
+      lease.snapshot,
+      input.call.name,
+      input.caller,
+      input.currentOptions ?? options,
+    )
+    const compatible =
+      input.currentOptions === undefined ||
+      (bound !== undefined &&
+        offered !== undefined &&
+        Equal.equals(yield* Preparation.declaration(bound), offered) &&
+        (input.resultContract === undefined ||
+          (input.resultContract.resultChannels === Tool.hasResultChannels(bound.declaration) &&
+            input.resultContract.structuredOutput === Tool.hasStructuredOutput(bound.declaration))))
     let attempt = checkpoint.attempt
     const safe =
       input.replay === 'safe' &&
       bound !== undefined &&
-      Tool.policy(bound.declaration).replay === 'safe'
+      Tool.policy(bound.declaration).replay === 'safe' &&
+      (input.currentOptions === undefined ||
+        (compatible && savedAdmission._tag === 'allowed' && currentAdmission._tag === 'allowed'))
     const interrupted = checkpoint.started && checkpoint.observedResult === undefined && !safe
     if (checkpoint.started && checkpoint.observedResult === undefined && safe) {
       attempt = yield* Schema.decodeEffect(Usage.AttemptId)(attempt + 1)
       yield* execution.commit((tx) =>
         Effect.gen(function* () {
-          yield* Round.slot(tx, execution.conversationId, execution.taskId, input)
-          yield* Usage.record(tx, {
-            conversationId: execution.conversationId,
-            identity: {
-              _tag: 'toolCall',
-              taskId: execution.taskId,
-              callId: input.call.id,
-              attempt: checkpoint.attempt,
-            },
-            outcome: {
-              _tag: 'interrupted',
-              reason: 'Prior safe invocation did not publish a result',
-            },
-          })
+          yield* sink.assert(tx)
+          yield* sink.recordAttempt(tx, checkpoint.attempt)
           const current = yield* Transaction.task(tx, execution.taskId)
           if (Option.isNone(current)) return yield* Round.invalid('The tool child is absent')
           yield* Transaction.putTask(tx, {
@@ -152,7 +197,7 @@ export const make = (registry: Registry.Service) => {
     let recovery: ToolProgress.Options['recovery'] = 'resume'
     if (interrupted) recovery = 'interrupt'
     else if (newerAttempt) recovery = 'retry'
-    const writer = yield* ToolProgress.make<import('../TaskError.js').Failure>(
+    const writer = yield* Progress.make<import('../TaskError.js').Failure, never>(
       { commit: execution.commit },
       {
         conversationId: execution.conversationId,
@@ -162,6 +207,8 @@ export const make = (registry: Registry.Service) => {
         policy: input.progress,
         recovery,
       },
+      undefined,
+      { persistRunning: input.progressEnabled },
     )
     let active = true
     let reporting = false
@@ -234,12 +281,8 @@ export const make = (registry: Registry.Service) => {
       ...gatedAccess(reportGuard),
       taskId: execution.taskId,
       callId: input.call.id,
-      imageReadPolicy:
-        input.preparation.model._tag === 'descriptor' &&
-        input.preparation.model.definition.capabilities.images === true &&
-        input.preparation.model.definition.imageLimits !== undefined
-          ? { vision: true, limits: input.preparation.model.definition.imageLimits }
-          : { vision: false },
+      ...(input.imageReadPolicy === undefined ? {} : { imageReadPolicy: input.imageReadPolicy }),
+      invocation: Nested.borrow(execution.invocation, reportGuard),
       output: (chunk) =>
         reportGuard.pipe(Effect.andThen(writer.output(chunk)), Effect.mapError(reportingFailure)),
       details: (value) =>
@@ -251,7 +294,7 @@ export const make = (registry: Registry.Service) => {
         ),
     }
     const { modelTools: _modelTools, ...allAgent } = options.agent ?? {}
-    const available = Inventory.inventory(lease.snapshot, 'model', {
+    const available = Inventory.inventory(lease.snapshot, input.caller, {
       ...options,
       agent: allAgent,
     }).map((item) => item.declaration.name)
@@ -260,11 +303,20 @@ export const make = (registry: Registry.Service) => {
     let denied = false
     let explicitEnvelope = checkpoint.explicitEnvelope ?? false
     const run = Effect.gen(function* () {
+      if (
+        input.currentOptions !== undefined &&
+        (!compatible || savedAdmission._tag === 'denied' || currentAdmission._tag === 'denied')
+      ) {
+        denied = true
+        if (currentAdmission._tag === 'denied') return errorResult(currentAdmission.denial.message)
+        if (savedAdmission._tag === 'denied') return errorResult(savedAdmission.denial.message)
+        return errorResult(`Pinned tool ${input.call.name} is incompatible`)
+      }
       if (interrupted)
         return errorResult(
           'Tool execution was interrupted. It was not repeated because replay is unsafe; its external outcome is unknown.',
         )
-      const admitted = Inventory.inspect(lease.snapshot, input.call.name, 'model', options)
+      const admitted = Inventory.inspect(lease.snapshot, input.call.name, input.caller, options)
       if (offered === undefined || admitted._tag === 'denied' || bound === undefined) {
         denied = true
         return errorResult(
@@ -273,7 +325,11 @@ export const make = (registry: Registry.Service) => {
             : `Tool ${input.call.name} is unavailable`,
         )
       }
-      if (!Equal.equals(yield* Preparation.declaration(bound), offered)) {
+      if (
+        !compatible ||
+        (input.currentOptions === undefined &&
+          !Equal.equals(yield* Preparation.declaration(bound), offered))
+      ) {
         denied = true
         return errorResult(`Pinned tool ${input.call.name} is incompatible`)
       }
@@ -359,7 +415,7 @@ export const make = (registry: Registry.Service) => {
               yield* codec.validateParameters(call.arguments)
               yield* execution.commit((tx) =>
                 Effect.gen(function* () {
-                  yield* Round.slot(tx, execution.conversationId, execution.taskId, input)
+                  yield* sink.assert(tx)
                   const current = yield* Transaction.task(tx, execution.taskId)
                   if (Option.isNone(current))
                     return yield* Round.invalid('The tool child is absent')
@@ -380,7 +436,7 @@ export const make = (registry: Registry.Service) => {
               )
               invoked = true
               reporting = true
-              result = yield* Inventory.invoke(lease, call, 'model', options).pipe(
+              result = yield* Inventory.invoke(lease, call, input.caller, options).pipe(
                 Effect.provideService(ToolExecution, access),
                 Effect.ensuring(
                   Effect.sync(() => {
@@ -400,7 +456,7 @@ export const make = (registry: Registry.Service) => {
               observedSpend = result.spend
               yield* execution.commit((tx) =>
                 Effect.gen(function* () {
-                  yield* Round.slot(tx, execution.conversationId, execution.taskId, input)
+                  yield* sink.assert(tx)
                   const current = yield* Transaction.task(tx, execution.taskId)
                   if (Option.isNone(current))
                     return yield* Round.invalid('The tool child is absent')
@@ -468,48 +524,9 @@ export const make = (registry: Registry.Service) => {
           message: branch.message,
         })),
       }
+      yield* Nested.close(execution.invocation, true)
       yield* writer.settle('completed', (tx) =>
-        Effect.gen(function* () {
-          const { round, found } = yield* Round.slot(
-            tx,
-            execution.conversationId,
-            execution.taskId,
-            input,
-          )
-          if (found.result !== undefined)
-            return yield* Round.invalid('The fatal tool slot already settled')
-          const error = { message, branches }
-          yield* Usage.record(tx, {
-            conversationId: execution.conversationId,
-            identity: {
-              _tag: 'toolCall',
-              taskId: execution.taskId,
-              callId: input.call.id,
-              attempt,
-            },
-            outcome: { _tag: 'failed', error },
-            ...(observedSpend === undefined
-              ? {}
-              : { usage: { _tag: 'tool' as const, name: call.name, cost: observedSpend } }),
-          })
-          yield* Round.write(tx, execution.conversationId, input.roundKey, {
-            ...round,
-            slots: round.slots.map((saved, index) =>
-              index === input.index
-                ? {
-                    ...saved,
-                    fatal: true,
-                    result,
-                    receipt: { callId: input.call.id, caller: 'model', status: 'failed' },
-                  }
-                : saved,
-            ),
-          })
-          yield* execution.progress(tx, contract, {
-            status: 'completing',
-            outcome: { status: 'failed', error, result: error },
-          })
-        }),
+        sink.fatal(tx, result, { message, branches }, observedSpend, attempt),
       )
       active = false
       settled = true
@@ -521,29 +538,182 @@ export const make = (registry: Registry.Service) => {
     let disposition: import('../ToolControl.js').Receipt['status'] = 'succeeded'
     if (denied) disposition = 'denied'
     else if (result.isError) disposition = 'failed'
-    const plain = result.content.flatMap((part) =>
-      part.type === 'text' && Object.keys(part.options).length === 0 ? [part.text] : [],
-    )
-    const value =
-      !explicitEnvelope && plain.length === result.content.length
-        ? plain.join('\n')
-        : yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.Envelope))({
-            _tag: '@effect-harness/ToolContent',
-            content: result.content,
-          })
-    const output = Prompt.toolMessage({
-      content: [
-        Prompt.toolResultPart({
-          id: call.id,
-          name: call.name,
-          providerExecuted: false,
-          isFailure: result.isError,
-          result: value,
-        }),
-      ],
-    })
+    yield* Nested.close(execution.invocation, true)
     yield* writer.settle(interrupted ? 'interrupted' : 'completed', (tx) =>
-      Effect.gen(function* () {
+      sink.complete(tx, result, {
+        call,
+        attempt,
+        invoked,
+        interrupted,
+        denied,
+        explicitEnvelope,
+        observedSpend,
+        disposition,
+      }),
+    )
+    active = false
+    settled = true
+    cancelled.delete(execution.taskId)
+  })
+  const abort = Effect.fnUntraced(function* (
+    input: PipelineInput,
+    checkpoint: Round.Checkpoint,
+    sink: Sink,
+  ) {
+    const execution = yield* TaskExecution
+    const buffered = cancelled.get(execution.taskId)
+    const accepted = buffered?.snapshot
+    const spend = checkpoint.observedResult?.spend ?? buffered?.spend
+    if (
+      accepted !== undefined &&
+      (accepted.attempt !== checkpoint.attempt ||
+        accepted.callId !== Round.progressKey(execution.taskId))
+    )
+      return yield* Round.invalid('The cancelled progress belongs to another invocation attempt')
+    const writer = yield* Progress.make<import('../TaskError.js').Failure, never>(
+      { commit: execution.commit },
+      {
+        conversationId: execution.conversationId,
+        callId: Round.progressKey(execution.taskId),
+        attempt: checkpoint.attempt,
+        retention: input.retention,
+        policy: input.progress,
+      },
+      accepted,
+      { persistRunning: input.progressEnabled },
+    )
+    const result = errorResult(
+      checkpoint.started
+        ? 'Tool call was cancelled; its unreported external outcome is unknown.'
+        : 'Tool call was cancelled before invoking its handler.',
+    )
+    yield* writer.settle('cancelled', (tx) =>
+      sink.cancel(tx, result, spend, checkpoint.attempt, checkpoint.started),
+    )
+    cancelled.delete(execution.taskId)
+  })
+  return { execute, abort, clear: () => cancelled.clear() }
+}
+
+const modelInput = (input: Round.Input): PipelineInput => ({
+  call: input.call,
+  replay: input.replay,
+  caller: 'model',
+  retention: input.retention,
+  progress: input.progress,
+  progressEnabled: true,
+  ...(input.preparation.tools.find((item) => item.declaration.name === input.call.name) ===
+  undefined
+    ? {}
+    : {
+        offered: input.preparation.tools.find((item) => item.declaration.name === input.call.name)!,
+      }),
+  options: {
+    agent: {
+      ...input.preparation.agent,
+      toolkits: {
+        ...input.preparation.agent.toolkits,
+        inherit: false,
+        registrations: input.preparation.requiredBindings.map((item) => item.id),
+        bindings: Object.fromEntries(
+          input.preparation.allTools.map((item) => [
+            item.declaration.name,
+            { binding: item.binding.id, version: item.binding.version },
+          ]),
+        ),
+      },
+    },
+  },
+  imageReadPolicy:
+    input.preparation.model._tag === 'descriptor' &&
+    input.preparation.model.definition.capabilities.images === true &&
+    input.preparation.model.definition.imageLimits !== undefined
+      ? { vision: true, limits: input.preparation.model.definition.imageLimits }
+      : { vision: false },
+})
+const modelSink = (execution: TaskExecutionAccess.Access, input: Round.Input): Sink => ({
+  assert: (tx) => Round.slot(tx, execution.conversationId, execution.taskId, input),
+  recordAttempt: (tx, attempt) =>
+    Usage.record(tx, {
+      conversationId: execution.conversationId,
+      identity: { _tag: 'toolCall', taskId: execution.taskId, callId: input.call.id, attempt },
+      outcome: { _tag: 'interrupted', reason: 'Prior safe invocation did not publish a result' },
+    }),
+  fatal: (tx, result, error, spend, attempt) =>
+    Effect.gen(function* () {
+      const { round, found } = yield* Round.slot(
+        tx,
+        execution.conversationId,
+        execution.taskId,
+        input,
+      )
+      if (found.result !== undefined)
+        return yield* Round.invalid('The fatal tool slot already settled')
+      yield* Usage.record(tx, {
+        conversationId: execution.conversationId,
+        identity: {
+          _tag: 'toolCall',
+          taskId: execution.taskId,
+          callId: input.call.id,
+          attempt,
+        },
+        outcome: { _tag: 'failed', error },
+        ...(spend === undefined
+          ? {}
+          : { usage: { _tag: 'tool' as const, name: input.call.name, cost: spend } }),
+      })
+      yield* Round.write(tx, execution.conversationId, input.roundKey, {
+        ...round,
+        slots: round.slots.map((saved, index) =>
+          index === input.index
+            ? {
+                ...saved,
+                fatal: true,
+                result,
+                receipt: { callId: input.call.id, caller: 'model', status: 'failed' },
+              }
+            : saved,
+        ),
+      })
+      yield* execution.progress(tx, contract, {
+        status: 'completing',
+        outcome: { status: 'failed', error, result: error },
+      })
+    }),
+  complete: (tx, result, meta) =>
+    Effect.gen(function* () {
+      const {
+        call,
+        attempt,
+        invoked,
+        interrupted,
+        denied,
+        explicitEnvelope,
+        observedSpend,
+        disposition,
+      } = meta
+      const plain = result.content.flatMap((part) =>
+        part.type === 'text' && Object.keys(part.options).length === 0 ? [part.text] : [],
+      )
+      const value =
+        !explicitEnvelope && plain.length === result.content.length
+          ? plain.join('\n')
+          : yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.Envelope))({
+              _tag: '@effect-harness/ToolContent',
+              content: result.content,
+            })
+      const output = Prompt.toolMessage({
+        content: [
+          Prompt.toolResultPart({
+            id: call.id,
+            name: call.name,
+            providerExecuted: false,
+            isFailure: result.isError,
+            result: value,
+          }),
+        ],
+      })
+      return yield* Effect.gen(function* () {
         const { round, found } = yield* Round.slot(
           tx,
           execution.conversationId,
@@ -611,11 +781,75 @@ export const make = (registry: Registry.Service) => {
               }
             : { status: 'completed', result: entry.id },
         })
-      }),
-    )
-    active = false
-    settled = true
-    cancelled.delete(execution.taskId)
+      })
+    }),
+  cancel: (tx, result, spend, attempt, started) =>
+    Effect.gen(function* () {
+      const { round, found } = yield* Round.slot(
+        tx,
+        execution.conversationId,
+        execution.taskId,
+        input,
+      )
+      if (found.result !== undefined)
+        return yield* Round.invalid('The cancelled slot already settled')
+      yield* Usage.record(tx, {
+        conversationId: execution.conversationId,
+        identity: {
+          _tag: 'toolCall',
+          taskId: execution.taskId,
+          callId: input.call.id,
+          attempt: attempt,
+        },
+        outcome: {
+          _tag: 'interrupted',
+          reason: started
+            ? 'Cancelled started handler; external spend unknown'
+            : 'Cancelled before handler',
+        },
+        ...(spend === undefined
+          ? {}
+          : {
+              usage: {
+                _tag: 'tool' as const,
+                name: input.call.name,
+                cost: spend,
+              },
+            }),
+      })
+      yield* Round.write(tx, execution.conversationId, input.roundKey, {
+        ...round,
+        slots: round.slots.map((saved, index) =>
+          index === input.index
+            ? {
+                ...saved,
+                result,
+                receipt: {
+                  callId: input.call.id,
+                  caller: 'model',
+                  status: 'cancelled',
+                },
+              }
+            : saved,
+        ),
+      })
+      yield* execution.progress(tx, contract, {
+        status: 'completing',
+        outcome: { status: 'aborted', reason: 'cancelled' },
+      })
+    }),
+})
+
+const disposals = new WeakMap<Task.Any, () => void>()
+export const clear = (definition: Task.Any) => disposals.get(definition)?.()
+export const make = (registry: Registry.Service) => {
+  const runner = pipeline(registry)
+  const execute = Effect.fnUntraced(function* ({
+    input,
+    checkpoint,
+  }: Task.PhaseInput<typeof Round.InputSchema, typeof Round.CheckpointSchema, 'execute'>) {
+    const execution = yield* TaskExecution
+    return yield* runner.execute(modelInput(input), checkpoint, modelSink(execution, input))
   })
   const abort = Effect.fnUntraced(function* ({
     input,
@@ -625,88 +859,7 @@ export const make = (registry: Registry.Service) => {
     readonly checkpoint: Round.Checkpoint
   }) {
     const execution = yield* TaskExecution
-    const buffered = cancelled.get(execution.taskId)
-    const accepted = buffered?.snapshot
-    const spend = checkpoint.observedResult?.spend ?? buffered?.spend
-    if (
-      accepted !== undefined &&
-      (accepted.attempt !== checkpoint.attempt ||
-        accepted.callId !== Round.progressKey(execution.taskId))
-    )
-      return yield* Round.invalid('The cancelled progress belongs to another invocation attempt')
-    const writer = yield* Progress.make<import('../TaskError.js').Failure, never>(
-      { commit: execution.commit },
-      {
-        conversationId: execution.conversationId,
-        callId: Round.progressKey(execution.taskId),
-        attempt: checkpoint.attempt,
-        retention: input.retention,
-        policy: input.progress,
-      },
-      accepted,
-    )
-    const result = errorResult(
-      checkpoint.started
-        ? 'Tool call was cancelled; its unreported external outcome is unknown.'
-        : 'Tool call was cancelled before invoking its handler.',
-    )
-    yield* writer.settle('cancelled', (tx) =>
-      Effect.gen(function* () {
-        const { round, found } = yield* Round.slot(
-          tx,
-          execution.conversationId,
-          execution.taskId,
-          input,
-        )
-        if (found.result !== undefined)
-          return yield* Round.invalid('The cancelled slot already settled')
-        yield* Usage.record(tx, {
-          conversationId: execution.conversationId,
-          identity: {
-            _tag: 'toolCall',
-            taskId: execution.taskId,
-            callId: input.call.id,
-            attempt: checkpoint.attempt,
-          },
-          outcome: {
-            _tag: 'interrupted',
-            reason: checkpoint.started
-              ? 'Cancelled started handler; external spend unknown'
-              : 'Cancelled before handler',
-          },
-          ...(spend === undefined
-            ? {}
-            : {
-                usage: {
-                  _tag: 'tool' as const,
-                  name: input.call.name,
-                  cost: spend,
-                },
-              }),
-        })
-        yield* Round.write(tx, execution.conversationId, input.roundKey, {
-          ...round,
-          slots: round.slots.map((saved, index) =>
-            index === input.index
-              ? {
-                  ...saved,
-                  result,
-                  receipt: {
-                    callId: input.call.id,
-                    caller: 'model',
-                    status: 'cancelled',
-                  },
-                }
-              : saved,
-          ),
-        })
-        yield* execution.progress(tx, contract, {
-          status: 'completing',
-          outcome: { status: 'aborted', reason: 'cancelled' },
-        })
-      }),
-    )
-    cancelled.delete(execution.taskId)
+    return yield* runner.abort(modelInput(input), checkpoint, modelSink(execution, input))
   })
   const definition = Task.make({
     ...contract,
@@ -719,7 +872,7 @@ export const make = (registry: Registry.Service) => {
     phases: { execute },
     abort,
   })
-  disposals.set(definition, () => cancelled.clear())
+  disposals.set(definition, runner.clear)
   return definition
 }
 

@@ -82,6 +82,18 @@ export interface NativeRunAdapter<R = never> {
   ) => Effect.Effect<PhaseResult, Failure, R | TaskExecution.TaskExecution | Scope.Scope>
 }
 export interface Options<R = never> {
+  /** Construct only after fresh reserved Access exists; Scope is the operation's fresh Scope. */
+  readonly invocation?: {
+    readonly open: (
+      access: TaskExecution.Access,
+      lease: RegistryScope.Lease,
+      mode: 'run' | 'abort',
+    ) => Effect.Effect<
+      import('./ToolInvocation.js').Access,
+      import('./ToolInvocation.js').Failure,
+      R | Scope.Scope
+    >
+  }
   readonly host?: Host<R>
   /** Omit to preserve standalone scheduling, which leaves legacy runs to their native runtime. */
   readonly nativeRun?: NativeRunAdapter<R>

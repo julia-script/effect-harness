@@ -29,6 +29,8 @@ import type * as RegistryScope from '../RegistryScope.js'
 import * as Session from '../Session.js'
 import { TaskError } from '../TaskError.js'
 import * as Task from '../Task.js'
+import * as ToolInvocation from '../ToolInvocation.js'
+import * as NestedInvocation from './NestedInvocation.js'
 import { TaskExecution, type Access } from '../TaskExecution.js'
 import * as TaskPolicy from '../TaskPolicy.js'
 import * as TaskResolution from '../TaskResolution.js'
@@ -43,6 +45,7 @@ interface Invocation extends Transitions.Invocation {
   readonly scope: Scope.Closeable
   readonly done: Deferred.Deferred<void>
   readonly transactions: WeakSet<Transaction.Transaction>
+  toolInvocation?: ToolInvocation.Access
   fiber?: Fiber.Fiber<void, never>
 }
 const error = (reason: TaskError['reason'], operation: string, message: string, cause?: unknown) =>
@@ -62,6 +65,12 @@ const invocationFailure = (failure: Scheduler.Failure): import('../TaskError.js'
   Schema.is(RegistryError)(failure) || Schema.is(StorageFormatError)(failure)
     ? error('faulted', 'task.hostBoundary', 'Task scheduler boundary failed', failure)
     : failure
+const toolInvocationFailure = (
+  failure: ToolInvocation.Failure,
+): import('../TaskError.js').Failure =>
+  Schema.is(ToolInvocation.InvocationError)(failure) || Schema.is(ExecutionError)(failure)
+    ? error('faulted', 'task.toolInvocation', failure.message, failure)
+    : invocationFailure(failure)
 const sameJson = Schema.toEquivalence(Schema.Json)
 
 const { ownedLive, hold } = Supervision
@@ -548,6 +557,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
             ),
           )
     const native: Access = {
+      invocation: ToolInvocation.unsupported,
       taskId: invocation.taskId,
       conversationId: invocation.conversationId,
       registry: {
@@ -611,6 +621,10 @@ export const make = Effect.fnUntraced(function* <R = never>(
               'Abort cleanup must commit a terminal outcome',
             )
           if (next.status === 'completing') {
+            yield* NestedInvocation.stageClose(
+              invocation.toolInvocation ?? ToolInvocation.unsupported,
+              tx,
+            ).pipe(Effect.mapError(toolInvocationFailure))
             const encoded = yield* Task.encode(
               Task.outcomeSchema<T['success'], T['failure']>(definition),
               next.outcome,
@@ -787,6 +801,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
           Deferred.await(invocation.done).pipe(Effect.andThen(Effect.interrupt)),
         ),
     }
+    NestedInvocation.registerGate(native, (tx) => transaction(tx).pipe(Effect.asVoid))
     return native
   }
 
@@ -857,7 +872,20 @@ export const make = Effect.fnUntraced(function* <R = never>(
                     ),
                   ),
               )
-        const native = access(invocation, lease, host)
+        const reserved = access(invocation, lease, host)
+        const toolInvocation =
+          options.invocation === undefined
+            ? ToolInvocation.unsupported
+            : yield* restore(
+                options.invocation.open(reserved, lease, invocation.mode).pipe(
+                  Effect.updateContext((_context: Context.Context<never>) =>
+                    Context.add(hostContext, Scope.Scope, invocation.scope),
+                  ),
+                  Effect.mapError(toolInvocationFailure),
+                ),
+              )
+        const native: Access = { ...reserved, invocation: toolInvocation }
+        invocation.toolInvocation = toolInvocation
         const checkpoint = yield* Task.decode(
           Schema.Struct({ phase: Schema.NonEmptyString }),
           record.state.checkpoint,
@@ -912,6 +940,12 @@ export const make = Effect.fnUntraced(function* <R = never>(
             outcome: { status: 'faulted', error: { message: Cause.pretty(exit.cause) } },
           }
         const after = yield* read(invocation.taskId)
+        yield* restore(
+          NestedInvocation.close(
+            native.invocation,
+            after.state.status === 'completing' || result._tag === 'outcome',
+          ).pipe(Effect.mapError(toolInvocationFailure)),
+        )
         const detail = result._tag === 'outcome' ? result.outcome : after.state.outcome
         yield* restore(
           lifecycle(

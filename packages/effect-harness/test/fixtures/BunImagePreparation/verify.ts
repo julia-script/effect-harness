@@ -104,7 +104,9 @@ const hv = new DataView(huge.buffer)
 hv.setUint32(16, 100000)
 hv.setUint32(20, 100000)
 hv.setUint32(29, crc(huge.subarray(12, 29)))
-const guardBytes = Bun.Image.prototype.bytes
+const guardBytesValue = Object.getOwnPropertyDescriptor(Bun.Image.prototype, 'bytes')?.value
+assert.equal(typeof guardBytesValue, 'function')
+const guardBytes = guardBytesValue as typeof Bun.Image.prototype.bytes
 let allocationTerminals = 0
 Bun.Image.prototype.bytes = function () {
   allocationTerminals++
@@ -506,7 +508,9 @@ await failure(brokenSecond, 'image/png', 'ImageDecodeFailed')
 
 // Force a native terminal to remain pending after a real native decode. The lease
 // must defer interruption/finalizers until the borrowed-byte terminal settles.
-const actualBytes = Bun.Image.prototype.bytes
+const actualBytesValue = Object.getOwnPropertyDescriptor(Bun.Image.prototype, 'bytes')?.value
+assert.equal(typeof actualBytesValue, 'function')
+const actualBytes = actualBytesValue as typeof Bun.Image.prototype.bytes
 let started!: () => void, release!: () => void
 const began = new Promise<void>((resolve) => {
   started = resolve

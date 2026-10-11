@@ -145,7 +145,7 @@ export interface Recorded {
  * Receipts use conversation/latest/fork-initial documents and survive task retirement.
  * Request, nested-call and compaction producers must explicitly call this at settlement.
  * Tool-call receipts reject unless the Session's matching StorageFormat capability confirms
- * container/minimum-reader protection 9/9. This check never activates a lower-format store.
+ * matching supported container/minimum-reader protection of at least 9. This check never activates a lower-format store.
  */
 export const record = (
   tx: Transaction.Transaction,

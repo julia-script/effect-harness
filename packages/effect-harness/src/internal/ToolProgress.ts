@@ -40,8 +40,11 @@ export const make = Effect.fnUntraced(function* <E, R>(
   gate: ToolProgress.Gate<E, R>,
   options: ToolProgress.Options,
   cancelled?: ToolProgress.Snapshot,
+  persistence: { readonly persistRunning?: boolean } = {},
 ) {
   const { callId, attempt } = options
+  const persistRunning = persistence.persistRunning !== false
+  let initialStored: ToolProgress.Snapshot | undefined
   const policy = yield* Schema.decodeEffect(ProgressPolicy.Policy)(
     options.policy ?? ProgressPolicy.defaultPolicy,
   ).pipe(
@@ -81,14 +84,16 @@ export const make = Effect.fnUntraced(function* <E, R>(
     Effect.gen(function* () {
       const found = yield* Transaction.snapshot(tx, ToolProgress.document, target)
       if (Option.isNone(found)) {
+        if (!persistRunning) return empty
         yield* Transaction.ensureDocument(tx, ToolProgress.document, target)
-        yield* Transaction.setDocument(tx, ToolProgress.document, target, empty)
+        if (persistRunning) yield* Transaction.setDocument(tx, ToolProgress.document, target, empty)
         return empty
       }
       const old = found.value.value
+      initialStored = old
       // Fork-initial members carry no parent invocation identity or output.
       if (old.callId === 'uninitialized') {
-        yield* Transaction.setDocument(tx, ToolProgress.document, target, empty)
+        if (persistRunning) yield* Transaction.setDocument(tx, ToolProgress.document, target, empty)
         return empty
       }
       if (old.callId !== callId)
@@ -99,7 +104,7 @@ export const make = Effect.fnUntraced(function* <E, R>(
             'conflict',
             'Safe retry needs a newer attempt and an unsettled prior call.',
           )
-        yield* Transaction.setDocument(tx, ToolProgress.document, target, empty)
+        if (persistRunning) yield* Transaction.setDocument(tx, ToolProgress.document, target, empty)
         return empty
       }
       if (old.attempt !== attempt || !sameRetention(old.retention, buffer.policy))
@@ -124,7 +129,8 @@ export const make = Effect.fnUntraced(function* <E, R>(
             },
           ],
         }
-        yield* Transaction.setDocument(tx, ToolProgress.document, target, interrupted)
+        if (persistRunning)
+          yield* Transaction.setDocument(tx, ToolProgress.document, target, interrupted)
         return interrupted
       }
       return old
@@ -163,6 +169,32 @@ export const make = Effect.fnUntraced(function* <E, R>(
   let settlementTx: Transaction.Transaction | undefined
   let flushedTx: Transaction.Transaction | undefined
   let final: ToolProgress.Snapshot | undefined
+  const boundedReports = (
+    nextDetails: Schema.Json | undefined,
+    nextDiagnostics: ReadonlyArray<ToolResult.Diagnostic>,
+  ) =>
+    Effect.gen(function* () {
+      if (persistRunning) return
+      const encoded = yield* Schema.encodeEffect(
+        Schema.fromJsonString(
+          Schema.Struct({
+            details: Schema.optionalKey(Schema.Json),
+            diagnostics: Schema.Array(ToolResult.DiagnosticSchema),
+          }),
+        ),
+      )({
+        ...(nextDetails === undefined ? {} : { details: nextDetails }),
+        diagnostics: nextDiagnostics,
+      })
+      if (
+        nextDiagnostics.length > maxPending ||
+        new TextEncoder().encode(encoded).length > Math.max(32, buffer.policy.maxBytes)
+      )
+        return yield* new OutputRetention.OutputRetentionError({
+          reason: 'overflow',
+          message: 'Final-only reports exceeded their bounded local retention budget.',
+        })
+    })
 
   const check = Effect.suspend(() => {
     if (failure !== undefined) return Effect.failCause(failure)
@@ -209,6 +241,18 @@ export const make = Effect.fnUntraced(function* <E, R>(
   const stage = (tx: Transaction.Transaction, snapshot: ToolProgress.Snapshot) =>
     Effect.gen(function* () {
       const found = yield* Transaction.snapshot(tx, ToolProgress.document, target)
+      if (!persistRunning) {
+        const same = Schema.toEquivalence(ToolProgress.Snapshot)
+        if (
+          (initialStored === undefined && Option.isSome(found)) ||
+          (initialStored !== undefined &&
+            (Option.isNone(found) || !same(found.value.value, initialStored)))
+        )
+          return yield* error('conflict', 'Final-only progress was replaced by another writer.')
+        yield* Transaction.ensureDocument(tx, ToolProgress.document, target)
+        yield* Transaction.setDocument(tx, ToolProgress.document, target, snapshot)
+        return snapshot
+      }
       if (
         Option.isNone(found) ||
         found.value.value.attempt !== attempt ||
@@ -269,7 +313,7 @@ export const make = Effect.fnUntraced(function* <E, R>(
       )
     }
   }).pipe(Effect.catchCause(poison))
-  const workerFiber = yield* worker.pipe(Effect.forkScoped)
+  const workerFiber = persistRunning ? yield* worker.pipe(Effect.forkScoped) : undefined
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
       mode = 'closed'
@@ -303,6 +347,15 @@ export const make = Effect.fnUntraced(function* <E, R>(
     details: (value) =>
       admissions.withPermit(
         Effect.gen(function* () {
+          if (!persistRunning) {
+            yield* check
+            const owned = yield* Value.copy(Schema.Json, value)
+            yield* boundedReports(owned, diagnostics)
+            yield* check
+            details = owned
+            yield* mark()
+            return
+          }
           const waiter = yield* Deferred.make<void, ToolProgress.Failure<E>>()
           yield* Effect.gen(function* () {
             yield* Effect.uninterruptible(
@@ -327,6 +380,7 @@ export const make = Effect.fnUntraced(function* <E, R>(
         Effect.gen(function* () {
           yield* check
           const owned = yield* Value.copy(ToolResult.DiagnosticSchema, value)
+          yield* boundedReports(details, [...diagnostics, owned])
           diagnostics = [...diagnostics, owned]
           yield* mark()
         }),
@@ -400,7 +454,7 @@ export const make = Effect.fnUntraced(function* <E, R>(
         mode = 'closed'
         yield* Deferred.succeed(stop, undefined)
         yield* Deferred.succeed(wake, undefined)
-        yield* Fiber.interrupt(workerFiber)
+        if (workerFiber !== undefined) yield* Fiber.interrupt(workerFiber)
         yield* poison(
           Cause.fail(error('closed', 'The accepted report was cancelled before acknowledgement.')),
         )
