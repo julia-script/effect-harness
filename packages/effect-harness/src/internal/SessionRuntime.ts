@@ -15,6 +15,7 @@ import { Storage } from '../Storage.js'
 import * as StorageFormat from '../StorageFormat.js'
 import { StorageError } from '../StorageError.js'
 import * as Value from './DocumentValue.js'
+import type * as ObservationRuntime from './ObservationRuntime.js'
 
 export type Event =
   | { readonly _tag: 'commit'; readonly value: Session.Commit }
@@ -32,6 +33,8 @@ export interface State {
   readonly cache: Map<string, Option.Option<Record.StoredDocument>>
   readonly subscribers: Set<Subscriber>
   readonly reconciliations: Set<Queue.Queue<void, Cause.Done | SessionError>>
+  readonly observations: Map<string, ObservationRuntime.Mount>
+  observationCommitSeq: Session.Commit['seq'] | undefined
   readonly requireSchedulerFormat: Effect.Effect<StorageFormat.Format, StorageFormat.Failure>
   readonly requireDocumentPatchFormat: Effect.Effect<StorageFormat.Format, StorageFormat.Failure>
   readonly checkToolCallFormat: Effect.Effect<void, Failure>
@@ -169,6 +172,8 @@ export const publish = Effect.fnUntraced(function* (
   commit: Session.Commit,
   documents: ReadonlyMap<Domain.DocumentId, Record.StoredDocument | null>,
 ) {
+  state.observationCommitSeq = commit.seq
+  for (const mount of state.observations.values()) yield* mount.publish(commit, documents)
   for (const queue of state.reconciliations) yield* Queue.offer(queue, undefined)
   for (const subscriber of state.subscribers) {
     if (subscriber.documentId === undefined)
@@ -185,6 +190,8 @@ export const publish = Effect.fnUntraced(function* (
 
 export const stop = Effect.fnUntraced(function* (state: State, error?: Failure) {
   state.poison = error
+  for (const mount of state.observations.values()) yield* mount.close(error)
+  state.observations.clear()
   for (const queue of state.reconciliations) yield* Queue.end(queue)
   state.reconciliations.clear()
   for (const subscriber of state.subscribers) {
@@ -271,6 +278,8 @@ export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Ini
     cache: new Map(),
     subscribers: new Set(),
     reconciliations: new Set(),
+    observations: new Map(),
+    observationCommitSeq: undefined,
     requireSchedulerFormat: guard(2),
     requireDocumentPatchFormat: guard(3),
     checkToolCallFormat,

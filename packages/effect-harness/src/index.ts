@@ -1,5 +1,10 @@
 /** Durable conversations, storage clients, tool contracts, and local execution. */
 export * as Agent from './Agent.js'
+export * as AgentEvent from './AgentEvent.js'
+export * as ConversationView from './ConversationView.js'
+export * as Observation from './Observation.js'
+export * as ObservationError from './ObservationError.js'
+export * as TaskGraph from './TaskGraph.js'
 export * as Coding from './coding/index.js'
 export * as Compaction from './Compaction.js'
 export * as CompactionError from './CompactionError.js'

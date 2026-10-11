@@ -7,6 +7,9 @@ import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
+import * as Scope from 'effect/Scope'
+import type * as ObservationProtocol from '../Observation.js'
+import type * as ObservationRuntime from './ObservationRuntime.js'
 import * as Agent from '../Agent.js'
 import * as Document from '../Document.js'
 import * as Subagent from '../Subagent.js'
@@ -79,6 +82,12 @@ export const registerControl = (execution: TaskExecution.Access, control: Contro
   return true
 }
 export interface Operations {
+  readonly attachObservation: (
+    tx: Transaction.Transaction,
+    id: Record.ConversationId,
+    consumerScope: Scope.Scope,
+    options?: ObservationProtocol.WatchOptions,
+  ) => Effect.Effect<ObservationRuntime.Attachment, ObservationProtocol.Failure>
   readonly backend: () => HarnessBackendService
   readonly submit: (
     tx: Transaction.Transaction,
@@ -477,6 +486,70 @@ export const make = Effect.fnUntraced(function* (
         Stream.mapEffect((value) => checked.pipe(Effect.as(value))),
         Stream.interruptWhen(ended),
       )
+    const attachObservation = (
+      id: Record.ConversationId,
+      consumerScope: Scope.Scope,
+      options?: ObservationProtocol.WatchOptions,
+    ) =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          let attachment: ObservationRuntime.Attachment | undefined
+          return yield* restore(
+            change((tx) =>
+              Effect.gen(function* () {
+                yield* ownedTarget(tx, id)
+                attachment = yield* operations.attachObservation(tx, id, consumerScope, options)
+                return attachment
+              }),
+            ),
+          ).pipe(
+            Effect.onExit((exit) =>
+              Exit.isFailure(exit) && attachment !== undefined ? attachment.detach : Effect.void,
+            ),
+            Effect.mapError((cause): ObservationProtocol.Failure =>
+              cause._tag === 'ExecutionError' ||
+              cause._tag === 'SubagentError' ||
+              cause._tag === 'TaskError'
+                ? new HarnessError({
+                    reason: 'failed',
+                    operation: 'conversation.observe',
+                    message: cause.message,
+                    cause,
+                  })
+                : cause,
+            ),
+          )
+        }),
+      )
+    const watchObservation = <F>(
+      id: Record.ConversationId,
+      options: ObservationProtocol.WatchOptions | undefined,
+      select: (
+        attachment: ObservationRuntime.Attachment,
+      ) => Stream.Stream<F, ObservationProtocol.Failure>,
+    ) =>
+      stream(
+        Stream.unwrap(
+          Effect.gen(function* () {
+            const outerScope = yield* Scope.Scope
+            const attachment = yield* attachObservation(id, outerScope, options)
+            return select(attachment)
+          }),
+        ),
+      ).pipe(
+        Stream.mapError((cause): ObservationProtocol.Failure =>
+          cause._tag === 'ExecutionError' ||
+          cause._tag === 'SubagentError' ||
+          cause._tag === 'TaskError'
+            ? new HarnessError({
+                reason: 'failed',
+                operation: 'conversation.observe',
+                message: cause.message,
+                cause,
+              })
+            : cause,
+        ),
+      )
     const admit = (tx: Transaction.Transaction, request: Subagent.Request, reservedKey?: string) =>
       Effect.gen(function* () {
         yield* control.gate(tx)
@@ -632,6 +705,21 @@ export const make = Effect.fnUntraced(function* (
         return yield* Value.copy(CompactionTask.HandleSchema, handle)
       })
     const backend: HarnessBackendService = {
+      observations: {
+        conversationSnapshot: (id) =>
+          Effect.scoped(
+            observeDecoded(() =>
+              Effect.gen(function* () {
+                const scope = yield* Scope.Scope
+                const attached = yield* attachObservation(id, scope)
+                return attached.snapshot
+              }),
+            ),
+          ),
+        watchView: (id, options) => watchObservation(id, options, (attachment) => attachment.views),
+        watchEvents: (id, options) =>
+          watchObservation(id, options, (attachment) => attachment.events),
+      },
       compactionTask: (handle) =>
         protect(
           'compaction.read',

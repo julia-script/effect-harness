@@ -19,6 +19,9 @@ import type * as Submission from './Submission.js'
 import * as ConversationHost from './internal/ConversationHost.js'
 import { ConversationTypeId } from './internal/ClientHandle.js'
 import { observation } from './internal/ConversationInvocation.js'
+import * as Observation from './Observation.js'
+import type * as ConversationView from './ConversationView.js'
+import type * as AgentEvent from './AgentEvent.js'
 
 export { ForkOptionsSchema, type ForkOptions } from './HarnessBackend.js'
 import type { ForkOptions, AbortOptions, ResetOptions } from './HarnessBackend.js'
@@ -35,6 +38,73 @@ export interface Conversation extends Pipeable.Pipeable {
   readonly id: Record.ConversationId
 }
 const backend = (self: Conversation) => self[ConversationHost.Backend]
+/** Coherent committed native view; acquiring it never starts pending work. */
+export const view = (
+  self: Conversation,
+): Effect.Effect<ConversationView.Snapshot, Observation.Failure> => {
+  const service = backend(self)
+  const read = () =>
+    Effect.suspend(() =>
+      service.observations?.conversationSnapshot === undefined
+        ? Observation.unsupported('conversation.view')
+        : service.observations.conversationSnapshot(self.id),
+    )
+  return observation(service)?.observe(read) ?? read()
+}
+export const watchView = (
+  self: Conversation,
+  options?: Observation.WatchOptions,
+): Stream.Stream<ConversationView.Frame, Observation.Failure> => {
+  const service = backend(self)
+  const read = () =>
+    Effect.suspend(() =>
+      service.observations?.watchView === undefined
+        ? Observation.unsupported('conversation.watchView')
+        : Effect.succeed(service.observations.watchView(self.id, options)),
+    )
+  return Stream.unwrap(observation(service)?.observe(read) ?? read())
+}
+export const events = (
+  self: Conversation,
+  options?: Observation.WatchOptions,
+): Stream.Stream<AgentEvent.Frame, Observation.Failure> => {
+  const service = backend(self)
+  const read = () =>
+    Effect.suspend(() =>
+      service.observations?.watchEvents === undefined
+        ? Observation.unsupported('conversation.events')
+        : Effect.succeed(service.observations.watchEvents(self.id, options)),
+    )
+  return Stream.unwrap(observation(service)?.observe(read) ?? read())
+}
+export const watchViewWith = <A, E, R>(
+  self: Conversation,
+  callback: (frame: ConversationView.Frame) => Effect.Effect<A, E, R>,
+  options?: Observation.WatchOptions,
+): Stream.Stream<A, E | Observation.Failure, R> => {
+  const observed = observation(backend(self))
+  return watchView(self, options).pipe(
+    Stream.mapEffect(
+      (frame) =>
+        observed?.observe(() => callback(frame)) ??
+        Effect.scoped(Effect.suspend(() => callback(frame))),
+    ),
+  )
+}
+export const eventsWith = <A, E, R>(
+  self: Conversation,
+  callback: (frame: AgentEvent.Frame) => Effect.Effect<A, E, R>,
+  options?: Observation.WatchOptions,
+): Stream.Stream<A, E | Observation.Failure, R> => {
+  const observed = observation(backend(self))
+  return events(self, options).pipe(
+    Stream.mapEffect(
+      (frame) =>
+        observed?.observe(() => callback(frame)) ??
+        Effect.scoped(Effect.suspend(() => callback(frame))),
+    ),
+  )
+}
 /** Start manual durable compaction even when automatic compaction is disabled. Wait on its task handle. */
 export const compact = (
   self: Conversation,

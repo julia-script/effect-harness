@@ -55,6 +55,7 @@ import * as CompactionRuntime from './CompactionRuntime.js'
 import * as CompactionTask from '../CompactionTask.js'
 import * as CompactionStatus from '../CompactionStatus.js'
 import * as Task from '../Task.js'
+import * as ObservationRuntime from './ObservationRuntime.js'
 
 const rootOptions = { ownership: { _tag: 'ownerless' } } as const
 const runKind = 'harness.run'
@@ -693,6 +694,8 @@ export const make = Effect.fnUntraced(function* <
           open: (access, _lease, mode) =>
             ConversationInvocation.make(access, mode, subagentDefinition, {
               backend: () => backend,
+              attachObservation: (tx, id, scope, options) =>
+                ObservationRuntime.attachObservation(session, tx, id, scope, options),
               submit: (tx, id, draft) =>
                 protect(
                   'conversation.submit',
@@ -851,6 +854,7 @@ export const make = Effect.fnUntraced(function* <
         return record.id
       })
       const backend: HarnessBackendService = {
+        observations: ObservationRuntime.make(session),
         compact: (conversationId, input = {}) =>
           protect(
             'conversation.compact',

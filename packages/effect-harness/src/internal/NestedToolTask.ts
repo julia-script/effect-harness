@@ -13,6 +13,7 @@ import * as Usage from '../Usage.js'
 import type * as StorageFormat from '../StorageFormat.js'
 import * as Round from './ToolRound.js'
 import * as Nested from './NestedInvocation.js'
+import * as ObservationState from './NestedObservationState.js'
 import * as ToolTask from './ToolTask.js'
 
 export const contract = {
@@ -109,6 +110,7 @@ export const make = (
         Nested.target(input.parentTaskId, execution.taskId),
         { receipt },
       )
+      yield* ObservationState.retain(tx, execution.conversationId, receipt)
       yield* execution.progress(tx, contract, { status: 'completing', outcome: taskOutcome })
     })
     return {

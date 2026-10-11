@@ -1,4 +1,5 @@
 import type * as Usage from './Usage.js'
+import type * as Observation from './Observation.js'
 /** Data-only boundary implemented by a local runtime or a transport adapter. */
 import * as Context from 'effect/Context'
 import type * as Effect from 'effect/Effect'
@@ -48,6 +49,7 @@ export const WatchSchema = Schema.Struct({
 export type Watch = typeof WatchSchema.Type
 
 export interface HarnessBackendService {
+  readonly observations?: Observation.Capabilities
   /** Native adapters validate caller authority before preparing a reset payload. */
   readonly reset?: (
     conversationId: Record.ConversationId,

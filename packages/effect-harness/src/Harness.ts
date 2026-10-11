@@ -1,4 +1,5 @@
 import type * as Usage from './Usage.js'
+import type * as Observation from './Observation.js'
 /** Application client. Its backend can live in this process or behind a transport. */
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -21,6 +22,7 @@ import type * as Model from './Model.js'
 export { CreateOptionsSchema, type CreateOptions } from './HarnessBackend.js'
 export { HarnessError } from './HarnessError.js'
 export interface HarnessService {
+  readonly observations?: Observation.Capabilities
   /** Current own-conversation or whole-session accounting; inherited fork work is counted once. */
   readonly usage: (
     conversationId?: Record.ConversationId,
@@ -48,7 +50,9 @@ export interface HarnessService {
 export class Harness extends Context.Service<Harness, HarnessService>()('effect-harness/Harness') {}
 export const make = Effect.gen(function* () {
   const backend = yield* HarnessBackend
+  const observations = backend.observations
   return Harness.of({
+    ...(observations === undefined ? {} : { observations }),
     usage: (id) =>
       backend.usage === undefined
         ? Effect.fail(
