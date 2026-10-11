@@ -20,6 +20,8 @@ import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as NativeTool from 'effect/ai/Tool'
 import * as NativeToolkit from 'effect/ai/Toolkit'
 import type * as Record from '../Record.js'
+import * as Task from '../Task.js'
+import * as ToolProgress from '../ToolProgress.js'
 import type * as Agent from '../Agent.js'
 import type * as Execution from '../Execution.js'
 import { ExecutionError, type Failure } from '../ExecutionError.js'
@@ -54,7 +56,7 @@ import { StreamPublicationFailure } from './StreamPublicationFailure.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
 import { protect, absent } from './HarnessFailure.js'
 import * as Round from './ToolRound.js'
-import type * as ToolTask from './ToolTask.js'
+import * as ToolTask from './ToolTask.js'
 import * as ToolControl from '../ToolControl.js'
 import * as OutputRetention from '../OutputRetention.js'
 import * as ProgressPolicy from '../ProgressPolicy.js'
@@ -122,10 +124,9 @@ export interface Services {
   ) => Effect.Effect<void, import('../TaskError.js').Failure>
   readonly complete: (
     tx: Transaction.Transaction,
-    outcome: import('../Record.js').TaskOutcome & {
-      readonly status: 'completed'
-      readonly result: Record.EntryId
-    },
+    outcome:
+      | { readonly status: 'completed'; readonly result: Record.EntryId }
+      | { readonly status: 'aborted'; readonly reason: typeof ToolTask.unsafeSubagentRecovery },
   ) => Effect.Effect<void, import('../TaskError.js').Failure>
   readonly invocationActive: () => boolean
 }
@@ -220,7 +221,7 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
     if (state._tag === 'toolRound') {
       const waiting = state
       const execution = yield* TaskExecution
-      yield* execution.outcomes(waiting.children)
+      const outcomes = yield* execution.outcomes(waiting.children)
       const round = yield* write((tx) => Round.read(tx, task.conversationId, waiting.roundKey))
       const admitted = round.slots.flatMap((slot) =>
         slot.taskId === undefined ? [] : [slot.taskId],
@@ -232,6 +233,95 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         return yield* Round.invalid('The parent wait does not cover every admitted tool child')
       if (round.ownerTaskId !== task.id || round.assistant !== waiting.assistant || round.applied)
         return yield* Round.invalid('The completed tool round does not match its run checkpoint')
+      if (
+        outcomes.some(
+          (outcome) =>
+            outcome.status === 'aborted' && outcome.reason === ToolTask.unsafeSubagentRecovery,
+        )
+      ) {
+        yield* write((tx, currentTask) =>
+          Effect.gen(function* () {
+            const current = yield* Round.read(tx, task.conversationId, waiting.roundKey)
+            if (
+              !Schema.toEquivalence(Run.RunStateSchema)(
+                yield* Run.decode(currentTask.state.checkpoint),
+                waiting,
+              ) ||
+              !Schema.toEquivalence(Round.RoundSchema)(current, round)
+            )
+              return yield* Round.invalid('The abandoned tool round changed during settlement')
+            for (const [index, slot] of current.slots.entries()) {
+              if (slot.taskId === undefined) continue
+              const child = yield* Transaction.task(tx, slot.taskId)
+              const outcome = outcomes[waiting.children.indexOf(slot.taskId)]
+              if (
+                Option.isNone(child) ||
+                child.value.kind !== ToolTask.contract.kind ||
+                child.value.version !== ToolTask.contract.version ||
+                child.value.background ||
+                child.value.state.status !== 'terminal' ||
+                child.value.state.outcome === undefined ||
+                outcome === undefined ||
+                !Schema.toEquivalence(Schema.Json)(child.value.state.outcome, outcome)
+              )
+                return yield* Round.invalid(
+                  'The abandoned round has no authoritative terminal child',
+                )
+              const input = yield* Task.decode(Round.InputSchema, child.value.input)
+              if (input.index !== index || input.roundKey !== waiting.roundKey)
+                return yield* Round.invalid('The abandoned child belongs to a different round')
+              yield* Round.slot(tx, task.conversationId, slot.taskId, input)
+              if (
+                outcome?.status !== 'aborted' ||
+                outcome.reason !== ToolTask.unsafeSubagentRecovery
+              )
+                continue
+              const progress = yield* Transaction.snapshot(
+                tx,
+                ToolProgress.document,
+                Round.target(task.conversationId, Round.progressKey(slot.taskId)),
+              )
+              const receipts = (yield* Usage.receipts(tx, task.conversationId)).filter(
+                (receipt) =>
+                  receipt.identity._tag === 'toolCall' &&
+                  receipt.identity.taskId === slot.taskId &&
+                  receipt.identity.callId === slot.call.id &&
+                  Option.isSome(progress) &&
+                  receipt.identity.attempt === progress.value.value.attempt,
+              )
+              if (
+                input.replay !== 'unsafe' ||
+                slot.result !== undefined ||
+                Option.isNone(progress) ||
+                progress.value.value.callId !== Round.progressKey(slot.taskId) ||
+                progress.value.value.status !== 'interrupted' ||
+                !Schema.toEquivalence(OutputRetention.Policy)(
+                  progress.value.value.retention,
+                  slot.retention,
+                ) ||
+                receipts.length !== 1 ||
+                receipts[0]?.outcome._tag !== 'interrupted' ||
+                receipts[0].outcome.reason !== ToolTask.unsafeSubagentRecovery ||
+                receipts[0].usage !== undefined ||
+                receipts[0].linkedEntryId !== undefined
+              )
+                return yield* Round.invalid(
+                  'The abandoned child has no matching interrupted accounting',
+                )
+            }
+            yield* clearLive(tx)
+            yield* Inbox.settle(tx, task.conversationId, task.id, waiting.submissionId, {
+              reason: 'aborted',
+            })
+            yield* services.complete(tx, {
+              status: 'aborted',
+              reason: ToolTask.unsafeSubagentRecovery,
+            })
+          }),
+        )
+        yield* notify
+        return
+      }
       const nextIndex = round.slots.findIndex((slot) => slot.result === undefined)
       if (nextIndex >= 0) {
         if (round.mode !== 'sequential' || round.slots[nextIndex]?.taskId !== undefined)

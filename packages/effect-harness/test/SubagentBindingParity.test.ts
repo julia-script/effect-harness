@@ -121,8 +121,8 @@ describe('actual tool subagent binding', () => {
                 const provider = yield* ScriptedStream.make({
                   generateText: ({ prompt }) =>
                     Effect.sync(() => {
-                      assert.isTrue(warm, 'Cold consumption must not repeat provider work')
                       requests++
+                      assert.isTrue(warm, 'Cold consumption must not repeat provider work')
                       const text = prompt.content
                         .flatMap((message) =>
                           message.role === 'user'

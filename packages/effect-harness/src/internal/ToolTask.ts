@@ -23,6 +23,7 @@ import * as ToolProgress from '../ToolProgress.js'
 import * as ToolResult from '../ToolResult.js'
 import * as Transaction from '../Transaction.js'
 import * as Usage from '../Usage.js'
+import * as Subagent from '../Subagent.js'
 import * as Stream from 'effect/Stream'
 import * as Round from './ToolRound.js'
 import * as Progress from './ToolProgress.js'
@@ -858,6 +859,8 @@ const modelSink = (execution: TaskExecutionAccess.Access, input: Round.Input): S
 
 const disposals = new WeakMap<Task.Any, () => void>()
 export const clear = (definition: Task.Any) => disposals.get(definition)?.()
+/** Native cold disposition; the parent also verifies the child, slot and accounting facts. */
+export const unsafeSubagentRecovery = 'unsafe-subagent-recovery'
 export const make = (registry: Registry.Service) => {
   const runner = pipeline(registry)
   const execute = Effect.fnUntraced(function* ({
@@ -865,6 +868,77 @@ export const make = (registry: Registry.Service) => {
     checkpoint,
   }: Task.PhaseInput<typeof Round.InputSchema, typeof Round.CheckpointSchema, 'execute'>) {
     const execution = yield* TaskExecution
+    if (
+      input.replay === 'unsafe' &&
+      checkpoint.started &&
+      checkpoint.observedResult === undefined
+    ) {
+      const admissions = yield* execution.snapshot(ConversationInvocation.index, {
+        scope: { _tag: 'task', taskId: execution.taskId },
+      })
+      if (Option.isSome(admissions) && Object.keys(admissions.value.value.slots).length > 0) {
+        for (const saved of Object.values(admissions.value.value.slots))
+          yield* Subagent.read(execution, saved.handle)
+        const assertCold = Effect.fnUntraced(function* (tx: Transaction.Transaction) {
+          const { found } = yield* Round.slot(tx, execution.conversationId, execution.taskId, input)
+          const current = yield* Transaction.task(tx, execution.taskId)
+          if (
+            checkpoint.acceptedCall === undefined ||
+            checkpoint.acceptedCall.id !== input.call.id ||
+            checkpoint.acceptedCall.name !== input.call.name ||
+            found.result !== undefined ||
+            Option.isNone(current) ||
+            current.value.kind !== contract.kind ||
+            current.value.version !== contract.version ||
+            current.value.background ||
+            current.value.state.status !== 'running' ||
+            !Schema.toEquivalence(Round.InputSchema)(
+              yield* Task.decode(Round.InputSchema, current.value.input),
+              input,
+            ) ||
+            !Schema.toEquivalence(Round.CheckpointSchema)(
+              yield* Task.decode(Round.CheckpointSchema, current.value.state.checkpoint),
+              checkpoint,
+            )
+          )
+            return yield* Round.invalid('The abandoned subagent invocation has changed')
+        })
+        yield* execution.commit(assertCold)
+        const writer = yield* Progress.make<import('../TaskError.js').Failure, never>(
+          { commit: execution.commit },
+          {
+            conversationId: execution.conversationId,
+            callId: Round.progressKey(execution.taskId),
+            attempt: checkpoint.attempt,
+            retention: input.retention,
+            policy: input.progress,
+            recovery: 'interrupt',
+          },
+          undefined,
+          { persistRunning: true },
+        )
+        yield* writer.settle('interrupted', (tx) =>
+          Effect.gen(function* () {
+            yield* assertCold(tx)
+            yield* Usage.record(tx, {
+              conversationId: execution.conversationId,
+              identity: {
+                _tag: 'toolCall',
+                taskId: execution.taskId,
+                callId: input.call.id,
+                attempt: checkpoint.attempt,
+              },
+              outcome: { _tag: 'interrupted', reason: unsafeSubagentRecovery },
+            })
+            yield* execution.progress(tx, contract, {
+              status: 'completing',
+              outcome: { status: 'aborted', reason: unsafeSubagentRecovery },
+            })
+          }),
+        )
+        return
+      }
+    }
     return yield* runner.execute(modelInput(input), checkpoint, modelSink(execution, input))
   })
   const abort = Effect.fnUntraced(function* ({
