@@ -84,6 +84,14 @@ export const RunStateSchema = Schema.Union([
     index: Schema.Natural,
     results: Schema.Array(ToolResult.ResultSchema),
   }),
+  Schema.TaggedStruct('toolRound', {
+    phase: Schema.tag('toolRound'),
+    ...running,
+    preparation: PreparedRequest.SnapshotSchema,
+    roundKey: Schema.NonEmptyString,
+    assistant: Record.EntryId,
+    children: Schema.Array(Record.TaskId),
+  }),
 ])
 export type RunState = typeof RunStateSchema.Type
 const safeHeaders = (headers: typeof AiError.HttpRequestDetails.Type.headers) =>
@@ -196,6 +204,12 @@ export const validPrefix = (state: RunState): boolean => {
     state.preparation.execution !== 'deferred'
   )
     return false
+  if (state._tag === 'toolRound')
+    return (
+      state.roundKey.length > 0 &&
+      state.children.length > 0 &&
+      new Set(state.children).size === state.children.length
+    )
   if (state._tag !== 'tools') return true
   return (
     state.index <= state.calls.length &&

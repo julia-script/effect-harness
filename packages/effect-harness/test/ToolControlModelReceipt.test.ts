@@ -86,7 +86,7 @@ describe('model-call control receipt compatibility', () => {
       ),
   )
   it.effect(
-    'final controls survive native JSONL reopen and stay out of provider content; activation remains deferred',
+    'activated terminate and handoff survive native JSONL reopen and stay out of provider content',
     () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -135,13 +135,32 @@ describe('model-call control receipt compatibility', () => {
             draft: { type: 'input', content: 'go' },
           })
           assert.strictEqual((yield* runtime.backend.wait(submission.id)).status, 'done')
-          assert.strictEqual(requests, 2)
-          assert.strictEqual(modelResult, 'public')
-          assert.notInclude(JSON.stringify(modelResult), 'private')
+          assert.strictEqual(requests, 1)
           const before = yield* Session.scanEntries(runtime.session, { conversationId: root }).pipe(
             Stream.runCollect,
           )
           const receipt = before.find((entry) => entry.kind === 'tool.result')
+          const messages = yield* Schema.decodeUnknownEffect(
+            Schema.Array(Schema.toCodecJson(Prompt.Message)),
+          )(receipt?.model)
+          assert.deepStrictEqual(messages, [
+            Prompt.toolMessage({
+              content: [
+                Prompt.toolResultPart({
+                  id: 'one',
+                  name: 'work',
+                  providerExecuted: false,
+                  isFailure: false,
+                  result: 'public',
+                }),
+              ],
+            }),
+          ])
+          modelResult = messages
+            .flatMap((message) => (message.role === 'tool' ? message.content : []))
+            .find((part) => part.type === 'tool-result')?.result
+          assert.strictEqual(modelResult, 'public')
+          assert.notInclude(JSON.stringify(modelResult), 'private')
           const encoded = Schema.toCodecJson(ToolResult.ResultSchema)
           assert.deepStrictEqual(
             (yield* Schema.decodeUnknownEffect(encoded)(receipt?.data)).control,

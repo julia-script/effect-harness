@@ -3,6 +3,7 @@ import * as Clock from 'effect/Clock'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
@@ -22,9 +23,23 @@ const error = (
 const sameRetention = (a: OutputRetention.Policy, b: OutputRetention.Policy): boolean =>
   a.retain === b.retain && a.maxBytes === b.maxBytes && a.maxLines === b.maxLines
 
+const cancellation = new WeakMap<
+  object,
+  () => Effect.Effect<ToolProgress.Snapshot, ToolProgress.Failure>
+>()
+/** Native task cleanup only: detach accepted local state without publishing or acknowledging it. */
+export const freezeCancellation = (writer: object) =>
+  Effect.suspend(() => {
+    const freeze = cancellation.get(writer)
+    return freeze === undefined
+      ? Effect.fail(error('closed', 'The writer has no cancellation capability.'))
+      : freeze()
+  })
+
 export const make = Effect.fnUntraced(function* <E, R>(
   gate: ToolProgress.Gate<E, R>,
   options: ToolProgress.Options,
+  cancelled?: ToolProgress.Snapshot,
 ) {
   const { callId, attempt } = options
   const policy = yield* Schema.decodeEffect(ProgressPolicy.Policy)(
@@ -115,16 +130,27 @@ export const make = Effect.fnUntraced(function* <E, R>(
       return old
     }),
   )
-  // Seed only committed decoded text. Incomplete code points are ephemeral until end/settlement.
-  yield* OutputRetention.append(buffer, initial.output.text)
-  buffer.totalBytes = initial.output.totalBytes
-  buffer.endsWithNewline = initial.endsWithNewline
+  const accepted =
+    cancelled === undefined ? initial : yield* Value.copy(ToolProgress.Snapshot, cancelled)
+  if (
+    accepted.callId !== callId ||
+    accepted.attempt !== attempt ||
+    !sameRetention(accepted.retention, initial.retention) ||
+    accepted.revision < initial.revision ||
+    accepted.output.totalBytes < initial.output.totalBytes ||
+    accepted.output.totalLines < initial.output.totalLines
+  )
+    return yield* error('conflict', 'Cancellation state does not match this durable invocation.')
+  // The private abort handoff seeds accepted state locally; only settle may publish it.
+  yield* OutputRetention.append(buffer, accepted.output.text)
+  buffer.totalBytes = accepted.output.totalBytes
+  buffer.endsWithNewline = accepted.endsWithNewline
   buffer.newlines =
-    initial.output.totalLines - (buffer.totalBytes > 0 && !buffer.endsWithNewline ? 1 : 0)
-  let revision = initial.revision
+    accepted.output.totalLines - (buffer.totalBytes > 0 && !buffer.endsWithNewline ? 1 : 0)
+  let revision = accepted.revision
   let committedRevision = initial.revision
-  let details = initial.details
-  let diagnostics = [...initial.diagnostics]
+  let details = accepted.details
+  let diagnostics = [...accepted.diagnostics]
   let status = initial.status
   let mode: 'running' | 'stopping' | 'closed' = 'running'
   let failure: Cause.Cause<ToolProgress.Failure<E>> | undefined
@@ -198,7 +224,12 @@ export const make = Effect.fnUntraced(function* <E, R>(
       return snapshot
     })
   const worker = Effect.gen(function* () {
-    while (mode === 'running' && failure === undefined && status === 'running') {
+    while (
+      cancelled === undefined &&
+      mode === 'running' &&
+      failure === undefined &&
+      status === 'running'
+    ) {
       if (revision === committedRevision) {
         yield* Deferred.await(wake)
         wake = Deferred.makeUnsafe<void>()
@@ -238,7 +269,7 @@ export const make = Effect.fnUntraced(function* <E, R>(
       )
     }
   }).pipe(Effect.catchCause(poison))
-  yield* worker.pipe(Effect.forkScoped)
+  const workerFiber = yield* worker.pipe(Effect.forkScoped)
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
       mode = 'closed'
@@ -361,6 +392,24 @@ export const make = Effect.fnUntraced(function* <E, R>(
         }),
       ),
   }
+  let frozen: ToolProgress.Snapshot | undefined
+  cancellation.set(writer, () =>
+    Effect.uninterruptible(
+      Effect.gen(function* () {
+        if (frozen !== undefined) return yield* Value.copy(ToolProgress.Snapshot, frozen)
+        mode = 'closed'
+        yield* Deferred.succeed(stop, undefined)
+        yield* Deferred.succeed(wake, undefined)
+        yield* Fiber.interrupt(workerFiber)
+        yield* poison(
+          Cause.fail(error('closed', 'The accepted report was cancelled before acknowledgement.')),
+        )
+        yield* OutputRetention.finish(buffer)
+        frozen = yield* Value.copy(ToolProgress.Snapshot, current())
+        return yield* Value.copy(ToolProgress.Snapshot, frozen)
+      }),
+    ),
+  )
   return writer
 })
 

@@ -34,9 +34,11 @@ import { TaskExecution } from 'effect-harness/TaskExecution'
 import * as TaskScheduler from 'effect-harness/TaskScheduler'
 import * as Tool from 'effect-harness/Tool'
 import { ToolExecution } from 'effect-harness/ToolExecution'
+import * as ToolProgress from 'effect-harness/ToolProgress'
 import * as Toolkit from 'effect-harness/Toolkit'
 import * as Transaction from 'effect-harness/Transaction'
 import * as Run from '../src/internal/RunState.js'
+import * as Round from '../src/internal/ToolRound.js'
 
 const root = Record.ROOT_CONVERSATION_ID
 const finish = (reason: Response.FinishReason): Response.FinishPartEncoded => ({
@@ -523,12 +525,12 @@ describe('native legacy run adoption', () => {
           yield* Deferred.await(customEntered)
           const before = yield* Session.scanTasks(first.session).pipe(Stream.runCollect)
           const run = before.find((record) => record.kind === 'harness.run')!
-          assert.strictEqual((yield* Run.decode(run.state.checkpoint)).phase, 'tools')
+          assert.strictEqual((yield* Run.decode(run.state.checkpoint)).phase, 'toolRound')
           yield* Scope.close(firstScope, Exit.void)
           assert.strictEqual(
             (yield* Context.get(memory, Storage.Storage).task(run.id)).pipe(Option.getOrThrow).state
               .status,
-            'running',
+            'waiting',
           )
           assert.strictEqual(
             (yield* retained!.output('late').pipe(Effect.flip))._tag,
@@ -556,9 +558,13 @@ describe('native legacy run adoption', () => {
               )
               assert.strictEqual(toolCalls, 2)
               assert.strictEqual(customCalls, 2)
+              const tasks = yield* Session.scanTasks(next.session).pipe(Stream.runCollect)
+              assert.strictEqual(tasks.length, 3)
+              const child = tasks.find((task) => task.kind === 'harness.tool')!
+              assert.strictEqual(child.owner, run.id)
               assert.strictEqual(
-                (yield* Session.scanTasks(next.session).pipe(Stream.runCollect)).length,
-                2,
+                (yield* Task.decode(Round.InputSchema, child.input)).call.id,
+                'native-live',
               )
             }),
           ).pipe(Effect.provideContext(memory), Effect.provide([model, handlers]))
@@ -577,6 +583,7 @@ describe('native legacy run adoption', () => {
               parameters: Schema.Struct({}),
               success: Schema.String,
               replay: 'safe',
+              executionMode: 'parallel',
             }).addDependency(Owner),
           )
           const second = Toolkit.make(
@@ -584,9 +591,11 @@ describe('native legacy run adoption', () => {
               parameters: Schema.Struct({}),
               success: Schema.String,
               replay: 'safe',
+              executionMode: 'parallel',
             }).addDependency(Owner),
           )
           const entered = yield* Deferred.make<void>()
+          const secondEntered = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
           const seen: string[] = []
           let released = 0
@@ -612,7 +621,14 @@ describe('native legacy run adoption', () => {
             .pipe(Layer.provideMerge(own('A')))
           const secondLayer = second
             .toLayer({
-              second: () => Owner.pipe(Effect.tap((value) => Effect.sync(() => seen.push(value)))),
+              second: () =>
+                Effect.gen(function* () {
+                  const owner = yield* Owner
+                  seen.push(owner)
+                  yield* Deferred.succeed(secondEntered, undefined)
+                  yield* Deferred.await(release)
+                  return owner
+                }),
             })
             .pipe(Layer.provideMerge(own('B')))
           const registry = yield* Registry.make
@@ -630,6 +646,7 @@ describe('native legacy run adoption', () => {
             draft: { type: 'input', content: 'both' },
           })
           yield* Deferred.await(entered)
+          yield* Deferred.await(secondEntered)
           yield* registry.uninstall('second')
           assert.strictEqual(released, 0)
           yield* Deferred.succeed(release, undefined)
@@ -964,6 +981,7 @@ for (const reused of [false, true]) {
             let rejectedCount = 0
             let readCount = 0
             let settlementCount = 0
+            let progressId: Record.DocumentId | undefined
             const storage = Storage.Storage.of({
               ...real,
               task: (...args) =>
@@ -978,9 +996,16 @@ for (const reused of [false, true]) {
               commit: (input) =>
                 Effect.suspend(() => {
                   const writes = Array.from(input)
+                  for (const write of writes) {
+                    if (
+                      write._tag === 'document.create' &&
+                      write.record.kind === ToolProgress.document.definition.kind
+                    )
+                      progressId = write.record.id
+                  }
                   if (
                     writes.some(
-                      (write) => write._tag === 'entry' && write.value.kind === 'tool.output',
+                      (write) => write._tag === 'document.change' && write.id === progressId,
                     )
                   ) {
                     rejectedCount++
@@ -992,19 +1017,7 @@ for (const reused of [false, true]) {
                     )
                   )
                     settlementCount++
-                  return real.commit(writes).pipe(
-                    Effect.tap(() =>
-                      Effect.sync(() => {
-                        if (
-                          boundary === 'read' &&
-                          writes.some(
-                            (write) => write._tag === 'entry' && write.value.kind === 'tool.result',
-                          )
-                        )
-                          nextRead = true
-                      }),
-                    ),
-                  )
+                  return real.commit(writes)
                 }),
             })
             const toolkit = Toolkit.make(
@@ -1014,9 +1027,16 @@ for (const reused of [false, true]) {
               probe: () =>
                 Effect.gen(function* () {
                   const access = yield* ToolExecution
-                  const output = yield* access.output('reject me').pipe(Effect.result)
+                  yield* access.output('reject me')
+                  const output = yield* access
+                    .details({ awaiting: 'durable output' })
+                    .pipe(Effect.result)
                   assert.strictEqual(output._tag, 'Failure')
                   if (output._tag === 'Failure') assert.strictEqual(output.failure, rejected)
+                  if (boundary === 'read') {
+                    nextRead = true
+                    return yield* storage.task(access.taskId).pipe(Effect.as('unreachable'))
+                  }
                   if (boundary === 'handler') return yield* later
                   if (boundary === 'transaction')
                     return yield* access.commit(() => Effect.fail(later))
@@ -1068,19 +1088,28 @@ for (const reused of [false, true]) {
             assert.strictEqual(Option.getOrThrow(yield* real.submission(job.id)).status, 'placed')
             const tasks = yield* Stream.runCollect(real.scanTasks({ kind: 'harness.run' }))
             assert.strictEqual(tasks.length, 1)
-            assert.strictEqual(tasks[0]?.state.status, 'running')
+            assert.strictEqual(tasks[0]?.state.status, 'waiting')
             const state = yield* Run.decode(tasks[0]!.state.checkpoint)
-            assert.strictEqual(state._tag, 'tools')
-            if (state._tag === 'tools') {
-              assert.strictEqual(state.index, boundary === 'read' ? 1 : 0)
-              assert.strictEqual(state.calls[0]?.started, true)
-            }
+            assert.strictEqual(state._tag, 'toolRound')
+            if (state._tag !== 'toolRound') return
+            const children = yield* Stream.runCollect(real.scanTasks({ kind: 'harness.tool' }))
+            assert.strictEqual(children.length, 1)
+            assert.strictEqual(children[0]?.owner, tasks[0]?.id)
+            const childState = yield* Task.decode(
+              Round.CheckpointSchema,
+              children[0]!.state.checkpoint,
+            )
+            assert.strictEqual(childState.started, true)
+            assert.strictEqual(childState.attempt, 0)
+            const round = yield* Session.commit(runtime.session, (tx) =>
+              Round.read(tx, root, state.roundKey),
+            )
+            assert.strictEqual(round.slots[0]?.taskId, children[0]?.id)
+            assert.isUndefined(round.slots[0]?.result)
+            assert.isUndefined(round.slots[0]?.receipt)
             const entries = yield* Stream.runCollect(real.scanEntries({ conversationId: root }))
             assert.strictEqual(entries.filter((entry) => entry.kind === 'tool.output').length, 0)
-            assert.strictEqual(
-              entries.filter((entry) => entry.kind === 'tool.result').length,
-              boundary === 'read' ? 1 : 0,
-            )
+            assert.strictEqual(entries.filter((entry) => entry.kind === 'tool.result').length, 0)
           }),
         ).pipe(Effect.provide(Storage.layerMemory)),
     )

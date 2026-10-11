@@ -10,7 +10,9 @@ import type * as ToolResult from './ToolResult.js'
 export class ToolExecution extends Context.Service<
   ToolExecution,
   Execution.Access & {
+    /** Durable per-call child identity in native tool rounds; legacy calls use their run ID. */
     readonly taskId: Record.TaskId
+    /** Original provider-visible ID; repeated IDs in later rounds remain distinct children. */
     readonly callId: string
     /** Request-pinned selected model policy; absent for direct toolkit execution. */
     readonly imageReadPolicy?: import('./coding/ImageReadPolicy.js').Policy | undefined

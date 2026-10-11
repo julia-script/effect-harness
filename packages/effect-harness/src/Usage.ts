@@ -107,6 +107,14 @@ export const ReceiptIdentitySchema = Schema.Union([
     callId: NestedCallId,
     attempt: AttemptId,
   }),
+  Schema.TaggedStruct('toolCall', {
+    // Keep the same durable task brand without introducing the Record initialization cycle.
+    taskId: Schema.Int.check(
+      Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+    ).pipe(Schema.brand('@effect-harness/durable/Record/TaskId')),
+    callId: Schema.NonEmptyString,
+    attempt: AttemptId,
+  }),
 ])
 export type ReceiptIdentity = typeof ReceiptIdentitySchema.Type
 /** Terminal accounting observation, including a failed known charge without a transcript entry. */
@@ -136,6 +144,8 @@ export interface Recorded {
  * changed identity payloads conflict. A linked entry must be local and agree on usage.
  * Receipts use conversation/latest/fork-initial documents and survive task retirement.
  * Request, nested-call and compaction producers must explicitly call this at settlement.
+ * Tool-call receipts reject unless the Session's matching StorageFormat capability confirms
+ * container/minimum-reader protection 9/9. This check never activates a lower-format store.
  */
 export const record = (
   tx: Transaction.Transaction,
@@ -149,6 +159,7 @@ export const record = (
  * when caught by the outer callback. Replay returns the immutable recorded outcome.
  * Use only transaction writes in change: external side effects cannot be rolled back.
  * The callback capability is revoked afterwards; Session operations would reenter its lock.
+ * Tool-call receipts enforce the same reader-9 protection as record before change runs.
  */
 export const settle = <E, R>(
   tx: Transaction.Transaction,

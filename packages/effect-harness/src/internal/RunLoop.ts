@@ -52,6 +52,11 @@ import { NativeWriteFailure } from './NativeWriteFailure.js'
 import { StreamPublicationFailure } from './StreamPublicationFailure.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
 import { protect, absent } from './HarnessFailure.js'
+import * as Round from './ToolRound.js'
+import type * as ToolTask from './ToolTask.js'
+import * as ToolControl from '../ToolControl.js'
+import * as OutputRetention from '../OutputRetention.js'
+import * as ProgressPolicy from '../ProgressPolicy.js'
 
 export interface BoundSection {
   readonly section: PromptSection.Any
@@ -59,6 +64,12 @@ export interface BoundSection {
   readonly registration: string
 }
 export interface Services {
+  readonly toolTask: ReturnType<typeof ToolTask.make>
+  readonly requireToolRoundFormat: Services['requireSubmissionFormat']
+  readonly waitTools: (
+    tx: Transaction.Transaction,
+    checkpoint: Extract<Run.RunState, { _tag: 'toolRound' }>,
+  ) => Effect.Effect<void, import('../TaskError.js').Failure>
   readonly compaction: CompactionRuntime.Services
   readonly waitCompaction: (
     tx: Transaction.Transaction,
@@ -205,6 +216,138 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
   const nextAttempt = (attempt: number) => Schema.decodeEffect(Usage.AttemptId)(attempt + 1)
   while (true) {
     yield* checkOpen
+    if (state._tag === 'toolRound') {
+      const waiting = state
+      const execution = yield* TaskExecution
+      yield* execution.outcomes(waiting.children)
+      const round = yield* write((tx) => Round.read(tx, task.conversationId, waiting.roundKey))
+      const admitted = round.slots.flatMap((slot) =>
+        slot.taskId === undefined ? [] : [slot.taskId],
+      )
+      if (
+        admitted.length !== waiting.children.length ||
+        admitted.some((id, index) => id !== waiting.children[index])
+      )
+        return yield* Round.invalid('The parent wait does not cover every admitted tool child')
+      if (round.ownerTaskId !== task.id || round.assistant !== waiting.assistant || round.applied)
+        return yield* Round.invalid('The completed tool round does not match its run checkpoint')
+      const nextIndex = round.slots.findIndex((slot) => slot.result === undefined)
+      if (nextIndex >= 0) {
+        if (round.mode !== 'sequential' || round.slots[nextIndex]?.taskId !== undefined)
+          return yield* Round.invalid('A terminal tool child did not publish its result slot')
+        yield* write((tx) =>
+          Effect.gen(function* () {
+            const current = yield* Round.read(tx, task.conversationId, waiting.roundKey)
+            const saved = current.slots[nextIndex]
+            if (saved === undefined || saved.taskId !== undefined || current.applied)
+              return yield* Round.invalid('Sequential child admission changed unexpectedly')
+            const child = yield* execution.createChild(tx, services.toolTask, {
+              ownerTaskId: task.id,
+              roundKey: waiting.roundKey,
+              index: nextIndex,
+              call: saved.call,
+              replay: saved.replay,
+              preparation: current.preparation,
+              retention: saved.retention,
+              progress: saved.progress,
+            })
+            yield* Round.write(tx, task.conversationId, waiting.roundKey, {
+              ...current,
+              slots: current.slots.map((slot, index) =>
+                index === nextIndex ? { ...slot, taskId: child.id } : slot,
+              ),
+            })
+            yield* services.waitTools(tx, { ...waiting, children: [...waiting.children, child.id] })
+          }),
+        )
+        return
+      }
+      const fatal = round.slots.filter((slot) => slot.fatal === true)
+      if (fatal.length > 0)
+        return yield* new HarnessError({
+          reason: 'failed',
+          operation: 'tool.round',
+          message: fatal
+            .flatMap((slot) => slot.result!.diagnostics.map((diagnostic) => diagnostic.message))
+            .join('\n'),
+        })
+      const results = round.slots.map((slot) => slot.result!)
+      const receipts = round.slots.map((slot) => slot.receipt!)
+      const { modelTools: _modelTools, ...allAgent } = round.preparation.agent
+      const availableControls = Inventory.inventory(lease.snapshot, 'model', {
+        agent: allAgent,
+      }).map((item) => item.declaration.name)
+      const controls = yield* ToolControl.reduce(
+        round.slots.map((slot) => slot.call.id),
+        receipts,
+        availableControls,
+      )
+      yield* runHooks(task.conversationId, waiting.agent, { _tag: 'afterTools', results }, task.id)
+      const next = yield* write((tx, currentTask) =>
+        Effect.gen(function* () {
+          const current = yield* Round.read(tx, task.conversationId, waiting.roundKey)
+          if (current.applied || current.slots.some((slot) => slot.result === undefined))
+            return yield* Round.invalid('The control barrier is already applied or incomplete')
+          if (controls.addTools.length > 0) {
+            const saved = yield* Transaction.ensureDocument(
+              tx,
+              agentDocument,
+              agentTarget(task.conversationId),
+            )
+            const agent = { ...defaultAgent, ...saved.value }
+            if (agent.modelTools !== undefined)
+              yield* Transaction.setDocument(tx, agentDocument, agentTarget(task.conversationId), {
+                ...saved.value,
+                modelTools: [...new Set([...agent.modelTools, ...controls.addTools])],
+              })
+          }
+          if (controls.handoff !== undefined)
+            yield* Transaction.appendEntry(tx, task.conversationId, {
+              kind: 'reset',
+              head: 'self',
+              model: yield* Schema.encodeEffect(Run.Messages)([
+                Prompt.userMessage({ content: [Prompt.textPart({ text: controls.handoff })] }),
+              ]),
+            })
+          const final = controls.terminate || controls.handoff !== undefined
+          const selected = yield* Inbox.boundary(tx, task.conversationId, {
+            boundary: final ? 'final' : 'postTools',
+            taskId: task.id,
+            ...(final ? { outcome: { answer: waiting.assistant } } : {}),
+          }).pipe(Effect.provideContext(context))
+          yield* Round.write(tx, task.conversationId, waiting.roundKey, {
+            ...current,
+            applied: true,
+          })
+          if (selected.boundary === 'final') {
+            const reset = selected.placed.findLast((item) => item._tag === 'WriteDone')
+            let answer: Record.EntryId | undefined
+            if (final) answer = waiting.assistant
+            else if (reset?._tag === 'WriteDone') answer = reset.entry
+            if (answer === undefined)
+              return yield* absent('run.reset', 'Reset placement is missing')
+            yield* services.complete(tx, { status: 'completed', result: answer })
+            return undefined
+          }
+          const next: Run.RunState = {
+            _tag: 'request',
+            phase: 'request',
+            submissionId: waiting.submissionId,
+            agent: waiting.agent,
+            ...(waiting.ordinal === undefined ? {} : { ordinal: waiting.ordinal }),
+            prompt: (yield* Inbox.project(tx, task.conversationId)).prompt,
+          }
+          yield* saveState(tx, currentTask, next)
+          return next
+        }),
+      )
+      if (next === undefined) {
+        yield* notify
+        return
+      }
+      state = next
+      continue
+    }
     if (state._tag === 'compaction') {
       const waiting = state
       const execution = yield* TaskExecution
@@ -1191,38 +1334,81 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
         yield* notify
         return
       }
-      const pending: Run.RunState = {
-        _tag: 'tools',
-        phase: 'tools',
-        submissionId: requesting.submissionId,
-        agent: requesting.agent,
-        ordinal: preparation.ordinal,
-        preparation,
-        prompt: nextPrompt,
-        calls: calls.map((call) => {
-          const tool = available.find((tool) => tool.name === call.name)
-          return {
-            call,
-            replay: tool === undefined ? 'unsafe' : Tool.policy(tool).replay,
-            started: false,
-          }
-        }),
-        index: 0,
-        results: [],
-      }
-      yield* write((tx, current) =>
+      const settings = yield* Settings.getOrDefault.pipe(Effect.provideContext(context))
+      const mode =
+        settings.toolExecution === 'parallel' &&
+        available.every((tool) => Tool.policy(tool).executionMode === 'parallel')
+          ? ('parallel' as const)
+          : ('sequential' as const)
+      const roundKey = `tool-round:${task.id}:${preparation.requestId}`
+      yield* write((tx) =>
         Effect.gen(function* () {
-          yield* appendAssistant(tx, {
+          yield* services.requireToolRoundFormat
+          const assistant = yield* appendAssistant(tx, {
             kind: 'assistant',
             usage,
             model: yield* Schema.encodeEffect(Run.Messages)(responsePrompt.content),
           })
-          yield* saveState(tx, current, pending)
+          const execution = yield* TaskExecution
+          const slots: Round.Slot[] = calls.map((call) => {
+            const tool = available.find((tool) => tool.name === call.name)
+            return {
+              call,
+              replay: tool === undefined ? 'unsafe' : Tool.policy(tool).replay,
+              retention:
+                tool === undefined ? OutputRetention.defaultPolicy : Tool.outputRetention(tool),
+              progress: {
+                ...(tool === undefined ? ProgressPolicy.defaultPolicy : Tool.progress(tool)),
+                minInterval: settings.progress.outputIntervalMs,
+              },
+            }
+          })
+          const children: Record.TaskId[] = []
+          for (let index = 0; index < slots.length; index++) {
+            if (mode === 'sequential' && index > 0) break
+            const slot = slots[index]!
+            const child = yield* execution.createChild(tx, services.toolTask, {
+              ownerTaskId: task.id,
+              roundKey,
+              index,
+              call: slot.call,
+              replay: slot.replay,
+              preparation,
+              retention: slot.retention,
+              progress: slot.progress,
+            })
+            slots[index] = { ...slot, taskId: child.id }
+            children.push(child.id)
+          }
+          yield* Transaction.ensureDocument(
+            tx,
+            Round.document,
+            Round.target(task.conversationId, roundKey),
+          )
+          yield* Round.write(tx, task.conversationId, roundKey, {
+            ownerTaskId: task.id,
+            assistant: assistant.id,
+            mode,
+            preparation,
+            applied: false,
+            slots,
+          })
+          yield* services.waitTools(tx, {
+            _tag: 'toolRound',
+            phase: 'toolRound',
+            submissionId: requesting.submissionId,
+            agent: requesting.agent,
+            ordinal: preparation.ordinal,
+            preparation,
+            prompt: nextPrompt,
+            roundKey,
+            assistant: assistant.id,
+            children,
+          })
         }),
       )
-      state = pending
       observed = undefined
-      continue
+      return
     }
     const toolState = state
     const pending = toolState.calls[toolState.index]

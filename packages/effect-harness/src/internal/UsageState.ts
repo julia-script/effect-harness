@@ -101,9 +101,10 @@ const stage = Effect.fnUntraced(function* (
   const address = target(receipt)
   const found = yield* Runtime.snapshot(state, document, address)
   const old = Option.isSome(found) ? found.value.value.receipt : undefined
+  if (old !== undefined && !same(old, receipt))
+    return yield* conflict('Accounting identity already has a different payload')
+  if (receipt.identity._tag === 'toolCall') yield* state.runtime.checkToolCallFormat
   if (old !== undefined) {
-    if (!same(old, receipt))
-      return yield* conflict('Accounting identity already has a different payload')
     return { receipt: old, inserted: false }
   }
   // The complete payload was validated before creating an empty family member.

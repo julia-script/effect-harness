@@ -38,6 +38,7 @@ import * as Registry from '../Registry.js'
 import type * as RegistryScope from '../RegistryScope.js'
 import * as TaskScheduler from '../TaskScheduler.js'
 import * as RunTask from './RunTask.js'
+import * as ToolTask from './ToolTask.js'
 import * as Transaction from '../Transaction.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
 import { protect, absent } from './HarnessFailure.js'
@@ -323,8 +324,33 @@ export const make = Effect.fnUntraced(function* <
             return yield* dispatchHooks(lease, id, agent, event, taskId)
           }),
         )
+      const toolDefinition = ToolTask.make(registry)
+      yield* registry.install(
+        Registry.withTask(
+          {
+            definition: { id: 'native-runtime-tool', version: 1 },
+            acquire: Effect.succeed({
+              tools: [],
+              tasks: [],
+              hooks: [],
+              sections: [],
+              extensions: [],
+            }),
+          },
+          toolDefinition,
+        ),
+      )
+      yield* Effect.addFinalizer(() =>
+        registry.uninstall('native-runtime-tool').pipe(Effect.ignore),
+      )
+      yield* Effect.addFinalizer(() => Effect.sync(() => ToolTask.clear(toolDefinition)))
       const native = RunTask.make(
         (lease) => ({
+          toolTask: toolDefinition,
+          requireToolRoundFormat: StorageFormat.requireSupportedFormat({
+            formatVersion: 9,
+            minimumReaderVersion: 9,
+          }).pipe(Effect.provideContext(context)),
           session,
           cancellationCleanup,
           requireSubmissionFormat,

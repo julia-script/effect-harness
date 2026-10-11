@@ -36,6 +36,7 @@ import * as Model from '../Model.js'
 import * as Prepared from '../PreparedRequest.js'
 import { ProviderAffinity } from '../ProviderAffinity.js'
 import * as DeferredExecution from './DeferredExecution.js'
+import * as ToolTask from './ToolTask.js'
 
 interface Invocation {
   readonly record: Record.Task
@@ -54,6 +55,7 @@ type BaseServices = Omit<
   | 'complete'
   | 'refresh'
   | 'waitCompaction'
+  | 'waitTools'
 >
 
 export const make = (
@@ -163,6 +165,13 @@ export const make = (
               policy: 'allSettled',
             })
           }),
+        waitTools: (tx, checkpoint) =>
+          execution.progress(tx, definition, {
+            status: 'waiting',
+            checkpoint,
+            on: checkpoint.children,
+            policy: 'allSettled',
+          }),
         invocationActive: () => active,
       },
       record,
@@ -191,6 +200,7 @@ export const make = (
       'deferred-start': phase,
       deferred: phase,
       tools: phase,
+      toolRound: phase,
       compaction: phase,
     },
   })
@@ -208,6 +218,8 @@ export const make = (
         const checkpoint = yield* Run.decode(
           Option.isSome(current) ? current.value.state.checkpoint : record.state.checkpoint,
         )
+        if (checkpoint._tag === 'toolRound')
+          yield* ToolTask.cancelUnadmitted(tx, record.conversationId, checkpoint.roundKey)
         if (
           (checkpoint._tag === 'streaming' ||
             checkpoint._tag === 'deferred' ||
@@ -284,7 +296,13 @@ export const make = (
           Effect.gen(function* () {
             if (inspection._tag !== 'compatible') return inspection
             const checkpoint = inspection.checkpoint
-            if (checkpoint.submissionId !== inspection.input || !Run.validPrefix(checkpoint))
+            if (
+              checkpoint.submissionId !== inspection.input ||
+              !Run.validPrefix(checkpoint) ||
+              (checkpoint._tag === 'toolRound' &&
+                checkpoint.roundKey !==
+                  `tool-round:${record.id}:${checkpoint.preparation.requestId}`)
+            )
               return {
                 _tag: 'blocked' as const,
                 error: TaskResolution.blocked(
@@ -297,6 +315,7 @@ export const make = (
             // Their next boundary starts fresh work; only pending I/O needs the old bindings.
             if (
               checkpoint._tag !== 'queued' &&
+              checkpoint._tag !== 'toolRound' &&
               !record.abortRequested &&
               checkpoint.preparation !== undefined &&
               (checkpoint._tag !== 'tools' || checkpoint.index < checkpoint.calls.length)

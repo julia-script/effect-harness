@@ -11,8 +11,8 @@ export interface Format {
   readonly minimumReaderVersion: number
 }
 
-/** This reader understands legacy containers and explicitly activated formats 2 through 8. */
-export const readerVersion = 8
+/** This reader understands legacy containers and explicitly activated formats 2 through 9. */
+export const readerVersion = 9
 
 export class StorageFormatError extends Schema.TaggedError<StorageFormatError>()(
   'StorageFormatError',
@@ -68,6 +68,8 @@ export const inspect: Effect.Effect<Format, Failure, Storage> = capability.pipe(
  * Reader6 refuses format7 before interpreting a deferred request as ordinary streaming.
  * v8 fences queued compaction placement and durable generation compaction waits;
  * reader7 refuses before interpreting either incompatible existing fact.
+ * v9 fences durable tool rounds, per-call child slots and tool-call accounting;
+ * reader8 refuses before interpreting their recovery and once-only control barrier.
  *
  * This is a reopen barrier, not fencing of foreign writers that already opened the store.
  * Stop old processes before activation. JSONL requires one owning writer per file;
@@ -85,15 +87,15 @@ export const requireSupportedFormat = Effect.fn('StorageFormat.requireSupportedF
 export const validate = (format: Format): Effect.Effect<Format, StorageFormatError> =>
   Schema.decodeUnknownEffect(
     Schema.Struct({
-      formatVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7, 8]),
-      minimumReaderVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7, 8]),
+      formatVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7, 8, 9]),
+      minimumReaderVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7, 8, 9]),
     }).check(Schema.makeFilter((marker) => marker.formatVersion === marker.minimumReaderVersion)),
   )(format).pipe(
     Effect.mapError(
       () =>
         new StorageFormatError({
           reason: 'unsupported',
-          message: 'Only matching container/reader pairs 1 through 8 are supported',
+          message: 'Only matching container/reader pairs 1 through 9 are supported',
         }),
     ),
     Effect.map(({ formatVersion, minimumReaderVersion }) => ({

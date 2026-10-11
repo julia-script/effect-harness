@@ -1622,7 +1622,34 @@ it.live(
         assert.strictEqual(identities[0]?.attempt, 0)
         assert.strictEqual(identities[1]?.attempt, 0)
         const receipts = yield* Session.commit(runtime.session, (tx) => Usage.receipts(tx, root))
-        assert.strictEqual(receipts.length, 2)
+        assert.strictEqual(receipts.length, 3)
+        const requests = receipts.filter((receipt) => receipt.identity._tag === 'requestAttempt')
+        assert.strictEqual(requests.length, 2)
+        assert.deepEqual(
+          requests.map((receipt) => receipt.identity),
+          identities.map((identity) => ({
+            _tag: 'requestAttempt' as const,
+            ...identity,
+            purpose: 'generation' as const,
+          })),
+        )
+        const toolReceipts = receipts.filter((receipt) => receipt.identity._tag === 'toolCall')
+        assert.strictEqual(toolReceipts.length, 1)
+        const toolReceipt = toolReceipts[0]!
+        assert.strictEqual(toolReceipt.identity._tag, 'toolCall')
+        if (toolReceipt.identity._tag !== 'toolCall') return
+        assert.strictEqual(toolReceipt.identity.callId, 'call')
+        assert.strictEqual(toolReceipt.identity.attempt, 0)
+        const tasks = yield* Session.scanTasks(runtime.session).pipe(Stream.runCollect)
+        const parent = tasks.find((task) => task.kind === 'harness.run')!
+        const identity = toolReceipt.identity
+        const child = tasks.find((task) => task.id === identity.taskId)!
+        assert.strictEqual(child.kind, 'harness.tool')
+        assert.strictEqual(child.owner, parent.id)
+        const resultEntry = (yield* entries(runtime)).find((entry) => entry.kind === 'tool.result')!
+        assert.strictEqual(toolReceipt.linkedEntryId, resultEntry.id)
+        assert.strictEqual(resultEntry.byTaskId, child.id)
+        assert.isUndefined(toolReceipt.usage?.cost)
         assert.strictEqual(
           (yield* Session.usage(runtime.session, root)).models[0]?.tokens.input,
           26,

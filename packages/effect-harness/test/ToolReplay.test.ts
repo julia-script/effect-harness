@@ -107,8 +107,9 @@ describe('tool declaration resolution', () => {
         })
         yield* Deferred.await(entered)
         const tasks = yield* Stream.runCollect(Session.scanTasks(first.session, {}))
-        const checkpoint = tasks.find((t) => t.state.status !== 'terminal')?.state.checkpoint
-        assert.include(JSON.stringify(checkpoint), '"replay":"unsafe"')
+        const child = tasks.find((t) => t.kind === 'harness.tool' && t.state.status !== 'terminal')
+        const checkpoint = child?.state.checkpoint
+        assert.include(JSON.stringify(child?.input), '"replay":"unsafe"')
         assert.include(JSON.stringify(checkpoint), '"started":true')
         assert.strictEqual(providerPolicy, 'unsafe')
         assert.strictEqual(safeExecutions, 0)

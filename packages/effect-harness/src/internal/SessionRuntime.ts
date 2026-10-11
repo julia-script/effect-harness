@@ -1,5 +1,5 @@
 /** One scoped coordination line, document cache and bounded non-blocking observers. */
-import type * as Cause from 'effect/Cause'
+import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -13,6 +13,7 @@ import type * as Transaction from '../Transaction.js'
 import { SessionError, type Failure } from '../SessionError.js'
 import { Storage } from '../Storage.js'
 import * as StorageFormat from '../StorageFormat.js'
+import { StorageError } from '../StorageError.js'
 import * as Value from './DocumentValue.js'
 
 export type Event =
@@ -33,6 +34,7 @@ export interface State {
   readonly reconciliations: Set<Queue.Queue<void, Cause.Done | SessionError>>
   readonly requireSchedulerFormat: Effect.Effect<StorageFormat.Format, StorageFormat.Failure>
   readonly requireDocumentPatchFormat: Effect.Effect<StorageFormat.Format, StorageFormat.Failure>
+  readonly checkToolCallFormat: Effect.Effect<void, Failure>
   scheduler: object | undefined
   closed: boolean
   poison: Failure | undefined
@@ -217,6 +219,51 @@ export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Ini
       ),
     )
   const semaphore = yield* Semaphore.make(1)
+  const checkToolCallFormat: Effect.Effect<void, Failure> = Effect.gen(function* () {
+    if (Option.isNone(capability) || capability.value.storage !== storage)
+      return yield* new SessionError({
+        reason: 'invalid',
+        operation: 'usage.format',
+        message: 'Tool-call receipts require the matching StorageFormat capability',
+      })
+    const format = yield* capability.value.inspect
+    yield* StorageFormat.validate(format)
+    if (format.minimumReaderVersion < 9)
+      return yield* new SessionError({
+        reason: 'invalid',
+        operation: 'usage.format',
+        message: 'Tool-call receipts require container and minimum reader protection 9/9',
+      })
+  }).pipe(
+    Effect.catchCause((fullCause) =>
+      Effect.gen(function* () {
+        const mapped = Cause.map(fullCause, (cause): Failure => {
+          if (cause._tag !== 'StorageFormatError') return cause
+          if (cause.reason === 'unavailable')
+            return new SessionError({
+              reason: 'invalid',
+              operation: 'usage.format',
+              message: cause.message,
+              cause,
+            })
+          return new StorageError({
+            reason: 'unsupportedFormat',
+            operation: 'usage.format',
+            message: cause.message,
+            cause,
+          })
+        })
+        for (const reason of mapped.reasons)
+          if (
+            reason._tag === 'Fail' &&
+            reason.error._tag === 'StorageError' &&
+            reason.error.reason === 'uncertain'
+          )
+            yield* stop(state, reason.error)
+        return yield* Effect.failCause(mapped)
+      }),
+    ),
+  )
   const state: State = {
     initializers,
     storage,
@@ -226,6 +273,7 @@ export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Ini
     reconciliations: new Set(),
     requireSchedulerFormat: guard(2),
     requireDocumentPatchFormat: guard(3),
+    checkToolCallFormat,
     scheduler: undefined,
     closed: false,
     poison: undefined,

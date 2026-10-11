@@ -26,6 +26,9 @@ import * as Storage from 'effect-harness/Storage'
 import * as Submission from 'effect-harness/Submission'
 import * as Tool from 'effect-harness/Tool'
 import { ToolExecution } from 'effect-harness/ToolExecution'
+import * as ToolProgress from 'effect-harness/ToolProgress'
+import * as Round from '../src/internal/ToolRound.js'
+import * as Task from 'effect-harness/Task'
 import * as Toolkit from 'effect-harness/Toolkit'
 import * as Transaction from 'effect-harness/Transaction'
 
@@ -142,8 +145,27 @@ describe('local runtime', () => {
         )
         assert.deepEqual(
           entries.map((entry) => entry.kind),
-          ['input', 'context.change', 'assistant', 'tool.output', 'tool.result', 'assistant'],
+          ['input', 'context.change', 'assistant', 'tool.result', 'assistant'],
         )
+        const tasks = yield* Session.scanTasks(runtime.session).pipe(Stream.runCollect)
+        const parent = tasks.find((task) => task.kind === 'harness.run')!
+        const child = tasks.find((task) => task.kind === 'harness.tool')!
+        assert.strictEqual(child.owner, parent.id)
+        assert.strictEqual((yield* Task.decode(Round.InputSchema, child.input)).call.id, 'call-1')
+        const progress = Option.getOrThrow(
+          yield* Session.snapshot(runtime.session, ToolProgress.document, {
+            scope: { _tag: 'conversation', conversationId: root.id },
+            key: Round.progressKey(child.id),
+          }),
+        )
+        assert.strictEqual(progress.record.key, Round.progressKey(child.id))
+        assert.deepEqual(progress.record.scope, { _tag: 'conversation', conversationId: root.id })
+        assert.strictEqual(progress.value.callId, Round.progressKey(child.id))
+        assert.strictEqual(progress.value.status, 'completed')
+        assert.strictEqual(progress.value.output.text, 'working\n')
+        assert.strictEqual(progress.value.output.totalBytes, 8)
+        assert.strictEqual(progress.value.output.totalLines, 1)
+        assert.strictEqual(progress.value.attempt, 0)
       }).pipe(
         Effect.provide([
           modelForTool,
