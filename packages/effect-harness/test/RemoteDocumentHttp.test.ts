@@ -80,7 +80,7 @@ const serviceDocument = Document.define({
   schema: codec,
   initial: () => ({ count: 0, label: '' }),
 })
-const fixture = (identity = 'test-remote-owner') =>
+const fixture = (identity = 'test-remote-owner', limits = resources) =>
   Effect.gen(function* () {
     const model = yield* LanguageModel.make({
       generateText: () => Effect.die('Provider must not run'),
@@ -99,12 +99,12 @@ const fixture = (identity = 'test-remote-owner') =>
       }),
     )
     const serverOwner = yield* Scope.fork(yield* Scope.Scope)
-    const handler = yield* Http.makeHandler(runtime.backend, { ...resources, identity }).pipe(
+    const handler = yield* Http.makeHandler(runtime.backend, { ...limits, identity }).pipe(
       Effect.provideService(Scope.Scope, serverOwner),
     )
     yield* HttpServer.serveEffect(handler).pipe(Effect.provideService(Scope.Scope, serverOwner))
     const endpoint = yield* HttpServer.addressFormattedWith(Effect.succeed)
-    const backend = yield* Http.make(runtime.backend, { ...resources, endpoint, identity })
+    const backend = yield* Http.make(runtime.backend, { ...limits, endpoint, identity })
     const harness = yield* Harness.make.pipe(Effect.provideService(HarnessBackend, backend))
     return {
       runtime,
@@ -120,6 +120,367 @@ const run = <A, E, R>(program: Effect.Effect<A, E, R>) =>
   Effect.scoped(program).pipe(Effect.provide([httpLayer, Storage.layerMemory]))
 
 describe('real HTTP materialized documents', () => {
+  it.live(
+    'handler Scope closes an unacknowledged operation without waiting on its hold fiber',
+    () =>
+      run(
+        Effect.gen(function* () {
+          const { endpoint, serverOwner } = yield* fixture()
+          const client = yield* HttpClient.HttpClient
+          const begun = yield* client.execute(
+            ClientRequest.post(`${endpoint}/documents/v1/begin`).pipe(
+              ClientRequest.setHeader('x-document-identity', 'test-remote-owner'),
+              ClientRequest.bodyText('{"protocol":1,"kind":"Current"}\n'),
+            ),
+          )
+          yield* begun.text
+          assert.isDefined(begun.headers['x-document-operation'])
+          yield* Scope.close(serverOwner, Exit.void)
+        }),
+      ),
+  )
+  it.live('a frame body crossing mount expiry cannot mint a new operation or reopen events', () =>
+    run(
+      Effect.gen(function* () {
+        const { endpoint, runtime } = yield* fixture('test-remote-owner', {
+          ...resources,
+          heartbeatIntervalMs: 15,
+          leaseTimeoutMs: 200,
+        })
+        const client = yield* HttpClient.HttpClient
+        const send = (route: string, text: string, token?: string, mount?: string) => {
+          let request = ClientRequest.post(`${endpoint}/documents/v1/${route}`).pipe(
+            ClientRequest.setHeader('x-document-identity', 'test-remote-owner'),
+            ClientRequest.bodyText(text + '\n'),
+          )
+          if (token !== undefined)
+            request = ClientRequest.setHeader(request, 'x-document-operation', token)
+          if (mount !== undefined)
+            request = ClientRequest.setHeader(request, 'x-document-subscription', mount)
+          return client.execute(request)
+        }
+        const dto = Schema.fromJsonString(
+          Schema.Struct({
+            _tag: Schema.String,
+            frame: Schema.optionalKey(Remote.WireFrameSchema),
+            error: Schema.optionalKey(Schema.Struct({ reason: Schema.String })),
+          }),
+        )
+        const parse = Schema.decodeEffect(dto)
+        const begun = yield* send('begin', '{"protocol":1,"kind":"Watch"}')
+        const token = begun.headers['x-document-operation']!
+        const selection = yield* Schema.encodeEffect(
+          Schema.fromJsonString(Remote.ReadRequestSchema),
+        )({
+          address: { ...target, kind: old.definition.kind },
+          metadata: old.definition,
+          family: false,
+        })
+        yield* send('select', `{"protocol":1,"request":${selection}}`, token).pipe(
+          Effect.flatMap((response) => response.text),
+        )
+        const attached = yield* send('attach', '{"protocol":1}', token)
+        yield* attached.text
+        const mount = attached.headers['x-document-subscription']!
+        yield* send('complete', '{"protocol":1}', token).pipe(
+          Effect.flatMap((response) => response.text),
+        )
+        const events = ClientRequest.get(`${endpoint}/documents/v1/events`).pipe(
+          ClientRequest.setHeader('x-document-identity', 'test-remote-owner'),
+          ClientRequest.setHeader('x-document-operation', token),
+          ClientRequest.setHeader('x-document-subscription', mount),
+        )
+        const stream = yield* client.execute(events)
+        const pull = yield* stream.stream.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.mapEffect((text) => parse(text)),
+          Stream.rechunk(1),
+          Stream.toPull,
+        )
+        const initial = (yield* pull)[0]!
+        assert.strictEqual(initial._tag, 'Data')
+        const frame = initial.frame!
+        const text = yield* Schema.encodeEffect(
+          Schema.fromJsonString(
+            Schema.Struct({
+              protocol: Schema.Literal(1),
+              epoch: Schema.String,
+              revision: Schema.Natural,
+            }),
+          ),
+        )({
+          protocol: 1,
+          epoch: frame.epoch,
+          revision:
+            frame._tag === 'Snapshot' || frame._tag === 'Rebase' ? frame.revision : frame.to,
+        })
+        const frameOperation = yield* send('frame', text, undefined, mount)
+        yield* frameOperation.text
+        const frameToken = frameOperation.headers['x-document-operation']!
+        const entered = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
+        const pending = yield* client
+          .execute(
+            ClientRequest.post(`${endpoint}/documents/v1/frame`).pipe(
+              ClientRequest.setHeader('x-document-identity', 'test-remote-owner'),
+              ClientRequest.setHeader('x-document-subscription', mount),
+              ClientRequest.bodyStream(
+                Stream.concat(
+                  Stream.fromEffect(
+                    Deferred.succeed(entered, undefined).pipe(
+                      Effect.as(new TextEncoder().encode(text.slice(0, 12))),
+                    ),
+                  ),
+                  Stream.fromEffect(
+                    Deferred.await(release).pipe(
+                      Effect.as(new TextEncoder().encode(text.slice(12) + '\n')),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          )
+          .pipe(Effect.forkChild)
+        yield* Deferred.await(entered)
+        yield* Effect.sleep(100)
+        assert.strictEqual(
+          (yield* send('heartbeat', '{"protocol":1}', frameToken).pipe(
+            Effect.flatMap((response) => response.text),
+            Effect.flatMap(parse),
+          ))._tag,
+          'Heartbeat',
+        )
+        const expired = (yield* pull)[0]!
+        yield* Deferred.succeed(release, undefined)
+        const response = yield* Fiber.join(pending)
+        const result = yield* response.text.pipe(Effect.flatMap(parse))
+        const heartbeat = yield* send('heartbeat', '{"protocol":1}', frameToken).pipe(
+          Effect.flatMap((response) => response.text),
+          Effect.flatMap(parse),
+        )
+        const ack = yield* send('complete', '{"protocol":1}', frameToken).pipe(
+          Effect.flatMap((response) => response.text),
+          Effect.flatMap(parse),
+        )
+        assert.strictEqual(heartbeat.error?.reason, 'expired')
+        assert.strictEqual(ack.error?.reason, 'expired')
+        assert.strictEqual(expired.error?.reason, 'expired')
+        assert.strictEqual(result._tag, 'Failure')
+        assert.strictEqual(result.error?.reason, 'expired')
+        assert.isUndefined(response.headers['x-document-operation'])
+        assert.strictEqual((yield* Native.get(runtime.session)).documentMounts.size, 0)
+        const reopening = yield* client.execute(events).pipe(
+          Effect.flatMap((response) => response.text),
+          Effect.flatMap(parse),
+        )
+        assert.strictEqual(reopening._tag, 'Failure')
+        assert.strictEqual(reopening.error?.reason, 'closed')
+      }),
+    ),
+  )
+  for (const route of ['select', 'attach'] as const)
+    for (const boundary of ['body', 'native'] as const)
+      it.live(`expired ${route} rejects late ${boundary} admission and leaves no mount`, () =>
+        run(
+          Effect.gen(function* () {
+            const limits = { ...resources, heartbeatIntervalMs: 15, leaseTimeoutMs: 200 }
+            const { runtime, endpoint } = yield* fixture('test-remote-owner', limits)
+            const client = yield* HttpClient.HttpClient
+            const dto = Schema.Struct({
+              _tag: Schema.String,
+              error: Schema.optionalKey(Schema.Struct({ reason: Schema.String })),
+            })
+            const parse = (text: string) => Schema.decodeEffect(Schema.fromJsonString(dto))(text)
+            const send = (action: string, body: string, token?: string) => {
+              let request = ClientRequest.post(`${endpoint}/documents/v1/${action}`).pipe(
+                ClientRequest.setHeader('x-document-identity', 'test-remote-owner'),
+                ClientRequest.bodyText(body + '\n'),
+              )
+              if (token !== undefined)
+                request = ClientRequest.setHeader(request, 'x-document-operation', token)
+              return client.execute(request)
+            }
+            const begun = yield* send(
+              'begin',
+              `{"protocol":1,"kind":"${route === 'select' ? 'Current' : 'Watch'}"}`,
+            )
+            const token = begun.headers['x-document-operation']!
+            const selector = yield* Schema.encodeEffect(
+              Schema.fromJsonString(Remote.ReadRequestSchema),
+            )({
+              address: { ...target, kind: old.definition.kind },
+              metadata: old.definition,
+              family: false,
+            })
+            const selection = `{"protocol":1,"request":${selector}}`
+            if (route === 'attach')
+              assert.strictEqual(
+                (yield* send('select', selection, token).pipe(
+                  Effect.flatMap((response) => response.text),
+                  Effect.flatMap(parse),
+                ))._tag,
+                'Authorized',
+              )
+            const entered = yield* Deferred.make<void>()
+            const release = yield* Deferred.make<void>()
+            yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
+            const native = yield* Native.get(runtime.session)
+            if (boundary === 'native') {
+              native.cache.clear()
+              const document = native.storage.document
+              Object.assign(native, {
+                storage: {
+                  ...native.storage,
+                  document: (...args: Parameters<typeof document>) =>
+                    Deferred.succeed(entered, undefined).pipe(
+                      Effect.andThen(Deferred.await(release)),
+                      Effect.andThen(document(...args)),
+                    ),
+                },
+              })
+            }
+            const text = route === 'select' ? selection : '{"protocol":1,"options":{"capacity":1}}'
+            const request = ClientRequest.post(`${endpoint}/documents/v1/${route}`).pipe(
+              ClientRequest.setHeader('x-document-identity', 'test-remote-owner'),
+              ClientRequest.setHeader('x-document-operation', token),
+            )
+            const pending = yield* client
+              .execute(
+                boundary === 'body'
+                  ? request.pipe(
+                      ClientRequest.bodyStream(
+                        Stream.concat(
+                          Stream.fromEffect(
+                            Deferred.succeed(entered, undefined).pipe(
+                              Effect.as(new TextEncoder().encode(text.slice(0, 12))),
+                            ),
+                          ),
+                          Stream.fromEffect(
+                            Deferred.await(release).pipe(
+                              Effect.as(new TextEncoder().encode(text.slice(12) + '\n')),
+                            ),
+                          ),
+                        ),
+                      ),
+                    )
+                  : request.pipe(ClientRequest.bodyText(text + '\n')),
+              )
+              .pipe(Effect.forkChild)
+            yield* Deferred.await(entered)
+            const expired = yield* client
+              .execute(
+                ClientRequest.get(`${endpoint}/documents/v1/events`).pipe(
+                  ClientRequest.setHeader('x-document-identity', 'test-remote-owner'),
+                  ClientRequest.setHeader('x-document-operation', token),
+                ),
+              )
+              .pipe(
+                Effect.flatMap((response) => response.text),
+                Effect.flatMap(parse),
+              )
+            assert.strictEqual(expired._tag, 'Expired')
+            yield* Deferred.succeed(release, undefined)
+            const response = yield* Fiber.join(pending)
+            const result = yield* response.text.pipe(Effect.flatMap(parse))
+            assert.strictEqual(result._tag, 'Failure')
+            assert.strictEqual(result.error?.reason, 'expired')
+            assert.isUndefined(response.headers['x-document-operation'])
+            assert.isUndefined(response.headers['x-document-subscription'])
+            assert.strictEqual(native.documentMounts.size, 0)
+            const ack = yield* send('complete', '{"protocol":1}', token).pipe(
+              Effect.flatMap((response) => response.text),
+              Effect.flatMap(parse),
+            )
+            assert.strictEqual(ack.error?.reason, 'expired')
+          }),
+        ),
+      )
+  it.live(
+    'HTTP capture registers before a queued writer and delivers initial then replacement exactly once',
+    () =>
+      run(
+        Effect.gen(function* () {
+          const storage = yield* Storage.Storage
+          let writes = 0
+          const commit = storage.commit
+          Object.assign(storage, {
+            commit: (...args: Parameters<typeof commit>) =>
+              Effect.sync(() => {
+                writes++
+              }).pipe(Effect.andThen(commit(...args))),
+          })
+          const { runtime, conversation, nativeOwner } = yield* fixture()
+          const baselineWrites = writes
+          const native = yield* Native.get(runtime.session)
+          native.cache.clear()
+          const before = yield* storage
+            .scanEntries({ conversationId: root })
+            .pipe(Stream.runCollect)
+          const entered = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
+          const document = native.storage.document
+          Object.assign(native, {
+            storage: {
+              ...native.storage,
+              document: (...args: Parameters<typeof document>) =>
+                Deferred.succeed(entered, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                  Effect.andThen(document(...args)),
+                ),
+            },
+          })
+          const initial = yield* Deferred.make<void>()
+          const replaced = yield* Deferred.make<void>()
+          const frames: Remote.MaterializedFrame<typeof current.definition.schema>[] = []
+          const watching = yield* Remote.watchWith(conversation, current, target, (frame) =>
+            Effect.gen(function* () {
+              frames.push(frame)
+              if (frame._tag === 'Snapshot') yield* Deferred.succeed(initial, undefined)
+              else if (frame._tag === 'Replace') yield* Deferred.succeed(replaced, undefined)
+            }),
+          ).pipe(Stream.runDrain, Effect.forkChild)
+          yield* Deferred.await(entered)
+          let admitted = false
+          const writer = yield* Session.commit(runtime.session, (tx) =>
+            Effect.gen(function* () {
+              admitted = true
+              assert.strictEqual(writes, baselineWrites)
+              assert.strictEqual(native.documentMounts.size, 1)
+              assert.deepEqual(
+                yield* storage.scanEntries({ conversationId: root }).pipe(Stream.runCollect),
+                before,
+              )
+              yield* Transaction.setDocument(tx, old, target, { old: 11 })
+            }),
+          ).pipe(Effect.forkChild)
+          yield* Effect.yieldNow
+          assert.isFalse(admitted)
+          yield* Deferred.succeed(release, undefined)
+          yield* Fiber.join(writer)
+          yield* Effect.raceFirst(Deferred.await(initial), Fiber.join(watching))
+          yield* Effect.raceFirst(Deferred.await(replaced), Fiber.join(watching))
+          yield* Scope.close(nativeOwner, Exit.void)
+          yield* Fiber.join(watching)
+          assert.strictEqual(writes, baselineWrites + 1)
+          assert.deepEqual(
+            frames.map((frame) => frame._tag),
+            ['Snapshot', 'Replace'],
+          )
+          const first = frames[0]!
+          const second = frames[1]!
+          if (first._tag !== 'Retired' && second._tag !== 'Retired') {
+            assert.deepEqual(first.value.value, { count: 4 })
+            assert.deepEqual(second.value.value, { count: 11 })
+            assert.strictEqual(first.value.storedVersion, 1)
+            assert.strictEqual(second.value.storedVersion, 1)
+          }
+          assert.strictEqual(native.documentMounts.size, 0)
+        }),
+      ),
+  )
   it.live('normal native Scope close drains the latest HTTP state before end', () =>
     run(
       Effect.gen(function* () {
@@ -487,6 +848,16 @@ describe('real HTTP materialized documents', () => {
           assert.strictEqual(
             (yield* send('complete', tokenB).pipe(Effect.flatMap(reply)))._tag,
             'Completed',
+          )
+          const cancelled = yield* send('begin')
+          const cancelledToken = cancelled.headers['x-document-operation']
+          assert.strictEqual(
+            (yield* send('cancel', cancelledToken).pipe(Effect.flatMap(reply)))._tag,
+            'Cancelled',
+          )
+          assert.strictEqual(
+            (yield* send('complete', cancelledToken).pipe(Effect.flatMap(reply))).error?.reason,
+            'closed',
           )
           const expiring = yield* send('begin')
           const expiringToken = expiring.headers['x-document-operation']

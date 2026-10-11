@@ -96,6 +96,7 @@ const ReplySchema = Schema.Union([
   Schema.TaggedStruct('Authorized', { protocol: Schema.Literal(1) }),
   Schema.TaggedStruct('Completed', { protocol: Schema.Literal(1) }),
   Schema.TaggedStruct('AlreadyCompleted', { protocol: Schema.Literal(1) }),
+  Schema.TaggedStruct('Cancelled', { protocol: Schema.Literal(1) }),
   Schema.TaggedStruct('Heartbeat', { protocol: Schema.Literal(1) }),
   Schema.TaggedStruct('Failure', { protocol: Schema.Literal(1), error: SafeFailureSchema }),
 ])
@@ -436,7 +437,7 @@ export const make = Effect.fnUntraced(function* (
             }
             // Joined callback cleanup, including its local finalizer Cause, precedes ACK.
             const acknowledgement = yield* call(
-              'complete',
+              Exit.isSuccess(result) ? 'complete' : 'cancel',
               ActionSchema,
               { protocol: 1 },
               op.token,
@@ -444,6 +445,11 @@ export const make = Effect.fnUntraced(function* (
             if (Exit.isFailure(result)) return yield* Effect.failCause(result.cause)
             if (Exit.isFailure(acknowledgement))
               return yield* Effect.failCause(acknowledgement.cause)
+            if (
+              acknowledgement.value.reply._tag !== 'Completed' &&
+              acknowledgement.value.reply._tag !== 'AlreadyCompleted'
+            )
+              return yield* failure('protocol', 'Missing successful completion acknowledgement')
             return result.value
           }),
         )
@@ -572,6 +578,7 @@ interface ServerOperation {
 interface ServerMount {
   readonly token: string
   readonly operationToken: string
+  readonly operation: ServerOperation
   readonly scope: Scope.Closeable
   readonly stream: Stream.Stream<Remote.WireFrame, Remote.Failure>
   readonly frames: Map<
@@ -581,7 +588,7 @@ interface ServerMount {
   readonly terminal: Deferred.Deferred<void, RemoteDocumentError>
   heartbeat: number
   opened: boolean
-  ended: boolean
+  ended: 'closed' | 'expired' | undefined
 }
 /** Creates a handler for one captured authorized backend; credentials never become DTO authority. */
 export const makeHandler = Effect.fnUntraced(function* (
@@ -597,6 +604,8 @@ export const makeHandler = Effect.fnUntraced(function* (
   const identity = options.identity
   if (identity.length === 0) return yield* failure('invalid', 'Transport identity is required')
   const scope = yield* Scope.Scope
+  // Terminate leases before closing the fibers that hold their completion barriers.
+  const resourceScope = yield* Scope.fork(scope)
   const operations = new Map<string, ServerOperation>()
   const mounts = new Map<string, ServerMount>()
   let closed = false
@@ -607,7 +616,7 @@ export const makeHandler = Effect.fnUntraced(function* (
     })
   const end = (op: ServerOperation, reason: 'closed' | 'expired') =>
     Effect.gen(function* () {
-      if (op.completed || op.ended !== undefined) return
+      if (op.completed || op.ended === 'closed' || op.ended === 'expired') return
       op.ended = reason
       yield* Queue.offer(op.control, {
         _tag: reason === 'expired' ? 'Expired' : 'Closed',
@@ -615,14 +624,50 @@ export const makeHandler = Effect.fnUntraced(function* (
       })
       yield* Queue.end(op.control)
       yield* complete(op)
-      if (op.mount !== undefined) yield* closeMount(op.mount)
+      if (op.mount !== undefined) yield* closeMount(op.mount, reason)
+      yield* Effect.sleep(resources.leaseTimeoutMs).pipe(
+        Effect.andThen(Effect.sync(() => operations.delete(op.token))),
+        Effect.forkIn(resourceScope),
+      )
     })
-  const closeMount = (mount: ServerMount) =>
+  const closeMount = (mount: ServerMount, reason: 'closed' | 'expired' = 'closed') =>
     Effect.gen(function* () {
-      mount.ended = true
+      mount.ended ??= reason
       mounts.delete(mount.token)
       mount.frames.clear()
+      yield* Deferred.fail(mount.terminal, failure(mount.ended, 'Document subscription ended'))
       yield* Scope.close(mount.scope, Exit.void)
+    })
+  const refreshOperation = (op: ServerOperation) =>
+    Effect.gen(function* () {
+      if (closed) yield* end(op, 'closed')
+      else if (!op.completed && op.mount?.ended !== undefined) yield* end(op, op.mount.ended)
+      else if (
+        !op.completed &&
+        (yield* Clock.currentTimeMillis) - op.heartbeat >= resources.leaseTimeoutMs
+      )
+        yield* end(op, 'expired')
+    })
+  const assertActive = (op: ServerOperation) =>
+    refreshOperation(op).pipe(
+      Effect.andThen(
+        Effect.suspend(() =>
+          !op.completed && op.ended === undefined
+            ? Effect.void
+            : Effect.fail(failure(op.ended ?? 'closed', 'Operation is no longer active')),
+        ),
+      ),
+    )
+  const assertMount = (mount: ServerMount) =>
+    Effect.gen(function* () {
+      yield* refreshOperation(mount.operation)
+      if (mount.operation.ended !== undefined)
+        return yield* failure(mount.operation.ended, 'Mount operation has ended')
+      if (closed) yield* closeMount(mount)
+      else if ((yield* Clock.currentTimeMillis) - mount.heartbeat >= resources.leaseTimeoutMs)
+        yield* closeMount(mount, 'expired')
+      if (mount.ended !== undefined)
+        return yield* failure(mount.ended, 'Document subscription ended')
     })
   yield* Scope.addFinalizer(
     scope,
@@ -680,28 +725,14 @@ export const makeHandler = Effect.fnUntraced(function* (
           )
         }),
       ),
-      Effect.forkIn(scope),
+      Effect.forkIn(resourceScope),
     )
     const expiry = Effect.forever(
-      Effect.sleep(resources.heartbeatIntervalMs).pipe(
-        Effect.andThen(
-          Effect.gen(function* () {
-            const now = yield* Clock.currentTimeMillis
-            if (now - op.heartbeat >= resources.leaseTimeoutMs) {
-              if (op.ended === 'revoked') {
-                yield* complete(op)
-                if (op.mount !== undefined) yield* closeMount(op.mount)
-              } else yield* end(op, 'expired')
-              yield* Effect.sleep(resources.leaseTimeoutMs).pipe(
-                Effect.andThen(Effect.sync(() => operations.delete(token))),
-                Effect.forkIn(scope),
-              )
-            }
-          }),
-        ),
-      ),
+      Effect.sleep(resources.heartbeatIntervalMs).pipe(Effect.andThen(refreshOperation(op))),
     )
-    yield* Effect.raceFirst(expiry, Deferred.await(op.completion)).pipe(Effect.forkIn(scope))
+    yield* Effect.raceFirst(expiry, Deferred.await(op.completion)).pipe(
+      Effect.forkIn(resourceScope),
+    )
     yield* Deferred.await(op.ready)
     return op
   })
@@ -714,6 +745,8 @@ export const makeHandler = Effect.fnUntraced(function* (
         }),
       ),
     )
+  const activeResponse = (op: ServerOperation, reply: Reply, headers?: Record<string, string>) =>
+    response(reply, headers).pipe(Effect.tap(() => assertActive(op)))
   const handler = Effect.gen(function* () {
     const request = yield* ServerRequest.HttpServerRequest
     if (closed) return yield* failure('closed', 'Transport handler scope is closed')
@@ -729,12 +762,7 @@ export const makeHandler = Effect.fnUntraced(function* (
         ? Effect.fail(failure('revoked', 'Invalid operation authority'))
         : Effect.succeed(op),
     )
-    const activeOperation = requireOperation.pipe(
-      Effect.filterOrFail(
-        (value) => !value.completed && value.ended === undefined,
-        (value) => failure(value.ended ?? 'closed', 'Operation is no longer active'),
-      ),
-    )
+    const activeOperation = requireOperation.pipe(Effect.tap(assertActive))
     const body = <S extends Schema.Constraint>(schema: S) =>
       one(
         request.stream.pipe(
@@ -746,6 +774,7 @@ export const makeHandler = Effect.fnUntraced(function* (
       if (token !== undefined || mountToken !== undefined)
         return yield* failure('revoked', 'Begin cannot reuse operation or mount authority')
       const input = yield* body(BeginSchema)
+      if (closed) return yield* failure('closed', 'Transport handler scope is closed')
       let method:
         | Remote.Capabilities['snapshot']
         | Remote.Capabilities['snapshotAsOf']
@@ -755,7 +784,8 @@ export const makeHandler = Effect.fnUntraced(function* (
       else method = backend.documents?.watch
       if (method === undefined) return yield* Remote.unsupported('remoteDocument.http.begin')
       const opened = yield* open(input.kind)
-      return yield* response(
+      return yield* activeResponse(
+        opened,
         {
           _tag: 'Ready',
           protocol: 1,
@@ -770,7 +800,9 @@ export const makeHandler = Effect.fnUntraced(function* (
         return yield* failure('revoked', 'Frame cannot reuse operation authority')
       if (mount === undefined || mount.ended)
         return yield* failure('closed', 'Invalid mount authority')
+      yield* assertMount(mount)
       const input = yield* body(FrameRequestSchema)
+      yield* assertMount(mount)
       const delivery = mount.frames.get(input.revision)
       if (delivery === undefined || delivery.frame.epoch !== input.epoch)
         return yield* failure('revoked', 'Frame is not an outstanding delivery from this mount')
@@ -779,7 +811,8 @@ export const makeHandler = Effect.fnUntraced(function* (
       opened.selected = true
       opened.delivery = delivery.done
       opened.mount = mount
-      return yield* response(
+      return yield* activeResponse(
+        opened,
         {
           _tag: 'Ready',
           protocol: 1,
@@ -787,6 +820,9 @@ export const makeHandler = Effect.fnUntraced(function* (
           expiresInMs: resources.leaseTimeoutMs,
         },
         { [tokenHeader]: opened.token },
+      ).pipe(
+        Effect.tap(() => assertMount(mount)),
+        Effect.onError(() => end(opened, 'closed')),
       )
     }
     if (route === 'select' && request.method === 'POST') {
@@ -796,6 +832,7 @@ export const makeHandler = Effect.fnUntraced(function* (
       if (current.selected) return yield* failure('revoked', 'Operation selector is already bound')
       current.selected = true
       const input = yield* body(SelectSchema)
+      yield* assertActive(current)
       if (
         current.kind === 'Frame' ||
         (current.kind === 'Historical') !== (input.at !== undefined) ||
@@ -807,7 +844,7 @@ export const makeHandler = Effect.fnUntraced(function* (
           current.kind === 'Historical' && input.at !== undefined
             ? yield* backend.documents!.snapshotAsOf!({ ...input.request, at: input.at })
             : yield* backend.documents!.snapshot!(input.request)
-        return yield* response({
+        return yield* activeResponse(current, {
           _tag: 'Read',
           protocol: 1,
           target: input.request.address,
@@ -818,8 +855,9 @@ export const makeHandler = Effect.fnUntraced(function* (
       if (input.options !== undefined)
         return yield* failure('protocol', 'Watch options require an authorized selector')
       yield* Lifetime.authorize(backend, input.request)
+      yield* assertActive(current)
       current.request = input.request
-      return yield* response({ _tag: 'Authorized', protocol: 1 })
+      return yield* activeResponse(current, { _tag: 'Authorized', protocol: 1 })
     }
     if (route === 'attach' && request.method === 'POST') {
       if (mountToken !== undefined)
@@ -830,40 +868,57 @@ export const makeHandler = Effect.fnUntraced(function* (
       const selected = current.request
       current.request = undefined
       const input = yield* body(AttachSchema)
-      const mountScope = yield* Scope.fork(scope)
-      const stream = yield* Stream.toPull(backend.documents!.watch!(selected, input.options)).pipe(
+      yield* assertActive(current)
+      const mountScope = yield* Scope.fork(resourceScope)
+      const stream = yield* Effect.gen(function* () {
+        const pull = yield* Stream.toPull(backend.documents!.watch!(selected, input.options))
+        const initial = yield* pull.pipe(
+          Effect.mapError((error) =>
+            Cause.isDone(error)
+              ? failure('closed', 'Document mount ended before initial state')
+              : error,
+          ),
+        )
+        yield* assertActive(current)
+        return Stream.concat(Stream.fromIterable(initial), Stream.fromPull(Effect.succeed(pull)))
+      }).pipe(
         Effect.provideService(Scope.Scope, mountScope),
         Effect.onError(() => Scope.close(mountScope, Exit.void)),
       )
       const created: ServerMount = {
         token: globalThis.crypto.randomUUID() + globalThis.crypto.randomUUID(),
         operationToken: current.token,
+        operation: current,
         scope: mountScope,
-        stream: Stream.fromPull(Effect.succeed(stream)),
+        stream,
         frames: new Map(),
         terminal: yield* Deferred.make<void, RemoteDocumentError>(),
         heartbeat: yield* Clock.currentTimeMillis,
         opened: false,
-        ended: false,
+        ended: undefined,
       }
+      current.mount = created
+      yield* assertActive(current).pipe(Effect.onError(() => closeMount(created)))
       mounts.set(created.token, created)
       yield* Effect.gen(function* () {
         while (!created.ended) {
           yield* Effect.sleep(resources.heartbeatIntervalMs)
           if ((yield* Clock.currentTimeMillis) - created.heartbeat >= resources.leaseTimeoutMs) {
+            created.ended = 'expired'
             yield* Deferred.fail(
               created.terminal,
               failure('expired', 'Document subscription expired'),
             )
-            if (!created.opened) yield* closeMount(created)
+            if (!created.opened) yield* closeMount(created, 'expired')
             return
           }
         }
-      }).pipe(Effect.forkIn(scope))
-      return yield* response(
+      }).pipe(Effect.forkIn(resourceScope))
+      return yield* activeResponse(
+        current,
         { _tag: 'Attached', protocol: 1 },
         { [subscriptionHeader]: created.token },
-      )
+      ).pipe(Effect.onError(() => closeMount(created)))
     }
     if (route === 'events' && request.method === 'GET') {
       if (mountToken !== undefined) {
@@ -871,11 +926,13 @@ export const makeHandler = Effect.fnUntraced(function* (
           return yield* failure('closed', 'Invalid or already-open mount stream')
         if (token !== mount.operationToken)
           return yield* failure('revoked', 'Stream operation does not own this mount')
+        yield* assertMount(mount)
         mount.opened = true
         const data = mount.stream.pipe(
           Stream.flatMap((frame) =>
             Stream.unwrap(
               Effect.gen(function* () {
+                yield* assertMount(mount)
                 const revision =
                   frame._tag === 'Snapshot' || frame._tag === 'Rebase' ? frame.revision : frame.to
                 const done = yield* Deferred.make<void>()
@@ -898,7 +955,11 @@ export const makeHandler = Effect.fnUntraced(function* (
           ),
         )
         const encoded = data.pipe(
-          Stream.mapEffect((message) => encode(ControlSchema, message, resources.maxFrameBytes)),
+          Stream.mapEffect((message) =>
+            encode(ControlSchema, message, resources.maxFrameBytes).pipe(
+              Effect.tap(() => (message._tag === 'Data' ? assertMount(mount) : Effect.void)),
+            ),
+          ),
           Stream.catch((error) =>
             Stream.fromEffect(
               encode(
@@ -918,6 +979,7 @@ export const makeHandler = Effect.fnUntraced(function* (
         )
       }
       const current = yield* requireOperation
+      yield* refreshOperation(current)
       if (current.controlOpened)
         return yield* failure('revoked', 'Operation control stream is already open')
       current.controlOpened = true
@@ -939,11 +1001,16 @@ export const makeHandler = Effect.fnUntraced(function* (
           return yield* failure('closed', 'Invalid mount action authority')
         if (route === 'complete')
           return yield* failure('protocol', 'A mount cannot complete an operation')
+        yield* assertMount(mount)
         if (route === 'cancel') yield* closeMount(mount)
         else mount.heartbeat = yield* Clock.currentTimeMillis
-        return yield* response({ _tag: 'Heartbeat', protocol: 1 })
+        return yield* response({
+          _tag: route === 'cancel' ? 'Cancelled' : 'Heartbeat',
+          protocol: 1,
+        })
       }
       const current = yield* requireOperation
+      yield* refreshOperation(current)
       if (route === 'heartbeat') {
         if (current.completed || current.ended === 'expired' || current.ended === 'closed')
           return yield* failure(current.ended ?? 'closed', 'Operation has ended')
@@ -952,13 +1019,23 @@ export const makeHandler = Effect.fnUntraced(function* (
       }
       if (current.ended === 'expired' || current.ended === 'closed')
         return yield* failure(current.ended, 'Operation has ended')
-      if (current.completed) return yield* response({ _tag: 'AlreadyCompleted', protocol: 1 })
+      if (current.completed) {
+        if (route === 'cancel')
+          return yield* failure('closed', 'Completed operation cannot be cancelled')
+        return yield* response({ _tag: 'AlreadyCompleted', protocol: 1 })
+      }
+      if (route === 'cancel') {
+        yield* end(current, 'closed')
+        return yield* response({ _tag: 'Cancelled', protocol: 1 })
+      }
+      if (current.ended === 'revoked')
+        return yield* failure('revoked', 'Revoked operation cannot complete successfully')
       current.completed = true
       yield* complete(current)
       yield* Queue.end(current.control)
       yield* Effect.sleep(resources.leaseTimeoutMs).pipe(
         Effect.andThen(Effect.sync(() => operations.delete(current.token))),
-        Effect.forkIn(scope),
+        Effect.forkIn(resourceScope),
       )
       return yield* response({ _tag: 'Completed', protocol: 1 })
     }

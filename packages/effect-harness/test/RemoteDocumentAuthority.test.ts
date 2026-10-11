@@ -13,6 +13,8 @@ import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as HttpServer from 'effect/http/HttpServer'
+import * as HttpClient from 'effect/http/HttpClient'
+import * as ClientRequest from 'effect/http/HttpClientRequest'
 import type * as Conversation from 'effect-harness/Conversation'
 import * as Document from 'effect-harness/Document'
 import * as Harness from 'effect-harness/Harness'
@@ -244,12 +246,51 @@ describe('authentic remote document authority', () => {
             Effect.forkChild,
           )
           yield* Deferred.await(held)
+          const client = yield* HttpClient.HttpClient
+          const action = (route: string, token?: string) => {
+            let request = ClientRequest.post(`${endpoint}/documents/v1/${route}`).pipe(
+              ClientRequest.setHeader('x-document-identity', 'authentic-parent'),
+              ClientRequest.bodyText(
+                route === 'begin' ? '{"protocol":1,"kind":"Current"}\n' : '{"protocol":1}\n',
+              ),
+            )
+            if (token !== undefined)
+              request = ClientRequest.setHeader(request, 'x-document-operation', token)
+            return client.execute(request)
+          }
+          const abandoned = yield* action('begin')
+          const abandonedToken = abandoned.headers['x-document-operation']!
+          const replySchema = Schema.fromJsonString(
+            Schema.Struct({
+              _tag: Schema.String,
+              error: Schema.optionalKey(Schema.Struct({ reason: Schema.String })),
+            }),
+          )
+          const revoked = yield* client
+            .execute(
+              ClientRequest.get(`${endpoint}/documents/v1/events`).pipe(
+                ClientRequest.setHeader('x-document-identity', 'authentic-parent'),
+                ClientRequest.setHeader('x-document-operation', abandonedToken),
+              ),
+            )
+            .pipe(
+              Effect.flatMap((response) => response.text),
+              Effect.flatMap(Schema.decodeEffect(replySchema)),
+              Effect.forkChild,
+            )
           yield* Deferred.succeed(settle, undefined)
           yield* Deferred.await(settling)
           yield* Deferred.await(cleanup)
           yield* Deferred.await(decoderCleanup)
           assert.isTrue((yield* runtime.scheduler.inspect(ref.id)).invoking)
           assert.strictEqual(cleaned, 0)
+          assert.strictEqual((yield* Fiber.join(revoked))._tag, 'Revoked')
+          yield* Effect.sleep(resources.leaseTimeoutMs + resources.heartbeatIntervalMs * 2)
+          const lateAck = yield* action('complete', abandonedToken).pipe(
+            Effect.flatMap((response) => response.text),
+            Effect.flatMap(Schema.decodeEffect(replySchema)),
+          )
+          assert.isTrue((yield* runtime.scheduler.inspect(ref.id)).invoking)
           yield* Deferred.succeed(release, undefined)
           const observationExit = yield* Fiber.await(observer)
           assert.isTrue(Exit.isFailure(observationExit))
@@ -264,6 +305,8 @@ describe('authentic remote document authority', () => {
           assert.strictEqual(cleaned, 1)
           assert.strictEqual(deliveries, 0)
           assert.strictEqual((yield* runtime.scheduler.wait(ref)).status, 'completed')
+          assert.strictEqual(lateAck._tag, 'Failure')
+          assert.strictEqual(lateAck.error?.reason, 'expired')
           let getters = 0
           const stale = {
             ...document,
