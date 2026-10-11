@@ -1,4 +1,5 @@
 import { ProviderAffinity } from '../ProviderAffinity.js'
+import { CompactionRequest } from '../CompactionRequest.js'
 import * as Predicate from 'effect/Predicate'
 /**
  * Canonical tool-media translation at the captured native client boundary.
@@ -114,6 +115,17 @@ const clientImpl = (
     const dynamic = yield* Effect.serviceOption(OpenAiLanguageModel.Config)
     const config = { ...defaults, ...Option.getOrUndefined(dynamic) }
     const affinity = yield* Effect.serviceOption(ProviderAffinity)
+    const summary = yield* Effect.serviceOption(CompactionRequest)
+    if (Option.isSome(summary)) {
+      const { prompt_cache_key: _key, tools: _tools, tool_choice: _choice, ...ordinary } = payload
+      Reflect.deleteProperty(ordinary, 'prompt_cache_retention')
+      return {
+        ...ordinary,
+        max_output_tokens: summary.value.maxOutputTokens,
+        background: false,
+        store: false,
+      }
+    }
     const routed =
       payload.prompt_cache_key === undefined && Option.isSome(affinity)
         ? { ...payload, prompt_cache_key: affinity.value.id }

@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
@@ -27,7 +28,7 @@ const finish = (reason: 'stop' | 'tool-calls') => ({
 })
 const model = Layer.effect(
   LanguageModel.LanguageModel,
-  LanguageModel.make({
+  ScriptedStream.make({
     generateText: ({ prompt }) =>
       Effect.succeed(
         prompt.content.some((message) => message.role === 'tool')
@@ -43,7 +44,6 @@ const model = Layer.effect(
               finish('tool-calls'),
             ],
       ),
-    streamText: () => Stream.empty,
   }),
 )
 const toolkit = Toolkit.make(Tool.make('work', { success: Schema.String, failure: Schema.String }))

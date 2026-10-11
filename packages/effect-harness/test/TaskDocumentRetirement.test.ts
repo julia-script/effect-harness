@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -18,6 +19,7 @@ import * as Record from 'effect-harness/Record'
 import * as Session from 'effect-harness/Session'
 import * as Storage from 'effect-harness/Storage'
 import { StorageError } from 'effect-harness/StorageError'
+import type { StorageFormat } from 'effect-harness/StorageFormat'
 import * as Tool from 'effect-harness/Tool'
 import { ToolExecution } from 'effect-harness/ToolExecution'
 import * as Toolkit from 'effect-harness/Toolkit'
@@ -84,8 +86,9 @@ const initialize = (session: Session.Session) =>
       return { task, saved, entry }
     }),
   )
-const withMemory = <A, E>(program: Effect.Effect<A, E, Storage.Storage | Scope.Scope>) =>
-  Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
+const withMemory = <A, E>(
+  program: Effect.Effect<A, E, Storage.Storage | StorageFormat | Scope.Scope>,
+) => Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
 const assertConflict = (failure: Session.Failure) => {
   assert.strictEqual(failure._tag, 'SessionError')
   if (failure._tag === 'SessionError') {
@@ -205,13 +208,11 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                     .pipe(Stream.runCollect)
                   assert.strictEqual(historical.length, 2)
                   assert.isTrue(historical.every((record) => record.retiredAt === batch.seq))
-                  const replacement = batch.changes.find(
-                    (write) => write._tag === 'document.change',
-                  )
-                  assert.deepEqual(replacement?.content, {
-                    _tag: 'base',
+                  const change = batch.changes.find((write) => write._tag === 'document.change')
+                  assert.deepEqual(change?.content, {
+                    _tag: 'delta',
                     version: 1,
-                    value: { count: 1 },
+                    ops: [['set', ['count'], 1]],
                   })
                   assert.deepEqual(before.value, { count: 0 })
                   assert.deepEqual(saved.value, { count: 0 })
@@ -285,7 +286,7 @@ describe('task retirement failures and legacy state', () => {
           },
           response: undefined,
         }
-        const model = yield* LanguageModel.make({
+        const model = yield* ScriptedStream.make({
           generateText: ({ prompt }) =>
             Effect.succeed(
               prompt.content.some((message) => message.role === 'tool')
@@ -301,7 +302,6 @@ describe('task retirement failures and legacy state', () => {
                     { ...finish, reason: 'tool-calls' as const },
                   ],
             ),
-          streamText: () => Stream.empty,
         })
         let owner: Record.TaskId | undefined
         const runtime = yield* HarnessRuntime.make({ tools }).pipe(

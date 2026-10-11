@@ -12,6 +12,7 @@ import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import type * as Record from 'effect-harness/Record'
 import * as Session from 'effect-harness/Session'
 import type { Storage } from 'effect-harness/Storage'
+import type { StorageFormat } from 'effect-harness/StorageFormat'
 import * as Transaction from 'effect-harness/Transaction'
 import { ConversationInitializer as Namespace } from 'effect-harness'
 
@@ -58,24 +59,28 @@ test('initializer requirements reach runtime construction and both public Layers
     Effect.Effect<
       HarnessRuntime.HarnessRuntimeService,
       HarnessError,
-      Storage | LanguageModel.LanguageModel | Scope.Scope | Seed | Audit
+      Storage | StorageFormat | LanguageModel.LanguageModel | Scope.Scope | Seed | Audit
     >
   >()
   expect(HarnessRuntime.layer(options)).type.toBe<
     Layer.Layer<
       HarnessRuntime.HarnessRuntime | HarnessBackend,
       HarnessError,
-      Storage | LanguageModel.LanguageModel | Seed | Audit
+      Storage | StorageFormat | LanguageModel.LanguageModel | Seed | Audit
     >
   >()
   expect(Harness.layerLocal(options)).type.toBe<
-    Layer.Layer<Harness.Harness, HarnessError, Storage | LanguageModel.LanguageModel | Seed | Audit>
+    Layer.Layer<
+      Harness.Harness,
+      HarnessError,
+      Storage | StorageFormat | LanguageModel.LanguageModel | Seed | Audit
+    >
   >()
   expect(HarnessRuntime.layer()).type.toBe<
     Layer.Layer<
       HarnessRuntime.HarnessRuntime | HarnessBackend,
       HarnessError,
-      Storage | LanguageModel.LanguageModel
+      Storage | StorageFormat | LanguageModel.LanguageModel
     >
   >()
 })

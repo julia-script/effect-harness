@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -41,7 +42,7 @@ const execute = <Tools extends Record<string, Tool.Any>>(
 ) =>
   Effect.gen(function* () {
     let observed: unknown
-    const model = yield* LanguageModel.make({
+    const model = yield* ScriptedStream.make({
       generateText: ({ prompt }) => {
         const result = prompt.content
           .flatMap((message) => (message.role === 'tool' ? message.content : []))
@@ -55,7 +56,6 @@ const execute = <Tools extends Record<string, Tool.Any>>(
           { ...finish, reason: 'tool-calls' as const },
         ])
       },
-      streamText: () => Stream.empty,
     })
     const runtime = yield* HarnessRuntime.make({ tools: toolkit, hooks }).pipe(
       Effect.provideService(LanguageModel.LanguageModel, model),

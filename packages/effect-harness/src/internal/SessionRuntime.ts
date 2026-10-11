@@ -1,5 +1,5 @@
 /** One scoped coordination line, document cache and bounded non-blocking observers. */
-import type * as Cause from 'effect/Cause'
+import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -12,7 +12,11 @@ import type * as Session from '../Session.js'
 import type * as Transaction from '../Transaction.js'
 import { SessionError, type Failure } from '../SessionError.js'
 import { Storage } from '../Storage.js'
+import * as StorageFormat from '../StorageFormat.js'
+import { StorageError } from '../StorageError.js'
 import * as Value from './DocumentValue.js'
+import type * as ObservationRuntime from './ObservationRuntime.js'
+import type * as DocumentBackend from './DocumentBackend.js'
 
 export type Event =
   | { readonly _tag: 'commit'; readonly value: Session.Commit }
@@ -29,6 +33,14 @@ export interface State {
   readonly semaphore: Semaphore.Semaphore
   readonly cache: Map<string, Option.Option<Record.StoredDocument>>
   readonly subscribers: Set<Subscriber>
+  readonly reconciliations: Set<Queue.Queue<void, Cause.Done | SessionError>>
+  readonly observations: Map<string, ObservationRuntime.Mount>
+  readonly documentMounts: Set<DocumentBackend.Mount>
+  observationCommitSeq: Session.Commit['seq'] | undefined
+  readonly requireSchedulerFormat: Effect.Effect<StorageFormat.Format, StorageFormat.Failure>
+  readonly requireDocumentPatchFormat: Effect.Effect<StorageFormat.Format, StorageFormat.Failure>
+  readonly checkToolCallFormat: Effect.Effect<void, Failure>
+  scheduler: object | undefined
   closed: boolean
   poison: Failure | undefined
 }
@@ -162,6 +174,10 @@ export const publish = Effect.fnUntraced(function* (
   commit: Session.Commit,
   documents: ReadonlyMap<Domain.DocumentId, Record.StoredDocument | null>,
 ) {
+  state.observationCommitSeq = commit.seq
+  for (const mount of state.documentMounts) yield* mount.publish(documents)
+  for (const mount of state.observations.values()) yield* mount.publish(commit, documents)
+  for (const queue of state.reconciliations) yield* Queue.offer(queue, undefined)
   for (const subscriber of state.subscribers) {
     if (subscriber.documentId === undefined)
       yield* emit(state, subscriber, { _tag: 'commit', value: commit })
@@ -177,6 +193,12 @@ export const publish = Effect.fnUntraced(function* (
 
 export const stop = Effect.fnUntraced(function* (state: State, error?: Failure) {
   state.poison = error
+  for (const mount of state.documentMounts) yield* mount.close(error)
+  state.documentMounts.clear()
+  for (const mount of state.observations.values()) yield* mount.close(error)
+  state.observations.clear()
+  for (const queue of state.reconciliations) yield* Queue.end(queue)
+  state.reconciliations.clear()
   for (const subscriber of state.subscribers) {
     if (error === undefined) yield* Queue.end(subscriber.queue)
     else
@@ -195,13 +217,79 @@ export const stop = Effect.fnUntraced(function* (state: State, error?: Failure) 
 
 export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Initializer> = []) {
   const storage = yield* Storage
+  const capability = yield* Effect.serviceOption(StorageFormat.StorageFormat)
+  const guardContext = Context.make(Storage, storage)
+  const guard = (version: 2 | 3) =>
+    StorageFormat.requireSupportedFormat({
+      formatVersion: version,
+      minimumReaderVersion: version,
+    }).pipe(
+      Effect.updateContext((_context: Context.Context<never>) =>
+        Option.isSome(capability)
+          ? Context.add(guardContext, StorageFormat.StorageFormat, capability.value)
+          : guardContext,
+      ),
+    )
   const semaphore = yield* Semaphore.make(1)
+  const checkToolCallFormat: Effect.Effect<void, Failure> = Effect.gen(function* () {
+    if (Option.isNone(capability) || capability.value.storage !== storage)
+      return yield* new SessionError({
+        reason: 'invalid',
+        operation: 'usage.format',
+        message: 'Tool-call receipts require the matching StorageFormat capability',
+      })
+    const format = yield* capability.value.inspect
+    yield* StorageFormat.validate(format)
+    if (format.minimumReaderVersion < 9)
+      return yield* new SessionError({
+        reason: 'invalid',
+        operation: 'usage.format',
+        message: 'Tool-call receipts require container and minimum reader protection 9/9',
+      })
+  }).pipe(
+    Effect.catchCause((fullCause) =>
+      Effect.gen(function* () {
+        const mapped = Cause.map(fullCause, (cause): Failure => {
+          if (cause._tag !== 'StorageFormatError') return cause
+          if (cause.reason === 'unavailable')
+            return new SessionError({
+              reason: 'invalid',
+              operation: 'usage.format',
+              message: cause.message,
+              cause,
+            })
+          return new StorageError({
+            reason: 'unsupportedFormat',
+            operation: 'usage.format',
+            message: cause.message,
+            cause,
+          })
+        })
+        for (const reason of mapped.reasons)
+          if (
+            reason._tag === 'Fail' &&
+            reason.error._tag === 'StorageError' &&
+            reason.error.reason === 'uncertain'
+          )
+            yield* stop(state, reason.error)
+        return yield* Effect.failCause(mapped)
+      }),
+    ),
+  )
   const state: State = {
     initializers,
     storage,
     semaphore,
     cache: new Map(),
     subscribers: new Set(),
+    reconciliations: new Set(),
+    observations: new Map(),
+    documentMounts: new Set(),
+    observationCommitSeq: undefined,
+    requireSchedulerFormat: guard(2),
+    requireDocumentPatchFormat: guard(3),
+    checkToolCallFormat,
+    scheduler: undefined,
     closed: false,
     poison: undefined,
   }
@@ -231,3 +319,19 @@ export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Ini
       }),
   )
 })
+
+/** Latest-state scheduler signals attach atomically. Overflow coalesces into a full scan. */
+export const reconcile = (self: object) =>
+  line(self, 'session.reconcile', (state) =>
+    Effect.gen(function* () {
+      const queue = yield* Queue.sliding<void, Cause.Done | SessionError>(1)
+      state.reconciliations.add(queue)
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          state.reconciliations.delete(queue)
+          yield* Queue.shutdown(queue)
+        }),
+      )
+      return queue
+    }),
+  )

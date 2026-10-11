@@ -32,7 +32,7 @@ it.live('runs memory, SQLite and JSONL cases from the built public Testing subpa
         { concurrency: 'unbounded' },
       )
       assert.strictEqual(code, 0, stderr)
-      assert.include(stdout, 'public storage consumer: 29 cases passed; temporary stores removed')
+      assert.include(stdout, 'public storage consumer: 53 cases passed; temporary stores removed')
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 )

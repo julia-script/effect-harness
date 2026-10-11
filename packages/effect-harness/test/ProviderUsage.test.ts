@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import * as Hook from 'effect-harness/Hook'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Document from 'effect-harness/Document'
@@ -27,10 +28,12 @@ import * as Record from 'effect-harness/Record'
 import * as Session from 'effect-harness/Session'
 import * as Storage from 'effect-harness/Storage'
 import { StorageError } from 'effect-harness/StorageError'
+import { StorageFormat } from 'effect-harness/StorageFormat'
 import * as Tool from 'effect-harness/Tool'
 import * as Toolkit from 'effect-harness/Toolkit'
 import * as Transaction from 'effect-harness/Transaction'
 import * as Usage from 'effect-harness/Usage'
+import * as Prepared from 'effect-harness/PreparedRequest'
 
 const root = Record.ROOT_CONVERSATION_ID
 const pricing = { inputToken: 0.01, outputToken: 0.02, currency: 'USD', source: 'fixture-v1' }
@@ -110,19 +113,14 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                 )
               : Storage.layerJsonl({ filePath: `${directory}/state.jsonl` })
           const identities: Array<string> = []
-          const native = yield* LanguageModel.make({
+          const native = yield* ScriptedStream.make({
             generateText: () => Effect.succeed(answer),
-            streamText: () => Stream.empty,
           })
           const models = [definition(native, identities)]
           const open = Effect.gen(function* () {
-            const storage =
-              backend === 'memory'
-                ? yield* Storage.Storage
-                : Context.get(yield* Layer.build(disk), Storage.Storage)
-            return yield* HarnessRuntime.make({ models }).pipe(
-              Effect.provideService(Storage.Storage, storage),
-            )
+            if (backend === 'memory') return yield* HarnessRuntime.make({ models })
+            const context = yield* Layer.build(disk)
+            return yield* HarnessRuntime.make({ models }).pipe(Effect.provideContext(context))
           })
           const firstScope = yield* Scope.make()
           yield* Effect.addFinalizer(() => Scope.close(firstScope, Exit.void))
@@ -197,7 +195,7 @@ describe('provider accounting boundaries', () => {
             },
           ])
           const identities: Array<string> = []
-          const native = yield* LanguageModel.make({
+          const native = yield* ScriptedStream.make({
             generateText: () =>
               Effect.gen(function* () {
                 const records = yield* storage
@@ -209,7 +207,6 @@ describe('provider accounting boundaries', () => {
                 assert.lengthOf(records, 1)
                 return answer
               }),
-            streamText: () => Stream.empty,
           })
           const runtime = yield* HarnessRuntime.make({
             models: [definition(native, identities, null)],
@@ -274,12 +271,27 @@ describe('provider accounting boundaries', () => {
       memory(
         Effect.gen(function* () {
           let calls = 0
-          const native = yield* LanguageModel.make({
+          const native = yield* ScriptedStream.make({
             generateText: () =>
               Effect.sync(() =>
-                ++calls === 1 ? answer : [Response.makePart('text', { text: 'no usage' })],
+                ++calls === 1
+                  ? answer
+                  : [
+                      Response.makePart('text', { text: 'no usage' }),
+                      Response.makePart('finish', {
+                        reason: 'stop',
+                        usage: new Response.Usage({
+                          inputTokens: {
+                            total: undefined,
+                            uncached: undefined,
+                            cacheRead: undefined,
+                            cacheWrite: undefined,
+                          },
+                          outputTokens: { total: undefined, text: undefined, reasoning: undefined },
+                        }),
+                      }),
+                    ],
               ),
-            streamText: () => Stream.empty,
           })
           const runtime = yield* HarnessRuntime.make({ models: [definition(native)] })
           yield* runtime.backend.root
@@ -302,10 +314,11 @@ describe('provider accounting boundaries', () => {
       ),
   )
 
-  it.effect('model failure and failed response commit never publish usage', () =>
+  it.effect('rejected response retains one known failed receipt without assistant entry', () =>
     memory(
       Effect.gen(function* () {
         const real = yield* Storage.Storage
+        const format = yield* StorageFormat
         let reject = false
         const storage = Storage.Storage.of({
           ...real,
@@ -323,16 +336,25 @@ describe('provider accounting boundaries', () => {
                 )
               : real.commit(writes),
         })
-        const native = yield* LanguageModel.make({
+        let observed: Prepared.Snapshot | undefined
+        let providerCalls = 0
+        const native = yield* ScriptedStream.make({
           generateText: () =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
+              observed = Option.getOrThrow(
+                yield* Effect.serviceOption(Prepared.PreparedRequest),
+              ).current
+              providerCalls++
               reject = true
               return answer
             }),
-          streamText: () => Stream.empty,
         })
+        const owner = yield* Scope.make()
+        yield* Effect.addFinalizer(() => Scope.close(owner, Exit.void))
         const runtime = yield* HarnessRuntime.make({ models: [definition(native)] }).pipe(
+          Effect.provideService(Scope.Scope, owner),
           Effect.provideService(Storage.Storage, storage),
+          Effect.provideService(StorageFormat, { ...format, storage }),
         )
         yield* runtime.backend.root
         const job = yield* runtime.backend.submit({
@@ -341,11 +363,151 @@ describe('provider accounting boundaries', () => {
         })
         const result = yield* runtime.backend.wait(job.id)
         assert.strictEqual(result.status, 'unanswered')
-        assert.deepEqual((yield* Session.usage(runtime.session)).models, [])
+        const report = yield* Session.usage(runtime.session)
+        assert.strictEqual(report.models[0]?.responses, 1)
+        assert.deepEqual(report.models[0]?.tokens, {
+          input: 10,
+          inputUncached: 6,
+          cacheRead: 4,
+          output: 5,
+          outputText: 3,
+          reasoning: 2,
+        })
+        assert.strictEqual(report.costs[0]?.model, 0.2)
         assert.isFalse((yield* own(runtime)).some((entry) => entry.usage !== undefined))
+        assert.isFalse((yield* own(runtime)).some((entry) => entry.kind === 'assistant'))
+        const receipts = yield* Session.commit(runtime.session, (tx) => Usage.receipts(tx, root))
+        assert.strictEqual(receipts.length, 1)
+        assert.strictEqual(receipts[0]?.outcome._tag, 'failed')
+        assert.strictEqual(receipts[0]?.linkedEntryId, undefined)
+        const expectedIdentity = yield* Schema.decodeUnknownEffect(Usage.ReceiptIdentitySchema)({
+          _tag: 'requestAttempt',
+          requestId: observed?.requestId,
+          attempt: 0,
+          purpose: 'generation',
+        })
+        assert.deepEqual(receipts[0]?.identity, expectedIdentity)
+        yield* Scope.close(owner, Exit.void)
+        const reopened = yield* HarnessRuntime.make({ models: [definition(native)] }).pipe(
+          Effect.provideService(Storage.Storage, storage),
+          Effect.provideService(StorageFormat, { ...format, storage }),
+        )
+        yield* reopened.backend.wait(job.id)
+        assert.deepEqual(yield* Session.usage(reopened.session), report)
+        assert.deepEqual(
+          yield* Session.commit(reopened.session, (tx) => Usage.receipts(tx, root)),
+          receipts,
+        )
+        assert.strictEqual(providerCalls, 1)
       }),
     ),
   )
+
+  for (const boundary of ['uncertain', 'corrupt', 'closed', 'settlement'] as const) {
+    it.effect(`native response ${boundary} failure retains health and recoverable state`, () =>
+      memory(
+        Effect.gen(function* () {
+          const real = yield* Storage.Storage
+          const format = yield* StorageFormat
+          let settlementWrites = 0
+          const storage = Storage.Storage.of({
+            ...real,
+            commit: (input) =>
+              Effect.suspend(() => {
+                const writes = Array.from(input)
+                const response = writes.some(
+                  (write) => write._tag === 'entry' && write.value.kind === 'assistant',
+                )
+                const settlement = writes.some(
+                  (write) => write._tag === 'submission' && write.value.status === 'unanswered',
+                )
+                if (settlement) settlementWrites++
+                if (response || (boundary === 'settlement' && settlement)) {
+                  const failure = new StorageError({
+                    reason: boundary === 'settlement' ? 'io' : boundary,
+                    operation: 'fixture.responseBoundary',
+                    message: boundary,
+                  })
+                  return boundary === 'uncertain' && response
+                    ? real.commit(writes).pipe(Effect.andThen(Effect.fail(failure)))
+                    : Effect.fail(failure)
+                }
+                return real.commit(writes)
+              }),
+          })
+          let observed: Prepared.Snapshot | undefined
+          const native = yield* ScriptedStream.make({
+            generateText: () =>
+              Effect.gen(function* () {
+                observed = Option.getOrThrow(
+                  yield* Effect.serviceOption(Prepared.PreparedRequest),
+                ).current
+                return answer
+              }),
+          })
+          const scope = yield* Scope.make()
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+          const runtime = yield* HarnessRuntime.make({ models: [definition(native)] }).pipe(
+            Effect.provideService(Storage.Storage, storage),
+            Effect.provideService(StorageFormat, { ...format, storage }),
+            Effect.provideService(Scope.Scope, scope),
+          )
+          yield* runtime.backend.root
+          const job = yield* runtime.backend.submit({
+            conversationId: root,
+            draft: { type: 'input', content: 'go' },
+          })
+          const failure = yield* runtime.backend.wait(job.id).pipe(Effect.flip)
+          assert.strictEqual(
+            failure.operation,
+            boundary === 'uncertain' ? 'runtime.observe' : 'runtime.scheduler',
+          )
+          assert.strictEqual(settlementWrites, boundary === 'settlement' ? 1 : 0)
+          const saved = Option.getOrThrow(yield* real.submission(job.id))
+          assert.strictEqual(saved.status, boundary === 'uncertain' ? 'done' : 'placed')
+          const entries = yield* Stream.runCollect(real.scanEntries({ conversationId: root }))
+          assert.strictEqual(
+            entries.filter((entry) => entry.usage !== undefined).length,
+            boundary === 'uncertain' ? 1 : 0,
+          )
+          if (boundary === 'uncertain') {
+            const sealed = yield* Session.usage(runtime.session).pipe(Effect.flip)
+            assert.strictEqual(sealed._tag, 'StorageError')
+            if (sealed._tag === 'StorageError') assert.strictEqual(sealed.reason, 'uncertain')
+            yield* Scope.close(scope, Exit.void)
+            const reopened = yield* HarnessRuntime.make({ models: [definition(native)] })
+            yield* reopened.backend.root
+            assert.strictEqual((yield* reopened.backend.wait(job.id)).status, 'done')
+            assert.strictEqual((yield* Session.usage(reopened.session)).models[0]?.responses, 1)
+          } else {
+            const tasks = yield* Stream.runCollect(real.scanTasks({ kind: 'harness.run' }))
+            assert.strictEqual(tasks.length, 1)
+            assert.strictEqual(tasks[0]?.state.status, 'running')
+            const task = tasks[0]!
+            const checkpoint = yield* Schema.decodeUnknownEffect(
+              Schema.Struct({
+                phase: Schema.String,
+                preparation: Schema.toCodecJson(Prepared.SnapshotSchema),
+                attempt: Usage.AttemptId,
+              }),
+            )(task.state.checkpoint)
+            assert.strictEqual(checkpoint.phase, 'streaming')
+            assert.strictEqual(checkpoint.preparation.ordinal, 1)
+            assert.deepEqual(checkpoint.preparation, observed)
+            assert.strictEqual(checkpoint.preparation.attempt, 0)
+            assert.strictEqual(checkpoint.attempt, 0)
+            assert.strictEqual(checkpoint.preparation.configuration, null)
+            assert.deepEqual(
+              checkpoint.preparation.model._tag === 'descriptor'
+                ? checkpoint.preparation.model.definition.ref
+                : undefined,
+              { provider: 'fixture', modelId: 'deterministic' },
+            )
+          }
+        }),
+      ),
+    )
+  }
 
   for (const failed of [false, true]) {
     it.effect(
@@ -357,7 +519,7 @@ describe('provider accounting boundaries', () => {
             const tools = Toolkit.make(Tool.makeResult('__proto__', { replay: 'safe' }))
             let executions = 0
             let block = true
-            const native = yield* LanguageModel.make({
+            const native = yield* ScriptedStream.make({
               generateText: ({ prompt }) => {
                 if (prompt.content.some((message) => message.role === 'tool'))
                   return block
@@ -373,7 +535,6 @@ describe('provider accounting boundaries', () => {
                   finish,
                 ])
               },
-              streamText: () => Stream.empty,
             })
             const layer = tools.toLayer({
               ['__proto__']: () => {
@@ -428,9 +589,8 @@ describe('accounting for omitted history and failed attempts', () => {
     memory(
       Effect.gen(function* () {
         const declared = { ...pricing }
-        const native = yield* LanguageModel.make({
+        const native = yield* ScriptedStream.make({
           generateText: () => Effect.succeed(answer),
-          streamText: () => Stream.empty,
         })
         const runtime = yield* HarnessRuntime.make({
           models: [definition(native, undefined, declared)],
@@ -460,12 +620,11 @@ describe('accounting for omitted history and failed attempts', () => {
       memory(
         Effect.gen(function* () {
           let requests = 0
-          const native = yield* LanguageModel.make({
+          const native = yield* ScriptedStream.make({
             generateText: () =>
               ++requests === 1
                 ? Effect.succeed(answer)
                 : Effect.die('provider failed before response'),
-            streamText: () => Stream.empty,
           })
           const hook = Hook.make({
             event: 'onYield',
@@ -493,9 +652,8 @@ describe('accounting for omitted history and failed attempts', () => {
   it.effect('unpriced native defaults keep unknown model identity and real counters', () =>
     memory(
       Effect.gen(function* () {
-        const native = yield* LanguageModel.make({
+        const native = yield* ScriptedStream.make({
           generateText: () => Effect.succeed(answer),
-          streamText: () => Stream.empty,
         })
         const runtime = yield* HarnessRuntime.make().pipe(
           Effect.provideService(LanguageModel.LanguageModel, native),

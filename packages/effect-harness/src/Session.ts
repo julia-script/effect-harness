@@ -20,6 +20,7 @@ import type * as Identity from './Identity.js'
 import type * as ConversationInitializer from './ConversationInitializer.js'
 import * as Record from './Record.js'
 import type * as Document from './Document.js'
+import type * as DocumentMaterialization from './DocumentMaterialization.js'
 import * as StorageRecord from './Record.js'
 import * as Sequence from './Sequence.js'
 import { SessionError as SessionFailure, type Failure } from './SessionError.js'
@@ -374,6 +375,101 @@ export const watch: {
   ) => watchImpl(self, document, target),
 )
 
+/** Materializes a detached current revision without persistence; missing documents return None. */
+export const materializedSnapshot: {
+  <S extends Document.Codec>(
+    document: Document.Document<S>,
+    target: Document.Target,
+  ): (
+    self: Session,
+  ) => Effect.Effect<
+    Option.Option<DocumentMaterialization.Snapshot<S>>,
+    Failure,
+    S['DecodingServices']
+  >
+  <S extends Document.Codec>(
+    self: Session,
+    document: Document.Document<S>,
+    target: Document.Target,
+  ): Effect.Effect<
+    Option.Option<DocumentMaterialization.Snapshot<S>>,
+    Failure,
+    S['DecodingServices']
+  >
+} = dual(
+  (args) => isSession(args[0]),
+  <S extends Document.Codec>(
+    self: Session,
+    document: Document.Document<S>,
+    target: Document.Target,
+  ) => materializedSnapshotImpl(self, document, target),
+)
+
+/**
+ * Materializes a rewindable revision at a visible entry using the supplied migrations.
+ * Retains the selected historical record and stored version; never persists an upgrade.
+ */
+export const materializedSnapshotAsOf: {
+  <S extends Document.Codec>(
+    document: Document.Document<S>,
+    target: Document.Target,
+    at: Record.EntryId,
+  ): (
+    self: Session,
+  ) => Effect.Effect<
+    Option.Option<DocumentMaterialization.Snapshot<S>>,
+    Failure,
+    S['DecodingServices']
+  >
+  <S extends Document.Codec>(
+    self: Session,
+    document: Document.Document<S>,
+    target: Document.Target,
+    at: Record.EntryId,
+  ): Effect.Effect<
+    Option.Option<DocumentMaterialization.Snapshot<S>>,
+    Failure,
+    S['DecodingServices']
+  >
+} = dual(
+  (args) => isSession(args[0]),
+  <S extends Document.Codec>(
+    self: Session,
+    document: Document.Document<S>,
+    target: Document.Target,
+    at: Record.EntryId,
+  ) => materializedSnapshotAsOfImpl(self, document, target, at),
+)
+
+/**
+ * Atomically subscribes and captures an in-memory materialized initial revision.
+ * Emits every later committed revision of that incarnation; retirement ends the stream.
+ * A migration-only equivalent value still emits: its storedVersion changes while its
+ * effectiveVersion stays fixed. Each frame is materialized from its own encoded version.
+ * Missing documents fail with notFound. Stream termination releases the subscription.
+ * Slow consumers cannot block commits; exceeding the subscriber buffer fails with overflow.
+ */
+export const watchMaterialized: {
+  <S extends Document.Codec>(
+    document: Document.Document<S>,
+    target: Document.Target,
+  ): (
+    self: Session,
+  ) => Stream.Stream<DocumentMaterialization.Snapshot<S>, Failure, S['DecodingServices']>
+  <S extends Document.Codec>(
+    self: Session,
+    document: Document.Document<S>,
+    target: Document.Target,
+  ): Stream.Stream<DocumentMaterialization.Snapshot<S>, Failure, S['DecodingServices']>
+} = dual(
+  (args) => isSession(args[0]),
+  <S extends Document.Codec>(
+    self: Session,
+    document: Document.Document<S>,
+    target: Document.Target,
+  ) => watchMaterializedImpl(self, document, target),
+)
+
 /** Live committed batches after subscription; no initial frame or historical replay. */
 export const commits: {
   (): (self: Session) => Stream.Stream<Commit, Failure>
@@ -547,6 +643,103 @@ const watchImpl = <S extends Document.Codec>(
     }),
   )
 
+const materializedSnapshotImpl = Effect.fnUntraced(function* <S extends Document.Codec>(
+  self: Session,
+  document: Document.Document<S>,
+  target: Document.Target,
+) {
+  const address = yield* Value.address(document, target)
+  return yield* SessionRuntime.line(self, 'session.materializedSnapshot', (state) =>
+    Effect.gen(function* () {
+      const stored = yield* SessionRuntime.load(state, address)
+      if (Option.isNone(stored)) return Option.none<DocumentMaterialization.Snapshot<S>>()
+      return Option.some(yield* Value.materialize(document, stored.value))
+    }),
+  )
+})
+
+const materializedSnapshotAsOfImpl = Effect.fnUntraced(function* <S extends Document.Codec>(
+  self: Session,
+  document: Document.Document<S>,
+  target: Document.Target,
+  at: Record.EntryId,
+) {
+  const address = yield* Value.address(document, target)
+  if (
+    address.scope._tag !== 'conversation' ||
+    document.definition.scope !== 'conversation' ||
+    document.definition.history !== 'rewindable'
+  )
+    return yield* new SessionFailure({
+      reason: 'invalid',
+      operation: 'session.materializedSnapshotAsOf',
+      message: 'Historical reads require a rewindable conversation document',
+    })
+  const conversationId = address.scope.conversationId
+  return yield* SessionRuntime.line(self, 'session.materializedSnapshotAsOf', (state) =>
+    Effect.gen(function* () {
+      const entry = yield* state.storage.entry(at, { conversationId })
+      if (Option.isNone(entry))
+        return yield* new SessionFailure({
+          reason: 'notFound',
+          operation: 'session.materializedSnapshotAsOf',
+          message: 'Historical entry is not visible',
+        })
+      const record = yield* state.storage.findDocument(
+        {
+          ...address,
+          scope: { _tag: 'conversation', conversationId: entry.value.entry.conversationId },
+        },
+        entry.value.commitSeq,
+      )
+      if (Option.isNone(record)) return Option.none<DocumentMaterialization.Snapshot<S>>()
+      const stored = yield* state.storage.document(record.value.id, entry.value.commitSeq)
+      if (Option.isNone(stored))
+        return yield* new SessionFailure({
+          reason: 'invalid',
+          operation: 'session.materializedSnapshotAsOf',
+          message: 'Historical document has no stored content',
+        })
+      return Option.some(yield* Value.materialize(document, stored.value))
+    }),
+  )
+})
+
+const watchMaterializedImpl = <S extends Document.Codec>(
+  self: Session,
+  document: Document.Document<S>,
+  target: Document.Target,
+) =>
+  Stream.unwrap(
+    Effect.gen(function* () {
+      const address = yield* Value.address(document, target)
+      const acquired = yield* SessionRuntime.line(self, 'session.watchMaterialized', (state) =>
+        Effect.gen(function* () {
+          const stored = yield* SessionRuntime.load(state, address)
+          if (Option.isNone(stored))
+            return yield* new SessionFailure({
+              reason: 'notFound',
+              operation: 'session.watchMaterialized',
+              message: 'Document is absent',
+            })
+          const initial = yield* Value.materialize(document, stored.value)
+          const subscriber = yield* SessionRuntime.subscribe(state, stored.value.record.id)
+          return { initial, subscriber }
+        }),
+      )
+      const revisions = Stream.fromQueue(acquired.subscriber.queue).pipe(
+        Stream.filter(
+          (
+            event,
+          ): event is { readonly _tag: 'document'; readonly value: StorageRecord.StoredDocument } =>
+            event._tag === 'document' && event.value !== null,
+        ),
+        Stream.mapEffect((event) => Value.materialize(document, event.value)),
+      )
+      return Stream.concat(Stream.succeed(acquired.initial), revisions)
+    }),
+  )
+
 const commitsImpl = (self: Session) =>
   Stream.unwrap(
     Effect.gen(function* () {
@@ -567,8 +760,9 @@ const commitsImpl = (self: Session) =>
 
 /**
  * Atomic accounting snapshot. Omit conversationId for all local work in this durable
- * session; supply it for only that conversation's own entries. Fork history is excluded
- * from child totals and counted once in session totals. Reads never create records.
+ * session; supply it for only that conversation's own entries and durable receipts.
+ * Fork history is excluded from child totals and counted once in session totals.
+ * Reads never create records. Receipts do not reconstruct uncommitted external charges.
  * Older entries are counted as legacyRecords, with unknown usage. Earlier versions
  * discard the optional accounting field on decode; downgrade loses these facts.
  */
@@ -597,6 +791,7 @@ export const usage = Effect.fnUntraced(function* (
               ),
             ]
       const entries: Array<Record.Entry> = []
+      const receipts: Array<Usage.Receipt> = []
       for (const conversation of conversations) {
         const own = yield* Transaction.scanEntries(tx, {
           conversationId: conversation.id,
@@ -606,8 +801,9 @@ export const usage = Effect.fnUntraced(function* (
           Stream.runCollect,
         )
         entries.push(...own)
+        receipts.push(...(yield* Usage.receipts(tx, conversation.id)))
       }
-      return Usage.aggregate(entries)
+      return Usage.aggregate(entries, receipts)
     }),
   )
 })

@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { NodeServices } from '@effect/platform-node'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
@@ -48,7 +49,7 @@ const execute = <Tools extends Record<string, Tool.Any>>(
 ) =>
   Effect.gen(function* () {
     let observed: unknown
-    const model = yield* LanguageModel.make({
+    const model = yield* ScriptedStream.make({
       generateText: ({ prompt }) => {
         const result = prompt.content
           .flatMap((message) => (message.role === 'tool' ? message.content : []))
@@ -62,7 +63,6 @@ const execute = <Tools extends Record<string, Tool.Any>>(
           { ...finish, reason: 'tool-calls' as const },
         ])
       },
-      streamText: () => Stream.empty,
     })
     const runtime = yield* HarnessRuntime.make({ tools, hooks }).pipe(
       Effect.provideService(LanguageModel.LanguageModel, model),
@@ -360,7 +360,7 @@ describe('independent tool result channels', () => {
         yield* Effect.addFinalizer(() => Scope.close(firstScope, Exit.void))
         let calls = 0
         let observed: unknown
-        const model = yield* LanguageModel.make({
+        const model = yield* ScriptedStream.make({
           generateText: () =>
             Effect.succeed([
               {
@@ -372,7 +372,6 @@ describe('independent tool result channels', () => {
               },
               { ...finish, reason: 'tool-calls' as const },
             ]),
-          streamText: () => Stream.empty,
         })
         const handlers = toolkit.toLayer({
           work: () =>
@@ -410,7 +409,7 @@ describe('independent tool result channels', () => {
         })
         yield* Deferred.await(entered)
         yield* Scope.close(firstScope, Exit.void)
-        const recoveredModel = yield* LanguageModel.make({
+        const recoveredModel = yield* ScriptedStream.make({
           generateText: ({ prompt }) => {
             const result = prompt.content
               .flatMap((message) => (message.role === 'tool' ? message.content : []))
@@ -418,7 +417,6 @@ describe('independent tool result channels', () => {
             observed = result?.result
             return Effect.succeed([{ type: 'text', text: 'done' }, finish])
           },
-          streamText: () => Stream.empty,
         })
         let recoveredResults: ReadonlyArray<ToolResult.Result> = []
         const recoveredHook = Hook.make({

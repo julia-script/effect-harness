@@ -21,6 +21,7 @@ import * as Model from 'effect-harness/Model'
 import * as PromptSection from 'effect-harness/PromptSection'
 import type * as Session from 'effect-harness/Session'
 import type { Storage } from 'effect-harness/Storage'
+import type { StorageFormat } from 'effect-harness/StorageFormat'
 import * as Submission from 'effect-harness/Submission'
 import * as Tool from 'effect-harness/Tool'
 import type { ToolExecution } from 'effect-harness/ToolExecution'
@@ -126,28 +127,37 @@ test('runtime owns tool handlers, hooks, storage and provider dependencies', () 
     Layer.Layer<
       HarnessRuntime.HarnessRuntime | HarnessBackend,
       Harness.HarnessError,
-      Storage | LanguageModel.LanguageModel | Toolkit.Handler<'search_issues'> | Audit
+      | Storage
+      | StorageFormat
+      | LanguageModel.LanguageModel
+      | Toolkit.Handler<'search_issues'>
+      | Audit
     >
   >()
   const extension = Extension.make({ name: 'issues', tools: [search], hooks: [beforeTool] })
   expect<Extension.Requirements<typeof extension>>().type.toBe<
-    Toolkit.Handler<'search_issues'> | Audit | HookExecution
+    Toolkit.Handler<'search_issues'> | Audit
   >()
   expect(HarnessRuntime.make({ extensions: [extension] })).type.toBe<
     Effect.Effect<
       HarnessRuntime.HarnessRuntimeService,
       Harness.HarnessError,
-      Scope.Scope | Storage | LanguageModel.LanguageModel | Toolkit.Handler<'search_issues'> | Audit
+      | Scope.Scope
+      | Storage
+      | StorageFormat
+      | LanguageModel.LanguageModel
+      | Toolkit.Handler<'search_issues'>
+      | Audit
     >
   >()
 })
 
 test('hooks and extension providers retain dependencies in both dual forms', () => {
-  expect<Hook.Requirements<typeof beforeTool>>().type.toBe<Audit | HookExecution>()
+  expect<Hook.Requirements<typeof beforeTool>>().type.toBe<Audit>()
   const supplied = Hook.provide(beforeTool, auditLayer)
   const piped = beforeTool.pipe(Hook.provide(auditLayer))
-  expect<Hook.Requirements<typeof supplied>>().type.toBe<HookExecution>()
-  expect<Hook.Requirements<typeof piped>>().type.toBe<HookExecution>()
+  expect<Hook.Requirements<typeof supplied>>().type.toBe<never>()
+  expect<Hook.Requirements<typeof piped>>().type.toBe<never>()
   const extension = Extension.make({ name: 'issues', tools: toolkit }).pipe(
     Extension.provide(handlers),
   )
@@ -163,12 +173,12 @@ test('prompt sections keep application services on the execution side', () => {
     }),
   })
   const extension = Extension.make({ name: 'project', sections: [section] })
-  expect<Extension.Requirements<typeof extension>>().type.toBe<Audit | HookExecution>()
+  expect<Extension.Requirements<typeof extension>>().type.toBe<Audit>()
   expect(HarnessRuntime.layer({ extensions: [extension] })).type.toBe<
     Layer.Layer<
       HarnessRuntime.HarnessRuntime | HarnessBackend,
       Harness.HarnessError,
-      Storage | LanguageModel.LanguageModel | Audit
+      Storage | StorageFormat | LanguageModel.LanguageModel | Audit
     >
   >()
 })
@@ -201,7 +211,12 @@ test('tool codecs are required by the handler side independently of application 
     Layer.Layer<
       HarnessRuntime.HarnessRuntime | HarnessBackend,
       Harness.HarnessError,
-      Storage | LanguageModel.LanguageModel | Toolkit.Handler<'clock'> | Decoder | Encoder
+      | Storage
+      | StorageFormat
+      | LanguageModel.LanguageModel
+      | Toolkit.Handler<'clock'>
+      | Decoder
+      | Encoder
     >
   >()
 })
@@ -225,7 +240,7 @@ test('model descriptors keep codec and configuration services exclusively on the
     Layer.Layer<
       HarnessRuntime.HarnessRuntime | HarnessBackend,
       Harness.HarnessError,
-      Storage | Toolkit.Handler<'search_issues'> | Decoder | Encoder | Credentials
+      Storage | StorageFormat | Toolkit.Handler<'search_issues'> | Decoder | Encoder | Credentials
     >
   >()
 })
@@ -277,7 +292,11 @@ test('the same application program depends only on the Harness client', () => {
     Effect.Effect<Submission.Settled, Harness.HarnessError, Harness.Harness>
   >()
   expect(Harness.layerLocal()).type.toBe<
-    Layer.Layer<Harness.Harness, Harness.HarnessError, Storage | LanguageModel.LanguageModel>
+    Layer.Layer<
+      Harness.Harness,
+      Harness.HarnessError,
+      Storage | StorageFormat | LanguageModel.LanguageModel
+    >
   >()
 })
 

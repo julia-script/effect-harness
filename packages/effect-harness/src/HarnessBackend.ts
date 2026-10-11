@@ -1,4 +1,5 @@
 import type * as Usage from './Usage.js'
+import type * as Observation from './Observation.js'
 /** Data-only boundary implemented by a local runtime or a transport adapter. */
 import * as Context from 'effect/Context'
 import type * as Effect from 'effect/Effect'
@@ -32,6 +33,15 @@ export const ForkSchema = Schema.Struct({
   conversationId: Record.ConversationId,
   options: Schema.optionalKey(ForkOptionsSchema),
 })
+export const AbortOptionsSchema = Schema.Struct({
+  includeBackground: Schema.optionalKey(Schema.Boolean),
+})
+export type AbortOptions = typeof AbortOptionsSchema.Type
+export const ResetOptionsSchema = Schema.Struct({
+  handoff: Schema.optionalKey(Schema.String),
+  requestId: Schema.optionalKey(Schema.NonEmptyString),
+})
+export type ResetOptions = typeof ResetOptionsSchema.Type
 export const WatchSchema = Schema.Struct({
   conversationId: Record.ConversationId,
   after: Schema.optionalKey(Record.EntryId),
@@ -39,6 +49,26 @@ export const WatchSchema = Schema.Struct({
 export type Watch = typeof WatchSchema.Type
 
 export interface HarnessBackendService {
+  readonly documents?: import('./RemoteDocument.js').Capabilities
+  readonly observations?: Observation.Capabilities
+  /** Native adapters validate caller authority before preparing a reset payload. */
+  readonly reset?: (
+    conversationId: Record.ConversationId,
+    options?: ResetOptions,
+  ) => Effect.Effect<SubmissionRef, HarnessError>
+  readonly compact?: (
+    conversationId: Record.ConversationId,
+    options?: import('./CompactionTask.js').Options,
+  ) => Effect.Effect<import('./CompactionTask.js').Handle, HarnessError>
+  readonly compactionTask?: (
+    handle: import('./CompactionTask.js').Handle,
+  ) => Effect.Effect<Record.Task, HarnessError>
+  readonly waitCompaction?: (
+    handle: import('./CompactionTask.js').Handle,
+  ) => Effect.Effect<import('./CompactionTask.js').Outcome, HarnessError>
+  readonly abortCompaction?: (
+    handle: import('./CompactionTask.js').Handle,
+  ) => Effect.Effect<void, HarnessError>
   /** Optional for older transports. Undefined is unsupported, never a zero usage report. */
   readonly usage?: (
     conversationId?: Record.ConversationId,
@@ -54,7 +84,10 @@ export interface HarnessBackendService {
   readonly fork: (
     request: typeof ForkSchema.Type,
   ) => Effect.Effect<Record.ConversationId, HarnessError>
-  readonly abort: (id: Record.ConversationId) => Effect.Effect<void, HarnessError>
+  readonly abort: (
+    id: Record.ConversationId,
+    options?: AbortOptions,
+  ) => Effect.Effect<void, HarnessError>
   readonly read: (id: Record.SubmissionId) => Effect.Effect<Submission.Record, HarnessError>
   readonly wait: (id: Record.SubmissionId) => Effect.Effect<Submission.Settled, HarnessError>
   readonly withdraw: (id: Record.SubmissionId) => Effect.Effect<Submission.Withdrawal, HarnessError>

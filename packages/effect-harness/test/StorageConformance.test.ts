@@ -272,7 +272,7 @@ it.effect('omits disabled capabilities and runs core checks without history hook
       make,
       capabilities: { history: false, reopen: false, sqlAmbient: false, sqlUncertain: false },
     })
-    assert.strictEqual(cases.length, 8)
+    assert.strictEqual(cases.length, 15)
     for (const test of cases) yield* test.run
     assert.strictEqual(historicalReads, 0)
   }),

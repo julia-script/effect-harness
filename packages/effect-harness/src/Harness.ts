@@ -1,4 +1,5 @@
 import type * as Usage from './Usage.js'
+import type * as Observation from './Observation.js'
 /** Application client. Its backend can live in this process or behind a transport. */
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -21,6 +22,7 @@ import type * as Model from './Model.js'
 export { CreateOptionsSchema, type CreateOptions } from './HarnessBackend.js'
 export { HarnessError } from './HarnessError.js'
 export interface HarnessService {
+  readonly observations?: Observation.Capabilities
   /** Current own-conversation or whole-session accounting; inherited fork work is counted once. */
   readonly usage: (
     conversationId?: Record.ConversationId,
@@ -34,11 +36,11 @@ export interface HarnessService {
     id: Record.ConversationId,
   ) => Effect.Effect<Option.Option<Conversation.Conversation>, HarnessError>
   /**
-   * Reacquires a saved input submission using this client's backend.
+   * Reacquires a saved input or write submission using this client's backend.
    * Validates immediately through backend.read, including settled submissions;
    * missing IDs fail with HarnessError. Creates no durable records and retains
-   * the original conversation ID. Open that conversation to resume pending work
-   * after a local runtime restart, then use Submission.read, wait or withdraw.
+   * the original conversation ID. Submission.wait resumes pending work after a local runtime restart without
+   * opening the conversation. read and acquisition perform no durable writes.
    */
   readonly submission: (
     id: Record.SubmissionId,
@@ -48,7 +50,9 @@ export interface HarnessService {
 export class Harness extends Context.Service<Harness, HarnessService>()('effect-harness/Harness') {}
 export const make = Effect.gen(function* () {
   const backend = yield* HarnessBackend
+  const observations = backend.observations
   return Harness.of({
+    ...(observations === undefined ? {} : { observations }),
     usage: (id) =>
       backend.usage === undefined
         ? Effect.fail(

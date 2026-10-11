@@ -1,0 +1,18 @@
+{
+  "extends": "../../../../../tsconfig.test.json",
+  "compilerOptions": {
+    "paths": {
+      "effect-harness": ["../../../src/index.ts"],
+      "effect-harness/*": ["../../../src/*.ts"]
+    },
+    "typeRoots": ["../../../../../node_modules/@types"]
+  },
+  "include": [
+    "../../../src/coding/Edit.ts",
+    "../../../src/internal/EditText.ts",
+    "../../../src/internal/EditDiff.ts",
+    "../../CodingEdit.test.ts",
+    "../../../typetest/CodingEdit.tst.ts",
+    "../../../../../apps/example/src/tour/CodingEdit.ts"
+  ]
+}

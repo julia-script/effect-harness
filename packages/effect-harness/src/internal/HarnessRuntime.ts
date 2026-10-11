@@ -1,12 +1,9 @@
 /** Persisted task checkpoints are authoritative; scoped fibers are disposable. */
-import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
-import * as Fiber from 'effect/Fiber'
 import * as Option from 'effect/Option'
-import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
@@ -25,6 +22,7 @@ import {
   SubmitSchema,
   ForkSchema,
   WatchSchema,
+  AbortOptionsSchema,
 } from '../HarnessBackend.js'
 import { HarnessError } from '../HarnessError.js'
 import type { Options, HarnessRuntimeService, Requirements } from '../HarnessRuntime.js'
@@ -36,26 +34,32 @@ import { Storage } from '../Storage.js'
 import type * as StorageRecord from '../Record.js'
 import type * as Submission from '../Submission.js'
 import type * as Tool from '../Tool.js'
-import * as Toolkit from '../Toolkit.js'
+import * as Registry from '../Registry.js'
+import type * as RegistryScope from '../RegistryScope.js'
+import * as TaskScheduler from '../TaskScheduler.js'
+import * as RunTask from './RunTask.js'
+import * as ToolTask from './ToolTask.js'
+import * as NestedInvocation from './NestedInvocation.js'
+import * as NestedToolTask from './NestedToolTask.js'
+import * as ConversationInvocation from './ConversationInvocation.js'
+import * as SubagentTask from './SubagentTask.js'
 import * as Transaction from '../Transaction.js'
-import * as Capability from './Capability.js'
-import * as RunLoop from './RunLoop.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
 import { protect, absent } from './HarnessFailure.js'
 import * as Run from './RunState.js'
+import * as Inbox from './Inbox.js'
+import * as RunControl from '../RunControl.js'
+import * as StorageFormat from '../StorageFormat.js'
+import * as Value from './DocumentValue.js'
+import * as CompactionRuntime from './CompactionRuntime.js'
+import * as CompactionTask from '../CompactionTask.js'
+import * as CompactionStatus from '../CompactionStatus.js'
+import * as Task from '../Task.js'
+import * as ObservationRuntime from './ObservationRuntime.js'
+import * as DocumentBackend from './DocumentBackend.js'
 
 const rootOptions = { ownership: { _tag: 'ownerless' } } as const
 const runKind = 'harness.run'
-interface Invocation {
-  ended: boolean
-  fiber?: Fiber.Fiber<void, never>
-}
-interface BoundHook {
-  readonly hook: Hook.Any
-  readonly context: Context.Context<never>
-  readonly extension?: string
-}
-
 export const make = Effect.fnUntraced(function* <
   T extends Record<string, Tool.Any>,
   H extends ReadonlyArray<Hook.Any>,
@@ -80,51 +84,45 @@ export const make = Effect.fnUntraced(function* <
         initializers: [
           ConversationInitializer.make({
             execute: (tx, record) =>
-              Transaction.ensureDocument(tx, agentDocument, agentTarget(record.id)).pipe(
-                Effect.asVoid,
-              ),
+              Effect.gen(function* () {
+                yield* Transaction.ensureDocument(tx, agentDocument, agentTarget(record.id))
+                yield* Transaction.ensureDocument(
+                  tx,
+                  CompactionStatus.document,
+                  CompactionStatus.target(record.id),
+                )
+              }),
           }),
           ...(options.initializers ?? []),
         ],
       })
       const schedulerScope = yield* Scope.make()
-      const wakeups = yield* Queue.make<void>({ capacity: 1, strategy: 'dropping' })
-      const topTools = Object.values(options.tools?.tools ?? {})
-      const extensions = options.extensions ?? []
-      const toolkit = Toolkit.make(
-        ...topTools,
-        ...extensions.flatMap((extension) => extension.tools),
-      )
-      // The native toolkit resolves duplicate names last-wins. Policy and admission must
-      // use those same declarations as the captured handler bindings.
-      const allTools = Object.values(toolkit.tools)
-      const hooks: Array<BoundHook> = []
-      const sections: Array<RunLoop.BoundSection> = []
-      let handlerContext: Context.Context<never> = context
-      for (const hook of options.hooks ?? [])
-        hooks.push({ hook, context: yield* Capability.context(hook) })
-      for (const extension of extensions) {
-        const extensionContext = yield* Capability.context(extension)
-        handlerContext = Context.merge(handlerContext, extensionContext)
-        yield* Effect.gen(function* () {
-          for (const hook of extension.hooks)
-            hooks.push({
-              hook,
-              context: yield* Capability.context(hook),
-              extension: extension.name,
-            })
-          for (const section of extension.sections)
-            sections.push({
-              section,
-              context: yield* Capability.context(section),
-              extension: extension.name,
-            })
-        }).pipe(Effect.provideContext(extensionContext))
-      }
-      // The public generic requirement enumerates each handler and codec service before this runtime erases tool names.
-      const handlers = yield* toolkit.pipe(
-        Effect.provideContext(handlerContext as Context.Context<unknown>),
-      )
+      const taskScope = yield* Scope.make()
+      const cancellationCleanup = yield* Scope.make()
+      // Also covers construction failures before the runtime close finalizer exists.
+      yield* Effect.addFinalizer(() => Scope.close(cancellationCleanup, Exit.void))
+      yield* Effect.addFinalizer(() => Scope.close(taskScope, Exit.void))
+      const registry = options.registry ?? (yield* Registry.make)
+      if (options.tools !== undefined)
+        yield* registry.install(
+          Registry.toolkit({ id: 'native-runtime-tools', version: 1 }, options.tools),
+        )
+      for (const [index, extension] of (options.extensions ?? []).entries())
+        yield* registry.install(
+          Registry.extension(
+            { id: `native-runtime-extension-${index}`, version: 1 },
+            // Options retains the concrete extension channels before heterogeneous installation.
+            extension as Extension.Extension<Requirements<T, H, X, M, I>, HarnessError>,
+          ),
+        )
+      for (const [index, hook] of (options.hooks ?? []).entries())
+        yield* registry.install(
+          Registry.hook(
+            { id: `native-runtime-hook-${index}`, version: 1 },
+            // Options enumerates each hook's R/E before the heterogeneous installation bridge.
+            hook as Hook.Hook<Hook.Name, HarnessError, Requirements<T, H, X, M, I>>,
+          ),
+        )
       const defaultAgent = yield* Schema.decodeEffect(Agent.StateSchema)(options.agent ?? {})
       const maxTurns = yield* Schema.decodeEffect(Schema.Int.check(Schema.isGreaterThan(0)))(
         options.maxTurns ?? 100,
@@ -133,14 +131,12 @@ export const make = Effect.fnUntraced(function* <
       const nativeDefault = Context.getOption(context, LanguageModel.LanguageModel)
       if (models.length === 0 && Option.isNone(nativeDefault))
         return yield* absent('runtime.make', 'A LanguageModel or model descriptor is required')
-      const active = new Map<Record.ConversationId, Invocation>()
       const waiters = new Map<
         Record.SubmissionId,
         Set<Deferred.Deferred<Submission.Settled, HarnessError>>
       >()
       const idleWaiters = new Set<Deferred.Deferred<void, HarnessError>>()
       let closing = false
-      let enabled = false
       let schedulerFailure: HarnessError | undefined
       const checkOpen = Effect.suspend(() => {
         if (closing)
@@ -154,12 +150,46 @@ export const make = Effect.fnUntraced(function* <
         if (schedulerFailure !== undefined) return Effect.fail(schedulerFailure)
         return Effect.void
       })
-      const wake = Queue.offer(wakeups, undefined).pipe(Effect.asVoid)
-      const activate = Effect.gen(function* () {
-        yield* checkOpen
-        enabled = true
-        yield* wake
+      const requireSubmissionFormat = StorageFormat.requireSupportedFormat({
+        formatVersion: 4,
+        minimumReaderVersion: 4,
+      }).pipe(Effect.provideContext(context))
+      const drainIdle = Effect.fnUntraced(function* () {
+        yield* Session.commit(session, (tx) =>
+          Effect.gen(function* () {
+            const conversations = yield* Transaction.scanConversations(tx).pipe(Stream.runCollect)
+            const tasks = yield* Transaction.scanTasks(tx, { kind: runKind }).pipe(
+              Stream.runCollect,
+            )
+            for (const conversation of conversations) {
+              if (
+                tasks.some(
+                  (task) =>
+                    task.conversationId === conversation.id &&
+                    task.state.status !== 'terminal' &&
+                    task.state.status !== 'completing',
+                )
+              )
+                continue
+              const queue = yield* Transaction.snapshot(
+                tx,
+                RunControl.inbox,
+                RunControl.target(conversation.id),
+              )
+              if (Option.isNone(queue) || queue.value.value.items.length === 0) continue
+              yield* requireSubmissionFormat
+              yield* Inbox.reconcile(tx, conversation.id)
+              yield* Inbox.boundary(tx, conversation.id, { boundary: 'final' }).pipe(
+                Effect.provideContext(context),
+              )
+            }
+          }),
+        )
       })
+      const activate = Effect.suspend(() =>
+        protect('runtime.resume', drainIdle().pipe(Effect.andThen(scheduler.resume))),
+      )
+      const wake = activate
       const requireConversation = Effect.fnUntraced(function* (
         tx: Transaction.Transaction,
         id: Record.ConversationId,
@@ -172,8 +202,8 @@ export const make = Effect.fnUntraced(function* <
       const readSubmission = Effect.fnUntraced(function* (id: Record.SubmissionId) {
         yield* checkOpen
         const found = yield* Session.submission(session, id)
-        if (Option.isNone(found) || found.value.type !== 'input')
-          return yield* absent('submission.read', `Input submission ${id} does not exist`)
+        if (Option.isNone(found))
+          return yield* absent('submission.read', `Submission ${id} does not exist`)
         return found.value
       })
       const notify = Effect.fnUntraced(function* () {
@@ -202,131 +232,527 @@ export const make = Effect.fnUntraced(function* <
         commit: <A, E, R>(change: (tx: Transaction.Transaction) => Effect.Effect<A, E, R>) =>
           Session.commit(session, change, { conversationId: id }),
       })
-      const runHooks = Effect.fnUntraced(function* (
+      const dispatchHooks = Effect.fnUntraced(function* (
+        lease: RegistryScope.Lease,
         id: Record.ConversationId,
         agent: Agent.State,
         event: Hook.Event,
         taskId?: Record.TaskId,
       ) {
-        let output: Hook.Output<Hook.Name> = undefined
-        for (const bound of hooks) {
-          if (
-            bound.hook.event !== event._tag ||
-            (bound.extension !== undefined &&
-              agent.extensions !== undefined &&
-              !agent.extensions.includes(bound.extension))
-          )
-            continue
-          // Event matching establishes the concrete callback's input; errors are normalized at this boundary.
-          const execute = bound.hook.execute as (
-            event: Hook.Event,
-          ) => Effect.Effect<Hook.Output<Hook.Name>, HarnessError, HookExecution>
-          const value = yield* protect(
-            'hook.execute',
-            execute(event).pipe(
-              Effect.updateContext((input: Context.Context<HookExecution>) =>
-                Context.merge(bound.context, input),
+        let active = true
+        const guard = Effect.suspend(() =>
+          active && !closing
+            ? Effect.void
+            : Effect.fail(
+                new ExecutionError({
+                  reason: 'revoked',
+                  operation: 'hook.access',
+                  message: 'Hook invocation has ended',
+                }),
               ),
-              Effect.provideService(HookExecution, {
-                ...access(id),
-                ...(taskId === undefined ? {} : { taskId }),
-              }),
-            ),
-          )
-          if (value !== undefined) output = value
-        }
-        return output
-      })
-      const saveState = Effect.fnUntraced(function* (
-        tx: Transaction.Transaction,
-        task: Record.Task,
-        state: Run.RunState,
-      ) {
-        yield* Transaction.putTask(tx, {
-          ...task,
-          state: { status: 'running', checkpoint: yield* Run.encode(state) },
-        })
-      })
-      const currentTask = Effect.fnUntraced(function* (
-        tx: Transaction.Transaction,
-        task: Record.Task,
-        invocation: Invocation,
-      ) {
-        yield* checkOpen.pipe(
-          Effect.mapError(
-            (error) =>
-              new ExecutionError({
-                reason: 'closed',
-                operation: 'task.commit',
-                message: error.message,
-                cause: error,
-              }),
+        )
+        const native = access(id)
+        return yield* protect(
+          'hook.execute',
+          Effect.scoped(
+            lease
+              .dispatchHook(event, {
+                // Creation already committed: preserve its caller-visible notification failure.
+                ...(event._tag === 'conversationCreated' ? { report: Effect.fail } : {}),
+                registrations: lease.snapshot.hooks
+                  .filter((item) => {
+                    const extension = lease.snapshot.extensions.find(
+                      (bound) => bound.owner.id === item.owner.id,
+                    )
+                    return (
+                      extension === undefined ||
+                      agent.extensions === undefined ||
+                      agent.extensions.includes(extension.declaration.name)
+                    )
+                  })
+                  .map((item) => item.owner.id),
+              })
+              .pipe(
+                Effect.provideService(HookExecution, {
+                  conversationId: id,
+                  ...(taskId === undefined ? {} : { taskId }),
+                  snapshot: (document, target) =>
+                    guard.pipe(Effect.andThen(native.snapshot(document, target))),
+                  watch: (document, target) =>
+                    Stream.unwrap(guard.pipe(Effect.as(native.watch(document, target)))).pipe(
+                      Stream.mapEffect((value) => guard.pipe(Effect.as(value))),
+                    ),
+                  commit: (change) =>
+                    guard.pipe(
+                      Effect.andThen(
+                        native.commit((tx) =>
+                          Effect.gen(function* () {
+                            if (taskId !== undefined) {
+                              const current = yield* Transaction.task(tx, taskId)
+                              if (
+                                Option.isNone(current) ||
+                                current.value.abortRequested ||
+                                current.value.state.status === 'terminal'
+                              )
+                                return yield* new ExecutionError({
+                                  reason: 'revoked',
+                                  operation: 'hook.commit',
+                                  message: 'Task invocation has ended',
+                                })
+                            }
+                            const value = yield* change(tx)
+                            yield* guard
+                            return value
+                          }),
+                        ),
+                      ),
+                    ),
+                }),
+              ),
+          ),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              active = false
+            }),
           ),
         )
-        const found = yield* Transaction.task(tx, task.id)
-        if (
-          invocation.ended ||
-          Option.isNone(found) ||
-          found.value.state.status === 'terminal' ||
-          found.value.abortRequested
-        )
-          return yield* new ExecutionError({
-            reason: 'revoked',
-            operation: 'task.commit',
-            message: 'The task invocation is no longer active',
-          })
-        return found.value
       })
-      const taskCommit = <A, E, R>(
-        task: Record.Task,
-        invocation: Invocation,
-        change: (tx: Transaction.Transaction, current: Record.Task) => Effect.Effect<A, E, R>,
+      const runHooks = (
+        id: Record.ConversationId,
+        agent: Agent.State,
+        event: Hook.Event,
+        taskId?: Record.TaskId,
       ) =>
-        Session.commit(
-          session,
-          (tx) =>
-            currentTask(tx, task, invocation).pipe(
-              Effect.flatMap((current) => change(tx, current)),
-            ),
-          { conversationId: task.conversationId, taskId: task.id },
-        )
-      const unanswered = Effect.fnUntraced(function* (
-        task: Record.Task,
-        reason: string,
-        detail?: Schema.Json,
-      ) {
-        yield* Session.commit(session, (tx) =>
+        Effect.scoped(
           Effect.gen(function* () {
-            const current = yield* Transaction.task(tx, task.id)
-            if (Option.isNone(current) || current.value.state.status === 'terminal') return
-            const state = yield* Run.decode(current.value.state.checkpoint)
-            const record = yield* Transaction.submission(tx, state.submissionId)
-            if (
-              Option.isSome(record) &&
-              record.value.type === 'input' &&
-              record.value.status !== 'done' &&
-              record.value.status !== 'unanswered'
-            ) {
-              yield* Transaction.putSubmission(tx, {
-                ...record.value,
-                _tag: 'InputUnanswered',
-                status: 'unanswered',
-                reason,
-                ...(detail === undefined ? {} : { detail }),
-              })
-            }
-            yield* Transaction.putTask(tx, {
-              ...current.value,
-              state: {
-                status: 'terminal',
-                outcome: { status: 'failed', error: { message: reason } },
-              },
-            })
+            const lease = yield* registry.acquire
+            return yield* dispatchHooks(lease, id, agent, event, taskId)
           }),
         )
-        yield* notify()
+      const nestedFormat = StorageFormat.requireSupportedFormat({
+        formatVersion: 10,
+        minimumReaderVersion: 10,
+      }).pipe(Effect.provideContext(context))
+      const inspectNestedFormat = StorageFormat.inspect.pipe(Effect.provideContext(context))
+      const nestedDefinition = NestedToolTask.make(registry, inspectNestedFormat)
+      yield* registry.install(
+        Registry.withTask(
+          {
+            definition: { id: 'native-runtime-nested', version: 1 },
+            acquire: Effect.succeed({
+              tools: [],
+              tasks: [],
+              hooks: [],
+              sections: [],
+              extensions: [],
+            }),
+          },
+          nestedDefinition,
+        ),
+      )
+      yield* Effect.addFinalizer(() =>
+        registry.uninstall('native-runtime-nested').pipe(Effect.ignore),
+      )
+      yield* Effect.addFinalizer(() => Effect.sync(() => NestedToolTask.clear(nestedDefinition)))
+      const toolDefinition = ToolTask.make(registry)
+      yield* registry.install(
+        Registry.withTask(
+          {
+            definition: { id: 'native-runtime-tool', version: 1 },
+            acquire: Effect.succeed({
+              tools: [],
+              tasks: [],
+              hooks: [],
+              sections: [],
+              extensions: [],
+            }),
+          },
+          toolDefinition,
+        ),
+      )
+      yield* Effect.addFinalizer(() =>
+        registry.uninstall('native-runtime-tool').pipe(Effect.ignore),
+      )
+      yield* Effect.addFinalizer(() => Effect.sync(() => ToolTask.clear(toolDefinition)))
+      const native = RunTask.make(
+        (lease) => ({
+          toolTask: toolDefinition,
+          requireToolRoundFormat: StorageFormat.requireSupportedFormat({
+            formatVersion: 9,
+            minimumReaderVersion: 9,
+          }).pipe(Effect.provideContext(context)),
+          session,
+          cancellationCleanup,
+          requireSubmissionFormat,
+          requireDeferredFormat: StorageFormat.requireSupportedFormat({
+            formatVersion: 7,
+            minimumReaderVersion: 7,
+          }).pipe(Effect.provideContext(context)),
+          requireStreamFormat: StorageFormat.requireSupportedFormat({
+            formatVersion: 6,
+            minimumReaderVersion: 6,
+          }).pipe(Effect.provideContext(context)),
+          requireRequestFormat: StorageFormat.requireSupportedFormat({
+            formatVersion: 5,
+            minimumReaderVersion: 5,
+          }).pipe(Effect.provideContext(context)),
+          nativeModel: options.nativeModel ?? { id: 'effect/ai/LanguageModel', version: 1 },
+          context,
+          lease,
+          allTools: lease.snapshot.tools
+            .filter((item) => item.owner.enabled)
+            .map((item) => item.declaration),
+          toolExtensions: new Map(
+            lease.snapshot.tools.flatMap((item) => {
+              const extension = lease.snapshot.extensions.find(
+                (bound) => bound.owner.id === item.owner.id,
+              )
+              return extension === undefined
+                ? []
+                : [[item.declaration.name, extension.declaration.name] as const]
+            }),
+          ),
+          sections: lease.snapshot.sections
+            .filter((item) => item.owner.enabled)
+            .map((item) => ({
+              section: item.declaration,
+              extension: lease.snapshot.extensions.find((bound) => bound.owner.id === item.owner.id)
+                ?.declaration.name,
+              registration: item.owner.id,
+            })),
+          models,
+          nativeDefault,
+          maxTurns,
+          defaultAgent,
+          checkOpen,
+          access,
+          runHooks: (id, agent, event, taskId) => dispatchHooks(lease, id, agent, event, taskId),
+          compaction: {
+            context,
+            models,
+            nativeDefault,
+            nativeModel: options.nativeModel ?? { id: 'effect/ai/LanguageModel', version: 1 },
+            ...(options.nativeCompaction === undefined
+              ? {}
+              : { nativeCompaction: options.nativeCompaction }),
+            defaultAgent,
+            runHooks,
+          },
+          notify: notify(),
+        }),
+        registry,
+        {
+          models,
+          nativeDefault,
+          nativeModel: options.nativeModel ?? { id: 'effect/ai/LanguageModel', version: 1 },
+        },
+      )
+      yield* registry.install(native.registration)
+      const compactionDefinition = CompactionRuntime.make({
+        context,
+        models,
+        nativeDefault,
+        nativeModel: options.nativeModel ?? { id: 'effect/ai/LanguageModel', version: 1 },
+        ...(options.nativeCompaction === undefined
+          ? {}
+          : { nativeCompaction: options.nativeCompaction }),
+        defaultAgent,
+        runHooks,
       })
+      yield* registry.install(
+        Registry.withTask(
+          {
+            definition: { id: 'native-runtime-compaction', version: 1 },
+            acquire: Effect.succeed({
+              tools: [],
+              tasks: [],
+              hooks: [],
+              sections: [],
+              extensions: [],
+            }),
+          },
+          compactionDefinition,
+        ),
+      )
+      yield* Effect.addFinalizer(() =>
+        registry.uninstall('native-runtime-compaction').pipe(Effect.ignore),
+      )
+      yield* Effect.addFinalizer(() => registry.uninstall('native-runtime-run').pipe(Effect.ignore))
+      const admitSubmission = Effect.fnUntraced(function* (
+        tx: Transaction.Transaction,
+        input: typeof SubmitSchema.Type,
+        place: boolean,
+      ) {
+        const { conversationId, draft } = yield* Value.copy(Schema.toCodecJson(SubmitSchema), input)
+        const requestId =
+          draft.requestId === undefined
+            ? undefined
+            : yield* Schema.decodeEffect(Identity.RequestId)(draft.requestId)
+        yield* requireConversation(tx, conversationId)
+        if (requestId !== undefined) {
+          const existing = yield* Transaction.submissionByRequest(tx, conversationId, requestId)
+          if (Option.isSome(existing)) {
+            if (existing.value.type !== draft.type)
+              return yield* new HarnessError({
+                reason: 'conflict',
+                operation: 'conversation.submit',
+                message: 'Request already identifies a different submission type',
+              })
+            return existing.value
+          }
+        }
+        const tasks = yield* Transaction.scanTasks(tx, {
+          conversationId,
+          kind: runKind,
+        }).pipe(Stream.runCollect)
+        const busy = tasks.some(
+          (task) => task.state.status !== 'terminal' && task.state.status !== 'completing',
+        )
+        if (busy && draft.type === 'input' && draft.whenBusy === 'reject')
+          return yield* new HarnessError({
+            reason: 'conflict',
+            operation: 'conversation.busy',
+            message: 'Conversation has an active run',
+          })
+        if (draft.type === 'write') {
+          if (draft.entry.model !== undefined)
+            yield* Schema.decodeEffect(Run.Messages)(draft.entry.model)
+          for (const edit of draft.entry.edits ?? []) {
+            if (edit._tag === 'replace') yield* Schema.decodeEffect(Run.Messages)(edit.messages)
+            if (Option.isNone(yield* Transaction.entry(tx, edit.target, { conversationId })))
+              return yield* new HarnessError({
+                reason: 'invalid',
+                operation: 'conversation.submit',
+                message: 'Write edit target is not visible in this conversation',
+              })
+          }
+          if (
+            typeof draft.entry.head === 'number' &&
+            Option.isNone(yield* Transaction.entry(tx, draft.entry.head, { conversationId }))
+          )
+            return yield* new HarnessError({
+              reason: 'invalid',
+              operation: 'conversation.submit',
+              message: 'Write head is not visible in this conversation',
+            })
+        }
+        yield* requireSubmissionFormat
+        yield* Inbox.ensureContext(tx, conversationId)
+        let mode: Inbox.Draft['mode'] = 'write'
+        if (draft.type === 'input') mode = draft.whenBusy === 'steer' ? 'steer' : 'followUp'
+        const submission = yield* Inbox.admit(tx, conversationId, {
+          mode,
+          payload:
+            draft.type === 'write'
+              ? draft.entry
+              : {
+                  kind: 'input',
+                  model: yield* Schema.encodeEffect(Run.Messages)([
+                    Inbox.importInput(draft.content),
+                  ]),
+                },
+          ...(requestId === undefined ? {} : { requestId }),
+        })
+        if (place && !busy) {
+          yield* Inbox.reconcile(tx, conversationId)
+          yield* Inbox.boundary(tx, conversationId, { boundary: 'final' }).pipe(
+            Effect.provideContext(context),
+          )
+        }
+        return submission
+      })
+      const configureAgent = Effect.fnUntraced(function* (
+        tx: Transaction.Transaction,
+        input: typeof ConfigureSchema.Type,
+      ) {
+        const { conversationId, change } = yield* Schema.decodeEffect(ConfigureSchema)(input)
+        yield* requireConversation(tx, conversationId)
+        const snapshot = yield* Transaction.ensureDocument(
+          tx,
+          agentDocument,
+          agentTarget(conversationId),
+        )
+        const value = { ...snapshot.value }
+        for (const key of [
+          'model',
+          'extensions',
+          'tools',
+          'modelTools',
+          'toolkits',
+          'instructions',
+        ] as const) {
+          if (change[key] === null) delete value[key]
+          else if (change[key] !== undefined) Object.assign(value, { [key]: change[key] })
+        }
+        yield* Transaction.appendEntry(tx, conversationId, {
+          kind: 'agent.configure',
+        })
+        yield* Transaction.setDocument(tx, agentDocument, agentTarget(conversationId), value)
+      })
+      const withdrawSubmission = Effect.fnUntraced(function* (
+        tx: Transaction.Transaction,
+        id: Record.SubmissionId,
+      ) {
+        yield* checkOpen
+        const found = yield* Transaction.submission(tx, id)
+        if (Option.isNone(found))
+          return yield* absent('submission.withdraw', 'Submission does not exist')
+        if (found.value.status === 'placed') return 'already_placed' as const
+        if (found.value.status === 'done' || found.value.status === 'unanswered')
+          return 'settled' as const
+        const queue = yield* Transaction.snapshot(
+          tx,
+          RunControl.inbox,
+          RunControl.target(found.value.conversationId),
+        )
+        if (Option.isSome(queue)) yield* Inbox.withdraw(tx, found.value.conversationId, id)
+        const remaining = yield* Transaction.submission(tx, id)
+        if (Option.isSome(remaining) && remaining.value.status === 'queued')
+          yield* Transaction.putSubmission(
+            tx,
+            remaining.value.type === 'input'
+              ? {
+                  ...remaining.value,
+                  _tag: 'InputUnanswered',
+                  status: 'unanswered',
+                  reason: 'withdrawn',
+                }
+              : {
+                  ...remaining.value,
+                  _tag: 'WriteUnanswered',
+                  status: 'unanswered',
+                  reason: 'withdrawn',
+                },
+          )
+        const tasks = yield* Stream.runCollect(
+          Transaction.scanTasks(tx, {
+            conversationId: found.value.conversationId,
+            kind: runKind,
+          }),
+        )
+        for (const task of tasks) {
+          if (task.state.status === 'terminal') continue
+          const state = yield* Run.decode(task.state.checkpoint)
+          if (state.submissionId === id)
+            yield* Transaction.putTask(tx, {
+              ...task,
+              state: {
+                status: 'terminal',
+                outcome: { status: 'aborted', reason: 'withdrawn' },
+              },
+            })
+        }
+        return 'aborted' as const
+      })
+      const subagentDefinition = SubagentTask.make()
+      yield* registry.install(
+        Registry.withTask(
+          {
+            definition: { id: 'native-runtime-subagent', version: 1 },
+            acquire: Effect.succeed({
+              tools: [],
+              tasks: [],
+              hooks: [],
+              sections: [],
+              extensions: [],
+            }),
+          },
+          subagentDefinition,
+        ),
+      )
+      yield* Effect.addFinalizer(() =>
+        registry.uninstall('native-runtime-subagent').pipe(Effect.ignore),
+      )
+      const createdConversations = new Set<Record.ConversationId>()
+      const notifyCreated = (id: Record.ConversationId) =>
+        Effect.suspend(() => {
+          if (createdConversations.has(id)) return Effect.void
+          createdConversations.add(id)
+          return protect(
+            'conversation.created',
+            snapshotAgent(id).pipe(
+              Effect.flatMap((agent) =>
+                runHooks(id, agent, { _tag: 'conversationCreated', conversationId: id }),
+              ),
+              Effect.asVoid,
+            ),
+          )
+        })
+      const scheduler: TaskScheduler.Service = yield* TaskScheduler.make(session, {
+        invocation: {
+          open: (access, lease, mode) =>
+            NestedInvocation.make(
+              access,
+              lease,
+              mode,
+              nestedDefinition,
+              nestedFormat,
+              inspectNestedFormat,
+            ),
+        },
+        subagent: {
+          open: (access, _lease, mode) =>
+            ConversationInvocation.make(access, mode, subagentDefinition, {
+              backend: () => backend,
+              attachObservation: (tx, id, scope, options) =>
+                ObservationRuntime.attachObservation(session, tx, id, scope, options),
+              readDocument: (tx, request, at) =>
+                DocumentBackend.inTransaction(session, tx, (runtime) =>
+                  DocumentBackend.capture(runtime, request, at),
+                ),
+              attachDocument: (tx, request, scope, options) =>
+                DocumentBackend.inTransaction(session, tx, (runtime) =>
+                  DocumentBackend.attach(runtime, request, scope, options),
+                ),
+              submit: (tx, id, draft) =>
+                protect(
+                  'conversation.submit',
+                  admitSubmission(tx, { conversationId: id, draft }, false),
+                ),
+              configure: (tx, id, change) =>
+                protect(
+                  'conversation.configure',
+                  configureAgent(tx, { conversationId: id, change }),
+                ),
+              compact: (tx, id, input = {}) =>
+                protect(
+                  'conversation.compact',
+                  Effect.gen(function* () {
+                    const options = yield* Value.copy(CompactionTask.OptionsSchema, input)
+                    const record = yield* CompactionRuntime.admit(tx, id, {
+                      reason: 'manual',
+                      blocking: false,
+                      ...options,
+                    })
+                    return { id: record.id, conversationId: id }
+                  }),
+                ),
+              withdraw: (tx, id) => protect('submission.withdraw', withdrawSubmission(tx, id)),
+              created: notifyCreated,
+              wake: protect('runtime.activate', activate),
+            }),
+        },
+        nativeRun: native.adapter,
+        host: {
+          open: () => Effect.succeed({}),
+          reconcile: (tx, record) =>
+            Effect.gen(function* () {
+              if (record.kind !== runKind || record.abortRequested) return true
+              const records = yield* Transaction.scanTasks(tx, {
+                conversationId: record.conversationId,
+                kind: runKind,
+                order: 'ascending',
+              }).pipe(Stream.runCollect)
+              return records.find((task) => task.state.status !== 'terminal')?.id === record.id
+            }),
+        },
+      }).pipe(
+        Effect.provideService(Registry.Registry, registry),
+        Effect.provideService(Scope.Scope, taskScope),
+      )
       const failScheduler = Effect.fnUntraced(function* (error: HarnessError) {
+        if (schedulerFailure !== undefined) return
         schedulerFailure = error
         for (const waiting of waiters.values())
           for (const waiter of waiting) yield* Deferred.fail(waiter, error)
@@ -334,56 +760,17 @@ export const make = Effect.fnUntraced(function* <
         for (const waiter of idleWaiters) yield* Deferred.fail(waiter, error)
         idleWaiters.clear()
       })
-      const pump = Effect.fnUntraced(function* () {
-        if (closing || schedulerFailure !== undefined) return
-        const tasks = yield* Stream.runCollect(
-          Session.scanTasks(session, { kind: runKind, order: 'ascending' }),
-        ).pipe(Effect.map((values) => values.filter((task) => task.state.status !== 'terminal')))
-        if (enabled)
-          for (const task of tasks) {
-            if (active.has(task.conversationId)) continue
-            const invocation: Invocation = { ended: false }
-            active.set(task.conversationId, invocation)
-            const execute = RunLoop.run(
-              {
-                session,
-                context,
-                allTools,
-                extensions,
-                sections,
-                models,
-                nativeDefault,
-                maxTurns,
-                defaultAgent,
-                checkOpen,
-                access,
-                runHooks,
-                saveState,
-                notify: notify(),
-                handlers,
-                write: (change) => taskCommit(task, invocation, change),
-                invocationActive: () => !invocation.ended,
-              },
-              task,
-            ).pipe(
-              Effect.catchCause((cause) => {
-                if (Cause.hasInterrupts(cause) || closing) return Effect.void
-                return protect(
-                  'run.fail',
-                  unanswered(task, 'failed', { message: Cause.pretty(cause) }),
-                ).pipe(Effect.catch((error) => failScheduler(error)))
-              }),
-              Effect.ensuring(
-                Effect.gen(function* () {
-                  invocation.ended = true
-                  active.delete(task.conversationId)
-                  yield* wake
-                }),
-              ),
-            )
-            invocation.fiber = yield* Effect.forkIn(execute, schedulerScope)
-          }
-        if (active.size === 0 && tasks.length === 0) {
+      const observe = Effect.fnUntraced(function* () {
+        if (closing) return
+        // An unusable Session keeps its original observation failure before scheduler diagnostics.
+        yield* Session.conversation(session, Record.ROOT_CONVERSATION_ID)
+        const failure = yield* scheduler.failure
+        if (Option.isSome(failure))
+          return yield* protect('runtime.scheduler', Effect.fail(failure.value))
+        yield* drainIdle()
+        yield* notify()
+        const tasks = yield* Session.scanTasks(session).pipe(Stream.runCollect)
+        if (tasks.every((task) => task.state.status === 'terminal')) {
           for (const waiter of idleWaiters) yield* Deferred.succeed(waiter, undefined)
           idleWaiters.clear()
         }
@@ -391,25 +778,41 @@ export const make = Effect.fnUntraced(function* <
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
           closing = true
-          for (const invocation of active.values()) invocation.ended = true
           yield* Scope.close(schedulerScope, Exit.void)
-          const error = new HarnessError({
-            reason: 'closed',
-            operation: 'runtime.close',
-            message: 'The owning runtime Scope is closed',
-          })
-          yield* failScheduler(error)
+          yield* Scope.close(taskScope, Exit.void)
+          // No admission can add cleanup after this close. Uncooperative provider
+          // cancellation can delay close, while local user abort remains bounded.
+          yield* Scope.close(cancellationCleanup, Exit.void)
+          yield* failScheduler(
+            new HarnessError({
+              reason: 'closed',
+              operation: 'runtime.close',
+              message: 'The owning runtime Scope is closed',
+            }),
+          )
         }),
       )
-      yield* Effect.forkIn(
-        Effect.forever(
-          Queue.take(wakeups).pipe(
-            Effect.andThen(
-              protect('runtime.pump', pump()).pipe(Effect.catch((error) => failScheduler(error))),
-            ),
-          ),
+      yield* scheduler.changes.pipe(
+        Stream.runForEach(() =>
+          protect('runtime.observe', observe()).pipe(Effect.catch(failScheduler)),
         ),
-        schedulerScope,
+        Effect.forkIn(schedulerScope),
+      )
+      const publicationPull = yield* Stream.toPull(Session.commits(session))
+      yield* Stream.fromEffectRepeat(publicationPull).pipe(
+        Stream.flatMap((events) => Stream.fromIterable(events)),
+        Stream.runForEach((event) =>
+          protect(
+            'runtime.publication',
+            Effect.gen(function* () {
+              for (const change of event.changes)
+                if (change._tag === 'conversation' && change.value.owner !== undefined)
+                  yield* notifyCreated(change.value.id)
+              yield* notify()
+            }),
+          ).pipe(Effect.catch(failScheduler)),
+        ),
+        Effect.forkIn(schedulerScope),
       )
       const rawSnapshot = Effect.fnUntraced(function* (address: StorageRecord.DocumentAddress) {
         yield* checkOpen
@@ -460,6 +863,64 @@ export const make = Effect.fnUntraced(function* <
         return record.id
       })
       const backend: HarnessBackendService = {
+        observations: ObservationRuntime.make(session),
+        documents: DocumentBackend.make(session),
+        compact: (conversationId, input = {}) =>
+          protect(
+            'conversation.compact',
+            Effect.gen(function* () {
+              yield* checkOpen
+              const options = yield* Value.copy(CompactionTask.OptionsSchema, input)
+              const record = yield* Session.commit(session, (tx) =>
+                Effect.gen(function* () {
+                  yield* requireConversation(tx, conversationId)
+                  return yield* CompactionRuntime.admit(tx, conversationId, {
+                    reason: 'manual',
+                    blocking: false,
+                    ...options,
+                  })
+                }),
+              )
+              yield* activate
+              return { id: record.id, conversationId }
+            }),
+          ),
+        compactionTask: (handle) =>
+          protect(
+            'compaction.read',
+            Effect.gen(function* () {
+              yield* checkOpen
+              const value = yield* Value.copy(CompactionTask.HandleSchema, handle)
+              const record = yield* Session.task(session, value.id)
+              if (
+                Option.isNone(record) ||
+                record.value.kind !== CompactionTask.kind ||
+                record.value.conversationId !== value.conversationId
+              )
+                return yield* absent('compaction.read', 'Compaction task handle is unavailable')
+              return record.value
+            }),
+          ),
+        waitCompaction: (handle) =>
+          protect(
+            'compaction.wait',
+            Effect.gen(function* () {
+              const record = yield* backend.compactionTask!(handle)
+              yield* activate
+              const terminal = yield* scheduler.waitForTask(record.id)
+              if (terminal.state.status !== 'terminal')
+                return yield* absent('compaction.wait', 'Task is not terminal')
+              return yield* Task.decode(CompactionTask.OutcomeSchema, terminal.state.outcome)
+            }),
+          ),
+        abortCompaction: (handle) =>
+          protect(
+            'compaction.abort',
+            Effect.gen(function* () {
+              const record = yield* backend.compactionTask!(handle)
+              yield* scheduler.abort(record.id)
+            }),
+          ),
         usage: (id) =>
           protect('harness.usage', checkOpen.pipe(Effect.andThen(Session.usage(session, id)))),
         root: protect('harness.root', initialize(true)),
@@ -478,48 +939,9 @@ export const make = Effect.fnUntraced(function* <
             'conversation.submit',
             Effect.gen(function* () {
               yield* checkOpen
-              const { conversationId, draft } = yield* Schema.decodeEffect(
-                Schema.toType(SubmitSchema),
-              )(input)
-              const requestId =
-                draft.requestId === undefined
-                  ? undefined
-                  : yield* Schema.decodeEffect(Identity.RequestId)(draft.requestId)
+              const request = yield* Value.copy(Schema.toCodecJson(SubmitSchema), input)
               const result = yield* Session.commit(session, (tx) =>
-                Effect.gen(function* () {
-                  yield* requireConversation(tx, conversationId)
-                  if (requestId !== undefined) {
-                    const existing = yield* Transaction.submissionByRequest(
-                      tx,
-                      conversationId,
-                      requestId,
-                    )
-                    if (Option.isSome(existing)) return existing.value
-                  }
-                  const submission = yield* Transaction.createSubmission(tx, {
-                    _tag: 'InputQueued',
-                    type: 'input',
-                    status: 'queued',
-                    conversationId,
-                    ...(requestId === undefined ? {} : { requestId }),
-                  })
-                  const state: Run.RunState = {
-                    _tag: 'queued',
-                    phase: 'queued',
-                    submissionId: submission.id,
-                    draft,
-                  }
-                  yield* Transaction.createTask(tx, {
-                    conversationId,
-                    kind: runKind,
-                    version: 1,
-                    background: false,
-                    abortRequested: false,
-                    input: submission.id,
-                    state: { status: 'pending', checkpoint: yield* Run.encode(state) },
-                  })
-                  return submission
-                }),
+                admitSubmission(tx, request, true),
               )
               yield* activate
               return { id: result.id, conversationId: result.conversationId }
@@ -531,31 +953,7 @@ export const make = Effect.fnUntraced(function* <
             Effect.gen(function* () {
               yield* checkOpen
               const { conversationId, change } = yield* Schema.decodeEffect(ConfigureSchema)(input)
-              yield* Session.commit(session, (tx) =>
-                Effect.gen(function* () {
-                  yield* requireConversation(tx, conversationId)
-                  const snapshot = yield* Transaction.ensureDocument(
-                    tx,
-                    agentDocument,
-                    agentTarget(conversationId),
-                  )
-                  const value = { ...snapshot.value }
-                  for (const key of ['model', 'extensions', 'tools', 'instructions'] as const) {
-                    if (change[key] === null) delete value[key]
-                    else if (change[key] !== undefined) Object.assign(value, { [key]: change[key] })
-                  }
-                  yield* Transaction.appendEntry(tx, conversationId, {
-                    kind: 'agent.configure',
-                    head: 'self',
-                  })
-                  yield* Transaction.setDocument(
-                    tx,
-                    agentDocument,
-                    agentTarget(conversationId),
-                    value,
-                  )
-                }),
-              )
+              yield* Session.commit(session, (tx) => configureAgent(tx, { conversationId, change }))
             }),
           ),
         agent: (id) =>
@@ -585,22 +983,17 @@ export const make = Effect.fnUntraced(function* <
               )
             }),
           ),
-        abort: (id) =>
+        abort: (id, options) =>
           protect(
             'conversation.abort',
             Effect.gen(function* () {
               yield* checkOpen
-              const tasks = yield* Stream.runCollect(
-                Session.scanTasks(session, { conversationId: id, kind: runKind }),
+              yield* scheduler.abortConversation(
+                id,
+                yield* Schema.decodeEffect(AbortOptionsSchema)(options ?? {}),
               )
-              for (const task of tasks)
-                if (task.state.status !== 'terminal') yield* unanswered(task, 'aborted')
-              const invocation = active.get(id)
-              if (invocation !== undefined) {
-                invocation.ended = true
-                if (invocation.fiber !== undefined) yield* Fiber.interrupt(invocation.fiber)
-              }
-              yield* wake
+              yield* drainIdle()
+              yield* notify()
             }),
           ),
         read: (id) => protect('submission.read', readSubmission(id)),
@@ -613,8 +1006,8 @@ export const make = Effect.fnUntraced(function* <
                 Effect.gen(function* () {
                   yield* checkOpen
                   const found = yield* Transaction.submission(tx, id)
-                  if (Option.isNone(found) || found.value.type !== 'input')
-                    return yield* absent('submission.wait', 'Input submission does not exist')
+                  if (Option.isNone(found))
+                    return yield* absent('submission.wait', 'Submission does not exist')
                   if (found.value.status === 'done' || found.value.status === 'unanswered')
                     return found.value
                   const waiting = waiters.get(id) ?? new Set()
@@ -624,7 +1017,8 @@ export const make = Effect.fnUntraced(function* <
                 }),
               )
               if (settled !== undefined) return settled
-              return yield* Deferred.await(waiter).pipe(
+              return yield* activate.pipe(
+                Effect.andThen(Deferred.await(waiter)),
                 Effect.ensuring(
                   Effect.sync(() => {
                     const waiting = waiters.get(id)
@@ -639,42 +1033,7 @@ export const make = Effect.fnUntraced(function* <
           protect(
             'submission.withdraw',
             Effect.gen(function* () {
-              const result = yield* Session.commit(session, (tx) =>
-                Effect.gen(function* () {
-                  yield* checkOpen
-                  const found = yield* Transaction.submission(tx, id)
-                  if (Option.isNone(found) || found.value.type !== 'input')
-                    return yield* absent('submission.withdraw', 'Input submission does not exist')
-                  if (found.value.status === 'placed') return 'already_placed' as const
-                  if (found.value.status === 'done' || found.value.status === 'unanswered')
-                    return 'settled' as const
-                  yield* Transaction.putSubmission(tx, {
-                    ...found.value,
-                    _tag: 'InputUnanswered',
-                    status: 'unanswered',
-                    reason: 'withdrawn',
-                  })
-                  const tasks = yield* Stream.runCollect(
-                    Transaction.scanTasks(tx, {
-                      conversationId: found.value.conversationId,
-                      kind: runKind,
-                    }),
-                  )
-                  for (const task of tasks) {
-                    if (task.state.status === 'terminal') continue
-                    const state = yield* Run.decode(task.state.checkpoint)
-                    if (state.submissionId === id)
-                      yield* Transaction.putTask(tx, {
-                        ...task,
-                        state: {
-                          status: 'terminal',
-                          outcome: { status: 'aborted', reason: 'withdrawn' },
-                        },
-                      })
-                  }
-                  return 'aborted' as const
-                }),
-              )
+              const result = yield* Session.commit(session, (tx) => withdrawSubmission(tx, id))
               yield* notify()
               yield* wake
               return result
@@ -777,7 +1136,7 @@ export const make = Effect.fnUntraced(function* <
           }),
         ),
       }
-      return { session, backend }
+      return { session, backend, registry, scheduler }
     }).pipe(
       Effect.provideService(Scope.Scope, ownedScope),
       Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(ownedScope, exit) : Effect.void)),

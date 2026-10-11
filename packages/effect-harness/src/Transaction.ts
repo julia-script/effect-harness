@@ -10,6 +10,7 @@ import * as Struct from 'effect/Struct'
 import type * as Identity from './Identity.js'
 import * as Record from './Record.js'
 import type * as Document from './Document.js'
+import type * as DocumentRetirement from './DocumentRetirement.js'
 import type * as StorageRecord from './Record.js'
 import type { Failure } from './SessionError.js'
 import * as Runtime from './internal/TransactionRuntime.js'
@@ -266,7 +267,7 @@ export const appendEntry: {
     Runtime.use(self, (state) => Runtime.appendEntry(state, conversationId, draft)),
 )
 
-/** Stages task data; does not schedule or execute it. */
+/** Stages task data and optional restart policy; omission retains legacy resume behavior. Does not schedule or execute it. */
 export const createTask: {
   (value: TaskCreate): (self: Transaction) => Effect.Effect<Record.Task, Failure>
   (self: Transaction, value: TaskCreate): Effect.Effect<Record.Task, Failure>
@@ -289,6 +290,16 @@ export const putTask: {
   (args) => isTransaction(args[0]),
   (self: Transaction, value: Record.Task) =>
     Runtime.use(self, (state) => Runtime.putTask(state, value)),
+)
+
+/** Persist an ordinary abort request/reason. Does not interrupt fibers or run cleanup. */
+export const requestTaskAbort: {
+  (id: Record.TaskId, reason?: string): (self: Transaction) => Effect.Effect<void, Failure>
+  (self: Transaction, id: Record.TaskId, reason?: string): Effect.Effect<void, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, id: Record.TaskId, reason?: string) =>
+    Runtime.use(self, (state) => Runtime.requestTaskAbort(state, id, reason)),
 )
 
 export const createSubmission: {
@@ -394,7 +405,10 @@ export const setDocument: {
 /**
  * Applies a pure replacement function to a detached value of an existing document.
  * Declared migrations upgrade older values before calling the replacement function.
- * Migration and replacement validate together before staging one current-version base.
+ * Migrations and updates validate together; version upgrades persist one current-version base.
+ * Compatible ordinary updates derive validated encoded JSON operations, including compact
+ * splices for inserted/removed array spans. Equal values avoid a write; setDocument and
+ * explicit replace operations select bases. checkpointWhen may select a base at preparation.
  * Terminal task owners conflict before migration or replacement callbacks run.
  */
 export const updateDocument: {
@@ -422,6 +436,38 @@ export const updateDocument: {
 )
 
 /**
+ * Applies ordered operations to the encoded JSON representation of an existing document.
+ * Paths refer to encoded fields, even for transformed codecs. Both codec directions validate
+ * before adoption; caught failures leave earlier drafts intact. Repeated calls combine once
+ * per incarnation/batch. Explicit replace selects a base; other changes write deltas unless
+ * checkpointWhen elects a base. Splices activate storage format3 before persistence, after
+ * preparation succeeds; custom storage must supply the matching StorageFormat capability.
+ */
+export const patchDocument: {
+  <S extends Document.Codec>(
+    document: Document.Document<S>,
+    target: Document.Target,
+    operations: ReadonlyArray<Record.Op>,
+  ): (
+    self: Transaction,
+  ) => Effect.Effect<void, Failure, S['DecodingServices'] | S['EncodingServices']>
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+    operations: ReadonlyArray<Record.Op>,
+  ): Effect.Effect<void, Failure, S['DecodingServices'] | S['EncodingServices']>
+} = dual(
+  (args) => isTransaction(args[0]),
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+    operations: ReadonlyArray<Record.Op>,
+  ) => Runtime.use(self, (state) => Runtime.patchDocument(state, document, target, operations)),
+)
+
+/**
  * Retires the current incarnation; a later ensureDocument allocates a fresh identity
  * when its owner is still nonterminal. May explicitly clean up legacy terminal documents.
  * A new draft retired in its creation transaction is omitted from persistence.
@@ -443,4 +489,36 @@ export const retireDocument: {
     document: Document.Document<S>,
     target: Document.Target,
   ) => Runtime.use(self, (state) => Runtime.retireDocument(state, document, target)),
+)
+
+/**
+ * Retires an explicitly selected incarnation using metadata only. Supply the current
+ * kind/scope/history/fork policy and a DocumentRetirement.target from a trusted snapshot.
+ * Live versions through policy.version are accepted; future versions, wrong
+ * addresses, changed incarnations and policy mismatches fail with SessionError(conflict,
+ * document.retireMetadata). Invalid metadata fails Schema validation. Absent/already
+ * retired targets are no-ops. Legacy terminal owners may be cleaned up explicitly.
+ *
+ * Does not read content or run codecs, migrations or initializers. An unloaded target
+ * requires Storage.documentMetadata; an adapter without that capability fails with
+ * SessionError(invalid, document.retireMetadata), without a content-read fallback.
+ * Missing/invalid version metadata fails rather than guessing. This operation uses
+ * Session transaction coordination; it does not add CAS against foreign raw writers.
+ * Failure stages no retirement, and prior drafts survive caught errors. Publication and
+ * watch termination occur only after storage success. Exact retireDocument is unchanged.
+ */
+export const retireDocumentMetadata: {
+  (
+    policy: Document.Metadata,
+    target: DocumentRetirement.Target,
+  ): (self: Transaction) => Effect.Effect<void, Failure>
+  (
+    self: Transaction,
+    policy: Document.Metadata,
+    target: DocumentRetirement.Target,
+  ): Effect.Effect<void, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, policy: Document.Metadata, target: DocumentRetirement.Target) =>
+    Runtime.use(self, (state) => Runtime.retireDocumentMetadata(state, policy, target)),
 )

@@ -5,7 +5,7 @@ export default defineConfig({
   resolve: {
     alias: [
       {
-        find: /^effect-harness\/(provider-openai|provider-anthropic)$/,
+        find: /^effect-harness\/(provider-openai|provider-anthropic|images-node|images-wasm|images-bun)$/,
         replacement: `${new URL('./packages/effect-harness/src/', import.meta.url).pathname}$1/index.ts`,
       },
       {

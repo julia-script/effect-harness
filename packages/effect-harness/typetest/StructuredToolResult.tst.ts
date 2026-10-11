@@ -8,6 +8,7 @@ import * as Extension from 'effect-harness/Extension'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Hook from 'effect-harness/Hook'
 import type * as Storage from 'effect-harness/Storage'
+import type { StorageFormat } from 'effect-harness/StorageFormat'
 import type * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Tool from 'effect-harness/Tool'
 import type * as ToolResult from 'effect-harness/ToolResult'
@@ -88,7 +89,12 @@ test('schema services, native dependencies and extension handler requirements re
     Layer.Layer<
       HarnessRuntime.HarnessRuntime | import('effect-harness/HarnessBackend').HarnessBackend,
       import('effect-harness/Harness').HarnessError,
-      Storage.Storage | LanguageModel.LanguageModel | Toolkit.Handler<'clock'> | Codec | Client
+      | Storage.Storage
+      | StorageFormat
+      | LanguageModel.LanguageModel
+      | Toolkit.Handler<'clock'>
+      | Codec
+      | Client
     >
   >()
   const extension = Extension.make({ name: 'clock', tools: clocks }).pipe(Extension.provide(layer))

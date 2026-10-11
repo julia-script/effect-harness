@@ -1,3 +1,4 @@
+import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
@@ -25,6 +26,9 @@ import * as Storage from 'effect-harness/Storage'
 import * as Submission from 'effect-harness/Submission'
 import * as Tool from 'effect-harness/Tool'
 import { ToolExecution } from 'effect-harness/ToolExecution'
+import * as ToolProgress from 'effect-harness/ToolProgress'
+import * as Round from '../src/internal/ToolRound.js'
+import * as Task from 'effect-harness/Task'
 import * as Toolkit from 'effect-harness/Toolkit'
 import * as Transaction from 'effect-harness/Transaction'
 
@@ -39,14 +43,13 @@ const finish = (reason: Response.FinishReason): Response.FinishPartEncoded => ({
 })
 const plainModel = Layer.effect(
   LanguageModel.LanguageModel,
-  LanguageModel.make({
+  ScriptedStream.make({
     generateText: () => Effect.succeed([{ type: 'text', text: 'answer' }, finish('stop')]),
-    streamText: () => Stream.empty,
   }),
 )
 const modelForTool = Layer.effect(
   LanguageModel.LanguageModel,
-  LanguageModel.make({
+  ScriptedStream.make({
     generateText: ({ prompt, tools }) => {
       if (tools.length === 0)
         return Effect.succeed([{ type: 'text', text: 'answer' }, finish('stop')])
@@ -68,7 +71,6 @@ const modelForTool = Layer.effect(
           : [{ type: 'text', text: result.isFailure ? 'interrupted' : 'done' }, finish('stop')],
       )
     },
-    streamText: () => Stream.empty,
   }),
 )
 const work = (replay: Tool.Replay = 'safe') =>
@@ -112,7 +114,7 @@ describe('local runtime', () => {
         )
         assert.deepEqual(
           entries.map((entry) => entry.kind),
-          ['input', 'assistant'],
+          ['input', 'context.change', 'assistant'],
         )
         yield* harness.waitForIdle
       }).pipe(Effect.provide(plainModel)),
@@ -143,8 +145,27 @@ describe('local runtime', () => {
         )
         assert.deepEqual(
           entries.map((entry) => entry.kind),
-          ['input', 'assistant', 'tool.output', 'tool.result', 'assistant'],
+          ['input', 'context.change', 'assistant', 'tool.result', 'assistant'],
         )
+        const tasks = yield* Session.scanTasks(runtime.session).pipe(Stream.runCollect)
+        const parent = tasks.find((task) => task.kind === 'harness.run')!
+        const child = tasks.find((task) => task.kind === 'harness.tool')!
+        assert.strictEqual(child.owner, parent.id)
+        assert.strictEqual((yield* Task.decode(Round.InputSchema, child.input)).call.id, 'call-1')
+        const progress = Option.getOrThrow(
+          yield* Session.snapshot(runtime.session, ToolProgress.document, {
+            scope: { _tag: 'conversation', conversationId: root.id },
+            key: Round.progressKey(child.id),
+          }),
+        )
+        assert.strictEqual(progress.record.key, Round.progressKey(child.id))
+        assert.deepEqual(progress.record.scope, { _tag: 'conversation', conversationId: root.id })
+        assert.strictEqual(progress.value.callId, Round.progressKey(child.id))
+        assert.strictEqual(progress.value.status, 'completed')
+        assert.strictEqual(progress.value.output.text, 'working\n')
+        assert.strictEqual(progress.value.output.totalBytes, 8)
+        assert.strictEqual(progress.value.output.totalLines, 1)
+        assert.strictEqual(progress.value.attempt, 0)
       }).pipe(
         Effect.provide([
           modelForTool,
@@ -347,7 +368,7 @@ describe('local runtime', () => {
             }),
         })
         const extension = Extension.make({ name: 'project', hooks: [hook], sections: [section] })
-        const native = yield* LanguageModel.make({
+        const native = yield* ScriptedStream.make({
           generateText: ({ prompt }) =>
             Effect.sync(() => {
               seen = prompt.content
@@ -356,7 +377,6 @@ describe('local runtime', () => {
                 .join('\n')
               return [{ type: 'text', text: 'answer' }, finish('stop')]
             }),
-          streamText: () => Stream.empty,
         })
         const runtime = yield* HarnessRuntime.make({ extensions: [extension] }).pipe(
           Effect.provideService(LanguageModel.LanguageModel, native),
@@ -375,9 +395,8 @@ describe('local runtime', () => {
   it.effect('selects an already-built provider through model metadata', () =>
     withMemory(
       Effect.gen(function* () {
-        const native = yield* LanguageModel.make({
+        const native = yield* ScriptedStream.make({
           generateText: () => Effect.succeed([{ type: 'text', text: 'selected' }, finish('stop')]),
-          streamText: () => Stream.empty,
         })
         const model = Model.make({
           definition: {
@@ -408,7 +427,7 @@ describe('local runtime', () => {
         const root = yield* harness.root
         const observing = yield* root.pipe(
           Conversation.entries(),
-          Stream.take(2),
+          Stream.take(3),
           Stream.runCollect,
           Effect.forkChild,
         )
@@ -417,16 +436,18 @@ describe('local runtime', () => {
         const entries = yield* Fiber.join(observing)
         assert.deepEqual(
           entries.map((entry) => entry.kind),
-          ['input', 'assistant'],
+          ['input', 'context.change', 'assistant'],
         )
         const cursor = entries[0]?.id
         assert.isDefined(cursor)
         const replay = yield* root.pipe(
           Conversation.entries({ after: cursor }),
-          Stream.take(1),
+          Stream.take(2),
           Stream.runCollect,
         )
-        assert.strictEqual(replay[0]?.kind, 'assistant')
+        assert.deepEqual(replay, entries.slice(1))
+        assert.strictEqual(replay[0]?.kind, 'context.change')
+        assert.strictEqual(replay[1]?.kind, 'assistant')
       }).pipe(Effect.provide(plainModel)),
     ),
   )

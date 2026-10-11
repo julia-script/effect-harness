@@ -37,7 +37,10 @@ const migrations = {
     ),
 } satisfies NonNullable<Document.Definition<typeof Current>['migrations']>
 const current = Document.define({
-  ...old.definition,
+  kind: old.definition.kind,
+  scope: 'conversation',
+  history: 'rewindable',
+  fork: 'asOf',
   version: 3,
   schema: Current,
   initial: () => ({ count: 0, label: 'new' }),

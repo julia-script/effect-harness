@@ -2,6 +2,7 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Document from '../Document.js'
+import type * as DocumentMaterialization from '../DocumentMaterialization.js'
 import * as Record from '../Record.js'
 import { SessionError, type Failure } from '../SessionError.js'
 
@@ -94,6 +95,57 @@ export const snapshot = Effect.fnUntraced(function* <S extends Document.Codec>(
   const owned = yield* copy(Record.StoredDocumentSchema, stored)
   const value = yield* Schema.decodeEffect(document.definition.schema)(owned.value)
   return { ...owned, value }
+})
+
+/** Read-side upgrades own both callback input and result without adopting either in storage. */
+export const materialize = Effect.fnUntraced(function* <S extends Document.Codec>(
+  document: Document.Document<S>,
+  stored: Record.StoredDocument,
+): Effect.fn.Return<DocumentMaterialization.Snapshot<S>, Failure, S['DecodingServices']> {
+  yield* Schema.decodeEffect(Document.MetadataSchema)(document.definition)
+  yield* compatible(document, stored, true)
+  const owned = yield* copy(Record.StoredDocumentSchema, stored)
+  let encoded = owned.value
+  if (owned.version !== document.definition.version) {
+    const migration = document.definition.migrations?.[owned.version]
+    if (migration === undefined)
+      return yield* new SessionError({
+        reason: 'conflict',
+        operation: 'document.materialize',
+        message: 'Persisted document version has no direct migration',
+      })
+    const migrated = yield* Effect.try({
+      try: () => migration(owned.value),
+      catch: (cause) =>
+        new SessionError({
+          reason: 'invalid',
+          operation: 'document.materialize',
+          message: 'Document migration callback failed',
+          cause,
+        }),
+    }).pipe(
+      Effect.flatten,
+      Effect.catchDefect((cause) =>
+        Effect.fail(
+          new SessionError({
+            reason: 'invalid',
+            operation: 'document.materialize',
+            message: 'Document migration callback failed',
+            cause,
+          }),
+        ),
+      ),
+    )
+    encoded = yield* copy(Schema.JsonObject, migrated)
+  }
+  const value = yield* Schema.decodeEffect(document.definition.schema)(encoded)
+  return {
+    record: owned.record,
+    storedVersion: owned.version,
+    effectiveVersion: document.definition.version,
+    value,
+    deltasSinceBase: owned.deltasSinceBase,
+  }
 })
 
 export const encode = Effect.fnUntraced(function* <S extends Document.Codec>(

@@ -7,6 +7,7 @@ import * as Arr from 'effect/Array'
 import * as Schema from 'effect/Schema'
 import * as Result from 'effect/Result'
 import * as Record from '../Record.ts'
+import * as TaskTransitions from './TaskTransitions.js'
 interface Snapshot {
   readonly record: Record.Document
   readonly version: number
@@ -84,49 +85,52 @@ const applyOpsImpl = Effect.fnUntraced(function* (
   const validOps = yield* validate(Schema.Array(Record.Op), ops).pipe(
     Effect.mapError((cause) => rejected('Invalid document operation', CorruptError, cause)),
   )
-  // effect-nit-allow P2-no-throw-in-effect-code: synchronous operation TypeErrors are confined to this catching thunk and become corrupt StorageError failures.
-  const result = yield* Effect.try({
-    // effect-nit-allow P1-throw-only-in-unsafe-orthrow: this synchronous
-    // catching thunk maps every native clone/operation throw into StorageError.
-    try: () => {
-      let result = detachedUnsafe(self)
-      for (const op of validOps) {
-        if (op[0] === 'replace') {
-          result = detachedUnsafe(op[1])
-          continue
-        }
-        const path = op[1]
-        let current: unknown = result
-        for (const segment of path.slice(0, -1)) {
-          if (!Predicate.isObjectOrArray(current) || !Object.hasOwn(current, segment))
-            throw new TypeError('Invalid operation path')
-          current = Reflect.get(current, segment)
-        }
-        const key = Arr.lastNonEmpty(path)
-        if (!Predicate.isObjectOrArray(current)) throw new TypeError('Invalid operation target')
-        if (
-          Array.isArray(current) &&
-          (!Predicate.isNumber(key) ||
-            !Number.isSafeInteger(key) ||
-            key < 0 ||
-            key > current.length)
-        )
-          throw new TypeError('Invalid array operation')
-        if (op[0] === 'delete') {
-          if (Array.isArray(current) && Predicate.isNumber(key)) current.splice(key, 1)
-          else Reflect.deleteProperty(current, key)
-        } else
-          Object.defineProperty(current, key, {
-            value: detachedUnsafe(op[2]),
-            enumerable: true,
-            configurable: true,
-            writable: true,
-          })
-      }
-      return result
-    },
-    catch: (cause) => rejected('Invalid document operation', CorruptError, cause),
-  })
+  let result = yield* detachedEffect(self)
+  for (const op of validOps) {
+    if (op[0] === 'replace') {
+      result = yield* detachedEffect(op[1])
+      continue
+    }
+    const path = op[1]
+    let current: unknown = result
+    for (const segment of path.slice(0, -1)) {
+      if (!Predicate.isObjectOrArray(current) || !Object.hasOwn(current, segment))
+        return yield* rejected('Invalid operation path', CorruptError)
+      current = Reflect.get(current, segment)
+    }
+    const key = Arr.lastNonEmpty(path)
+    if (!Predicate.isObjectOrArray(current))
+      return yield* rejected('Invalid operation target', CorruptError)
+    if (
+      Array.isArray(current) &&
+      (!Predicate.isNumber(key) || !Number.isSafeInteger(key) || key < 0 || key > current.length)
+    )
+      return yield* rejected('Invalid array operation', CorruptError)
+    if (op[0] === 'splice') {
+      if (!Object.hasOwn(current, key)) return yield* rejected('Invalid splice path', CorruptError)
+      const array: unknown = Reflect.get(current, key)
+      if (!Array.isArray(array) || op[2] > array.length || op[3] > array.length - op[2])
+        return yield* rejected('Invalid splice range or target', CorruptError)
+      const items = yield* detachedEffect(op[4])
+      // Concatenation avoids the argument-count limit of splice(...items).
+      Object.defineProperty(current, key, {
+        value: array.slice(0, op[2]).concat(items, array.slice(op[2] + op[3])),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      })
+    } else if (op[0] === 'delete') {
+      if (Array.isArray(current) && Predicate.isNumber(key)) current.splice(key, 1)
+      else Reflect.deleteProperty(current, key)
+    } else {
+      Object.defineProperty(current, key, {
+        value: yield* detachedEffect(op[2]),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      })
+    }
+  }
   return yield* validate(Schema.JsonObject, result)
 })
 
@@ -241,9 +245,18 @@ const applyWritesImpl = Effect.fnUntraced(function* (
           commitSeq: seq,
         })
         break
-      case 'task':
+      case 'task': {
+        const previous = MutableHashMap.get(tasks, write.value.id)
+        // Storage accepts scheduler upgrades, but cannot relax ownership, abort intent,
+        // held outcomes or terminal receipts. Public Transaction.putTask is stricter.
+        if (
+          Option.isSome(previous) &&
+          !TaskTransitions.canReplace(previous.value, write.value, true)
+        )
+          return yield* rejected('Task identity, policy or receipt is immutable', ConflictError)
         MutableHashMap.set(tasks, write.value.id, yield* detachedEffect(write.value))
         break
+      }
       case 'submission':
         MutableHashMap.set(submissions, write.value.id, yield* detachedEffect(write.value))
         break

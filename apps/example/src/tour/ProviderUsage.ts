@@ -1,10 +1,9 @@
+import * as ScriptedStream from '../ScriptedStream.js'
 import * as Option from 'effect/Option'
 import { NodeRuntime } from '@effect/platform-node'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as Stream from 'effect/Stream'
-import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Response from 'effect/ai/Response'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Model from 'effect-harness/Model'
@@ -27,7 +26,7 @@ const finish = Response.makePart('finish', {
 })
 const program = Effect.scoped(
   Effect.gen(function* () {
-    const native = yield* LanguageModel.make({
+    const native = yield* ScriptedStream.make({
       generateText: ({ prompt }) =>
         Effect.gen(function* () {
           const affinity = yield* Effect.serviceOption(ProviderAffinity)
@@ -45,7 +44,6 @@ const program = Effect.scoped(
                 finish,
               ]
         }),
-      streamText: () => Stream.empty,
     })
     const model = Model.make({
       definition: {
