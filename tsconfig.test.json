@@ -8,6 +8,13 @@
       "effect-harness/provider-openai": ["./packages/effect-harness/src/provider-openai/index.ts"],
       "effect-harness/provider-anthropic": [
         "./packages/effect-harness/src/provider-anthropic/index.ts"
+      ],
+      "effect-harness/provider-auth": ["./packages/effect-harness/src/provider-auth/index.ts"],
+      "effect-harness/provider-auth-node": [
+        "./packages/effect-harness/src/provider-auth-node/index.ts"
+      ],
+      "effect-harness/provider-openai-codex": [
+        "./packages/effect-harness/src/provider-openai-codex/index.ts"
       ]
     }
   },
