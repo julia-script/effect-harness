@@ -36,3 +36,15 @@ Schema indexing follows properties, array items, variants and local references, 
 Codex and Claude OAuth receive search as an ordinary application function, followed by an expanded top-level tool list. No server-side search protocol, `defer_loading`, inline tool changes or tool-reference result format is required. The prepared declaration order is preserved on the wire, including Claude's tool-name normalization.
 
 Changing top-level tools can invalidate a remote cache prefix. Declaration ordering does not guarantee cache reuse. Claude's model-specific retained-thinking policy is shared with subscription compaction and pinned in provider configuration; supporting models use documented server mismatch handling. Stored reasoning and valid tool cycles remain intact. See [subscription providers](subscription-providers.md) for supported policy details. Protocol fixtures verify request construction; they do not establish live OAuth endpoint access.
+
+## Combined integration verification
+
+The standalone test suite covers discovery, admission, activation, historical forks, persistent restart and both OAuth transports. The additional [cross-feature suite](../packages/effect-harness/integration/ToolSearchCompaction.test.ts) requires subscription compaction as well as deferred discovery. It asserts search, load, invocation, compaction, close, reopen and invocation again against JSONL storage, including account binding and Claude signed/redacted thinking.
+
+In a checkout containing both features, run:
+
+```sh
+bunx vitest run --config vitest.integration.config.ts
+```
+
+This separate suite fails if the provider summary capability is absent; it is not silently skipped. It is typechecked by the ordinary check command and stays outside the standalone test glob while the features are reviewed separately.

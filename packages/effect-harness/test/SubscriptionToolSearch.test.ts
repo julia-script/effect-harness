@@ -44,6 +44,16 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
               preparations.push(
                 Option.getOrThrow(yield* Effect.serviceOption(Prepared.PreparedRequest)).current,
               )
+              if (provider === 'anthropic') {
+                assert.include(
+                  request.headers['anthropic-beta']!,
+                  'thinking-binding-controls-2026-08-01',
+                )
+                assert.deepStrictEqual(body.thinking, {
+                  type: 'adaptive',
+                  block_binding: { prefix_mismatch_behavior: 'drop_block' },
+                })
+              }
               const turn = bodies.length
               const name = turn === 1 ? 'tool_search' : 'read'
               const args = turn === 1 ? { query: 'filesystem' } : { path: '/meeting.txt' }
@@ -91,25 +101,51 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
                 name: name === 'read' ? 'Read' : name,
                 input: args,
               }
+              const index = turn === 1 ? 1 : 0
               return HttpClientResponse.fromWeb(
                 request,
                 new Response(
                   sse([
                     {
                       type: 'message_start',
-                      message: { ...claudeResponse, content: [], stop_reason: null },
+                      message: {
+                        ...claudeResponse,
+                        model: 'claude-sonnet-5-5',
+                        content: [],
+                        stop_reason: null,
+                      },
                     },
+                    ...(turn === 1
+                      ? [
+                          {
+                            type: 'content_block_start',
+                            index: 0,
+                            content_block: { type: 'thinking', thinking: '', signature: '' },
+                          },
+                          {
+                            type: 'content_block_delta',
+                            index: 0,
+                            delta: { type: 'thinking_delta', thinking: 'search reasoning' },
+                          },
+                          {
+                            type: 'content_block_delta',
+                            index: 0,
+                            delta: { type: 'signature_delta', signature: 'signed-search' },
+                          },
+                          { type: 'content_block_stop', index: 0 },
+                        ]
+                      : []),
                     {
                       type: 'content_block_start',
-                      index: 0,
+                      index,
                       content_block: { ...tool, input: {} },
                     },
                     {
                       type: 'content_block_delta',
-                      index: 0,
+                      index,
                       delta: { type: 'input_json_delta', partial_json: JSON.stringify(args) },
                     },
-                    { type: 'content_block_stop', index: 0 },
+                    { type: 'content_block_stop', index },
                     {
                       type: 'message_delta',
                       delta: { stop_reason: 'tool_use', stop_sequence: null },
@@ -121,7 +157,7 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
               )
             }),
           )
-          const modelId = provider === 'openai-codex' ? 'gpt-5.4' : 'claude-sonnet-4-6'
+          const modelId = provider === 'openai-codex' ? 'gpt-5.4' : 'claude-sonnet-5-5'
           const definition = {
             ref: { provider, modelId },
             capabilities: { tools: true, images: false, reasoning: true, structuredOutput: false },
@@ -136,6 +172,8 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
                   model: modelId,
                   binding: { ...binding, provider },
                   definition,
+                  thinkingModes: ['adaptive'],
+                  config: { thinking: { type: 'adaptive' } },
                 }).pipe(
                   Effect.provideService(Store.CredentialStore, store),
                   Effect.provideService(HttpClient.HttpClient, http),
@@ -201,6 +239,11 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
           }).pipe(Stream.runCollect)
           assert.strictEqual(entries.filter((entry) => entry.kind === 'tool.result').length, 2)
           assert.include(JSON.stringify(entries), '"loaded":["read"]')
+          if (provider === 'anthropic') {
+            assert.include(JSON.stringify(bodies[1]), 'signed-search')
+            assert.include(JSON.stringify(bodies[2]), 'signed-search')
+            assert.include(JSON.stringify(entries), 'search reasoning')
+          }
           assert.notInclude(JSON.stringify(entries), 'SECRET')
         }),
       ).pipe(Effect.provide(Storage.layerMemory)),

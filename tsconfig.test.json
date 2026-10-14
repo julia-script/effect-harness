@@ -18,5 +18,11 @@
       ]
     }
   },
-  "include": ["packages/effect-harness/test/**/*.ts", "apps/*/test/**/*.ts", "vitest.config.ts"]
+  "include": [
+    "packages/effect-harness/test/**/*.ts",
+    "packages/effect-harness/integration/**/*.ts",
+    "apps/*/test/**/*.ts",
+    "vitest.config.ts",
+    "vitest.integration.config.ts"
+  ]
 }
