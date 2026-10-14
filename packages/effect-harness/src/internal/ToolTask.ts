@@ -122,12 +122,19 @@ export const pipeline = (registry: Registry.Service) => {
     Record.TaskId,
     { readonly snapshot: ToolProgress.Snapshot; readonly spend?: Usage.Cost }
   >()
-  const execute = Effect.fnUntraced(function* (
+  const execute = Effect.fn('Tool.execute')(function* (
     input: PipelineInput,
     checkpoint: Round.Checkpoint,
     sink: Sink,
   ) {
     const execution = yield* TaskExecution
+    yield* Effect.annotateCurrentSpan({
+      'task.id': execution.taskId,
+      'conversation.id': execution.conversationId,
+      'tool.name': input.call.name,
+      'tool.call.id': input.call.id,
+      'tool.replay': input.replay,
+    })
     if (
       (checkpoint.acceptedCall !== undefined &&
         (checkpoint.acceptedCall.id !== input.call.id ||

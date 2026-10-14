@@ -1,3 +1,4 @@
+import * as Tracing from './Tracing.js'
 /** Session-line reservation and invocation writes; handlers and observers run off that line. */
 import * as Cause from 'effect/Cause'
 import * as Clock from 'effect/Clock'
@@ -333,35 +334,39 @@ export const make = Effect.fnUntraced(function* <R = never>(
     return Option.some(wire)
   })
   const guard = check.pipe(Effect.andThen(state.requireSchedulerFormat), Effect.asVoid)
-  const resume = Effect.uninterruptibleMask((restore) =>
-    Effect.gen(function* () {
-      yield* restore(guard)
-      yield* restore(
-        Session.commit(session, (tx) =>
-          Effect.gen(function* () {
-            const records = yield* Transaction.scanTasks(tx).pipe(Stream.runCollect)
-            for (const record of records) {
-              if (
-                (record.kind === 'harness.run' && nativeRun === undefined) ||
-                record.state.status === 'terminal' ||
-                invocations.has(record.id)
-              )
-                continue
-              let next = record
-              if (!recovered && reopened.has(record.id)) next = TaskPolicy.recover(record)
-              else if (record.state.status === 'running')
-                next = { ...record, state: { ...record.state, status: 'pending' } }
-              if (next !== record) yield* Transaction.putTask(tx, next)
-            }
-          }),
-        ),
-      )
-      recovered = true
-      failed = undefined
-      enabled = true
-      yield* wake
-    }),
+  const resumeInvocation = Effect.fn('TaskScheduler.resume')(() =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        yield* Effect.annotateCurrentSpan('scheduler.recovery', !recovered)
+        yield* restore(guard)
+        yield* restore(
+          Session.commit(session, (tx) =>
+            Effect.gen(function* () {
+              const records = yield* Transaction.scanTasks(tx).pipe(Stream.runCollect)
+              for (const record of records) {
+                if (
+                  (record.kind === 'harness.run' && nativeRun === undefined) ||
+                  record.state.status === 'terminal' ||
+                  invocations.has(record.id)
+                )
+                  continue
+                let next = record
+                if (!recovered && reopened.has(record.id)) next = TaskPolicy.recover(record)
+                else if (record.state.status === 'running')
+                  next = { ...record, state: { ...record.state, status: 'pending' } }
+                if (next !== record) yield* Transaction.putTask(tx, next)
+              }
+            }),
+          ),
+        )
+        recovered = true
+        failed = undefined
+        enabled = true
+        yield* wake
+      }),
+    ),
   )
+  const resume = resumeInvocation()
   const wait: Scheduler.Service['wait'] = (ref) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1061,9 +1066,21 @@ export const make = Effect.fnUntraced(function* <R = never>(
       ),
     )
 
-  const run = (invocation: Invocation, record: Record.Task, lease: RegistryScope.Lease) => {
+  // Cause identity is used by durable fault provenance; add a span without stack annotations.
+  const run = Effect.fnUntraced(function* (
+    invocation: Invocation,
+    record: Record.Task,
+    lease: RegistryScope.Lease,
+  ) {
+    yield* Effect.annotateCurrentSpan({
+      'task.id': record.id,
+      'conversation.id': record.conversationId,
+      'task.kind': record.kind,
+      'task.version': record.version,
+      'task.mode': invocation.mode,
+    })
     let cleanupExit: Exit.Exit<unknown, unknown> = Exit.void
-    return Effect.uninterruptibleMask((restore) =>
+    return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const host =
           options.host === undefined
@@ -1122,6 +1139,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
           Schema.Struct({ phase: Schema.NonEmptyString }),
           record.state.checkpoint,
         )
+        yield* Effect.annotateCurrentSpan('task.phase', checkpoint.phase)
         // These notifications describe an invocation's lifecycle, including a held
         // completion. Task terminal state remains exclusively a persisted transition.
         const lifecycle = (stage: TaskHook.Stage, detail?: Schema.Json) =>
@@ -1171,6 +1189,10 @@ export const make = Effect.fnUntraced(function* <R = never>(
             _tag: 'outcome',
             outcome: { status: 'faulted', error: { message: Cause.pretty(exit.cause) } },
           }
+        yield* Effect.annotateCurrentSpan(
+          'task.result',
+          result._tag === 'outcome' ? result.outcome.status : result._tag,
+        )
         const after = yield* read(invocation.taskId)
         yield* restore(
           NestedInvocation.close(
@@ -1179,6 +1201,8 @@ export const make = Effect.fnUntraced(function* <R = never>(
           ).pipe(Effect.mapError(toolInvocationFailure)),
         )
         const detail = result._tag === 'outcome' ? result.outcome : after.state.outcome
+        if (detail !== undefined && Schema.is(Record.TaskOutcome)(detail))
+          yield* Effect.annotateCurrentSpan('task.outcome', detail.status)
         yield* restore(
           ConversationInvocation.close(
             native.subagent,
@@ -1243,7 +1267,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
         ),
       ),
     )
-  }
+  }, Tracing.withSpan('TaskScheduler.invoke'))
 
   const reserve = (id: Record.TaskId) =>
     Effect.uninterruptibleMask((restore) =>

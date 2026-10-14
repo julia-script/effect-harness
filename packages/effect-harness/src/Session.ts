@@ -1,3 +1,4 @@
+import * as Tracing from './internal/Tracing.js'
 import * as Usage from './Usage.js'
 /**
  * One scoped state coordinator over Storage.
@@ -479,12 +480,17 @@ export const commits: {
   (self: Session) => commitsImpl(self),
 )
 
+// Cause identity is used by durable fault provenance; add a span without stack annotations.
 const commitImpl = Effect.fnUntraced(function* <A, E, R>(
   self: Session,
   change: (tx: Transaction.Transaction) => Effect.Effect<A, E, R>,
   input: CommitOptions = {},
 ): Effect.fn.Return<A, E | Failure, R> {
   const options = yield* Value.copy(CommitOptionsSchema, input)
+  yield* Effect.annotateCurrentSpan({
+    ...(options.taskId === undefined ? {} : { 'task.id': options.taskId }),
+    ...(options.conversationId === undefined ? {} : { 'conversation.id': options.conversationId }),
+  })
   return yield* SessionRuntime.line(self, 'session.commit', (state) =>
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
@@ -508,12 +514,14 @@ const commitImpl = Effect.fnUntraced(function* <A, E, R>(
           ),
         )
         const changes = yield* TxRuntime.writes(draft)
+        yield* Effect.annotateCurrentSpan('commit.changes', changes.length)
         if (changes.length === 0) return result
         let persisted = false
         yield* Effect.gen(function* () {
           const sequence = yield* state.storage.commit(changes)
           persisted = true
           const seq = yield* Schema.decodeEffect(Sequence.SequenceSchema)(sequence)
+          yield* Effect.annotateCurrentSpan('commit.sequence', seq)
           const documents = yield* TxRuntime.adopt(draft, seq)
           const committed = yield* Value.copy(CommitSchema, { seq, changes })
           yield* SessionRuntime.publish(state, committed, documents)
@@ -544,7 +552,7 @@ const commitImpl = Effect.fnUntraced(function* <A, E, R>(
       }),
     ),
   )
-})
+}, Tracing.withSpan('Session.commit'))
 
 const snapshotImpl = Effect.fnUntraced(function* <S extends Document.Codec>(
   self: Session,

@@ -104,9 +104,22 @@ export const retryAt = (
   return Number.isSafeInteger(until) && until >= now ? until : undefined
 }
 
+const consumeAttempt = Effect.fn('Model.stream')(function* <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  preparation: Prepared.Snapshot,
+  attempt: Usage.AttemptId,
+) {
+  yield* Effect.annotateCurrentSpan({
+    'request.id': preparation.requestId,
+    'request.attempt': attempt,
+  })
+  return yield* effect
+})
+
 export const consume = Effect.fnUntraced(function* <E, R, R2>(
   stream: Stream.Stream<Part, AiError.AiError, R>,
   preparation: Prepared.Snapshot,
+  attempt: Usage.AttemptId,
   interval: number,
   publish: (partial: LiveState.Partial, revision: number) => Effect.Effect<void, E, R2>,
 ): Effect.fn.Return<
@@ -281,7 +294,11 @@ export const consume = Effect.fnUntraced(function* <E, R, R2>(
     yield* Deferred.succeed(wake, undefined)
   })
   const exit = yield* Effect.exit(
-    Effect.raceFirst(Stream.runForEach(stream, append), Deferred.await(failed)),
+    consumeAttempt(
+      Effect.raceFirst(Stream.runForEach(stream, append), Deferred.await(failed)),
+      preparation,
+      attempt,
+    ),
   )
   yield* Effect.uninterruptible(
     Effect.gen(function* () {

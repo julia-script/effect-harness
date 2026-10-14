@@ -479,12 +479,16 @@ export const make = Effect.fnUntraced(function* <
         registry.uninstall('native-runtime-compaction').pipe(Effect.ignore),
       )
       yield* Effect.addFinalizer(() => registry.uninstall('native-runtime-run').pipe(Effect.ignore))
-      const admitSubmission = Effect.fnUntraced(function* (
+      const admitSubmission = Effect.fn('Harness.admitSubmission')(function* (
         tx: Transaction.Transaction,
         input: typeof SubmitSchema.Type,
         place: boolean,
       ) {
         const { conversationId, draft } = yield* Value.copy(Schema.toCodecJson(SubmitSchema), input)
+        yield* Effect.annotateCurrentSpan({
+          'conversation.id': conversationId,
+          'submission.type': draft.type,
+        })
         const requestId =
           draft.requestId === undefined
             ? undefined
@@ -499,6 +503,10 @@ export const make = Effect.fnUntraced(function* <
                 operation: 'conversation.submit',
                 message: 'Request already identifies a different submission type',
               })
+            yield* Effect.annotateCurrentSpan({
+              'submission.id': existing.value.id,
+              'submission.reused': true,
+            })
             return existing.value
           }
         }
@@ -560,6 +568,10 @@ export const make = Effect.fnUntraced(function* <
             Effect.provideContext(context),
           )
         }
+        yield* Effect.annotateCurrentSpan({
+          'submission.id': submission.id,
+          'submission.reused': false,
+        })
         return submission
       })
       const configureAgent = Effect.fnUntraced(function* (
