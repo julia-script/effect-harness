@@ -17,6 +17,7 @@ import type * as Credential from '../provider-auth/Credential.js'
 import { toAiError } from '../provider-auth/AuthError.js'
 import * as Resolver from '../provider-auth/Resolver.js'
 import * as OAuth from './OAuth.js'
+import * as ThinkingPolicy from './ThinkingPolicy.js'
 import * as ToolResult from './ToolResult.js'
 import * as Http from '../internal/SubscriptionHttp.js'
 
@@ -131,6 +132,17 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       const config = yield* Schema.decodeEffect(Settings, { onExcessProperty: 'error' })(
         Option.getOrElse(dynamic, () => options.config ?? {}),
       ).pipe(Effect.mapError(() => Http.invalid('Unsupported Anthropic OAuth settings')))
+      const thinkingBinding = yield* ThinkingPolicy.configure(
+        options.model,
+        config.thinking?.type,
+        input.payload.messages.some(
+          (message) =>
+            typeof message.content !== 'string' &&
+            message.content.some(
+              (block) => block.type === 'thinking' || block.type === 'redacted_thinking',
+            ),
+        ),
+      )
       const maximum = config.maxTokens ?? 4096
       if (config.temperature !== undefined && options.supportsTemperature !== true)
         return yield* Http.invalid('Temperature is not declared supported for this model')
@@ -219,6 +231,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
           : {
               thinking: {
                 ...config.thinking,
+                ...thinkingBinding,
                 ...(config.thinkingDisplay === undefined
                   ? {}
                   : { display: config.thinkingDisplay }),
@@ -256,6 +269,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       const betas = new Set([
         'claude-code-20250219',
         'oauth-2025-04-20',
+        ...(ThinkingPolicy.forModel(options.model) === 'server-drop' ? [ThinkingPolicy.beta] : []),
         ...(translated.params?.['anthropic-beta']?.split(',').filter(Boolean) ?? []),
       ])
       const request = HttpClientRequest.post(
