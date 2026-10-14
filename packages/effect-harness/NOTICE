@@ -4,6 +4,8 @@ Embedded task scheduling, persistence transactions, conversation turns and recov
 
 Source: https://github.com/earendil-works/pi
 
+Subscription OAuth protocol constants, login flows, Codex SSE request compatibility, and Anthropic legacy compatibility casing/preamble are adapted from Pi at commit b45e0ebcc5ae2fc42a6f2f23104d10e656e6bedb.
+
 MIT License
 
 Copyright (c) 2025 Mario Zechner

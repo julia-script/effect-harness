@@ -155,13 +155,13 @@ const observeNativeReadiness = (holdStartup = false) =>
           ? Effect.void
           : Deferred.await(handlesChanged).pipe(Effect.andThen(awaitClosed(handle))),
       )
-    const awaitAttachment = (path: string): Effect.Effect<void> =>
+    const awaitAttachment = (path: string, previous?: NativeHandle): Effect.Effect<void> =>
       Effect.suspend(() => {
         const handle = nativeObservations.handles
           .slice(firstHandle)
           .findLast((handle) => handle.path === path && handle.closed === 0)
-        if (handle && settled.get(path) === handle) return Effect.void
-        return Deferred.await(changed).pipe(Effect.andThen(awaitAttachment(path)))
+        if (handle && handle !== previous && settled.get(path) === handle) return Effect.void
+        return Deferred.await(changed).pipe(Effect.andThen(awaitAttachment(path, previous)))
       })
     return {
       adapter,
@@ -479,6 +479,14 @@ describe('FileWatch native coverage', () => {
         yield* Fiber.join(attaching).pipe(Effect.timeout('2 seconds'))
         const firstIdentity = yield* fs.stat(`${root}/skills`)
         const recreated = yield* readiness.hold
+        const reattaching = yield* readiness
+          .awaitAttachment(`${root}/skills`, firstAttachment)
+          .pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        assert.isUndefined(
+          reattaching.pollUnsafe(),
+          'The still-open prior handle must not satisfy replacement readiness',
+        )
         yield* fs.rename(`${root}/skills`, `${root}/old-skills`)
         yield* readiness.awaitClosed(firstAttachment).pipe(Effect.timeout('2 seconds'))
         // No replacement can be admitted while its target is absent. The old record still exists.
@@ -501,9 +509,6 @@ describe('FileWatch native coverage', () => {
         assert.isDefined(secondAttachment)
         assert.notStrictEqual(secondAttachment, firstAttachment)
         assert.strictEqual(firstAttachment?.closed, 1)
-        const reattaching = yield* readiness
-          .awaitAttachment(`${root}/skills`)
-          .pipe(Effect.forkChild)
         yield* Effect.yieldNow
         assert.isUndefined(
           reattaching.pollUnsafe(),
@@ -612,7 +617,9 @@ describe('FileWatch native coverage', () => {
             yield* content('skills/value', 'recreated:3')
           }),
         )
-        yield* readiness.awaitAttachment(`${root}/skills`).pipe(Effect.timeout('2 seconds'))
+        yield* readiness
+          .awaitAttachment(`${root}/skills`, firstAttachment)
+          .pipe(Effect.timeout('2 seconds'))
         assert.notStrictEqual(
           readiness.handles().findLast((h) => h.path === `${root}/skills`),
           firstAttachment,
@@ -759,7 +766,9 @@ describe('FileWatch native coverage', () => {
               yield* content('skills/generation', 'skills-recreated:6')
             }),
           )
-          yield* readiness.awaitAttachment(`${root}/skills`).pipe(Effect.timeout('2 seconds'))
+          yield* readiness
+            .awaitAttachment(`${root}/skills`, firstAttachment)
+            .pipe(Effect.timeout('2 seconds'))
           assert.notStrictEqual(
             readiness.handles().findLast((h) => h.path === `${root}/skills`),
             firstAttachment,

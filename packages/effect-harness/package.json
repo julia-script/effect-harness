@@ -76,6 +76,22 @@
     "./testing/ToolkitIsolation": {
       "types": "./dist/testing/ToolkitIsolation.d.ts",
       "default": "./dist/testing/ToolkitIsolation.js"
+    },
+    "./provider-auth": {
+      "types": "./dist/provider-auth/index.d.ts",
+      "default": "./dist/provider-auth/index.js"
+    },
+    "./provider-auth/*": {
+      "types": "./dist/provider-auth/*.d.ts",
+      "default": "./dist/provider-auth/*.js"
+    },
+    "./provider-auth-node": {
+      "types": "./dist/provider-auth-node/index.d.ts",
+      "default": "./dist/provider-auth-node/index.js"
+    },
+    "./provider-auth-node/*": {
+      "types": "./dist/provider-auth-node/*.d.ts",
+      "default": "./dist/provider-auth-node/*.js"
     }
   },
   "publishConfig": {
