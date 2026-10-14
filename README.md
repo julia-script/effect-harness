@@ -65,8 +65,8 @@ effort and thinking controls before calling the selected provider's factory. It
 preserves the factory's requirements and the returned model's inference
 requirements. Provider factories translate controls and enforce any additional
 protocol-specific constraints. Effort values are per-model strings; unsupported
-values fail instead of being clamped. Omitted options stay omitted, and metadata
-defaults are informational. Unknown capabilities stay unknown;
+values fail instead of being clamped. The generic catalog leaves omitted options
+untouched; concrete factories choose their effective defaults before construction. Unknown capabilities stay unknown;
 `ModelInfo.toDefinition` requires complete capability declarations before building
 a runtime model.
 
@@ -77,11 +77,40 @@ separately, and does not retain failures. Its `invalidate` Effect clears both
 caches. Model construction still requires its own services. Plain catalogs do not
 cache or capture services implicitly.
 
-The [model catalog example](apps/example/src/tour/ModelCatalog.ts) demonstrates
-lazy discovery and wiring the existing Codex model factory. Run it offline with
-`bun apps/example/src/tour/ModelCatalog.ts` after building the library. Remote
-catalog fetching and maintained model inventories are supplied through the source
-callbacks; this API does not assume a universal discovery endpoint.
+Concrete subscription providers connect discovery to the durable adapters:
+
+- `provider-openai-codex/Provider.make({ id, binding, clientVersion })` fetches the
+  authenticated Codex account's catalog lazily. Both discovery and resolution
+  require `HttpClient` and `CredentialStore`. The upstream endpoint returns its
+  entire inventory; filtering and pagination happen locally. `clientVersion` is
+  the explicit Codex catalog compatibility version. `catalogUrl` can override
+  discovery independently of the inference endpoint. For shared bulk discovery,
+  `yield* provider-openai-codex/Catalog.cached(options, { timeToLive })` creates a
+  lazy account-bound snapshot source for `makeWithSource`. Its list/get calls
+  share one fetch; expiration or `invalidate` refreshes the whole snapshot.
+  The generic provider cache alone caches pages and model IDs separately.
+- `provider-anthropic/Provider.make({ id, binding })` uses bundled Claude OAuth
+  model definitions. Listing and detail lookup require no services; resolving a
+  model requires `HttpClient` and `CredentialStore`. These definitions describe
+  adapter support, not account entitlement. Thinking controls reflect the
+  adapter's durable history policy.
+- `provider-anthropic/Catalog.apiKey({ apiKey })` supplies live API-key discovery:
+  one Models API page per list call and a direct request per detail lookup.
+  Queries filter only the returned page, so an empty page can still have a cursor.
+  This source requires `HttpClient`; it does not authenticate OAuth inference.
+
+Both concrete providers expose `makeWithSource(options, source)` for custom
+inventories, preserving each source operation's errors and services. They choose
+reasoning effort from explicit selection, provider configuration, then metadata
+default, and pin the effective settings in the existing durable configuration.
+Claude OAuth uses adaptive thinking when advertised. Unsupported selections fail
+before inference. API metadata can advertise controls beyond the OAuth adapter;
+its factory still enforces the adapter's restrictions. Missing capabilities must
+be supplied by a custom source before resolving a runtime model.
+
+The [model catalog example](apps/example/src/tour/ModelCatalog.ts) composes both
+concrete providers and runs only Claude's offline discovery. Run it with
+`bun apps/example/src/tour/ModelCatalog.ts` after building the library.
 
 ## Declare tools, then supply handlers
 

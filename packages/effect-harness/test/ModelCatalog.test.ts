@@ -19,6 +19,27 @@ const info: ModelInfo.ModelInfo = {
 }
 const unused = () => Effect.die('Unexpected model construction')
 
+it.effect('accepts enabled thinking without a budget when the model declares only a toggle', () =>
+  Effect.gen(function* () {
+    const toggle = yield* ModelInfo.decode({
+      ...info,
+      reasoning: { thinking: { modes: ['enabled', 'disabled'] } },
+    })
+    assert.deepEqual(
+      yield* ModelInfo.validateOptions(toggle, { reasoning: { thinking: { mode: 'enabled' } } }),
+      { reasoning: { thinking: { mode: 'enabled' } } },
+    )
+    assert.equal(
+      (yield* Effect.flip(
+        ModelInfo.validateOptions(toggle, {
+          reasoning: { thinking: { mode: 'enabled', budgetTokens: 2048 } },
+        }),
+      )).reason,
+      'unsupportedOptions',
+    )
+  }),
+)
+
 it.effect(
   'construction and effect creation do no discovery; listing and direct lookup are independent',
   () =>

@@ -15,7 +15,7 @@ export const make = <const Providers extends ReadonlyArray<Provider.Any>>(input:
 
 /** A runtime string selects the union; a literal selects only matching providers. */
 export type Selected<P extends Provider.Any, Id extends string> = P extends unknown
-  ? [Extract<Id, P['id']> | Extract<P['id'], Id>] extends [never]
+  ? [Id & P['id']] extends [never]
     ? never
     : P
   : never

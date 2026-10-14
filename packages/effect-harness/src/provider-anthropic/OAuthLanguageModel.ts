@@ -21,6 +21,7 @@ import * as ThinkingPolicy from './ThinkingPolicy.js'
 import * as ToolResult from './ToolResult.js'
 import * as Http from '../internal/SubscriptionHttp.js'
 
+export const Effort = Schema.Literals(['low', 'medium', 'high', 'xhigh', 'max'])
 export const Settings = Schema.Struct({
   maxTokens: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   thinking: Schema.optionalKey(
@@ -33,7 +34,7 @@ export const Settings = Schema.Struct({
       Schema.Struct({ type: Schema.Literal('adaptive') }),
     ]),
   ),
-  effort: Schema.optionalKey(Schema.Literals(['low', 'medium', 'high', 'xhigh', 'max'])),
+  effort: Schema.optionalKey(Effort),
   thinkingDisplay: Schema.optionalKey(Schema.Literals(['summarized', 'omitted'])),
   temperature: Schema.optionalKey(
     Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),

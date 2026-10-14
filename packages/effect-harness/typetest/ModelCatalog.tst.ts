@@ -26,6 +26,8 @@ declare const construction: Effect.Effect<typeof model, CreateError, Constructio
 declare const otherDetails: Effect.Effect<ModelInfo.ModelInfo, never, Other>
 declare const dynamicId: string
 declare const unionId: 'primary' | 'secondary'
+declare const brandedId: string & { readonly __brand: 'ProviderId' }
+declare const templateId: `f${string}`
 
 const first = Provider.make({
   id: 'first',
@@ -62,6 +64,22 @@ test('literal provider lookup retains operation-specific dependencies and errors
 })
 
 test('dynamic selection requires the union, while unknown providers fail without dependencies', () => {
+  expect(Catalog.get(catalog, { provider: brandedId, modelId: 'model' })).type.toBe<
+    Effect.Effect<ModelInfo.ModelInfo, GetError | ModelCatalogError, Details | Other>
+  >()
+  expect(Catalog.list(catalog, { provider: brandedId })).type.toBe<
+    Effect.Effect<Provider.Page, ListError | ModelCatalogError, Listing>
+  >()
+  expect(Catalog.resolve(catalog, { provider: brandedId, modelId: 'model' })).type.toBe<
+    Effect.Effect<
+      typeof model,
+      GetError | CreateError | ModelCatalogError,
+      Details | Other | Construction
+    >
+  >()
+  expect(Catalog.get(catalog, { provider: templateId, modelId: 'model' })).type.toBe<
+    Effect.Effect<ModelInfo.ModelInfo, GetError | ModelCatalogError, Details>
+  >()
   expect(Catalog.get(catalog, { provider: dynamicId, modelId: 'model' })).type.toBe<
     Effect.Effect<ModelInfo.ModelInfo, GetError | ModelCatalogError, Details | Other>
   >()

@@ -87,7 +87,8 @@ export const decode = Effect.fnUntraced(function* (input: unknown) {
     (thinking?.budgetTokens !== undefined && !thinking.modes.includes('enabled')) ||
     (thinking?.budgetTokens?.max !== undefined &&
       thinking.budgetTokens.max < thinking.budgetTokens.min) ||
-    (info.capabilities?.reasoning === false && (effort !== undefined || thinking !== undefined))
+    (info.capabilities?.reasoning === false &&
+      (effort !== undefined || thinking?.modes.some((mode) => mode !== 'disabled')))
   )
     return yield* new ModelCatalogError({
       reason: 'invalidMetadata',
@@ -126,11 +127,12 @@ export const validateOptions = Effect.fnUntraced(function* (info: ModelInfo, inp
     thinking !== undefined &&
     (!support?.modes.includes(thinking.mode) ||
       (thinking.mode === 'enabled' &&
-        (thinking.budgetTokens === undefined ||
-          support.budgetTokens === undefined ||
-          thinking.budgetTokens < support.budgetTokens.min ||
-          (support.budgetTokens.max !== undefined &&
-            thinking.budgetTokens > support.budgetTokens.max))) ||
+        ((support.budgetTokens === undefined && thinking.budgetTokens !== undefined) ||
+          (support.budgetTokens !== undefined &&
+            (thinking.budgetTokens === undefined ||
+              thinking.budgetTokens < support.budgetTokens.min ||
+              (support.budgetTokens.max !== undefined &&
+                thinking.budgetTokens > support.budgetTokens.max))))) ||
       (thinking.mode !== 'enabled' && thinking.budgetTokens !== undefined))
   )
     return yield* new ModelCatalogError({
