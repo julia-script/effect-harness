@@ -93,23 +93,13 @@ export const align = Effect.fnUntraced(function* (
   }
 })
 
-/** Legacy extension filters deny the canonical owner; explicit toolkit selection defines its own order. */
+/** Request preparation shares the admission inventory, including ownership and permission filters. */
 export const inventory = (
   snapshot: RegistryScope.Snapshot,
   caller: Tool.Caller,
   agent: Agent.State,
-) => {
-  if (agent.toolkits !== undefined) return Inventory.inventory(snapshot, caller, { agent })
-  const { extensions, ...unfiltered } = agent
-  return Inventory.inventory(snapshot, caller, { agent: unfiltered }).filter((item) => {
-    const extension = snapshot.extensions.find((entry) => entry.owner.id === item.owner.id)
-    return (
-      extension === undefined ||
-      extensions === undefined ||
-      extensions.includes(extension.declaration.name)
-    )
-  })
-}
+  selection: Inventory.Options['selection'] = 'offered',
+) => Inventory.inventory(snapshot, caller, { agent, selection })
 
 export const unavailable = (message: string) =>
   new HarnessError({
@@ -128,6 +118,7 @@ export const declaration = (item: RegistryScope.BoundTool) =>
       binding: { id: item.owner.id, version: item.owner.version },
       callers: Tool.callers(item.declaration),
       replay: Tool.policy(item.declaration).replay,
+      deferred: Tool.isDeferred(item.declaration),
       ...(NativeTool.getStrictMode(item.declaration) === undefined
         ? {}
         : { strict: NativeTool.getStrictMode(item.declaration) }),

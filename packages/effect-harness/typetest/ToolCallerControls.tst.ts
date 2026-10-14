@@ -151,5 +151,5 @@ test('public admission exposes failures and only the fresh invocation service', 
   expect<ToolResult.Nested>().type.not.toHaveProperty('content')
   expect<Agent.State>().type.toHaveProperty('modelTools')
   expect<Agent.State>().type.toHaveProperty('toolkits')
-  expect<Agent.Change['modelTools']>().type.toBe<ReadonlyArray<string> | null | undefined>()
+  expect<Agent.Change['modelTools']>().type.toBe<Agent.ModelTools | null | undefined>()
 })

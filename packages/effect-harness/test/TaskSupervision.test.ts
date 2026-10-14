@@ -674,7 +674,7 @@ describe('native task ownership', () => {
             Transaction.setDocument(tx, AgentState.document, AgentState.target(root), {
               instructions: 'new',
               tools: ['two'],
-              modelTools: ['visible'],
+              modelTools: { mode: 'explicit', names: ['visible'] },
               toolkits: { inherit: false, registrations: ['selected'] },
             }),
           )
@@ -722,7 +722,7 @@ describe('native task ownership', () => {
               {
                 instructions: 'new',
                 tools: ['two'],
-                modelTools: ['visible'],
+                modelTools: { mode: 'explicit', names: ['visible'] },
                 toolkits: { inherit: false, registrations: ['selected'] },
               },
               {

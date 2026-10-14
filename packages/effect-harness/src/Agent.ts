@@ -25,12 +25,31 @@ export const ToolkitSelectionSchema = Schema.Struct({
 })
 export type ToolkitSelection = typeof ToolkitSelectionSchema.Type
 
+/** Default offers append loaded tools; explicit offers contain only these ordered names. */
+export const ModelToolsSchema = Schema.Struct({
+  mode: Schema.Literals(['default', 'explicit']),
+  names: Schema.Array(Schema.NonEmptyString),
+  /** Successful activation pins authority independently of presentation and programmatic callers. */
+  bindings: Schema.optionalKey(
+    Schema.Record(
+      Schema.NonEmptyString,
+      Schema.Struct({
+        binding: Schema.NonEmptyString,
+        version: Schema.Int.check(
+          Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+        ),
+      }),
+    ),
+  ),
+})
+export type ModelTools = typeof ModelToolsSchema.Type
+
 /** Persisted conversation configuration contains names and options, not live capabilities. */
 export const StateSchema = Schema.Struct({
   model: Schema.optionalKey(Model.SelectionSchema),
   extensions: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
   tools: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
-  modelTools: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+  modelTools: Schema.optionalKey(ModelToolsSchema),
   toolkits: Schema.optionalKey(ToolkitSelectionSchema),
   instructions: Schema.optionalKey(Schema.String),
 })
@@ -41,7 +60,7 @@ export const ChangeSchema = Schema.Struct({
   model: Schema.optionalKey(Schema.NullOr(Model.SelectionSchema)),
   extensions: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.NonEmptyString))),
   tools: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.NonEmptyString))),
-  modelTools: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.NonEmptyString))),
+  modelTools: Schema.optionalKey(Schema.NullOr(ModelToolsSchema)),
   toolkits: Schema.optionalKey(Schema.NullOr(ToolkitSelectionSchema)),
   instructions: Schema.optionalKey(Schema.NullOr(Schema.String)),
 })

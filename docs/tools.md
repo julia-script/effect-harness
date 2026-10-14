@@ -35,3 +35,5 @@ The local loop currently executes tool calls in response order. The `executionMo
 `Extension.make` statically bundles tools, hooks, and prompt sections. `Extension.provide` defers a Layer to runtime construction. Hooks can transform prompts, block tool calls, replace arguments or results, and continue a yielded response. See the [extension example](../apps/example/src/tour/Extensions.ts).
 
 The [uppercase tool](../apps/example/src/Uppercase.ts) is a complete declaration/handler example. The [documents example](../apps/example/src/tour/Documents.ts) writes application state from a handler.
+
+See [deferred tool discovery](tool-search.md) for opt-in `tool_search`, initial model offers, programmatic callers, and persistent loading.

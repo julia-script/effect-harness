@@ -21,6 +21,7 @@ export const ToolSchema = Schema.Struct({
   binding: BindingSchema,
   callers: Schema.Array(Tool.CallerSchema),
   replay: Tool.ReplaySchema,
+  deferred: Schema.Boolean,
   strict: Schema.optionalKey(Schema.Boolean),
   success: Schema.Json,
   failure: Schema.Json,

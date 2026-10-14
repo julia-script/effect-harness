@@ -556,7 +556,7 @@ describe('positional context planning', () => {
           const first = yield* registry.acquire
           assert.deepEqual(
             (yield* Plan.render(view, first, {
-              agent: { tools: ['a', 'b'], modelTools: ['b', 'a'] },
+              agent: { tools: ['a', 'b'], modelTools: { mode: 'explicit', names: ['b', 'a'] } },
             })).tools.map((tool) => tool.name),
             ['b', 'a'],
           )

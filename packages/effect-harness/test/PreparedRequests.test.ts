@@ -350,7 +350,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               change: {
                 model: { ref: second.definition.ref, options: { value: 'new' } },
                 instructions: 'changed',
-                modelTools: [],
+                modelTools: { mode: 'explicit', names: [] },
               },
             })
             yield* Deferred.succeed(release, undefined)
