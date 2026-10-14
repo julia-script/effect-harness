@@ -753,7 +753,7 @@ describe('durable native tool rounds', () => {
         })
         const runtime = yield* HarnessRuntime.make({
           tools: toolkit,
-          agent: { modelTools: ['first', 'second'] },
+          agent: { modelTools: { mode: 'explicit', names: ['first', 'second'] } },
         }).pipe(
           Effect.provideService(LanguageModel.LanguageModel, model),
           Effect.provide(
@@ -810,7 +810,7 @@ describe('durable native tool rounds', () => {
         assert.deepStrictEqual(
           Option.getOrThrow(
             yield* Session.snapshot(runtime.session, AgentState.document, AgentState.target(root)),
-          ).value.modelTools,
+          ).value.modelTools?.names,
           ['first', 'second', 'lookup', 'inspect'],
         )
         const next = yield* runtime.backend.submit({

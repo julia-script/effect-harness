@@ -58,7 +58,7 @@ const run = Effect.scoped(
     const lease = yield* registry.acquire
     const options = {
       agent: {
-        modelTools: ['finish'],
+        modelTools: { mode: 'explicit', names: ['finish'] },
         toolkits: { inherit: false, registrations: ['application'] },
       },
     } as const

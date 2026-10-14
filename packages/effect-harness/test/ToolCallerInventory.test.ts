@@ -93,13 +93,15 @@ describe('bound caller admission', () => {
         }
         assert.strictEqual(calls, 0)
         assert.strictEqual(
-          (yield* ToolInventory.invoke(lease, call, 'model', { agent: { modelTools: [] } }).pipe(
-            Effect.flip,
-          ))._tag,
+          (yield* ToolInventory.invoke(lease, call, 'model', {
+            agent: { modelTools: { mode: 'explicit', names: [] } },
+          }).pipe(Effect.flip))._tag,
           'ToolAdmissionDenied',
         )
         assert.strictEqual(calls, 0)
-        yield* ToolInventory.invoke(lease, call, 'tools', { agent: { modelTools: [] } })
+        yield* ToolInventory.invoke(lease, call, 'tools', {
+          agent: { modelTools: { mode: 'explicit', names: [] } },
+        })
         assert.strictEqual(calls, 1)
       }),
     ).pipe(Effect.provide(execution)),
@@ -258,7 +260,7 @@ describe('bound caller admission', () => {
           const lease = yield* Scope.provide(registry.acquire, scope)
           const agent: Agent.State = {
             tools: ['same'],
-            modelTools: [],
+            modelTools: { mode: 'explicit', names: [] },
             toolkits: { inherit: false, registrations: ['last', 'first'] },
           }
           const fork = yield* Schema.decodeEffect(Schema.toCodecJson(Agent.StateSchema))(

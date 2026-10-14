@@ -88,3 +88,7 @@ export * as CompactionRequest from './CompactionRequest.js'
 export * as RemoteDocument from './RemoteDocument.js'
 export * as RemoteDocumentError from './RemoteDocumentError.js'
 export * as RemoteDocumentHttp from './RemoteDocumentHttp.js'
+
+export * as ToolCatalog from './ToolCatalog.js'
+export * as ToolSearch from './ToolSearch.js'
+export * as ToolSearchRanking from './ToolSearchRanking.js'

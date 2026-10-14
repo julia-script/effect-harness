@@ -40,7 +40,7 @@ describe('model-call control receipt compatibility', () => {
           const session = yield* Session.make()
           const state = {
             tools: ['work', 'lookup'],
-            modelTools: ['work'],
+            modelTools: { mode: 'explicit', names: ['work'] },
             toolkits: {
               inherit: false,
               registrations: ['owner'],
@@ -65,7 +65,7 @@ describe('model-call control receipt compatibility', () => {
           yield* Session.commit(session, (tx) =>
             Transaction.setDocument(tx, AgentState.document, AgentState.target(root.id), {
               tools: [],
-              modelTools: [],
+              modelTools: { mode: 'explicit', names: [] },
               toolkits: { inherit: true, registrations: [] },
             }),
           )

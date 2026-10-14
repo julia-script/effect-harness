@@ -371,9 +371,10 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
         })
       const results = round.slots.map((slot) => slot.result!)
       const receipts = round.slots.map((slot) => slot.receipt!)
-      const { modelTools: _modelTools, ...allAgent } = round.preparation.agent
       const availableControls = Inventory.inventory(lease.snapshot, 'model', {
-        agent: allAgent,
+        agent: round.preparation.agent,
+        preparedTools: round.preparation.allTools,
+        selection: 'permitted',
       }).map((item) => item.declaration.name)
       const controls = yield* ToolControl.reduce(
         round.slots.map((slot) => slot.call.id),
@@ -393,11 +394,22 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
               agentTarget(task.conversationId),
             )
             const agent = { ...defaultAgent, ...saved.value }
-            if (agent.modelTools !== undefined)
-              yield* Transaction.setDocument(tx, agentDocument, agentTarget(task.conversationId), {
-                ...saved.value,
-                modelTools: [...new Set([...agent.modelTools, ...controls.addTools])],
-              })
+            const selection = agent.modelTools ?? { mode: 'default' as const, names: [] }
+            const bindings = new Map(Object.entries(selection.bindings ?? {}))
+            for (const name of controls.addTools) {
+              const tool = round.preparation.allTools.find(
+                (item) => item.declaration.name === name,
+              )!
+              bindings.set(name, { binding: tool.binding.id, version: tool.binding.version })
+            }
+            yield* Transaction.setDocument(tx, agentDocument, agentTarget(task.conversationId), {
+              ...saved.value,
+              modelTools: {
+                ...selection,
+                names: [...new Set([...selection.names, ...controls.addTools])],
+                bindings: Object.fromEntries(bindings),
+              },
+            })
           }
           if (controls.handoff !== undefined)
             yield* Transaction.appendEntry(tx, task.conversationId, {
@@ -783,9 +795,8 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
             ? []
             : Preparation.inventory(lease.snapshot, 'model', requesting.agent)
         const offeredTools = yield* Effect.forEach(offered, Preparation.declaration)
-        const { modelTools: _modelTools, ...allAgent } = requesting.agent
         const allInventory = [
-          ...Preparation.inventory(lease.snapshot, 'model', allAgent),
+          ...Preparation.inventory(lease.snapshot, 'model', requesting.agent, 'permitted'),
           ...Preparation.inventory(lease.snapshot, 'tools', requesting.agent),
         ]
         const allBindings = [

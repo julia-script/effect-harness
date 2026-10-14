@@ -554,9 +554,9 @@ describe('nested result and no-entry accounting', () => {
             ),
           )
           for (const agent of [
-            { modelTools: [] },
+            { modelTools: { mode: 'explicit' as const, names: [] } },
             { tools: [] },
-            { tools: ['tools'], modelTools: [] },
+            { tools: ['tools'], modelTools: { mode: 'explicit' as const, names: [] } },
           ]) {
             const root = yield* runtime.backend.create({ agent })
             const parent = yield* runtime.scheduler.start(program, undefined, {

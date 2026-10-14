@@ -1,6 +1,9 @@
 /** Caller admission against a single immutable, leased registry generation. */
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
+import * as NativeTool from 'effect/ai/Tool'
+import * as Catalog from './ToolCatalog.js'
+import { ExecutionError } from './ExecutionError.js'
 import type * as Agent from './Agent.js'
 import type * as RegistryScope from './RegistryScope.js'
 import * as Tool from './Tool.js'
@@ -8,7 +11,7 @@ import * as Toolkit from './Toolkit.js'
 import * as ToolResult from './ToolResult.js'
 import type { RegistryError } from './RegistryError.js'
 import type { Failure } from './ExecutionError.js'
-import type { ToolExecution } from './ToolExecution.js'
+import { ToolExecution } from './ToolExecution.js'
 import type * as ToolControl from './ToolControl.js'
 
 export const ReasonSchema = Schema.Literals([
@@ -40,6 +43,10 @@ export type Inspection = typeof InspectionSchema.Type
 
 export interface Options {
   readonly agent?: Agent.State
+  /** Permission checks ignore presentation only when explicitly requested by runtime control paths. */
+  readonly selection?: 'offered' | 'permitted'
+  /** The request's admitted generation fences discovery and control application after replacement. */
+  readonly preparedTools?: ReadonlyArray<typeof import('./PreparedRequest.js').ToolSchema.Type>
   /** Supplied default registrations; omitted means all installed registrations. */
   readonly inheritedRegistrations?: ReadonlyArray<string>
 }
@@ -48,6 +55,7 @@ const pinOptions = (options: Options): Options => {
   const agent = options.agent
   const selection = agent?.toolkits
   return {
+    ...options,
     ...(options.inheritedRegistrations === undefined
       ? {}
       : { inheritedRegistrations: [...options.inheritedRegistrations] }),
@@ -58,7 +66,24 @@ const pinOptions = (options: Options): Options => {
             ...agent,
             ...(agent.extensions === undefined ? {} : { extensions: [...agent.extensions] }),
             ...(agent.tools === undefined ? {} : { tools: [...agent.tools] }),
-            ...(agent.modelTools === undefined ? {} : { modelTools: [...agent.modelTools] }),
+            ...(agent.modelTools === undefined
+              ? {}
+              : {
+                  modelTools: {
+                    ...agent.modelTools,
+                    names: [...agent.modelTools.names],
+                    ...(agent.modelTools.bindings === undefined
+                      ? {}
+                      : {
+                          bindings: Object.fromEntries(
+                            Object.entries(agent.modelTools.bindings).map(([name, binding]) => [
+                              name,
+                              { ...binding },
+                            ]),
+                          ),
+                        }),
+                  },
+                }),
             ...(selection === undefined
               ? {}
               : {
@@ -162,12 +187,26 @@ export const inspect = (
     return deny('incompatibleVersion', `Contract version for ${name} changed`)
   if (options.agent?.tools !== undefined && !options.agent.tools.includes(name))
     return deny('toolFiltered', `Tool ${name} is outside the agent tool inventory`)
-  if (
-    caller === 'model' &&
-    options.agent?.modelTools !== undefined &&
-    !options.agent.modelTools.includes(name)
-  )
-    return deny('modelFiltered', `Tool ${name} is outside the model offer inventory`)
+  const loaded = caller === 'model' ? options.agent?.modelTools?.bindings : undefined
+  const pin = loaded !== undefined && Object.hasOwn(loaded, name) ? loaded[name] : undefined
+  if (pin !== undefined && (pin.binding !== item.owner.id || pin.version !== item.owner.version))
+    return deny('incompatibleVersion', `Activated binding for ${name} changed`)
+  if (options.preparedTools !== undefined) {
+    const prepared = options.preparedTools.find((tool) => tool.declaration.name === name)
+    if (
+      prepared === undefined ||
+      prepared.binding.id !== item.owner.id ||
+      prepared.binding.version !== item.owner.version ||
+      prepared.deferred !== Tool.isDeferred(item.declaration)
+    )
+      return deny('incompatibleVersion', `Request binding for ${name} changed`)
+  }
+  if (caller === 'model' && options.selection !== 'permitted') {
+    const selection = options.agent?.modelTools
+    const selected = selection?.names.includes(name) === true
+    if (!selected && (selection?.mode === 'explicit' || Tool.isDeferred(item.declaration)))
+      return deny('modelFiltered', `Tool ${name} is outside the model offer inventory`)
+  }
   if (!Tool.callers(item.declaration).includes(caller))
     return deny('callerDenied', `Tool ${name} does not allow ${caller} callers`)
   return { _tag: 'allowed', name, caller, registration: item.owner.id, version: item.owner.version }
@@ -180,14 +219,53 @@ export const inventory = (
   options: Options = {},
 ): ReadonlyArray<RegistryScope.BoundTool> => {
   const all = canonical(snapshot, options)
-  const order =
-    caller === 'model' ? (options.agent?.modelTools ?? options.agent?.tools) : options.agent?.tools
-  const names = order ?? [...all.keys()]
+  const selection = options.agent?.modelTools
+  const base = options.agent?.tools ?? [...all.keys()]
+  let names = base
+  if (caller === 'model' && options.selection !== 'permitted') {
+    if (selection?.mode === 'explicit') names = selection.names
+    else
+      names = [
+        ...base.filter((name) => {
+          const item = chosen(snapshot, name, options)
+          return item !== undefined && !Tool.isDeferred(item.declaration)
+        }),
+        ...(selection?.names ?? []),
+      ]
+  }
   return [...new Set(names)].flatMap((name) => {
     const inspection = inspect(snapshot, name, caller, options)
     const item = chosen(snapshot, name, options)
     return inspection._tag === 'allowed' && item !== undefined ? [item] : []
   })
+}
+
+/** Only authorized, deferred, currently unoffered declarations enter the metadata catalog. */
+export const catalog = (snapshot: RegistryScope.Snapshot, options: Options = {}) => {
+  const offered = new Set(
+    inventory(snapshot, 'model', { ...options, selection: 'offered' }).map(
+      (item) => item.declaration.name,
+    ),
+  )
+  const candidates = inventory(snapshot, 'model', { ...options, selection: 'permitted' }).filter(
+    (item) => Tool.isDeferred(item.declaration) && !offered.has(item.declaration.name),
+  )
+  return Effect.forEach(candidates, (item) =>
+    Effect.try({
+      try: (): Catalog.Metadata => ({
+        name: item.declaration.name,
+        description: NativeTool.getDescription(item.declaration) ?? '',
+        parameters: structuredClone(
+          NativeTool.getJsonSchema(item.declaration),
+        ) as Schema.JsonObject,
+      }),
+      catch: () =>
+        new Catalog.CatalogError({
+          name: item.declaration.name,
+          message: `Tool ${item.declaration.name} has no searchable parameter schema`,
+        }),
+    }),
+  )
 }
 
 /** Admission uses the same lease and exact owner/version that invocation will use. */
@@ -197,7 +275,7 @@ export const admit = Effect.fn('ToolInventory.admit')(function* (
   caller: Tool.Caller,
   options: Options = {},
 ) {
-  const inspection = inspect(lease.snapshot, name, caller, options)
+  const inspection = inspect(lease.snapshot, name, caller, { ...options, selection: 'offered' })
   if (inspection._tag === 'denied') return yield* inspection.denial
   return yield* lease.resolveTool(name, {
     binding: inspection.registration,
@@ -219,21 +297,47 @@ export const invoke = Effect.fn('ToolInventory.invoke')(function* (
   Denial | RegistryError | Failure | Schema.SchemaError | ToolControl.InvalidControl,
   ToolExecution
 > {
-  const pinned = pinOptions(options)
+  const pinned = pinOptions({ ...options, selection: 'offered' })
   const admitted = yield* admit(lease, call.name, caller, pinned)
   return yield* lease.withTool(
     call.name,
     (item) =>
       Effect.gen(function* () {
         // The leased invocation validates outer parameters with the bound capability before delegation.
-        const result = yield* lease.invokeTool(call, {
-          binding: item.owner.id,
-          version: item.owner.version,
-        })
-        const { modelTools: _modelTools, ...agent } = pinned.agent ?? {}
-        const available = inventory(lease.snapshot, 'model', { ...pinned, agent }).map(
-          (item) => item.declaration.name,
+        const access = yield* ToolExecution
+        let active = true
+        const deferredTools = Effect.suspend<
+          ReadonlyArray<Catalog.Metadata>,
+          Catalog.CatalogError | ExecutionError,
+          never
+        >(() =>
+          active
+            ? catalog(lease.snapshot, pinned)
+            : Effect.fail(
+                new ExecutionError({
+                  reason: 'revoked',
+                  operation: 'tool.catalog',
+                  message: 'Tool invocation has ended',
+                }),
+              ),
         )
+        const result = yield* lease
+          .invokeTool(call, {
+            binding: item.owner.id,
+            version: item.owner.version,
+          })
+          .pipe(
+            Effect.provideService(ToolExecution, { ...access, deferredTools }),
+            Effect.ensuring(
+              Effect.sync(() => {
+                active = false
+              }),
+            ),
+          )
+        const available = inventory(lease.snapshot, 'model', {
+          ...pinned,
+          selection: 'permitted',
+        }).map((item) => item.declaration.name)
         // Registration already captured every codec service. Erased registry declarations are
         // narrowed only at this schema boundary; validation runs with exactly the owner's context.
         type CapturedCodec = Schema.Codec<unknown, unknown, never, never>
@@ -262,7 +366,7 @@ export const invokeNested = Effect.fn('ToolInventory.invokeNested')(function* (
   call: Tool.Call,
   options: Options = {},
 ) {
-  const pinned = pinOptions(options)
+  const pinned = pinOptions({ ...options, selection: 'offered' })
   const item = yield* admit(lease, call.name, 'tools', pinned)
   const result = yield* invoke(lease, call, 'tools', pinned)
   return ToolResult.nested(result, Tool.hasStructuredOutput(item.declaration))

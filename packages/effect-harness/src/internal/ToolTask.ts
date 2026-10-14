@@ -307,10 +307,9 @@ export const pipeline = (registry: Registry.Service) => {
           Effect.mapError(reportingFailure),
         ),
     }
-    const { modelTools: _modelTools, ...allAgent } = options.agent ?? {}
     const available = Inventory.inventory(lease.snapshot, input.caller, {
       ...options,
-      agent: allAgent,
+      selection: 'permitted',
     }).map((item) => item.declaration.name)
     let call = checkpoint.acceptedCall ?? input.call
     let invoked = interrupted || checkpoint.observedResult !== undefined
@@ -633,6 +632,7 @@ const modelInput = (input: Round.Input): PipelineInput => ({
         offered: input.preparation.tools.find((item) => item.declaration.name === input.call.name)!,
       }),
   options: {
+    preparedTools: input.preparation.allTools,
     agent: {
       ...input.preparation.agent,
       toolkits: {
