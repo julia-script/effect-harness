@@ -49,6 +49,89 @@ const deferred = Toolkit.make(
 const toolkit = Toolkit.merge(Search.toolkit, deferred)
 
 describe('durable deferred activation', () => {
+  for (const ending of ['terminate', 'maxTurns'] as const)
+    it.live(`${ending}: immediate tip forks retain activation, including after cold reopen`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
+          const storageLayer = Storage.layerJsonl({ filePath: `${directory}/session.jsonl` })
+          let requests = 0
+          const model = yield* ScriptedStream.make({
+            generateText: () =>
+              Effect.sync(() => {
+                requests++
+                return call('tool_search', { query: 'calendar' })
+              }),
+          })
+          const handlers = Layer.merge(
+            Search.layer,
+            deferred.toLayer({
+              lookup: () => Effect.die('Discovery must not invoke the deferred operation'),
+              archive: () => Effect.die('Discovery must not invoke the deferred operation'),
+            }),
+          )
+          const make = () =>
+            HarnessRuntime.make({
+              tools: toolkit,
+              maxTurns: 1,
+              hooks:
+                ending === 'terminate'
+                  ? [
+                      Hook.make({
+                        event: 'afterTool',
+                        execute: ({ result }) =>
+                          Effect.succeed({
+                            ...result,
+                            control: { ...result.control, terminate: true },
+                          }),
+                      }),
+                    ]
+                  : [],
+            }).pipe(
+              Effect.provide(handlers),
+              Effect.provideService(LanguageModel.LanguageModel, model),
+            )
+          const scope = yield* Scope.make()
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+          const storage = yield* Layer.buildWithScope(Layer.fresh(storageLayer), scope)
+          const runtime = yield* make().pipe(
+            Effect.provideContext(storage),
+            Effect.provideService(Scope.Scope, scope),
+          )
+          const root = yield* runtime.backend.root
+          const job = yield* runtime.backend.submit({
+            conversationId: root,
+            draft: { type: 'input', content: 'Find my appointment' },
+          })
+          const outcome = yield* runtime.backend.wait(job.id)
+          assert.strictEqual(outcome.status, ending === 'terminate' ? 'done' : 'unanswered')
+          assert.strictEqual(requests, 1)
+          const selected = (yield* runtime.backend.agent(root)).modelTools!
+          assert.deepStrictEqual(selected.names, ['lookup'])
+          assert.isDefined(selected.bindings?.lookup)
+          const tip = yield* runtime.backend.fork({ conversationId: root })
+          assert.deepStrictEqual((yield* runtime.backend.agent(tip)).modelTools, selected)
+          const entries = yield* Session.scanEntries(runtime.session, {
+            conversationId: root,
+          }).pipe(Stream.runCollect)
+          const result = entries.find((entry) => entry.kind === 'tool.result')!
+          const before = yield* runtime.backend.fork({
+            conversationId: root,
+            options: { at: result.id },
+          })
+          assert.isUndefined((yield* runtime.backend.agent(before)).modelTools)
+          yield* Scope.close(scope, Exit.void)
+          const reopenedStorage = yield* Layer.build(Layer.fresh(storageLayer))
+          const reopened = yield* make().pipe(Effect.provideContext(reopenedStorage))
+          const reopenedTip = yield* reopened.backend.fork({ conversationId: root })
+          assert.deepStrictEqual((yield* reopened.backend.agent(reopenedTip)).modelTools, selected)
+          assert.deepStrictEqual((yield* reopened.backend.agent(tip)).modelTools, selected)
+          assert.isUndefined((yield* reopened.backend.agent(before)).modelTools)
+          assert.strictEqual(requests, 1)
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    )
+
   for (const mode of ['default', 'explicit'] as const)
     for (const crash of ['before activation', 'after activation'] as const)
       it.live(
@@ -179,6 +262,10 @@ describe('durable deferred activation', () => {
                 1,
               )
               assert.strictEqual(entries.filter((entry) => entry.kind === 'tool.result').length, 2)
+              assert.strictEqual(
+                entries.filter((entry) => entry.kind === 'agent.configure').length,
+                1,
+              )
               const again = yield* second.backend.submit({
                 conversationId: root,
                 draft: { type: 'input', content: 'Continue' },

@@ -416,6 +416,10 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
               )!
               bindings.set(name, { binding: tool.binding.id, version: tool.binding.version })
             }
+            // As-of forks need an entry at this commit even when activation ends the run.
+            yield* Transaction.appendEntry(tx, task.conversationId, {
+              kind: 'agent.configure',
+            })
             yield* Transaction.setDocument(tx, agentDocument, agentTarget(task.conversationId), {
               ...saved.value,
               modelTools: {

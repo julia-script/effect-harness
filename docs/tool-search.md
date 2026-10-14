@@ -19,7 +19,7 @@ Search examines only deferred declarations that are permitted for the model but 
 
 ## Durability and availability changes
 
-Activation and the applied-round marker commit together. Reopening after result persistence resumes the barrier without repeating a completed search or changing declaration order. Only successful model-issued receipts activate tools; failures, blocked calls, cancelled calls and programmatic/nested calls do not. Hooks must pass final result/control validation.
+Activation, an `agent.configure` history boundary and the applied-round marker commit together. An immediate tip fork inherits the loaded selection even if the run terminates or exhausts its turn budget before another model response. Explicit forks at entries before activation retain the earlier selection. Reopening after result persistence resumes the barrier without repeating a completed search or changing declaration order. Only successful model-issued receipts activate tools; failures, blocked calls, cancelled calls and programmatic/nested calls do not. Hooks must pass final result/control validation.
 
 Selections survive reopen, compaction and history reset. Historical forks inherit the selection at the fork entry and then evolve independently. Explicit configuration changes remain authoritative. A later model selection change invalidates in-flight additions; current agent and registration restrictions are checked again inside the activation transaction.
 
@@ -29,7 +29,7 @@ A search is scoped to its leased generation. If registration availability change
 
 `ToolSearchRanking` is a pure, local BM25 implementation (`k1 = 1.2`, `b = 0.75`) over immutable documents. It splits camel case, lowercases alphanumeric terms, removes English stop words, applies simple singularization, and uses distinct query terms. Names, descriptions, parameter property names and schema descriptions contribute. Positive scores are ordered descending; input order breaks ties. The default limit is eight; limits must be integers from 1 through 64. Blank queries are invalid; stop-word-only queries return no matches. This is English lexical matching, with no semantic or multilingual quality claim.
 
-Schema indexing follows properties, array items, variants and local references, including `$defs`. It visits at most 2,048 nodes, depth 64 and 32,768 text characters per declaration. Cycles terminate, remote references are never fetched, and unreachable definitions are not indexed. `schemaText` reports when these bounds truncate indexing.
+Schema indexing follows properties, array items, variants and local references, including `$defs` and URI-percent-encoded identifiers emitted by Effect. It visits at most 2,048 nodes, depth 64 and 32,768 text characters per declaration. Cycles terminate, remote references are never fetched, and unreachable definitions are not indexed. `schemaText` reports when these bounds truncate indexing.
 
 ## Subscription providers
 
@@ -39,12 +39,12 @@ Changing top-level tools can invalidate a remote cache prefix. Declaration order
 
 ## Combined integration verification
 
-The standalone test suite covers discovery, admission, activation, historical forks, persistent restart and both OAuth transports. The additional [cross-feature suite](../packages/effect-harness/integration/ToolSearchCompaction.test.ts) requires subscription compaction as well as deferred discovery. It asserts search, load, invocation, compaction, close, reopen and invocation again against JSONL storage, including account binding and Claude signed/redacted thinking.
+The ordinary `bun run test` command and CI include the [combined acceptance suite](../packages/effect-harness/test/ToolSearchCompaction.test.ts). It asserts search, load, invocation, compaction, close, reopen and invocation again against JSONL storage for both OAuth transports, including account binding and Claude signed/redacted thinking.
 
-In a checkout containing both features, run:
+To run just these cases:
 
 ```sh
-bunx vitest run --config vitest.integration.config.ts
+bunx vitest run packages/effect-harness/test/ToolSearchCompaction.test.ts
 ```
 
-This separate suite fails if the provider summary capability is absent; it is not silently skipped. It is typechecked by the ordinary check command and stays outside the standalone test glob while the features are reviewed separately.
+These cases use the same test configuration and typechecking as the admission, activation and recovery suites.

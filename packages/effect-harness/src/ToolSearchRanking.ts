@@ -23,6 +23,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+import * as JsonPointer from 'effect/JsonPointer'
+
 export type SearchDocument = { readonly name: string; readonly text: string }
 
 const STOP_WORDS: ReadonlySet<string> = new Set([
@@ -142,11 +144,10 @@ export const schemaText = (
     }
   }
   const resolve = (ref: string): unknown => {
-    if (ref === '#') return schema
-    if (!ref.startsWith('#/')) return undefined
+    const path = ref.startsWith('#') ? JsonPointer.parseUriFragment(ref) : undefined
+    if (path === undefined) return undefined
     let current: unknown = schema
-    for (const token of ref.slice(2).split('/')) {
-      const key = token.replaceAll('~1', '/').replaceAll('~0', '~')
+    for (const key of path) {
       if (!object(current) || !Object.hasOwn(current, key)) return undefined
       current = current[key]
     }

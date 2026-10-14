@@ -1,4 +1,6 @@
 import { assert, describe, it } from '@effect/vitest'
+import * as Schema from 'effect/Schema'
+import * as Tool from 'effect/ai/Tool'
 import * as Ranking from '../src/ToolSearchRanking.js'
 
 const documents = [
@@ -16,6 +18,21 @@ const documents = [
 ].map(Ranking.document)
 
 describe('local BM25 discovery', () => {
+  for (const identifier of ['Foo Bar', 'Percent%Value', 'café', '節点', 'a/b~c', '#?[]'])
+    it(`indexes native Effect definition metadata for identifier ${identifier}`, () => {
+      const tool = Tool.make('probe', {
+        parameters: Schema.Struct({
+          value: Schema.String.annotate({ identifier, description: 'astronomy' }),
+        }),
+      })
+      const document = Ranking.document({
+        name: tool.name,
+        description: '',
+        parameters: Tool.getJsonSchema(tool),
+      })
+      assert.deepStrictEqual(Ranking.rankDocuments('astronomy', [document]), ['probe'])
+    })
+
   it('ranks name, description and parameter matches with independent expected order', () => {
     assert.deepStrictEqual(Ranking.rankDocuments('create issues', documents), [
       'createIssue',
@@ -69,6 +86,7 @@ describe('local BM25 discovery', () => {
     assert.strictEqual(Ranking.schemaText(parameters).truncated, false)
     const escaped = { $ref: '#/$defs/a~1b~0c', $defs: { 'a/b~c': { description: 'escaped' } } }
     assert.include(Ranking.schemaText(escaped).text, 'escaped')
+    assert.strictEqual(Ranking.schemaText({ $ref: '#/%' }).text, '')
   })
   it('bounds cycles, depth, width and indexed text', () => {
     const cyclic: { description: string; items?: unknown } = { description: 'cycle' }

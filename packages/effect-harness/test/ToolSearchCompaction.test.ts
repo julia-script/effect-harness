@@ -1,4 +1,4 @@
-/** Cross-feature acceptance: run with both deferred discovery and subscription compaction installed. */
+/** Durable discovery and subscription compaction acceptance through the public OAuth transports. */
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Effect from 'effect/Effect'
@@ -34,7 +34,7 @@ import {
   sse,
   payload,
   credentials,
-} from '../test/fixtures/SubscriptionProtocol.js'
+} from './fixtures/SubscriptionProtocol.js'
 
 for (const provider of ['openai-codex', 'anthropic'] as const)
   it.live(
@@ -206,10 +206,6 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
                   Effect.provideService(Store.CredentialStore, store),
                   Effect.provideService(HttpClient.HttpClient, http),
                 )
-          assert.isDefined(
-            model.compaction,
-            'This acceptance suite requires the subscription-compaction feature commit',
-          )
           const files = Toolkit.make(
             Tool.make('read', {
               deferred: true,
