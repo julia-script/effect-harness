@@ -1,5 +1,7 @@
 # Documentation
 
+The [docs app](../apps/docs/README.md) provides a Foldkit site with a guided tutorial, practical guides, reference pages, and a controlled-model conversation lab. Its [content plan](../apps/docs/CONTENT_PLAN.md) records audiences and Diátaxis scope.
+
 Start with the [README examples](../README.md) or run the [offline application](../apps/example/README.md).
 
 - [Tools](tools.md): schema declarations, handler Layers, dependencies, progress, and replay.
