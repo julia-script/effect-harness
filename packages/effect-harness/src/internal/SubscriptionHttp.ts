@@ -49,8 +49,41 @@ export const execute = (
     ),
   )
 
+export type Provider = 'openai-codex' | 'anthropic'
+const overflow = () =>
+  new AiError.AiError({
+    module: 'SubscriptionProvider',
+    method: 'request',
+    reason: new AiError.InvalidRequestError({
+      description: 'Provider input context exceeded',
+      metadata: { subscription: { failure: 'input-context-overflow' } },
+    }),
+  })
+const discriminator = Schema.Struct({
+  subscription: Schema.Struct({ failure: Schema.Literal('input-context-overflow') }),
+})
+export const isOverflow = (error: AiError.AiError): boolean =>
+  error.module === 'SubscriptionProvider' &&
+  error.reason._tag === 'InvalidRequestError' &&
+  Schema.is(discriminator)(error.reason.metadata)
+const inputOverflow = (
+  provider: Provider | undefined,
+  code: string | undefined,
+  message?: string,
+): boolean =>
+  (provider === 'openai-codex' && code === 'context_length_exceeded') ||
+  (provider === 'anthropic' &&
+    code === 'invalid_request_error' &&
+    message !== undefined &&
+    /^prompt is too long(?:: \d+ tokens > \d+ maximum)?\.?$/.test(message))
+
 /** Terminal provider codes are classified without retaining a provider-supplied message. */
-export const providerFailure = (code: string | undefined) => {
+export const providerFailure = (
+  code: string | undefined,
+  provider?: Provider,
+  message?: string,
+) => {
+  if (inputOverflow(provider, code, message)) return overflow()
   let reason: AiError.AiError['reason']
   if (code === 'usage_limit_reached' || code === 'insufficient_quota')
     reason = new AiError.QuotaExhaustedError({})
@@ -83,9 +116,10 @@ const errorCode = Schema.Struct({
   error: Schema.Struct({
     code: Schema.optionalKey(Schema.String),
     type: Schema.optionalKey(Schema.String),
+    message: Schema.optionalKey(Schema.String),
   }),
 })
-export const checkStatus = (response: HttpClientResponse.HttpClientResponse) =>
+export const checkStatus = (response: HttpClientResponse.HttpClientResponse, provider?: Provider) =>
   Effect.gen(function* () {
     if (response.status >= 200 && response.status < 300) return
     let reason: AiError.AiError['reason']
@@ -106,6 +140,21 @@ export const checkStatus = (response: HttpClientResponse.HttpClientResponse) =>
           Number.isFinite(retry) && retry >= 0 ? { retryAfter: Duration.seconds(retry) } : {},
         )
       }
+    } else if (response.status === 400) {
+      const body = yield* response.json.pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(errorCode)),
+        Effect.option,
+      )
+      if (
+        body._tag === 'Some' &&
+        inputOverflow(
+          provider,
+          body.value.error.code ?? body.value.error.type,
+          body.value.error.message,
+        )
+      )
+        return yield* overflow()
+      reason = new AiError.InvalidRequestError({ description: 'Provider HTTP 400' })
     } else if (response.status >= 500)
       reason = new AiError.InternalProviderError({
         description: `Provider HTTP ${response.status}`,

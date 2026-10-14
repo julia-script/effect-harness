@@ -180,7 +180,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
         }),
       )
       const response = yield* Http.execute(http, request)
-      yield* Http.checkStatus(response)
+      yield* Http.checkStatus(response, 'openai-codex')
       const stream = Stream.suspend(() => {
         let terminal = false
         return response.stream.pipe(
@@ -196,7 +196,10 @@ export const make = Effect.fnUntraced(function* (options: Options) {
                 typeof event.code === 'string' ? event : event.error,
               )
               return Effect.fail(
-                Http.providerFailure(Option.isSome(failure) ? failure.value.code : undefined),
+                Http.providerFailure(
+                  Option.isSome(failure) ? failure.value.code : undefined,
+                  'openai-codex',
+                ),
               )
             }
             if (event.type === 'response.failed') {
@@ -208,8 +211,28 @@ export const make = Effect.fnUntraced(function* (options: Options) {
               return Effect.fail(
                 Http.providerFailure(
                   Option.isSome(failure) ? failure.value.response.error.code : undefined,
+                  'openai-codex',
                 ),
               )
+            }
+            if (event.type === 'response.completed' || event.type === 'response.done') {
+              const terminal = Schema.decodeUnknownOption(
+                Schema.Struct({
+                  response: Schema.Struct({
+                    status: Schema.optionalKey(Schema.String),
+                    error: Schema.optionalKey(Schema.NullOr(Schema.Unknown)),
+                    incomplete_details: Schema.optionalKey(Schema.NullOr(Schema.Unknown)),
+                  }),
+                }),
+              )(event)
+              if (
+                Option.isNone(terminal) ||
+                (terminal.value.response.status !== undefined &&
+                  terminal.value.response.status !== 'completed') ||
+                terminal.value.response.error != null ||
+                terminal.value.response.incomplete_details != null
+              )
+                return Effect.fail(Http.malformed())
             }
             return Schema.decodeUnknownEffect(OpenAiSchema.ResponseStreamEvent)(
               event.type === 'response.done' ? { ...event, type: 'response.completed' } : event,

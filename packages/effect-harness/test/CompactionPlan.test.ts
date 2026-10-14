@@ -540,7 +540,7 @@ describe('native text-only compaction transcript', () => {
           ],
         }),
       ])
-      const expected = `[User]: question\n\n[Assistant thinking]: think\n\n[Assistant]: answer\n\n[Assistant tool calls]: lookup(path="a", n=2)\n\n[Tool result]: ${'x'.repeat(2000)}\n\n[... 2 more characters truncated]`
+      const expected = `[User]: question\n\n[Assistant]: answer\n\n[Assistant tool calls]: lookup(path="a", n=2)\n\n[Tool result]: ${'x'.repeat(2000)}\n\n[... 2 more characters truncated]`
       assert.strictEqual((yield* Plan.serialize(source)).text, expected)
       const prepared = yield* Plan.preparePrompt(source, 'Focus on paths')
       assert.strictEqual(prepared.prompt.content.length, 2)

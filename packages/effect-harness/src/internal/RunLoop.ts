@@ -1,4 +1,5 @@
 import * as Tracing from './Tracing.js'
+import * as PromptUsage from './PromptUsage.js'
 import * as ProviderState from './ProviderState.js'
 import { ProviderAffinity } from '../ProviderAffinity.js'
 import * as Usage from '../Usage.js'
@@ -809,17 +810,48 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
               plan,
               selected?.positioning ?? { sections: 'leading', tools: 'latest' },
             )
-            return { view, plan, ...preview }
+            const usage = yield* Transaction.snapshot(
+              tx,
+              PromptUsage.document,
+              PromptUsage.target(task.conversationId),
+            )
+            return {
+              view,
+              plan,
+              ...preview,
+              baseline: Option.isSome(usage) ? usage.value.value.baseline : undefined,
+            }
           }),
         )
         prompt = planned.translation.prompt
+        const before = yield* runHooks(
+          task.conversationId,
+          requesting.agent,
+          { _tag: 'beforeRequest', prompt },
+          task.id,
+        )
+        if (before !== undefined && 'content' in before) prompt = before as Prompt.Prompt
         if (requesting.compacted === undefined) {
           const selection = yield* Compaction.select(planned.view, settings.compaction, {
             reason: 'threshold',
             ...(selected?.definition.contextWindow === undefined
               ? {}
               : { contextWindow: selected.definition.contextWindow }),
-            extra: prompt.content.slice(planned.view.prompt.content.length),
+            prompt,
+            tools: offeredTools.map((tool) => tool.declaration),
+            ...(selected?.measurement === undefined
+              ? {}
+              : { overheadTokens: selected.measurement.overheadTokens }),
+            ...(planned.baseline !== undefined &&
+            selected?.measurement !== undefined &&
+            PromptUsage.identity(selected.measurement.identity, offeredTools) ===
+              planned.baseline.identity &&
+            Schema.toEquivalence(Schema.UndefinedOr(Model.SelectionSchema))(
+              planned.baseline.model,
+              requesting.agent.model,
+            )
+              ? { baseline: planned.baseline }
+              : {}),
           }).pipe(Effect.provideContext(context))
           if (selection._tag === 'Selected') {
             const ready = yield* CompactionRuntime.prepare(
@@ -862,13 +894,6 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
             }
           }
         }
-        const before = yield* runHooks(
-          task.conversationId,
-          requesting.agent,
-          { _tag: 'beforeRequest', prompt },
-          task.id,
-        )
-        if (before !== undefined && 'content' in before) prompt = before as Prompt.Prompt
         const translation = yield* Preparation.align(planned.translation, prompt)
         const preparation = yield* Preparation.own({
           requestId,
@@ -1028,7 +1053,11 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
         const immutable = yield* write((tx) => Inbox.project(tx, task.conversationId))
         const selection = yield* Compaction.select(immutable, policy.compaction, {
           reason: 'overflow',
-          extra: preparation.prompt.content.slice(immutable.prompt.content.length),
+          prompt: preparation.prompt,
+          tools: preparation.tools.map((tool) => tool.declaration),
+          ...(selected?.measurement === undefined
+            ? {}
+            : { overheadTokens: selected.measurement.overheadTokens }),
         }).pipe(Effect.provideContext(context))
         if (selection._tag === 'Noop') return false
         const ready = yield* CompactionRuntime.prepare(
@@ -1305,6 +1334,46 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
             linkedEntryId: entry.id,
             ...(draft.usage === undefined ? {} : { usage: draft.usage }),
           })
+          const preparedModel = preparation.model
+          const measuredModel =
+            preparedModel._tag === 'descriptor'
+              ? services.compaction.models.find(
+                  (model) =>
+                    model.definition.ref.provider === preparedModel.definition.ref.provider &&
+                    model.definition.ref.modelId === preparedModel.definition.ref.modelId,
+                )
+              : undefined
+          if (
+            measuredModel?.measurement !== undefined &&
+            draft.usage?._tag === 'model' &&
+            draft.usage.tokens.input !== undefined &&
+            (response.finishReason === 'stop' || response.finishReason === 'tool-calls')
+          ) {
+            yield* Transaction.ensureDocument(
+              tx,
+              PromptUsage.document,
+              PromptUsage.target(task.conversationId),
+            )
+            yield* Transaction.setDocument(
+              tx,
+              PromptUsage.document,
+              PromptUsage.target(task.conversationId),
+              {
+                baseline: {
+                  identity: PromptUsage.identity(
+                    measuredModel.measurement.identity,
+                    preparation.tools,
+                  ),
+                  ...(preparation.agent.model === undefined
+                    ? {}
+                    : { model: preparation.agent.model }),
+                  prompt: preparation.prompt,
+                  tools: preparation.tools.map((tool) => tool.declaration),
+                  inputTokens: draft.usage.tokens.input,
+                },
+              },
+            )
+          }
           yield* clearLive(tx)
           return entry
         })
