@@ -2,7 +2,7 @@
 
 Durable AI conversations with Effect services, schema-backed state, and scoped local execution.
 
-[effect-harness on npm](https://www.npmjs.com/package/effect-harness)
+[Documentation & interactive lab](https://effect-harness-docs-docs-prod-xywgv64k67qqnujx.juliaortiz-js.workers.dev) · [effect-harness on npm](https://www.npmjs.com/package/effect-harness)
 
 Define tools with schemas, supply their handlers through Layers, and submit input through a `Harness` client. The local runtime persists conversation history, submissions, tool checkpoints, and application documents through a `Storage` service.
 

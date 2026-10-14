@@ -38,3 +38,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # local research and review artifacts
 .unlazy/
 .scratch/
+
+# Alchemy local deployment artifacts
+.alchemy
+.wrangler
