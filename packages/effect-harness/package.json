@@ -92,6 +92,14 @@
     "./provider-auth-node/*": {
       "types": "./dist/provider-auth-node/*.d.ts",
       "default": "./dist/provider-auth-node/*.js"
+    },
+    "./provider-openai-codex": {
+      "types": "./dist/provider-openai-codex/index.d.ts",
+      "default": "./dist/provider-openai-codex/index.js"
+    },
+    "./provider-openai-codex/*": {
+      "types": "./dist/provider-openai-codex/*.d.ts",
+      "default": "./dist/provider-openai-codex/*.js"
     }
   },
   "publishConfig": {
