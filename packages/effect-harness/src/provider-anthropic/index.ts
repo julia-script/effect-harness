@@ -1,6 +1,9 @@
 /**
  * Public concept namespaces for this package.
  */
+export * as OAuth from './OAuth.js'
+export * as OAuthLanguageModel from './OAuthLanguageModel.js'
+export * as OAuthModel from './OAuthModel.js'
 // @barrel
 /**
  * Native Effect AI Anthropic client service and protocol facade.

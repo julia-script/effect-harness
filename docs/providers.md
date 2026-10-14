@@ -21,3 +21,5 @@ const ModelLive = OpenAiLanguageModel.layerApiKeyConfig({
 For multiple models, construct `Model.make` descriptors from already acquired language-model instances. Each descriptor has a schema-backed definition (provider/model reference, declared capabilities, optional limits), an options schema, and `configure` to map decoded options into provider request services. Pass descriptors in `Harness.layerLocal({ models })`. Configure a conversation's model reference and options through `Conversation.configure`.
 
 Descriptors retain the provider's already acquired resources. The provider Layer owns those resources; model limits and capabilities are caller declarations. There is no dynamic catalog service in the harness.
+
+For subscription authentication, see [subscription providers](subscription-providers.md): explicit Codex and Claude OAuth, credential persistence/refresh, durable account bindings, runnable examples, and the compatibility checklist. Existing API-key constructors retain their current behavior.
