@@ -394,6 +394,19 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
               agentTarget(task.conversationId),
             )
             const agent = { ...defaultAgent, ...saved.value }
+            if (!Equal.equals(agent.modelTools, round.preparation.agent.modelTools))
+              return yield* new ToolControl.InvalidControl({
+                reason: 'invalidRound',
+                message: 'Model selection changed after the request was prepared',
+              })
+            yield* ToolControl.validate(
+              { addTools: controls.addTools },
+              Inventory.inventory(lease.snapshot, 'model', {
+                agent,
+                preparedTools: round.preparation.allTools,
+                selection: 'permitted',
+              }).map((item) => item.declaration.name),
+            )
             const selection = agent.modelTools ?? { mode: 'default' as const, names: [] }
             const bindings = new Map(Object.entries(selection.bindings ?? {}))
             for (const name of controls.addTools) {

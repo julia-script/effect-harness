@@ -10,11 +10,12 @@ import type * as ToolResult from './ToolResult.js'
 export class ToolExecution extends Context.Service<
   ToolExecution,
   Execution.Access & {
-    /** Durable per-call child identity in native tool rounds; legacy calls use their run ID. */
+    /** Permission-filtered metadata borrowed for this handler; access expires on completion. */
     readonly deferredTools?: Effect.Effect<
       ReadonlyArray<import('./ToolCatalog.js').Metadata>,
       import('./ToolCatalog.js').CatalogError | import('./ExecutionError.js').ExecutionError
     >
+    /** Durable per-call child identity in native tool rounds; legacy calls use their run ID. */
     readonly taskId: Record.TaskId
     /** Original provider-visible ID; repeated IDs in later rounds remain distinct children. */
     readonly callId: string

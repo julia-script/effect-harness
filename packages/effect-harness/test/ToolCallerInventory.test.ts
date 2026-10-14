@@ -312,7 +312,7 @@ describe('bound caller admission', () => {
         }),
       ).pipe(Effect.provide(execution)),
   )
-  it.effect('legacy extension selection filters and orders owners before caller inventories', () =>
+  it.effect('extension availability never reveals shadows; registration selection owns order', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const calls: string[] = []
@@ -348,6 +348,21 @@ describe('bound caller admission', () => {
           (yield* ToolInventory.invoke(lease, call, 'tools', {
             agent: { extensions: ['last', 'first'] },
           })).details,
+          'last',
+        )
+        assert.strictEqual(
+          ToolInventory.inspect(lease.snapshot, 'same', 'model', {
+            agent: { extensions: ['first'] },
+          })._tag,
+          'denied',
+        )
+        assert.strictEqual(
+          (yield* ToolInventory.invoke(lease, call, 'tools', {
+            agent: {
+              extensions: ['first', 'last'],
+              toolkits: { inherit: false, registrations: ['owner-last', 'owner-first'] },
+            },
+          })).details,
           'first',
         )
         const filtered = {
@@ -364,7 +379,7 @@ describe('bound caller admission', () => {
           (yield* ToolInventory.invoke(lease, call, 'model', filtered).pipe(Effect.flip))._tag,
           'ToolAdmissionDenied',
         )
-        assert.deepStrictEqual(calls, ['first'])
+        assert.deepStrictEqual(calls, ['last', 'first'])
         const bindings: NonNullable<Agent.ToolkitSelection['bindings']> = {}
         Object.setPrototypeOf(bindings, { same: { binding: 'missing' } })
         assert.strictEqual(

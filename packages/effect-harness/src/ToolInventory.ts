@@ -117,25 +117,9 @@ const registrations = (
   const inherited =
     options.inheritedRegistrations ?? snapshot.registrations.map((owner) => owner.id)
   const selection = options.agent?.toolkits
-  const selected =
-    selection === undefined
-      ? inherited
-      : [...new Set([...(selection.inherit ? inherited : []), ...selection.registrations])]
-  const extensions = options.agent?.extensions
-  if (extensions === undefined) return selected
-  const names = (id: string) =>
-    snapshot.extensions.filter((item) => item.owner.id === id).map((item) => item.declaration.name)
-  if (selection !== undefined)
-    return selected.filter(
-      (id) => names(id).length === 0 || names(id).some((name) => extensions.includes(name)),
-    )
-  // Legacy extension selection retains its supplied order; standalone toolkits remain inherited.
-  return [
-    ...new Set([
-      ...selected.filter((id) => names(id).length === 0),
-      ...extensions.flatMap((name) => selected.filter((id) => names(id).includes(name))),
-    ]),
-  ]
+  return selection === undefined
+    ? inherited
+    : [...new Set([...(selection.inherit ? inherited : []), ...selection.registrations])]
 }
 
 /** Choose ownership before considering enabled flags, caller permissions or name filters. */
@@ -178,6 +162,16 @@ export const inspect = (
   if (item === undefined) return deny('notFound', `Tool ${name} has no selected binding`)
   if (!registrations(snapshot, options).includes(item.owner.id))
     return deny('registrationNotSelected', `Registration ${item.owner.id} is not selected`)
+  const extensions = snapshot.extensions.filter((extension) => extension.owner.id === item.owner.id)
+  if (
+    options.agent?.extensions !== undefined &&
+    extensions.length > 0 &&
+    !extensions.some((extension) => options.agent!.extensions!.includes(extension.declaration.name))
+  )
+    return deny(
+      'registrationNotSelected',
+      `Registration ${item.owner.id} is outside the agent extension selection`,
+    )
   if (!item.owner.enabled || options.agent?.toolkits?.disabled?.includes(item.owner.id))
     return deny('disabled', `Registration ${item.owner.id} is disabled`)
   const bindings = options.agent?.toolkits?.bindings

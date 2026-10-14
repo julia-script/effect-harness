@@ -2,7 +2,7 @@
 
 Hosts can mark native tool declarations with `deferred: true` in `Tool.make` or `Tool.makeResult`, or annotate an Effect tool with `Tool.Deferred`. The default is false. Install `ToolSearch.toolkit` together with `ToolSearch.layer` to offer the optional `tool_search` function. The [typechecked example](../apps/example/src/tour/ToolSearch.ts) combines search with calendar, document and email tools.
 
-With default selection, the first model request offers permitted nondeferred tools. A model invokes `tool_search` with `{ query, limit? }`; its result lists matches in `structuredOutput.loaded` and `details.loaded`, with a short model-facing description. Successful model-issued results contribute `control.addTools` to the existing complete-round barrier. The next request offers those tools, and a subsequent ordinary tool call executes the operation. Search does not execute matches or write conversation state independently.
+With default selection, the first model request offers permitted nondeferred tools. A model invokes `tool_search` with `{ query, limit? }`; its result lists matches in `structuredOutput.loaded` and `details.loaded`, with a short model-facing description. Successful model-issued results contribute `control.addTools` to the existing complete-round barrier. The next request offers those tools, and a subsequent ordinary tool call executes the operation. Search does not execute matches or write conversation state independently. A host can register tools from its MCP integration through the same declarations; this package does not own the MCP transport.
 
 ## Selection and permission
 
@@ -13,7 +13,7 @@ With default selection, the first model request offers permitted nondeferred too
 
 Successful additions append to `names` without duplicates and record their owner/version in `modelTools.bindings`. Explicit selections can grow through authorized controls too. Configure a new selection to remove previous offers and their bindings; clearing the override restores the host's default configuration. Programmatic `tools` callers can invoke permitted deferred tools before model discovery. They cannot call model-only `tool_search`, and their results cannot activate tools.
 
-Search examines only deferred declarations that are permitted for the model but not already offered. Disabled or unselected registrations, agent restrictions, caller restrictions and incompatible bindings all apply. An excluded ordinary tool does not become deferred. Knowing an unoffered deferred name does not authorize a model call. Duplicate names resolve to one canonical owner before permissions are checked; denial never reveals a shadowed declaration.
+Search examines only deferred declarations that are permitted for the model but not already offered. Disabled or unselected registrations, agent restrictions, caller restrictions and incompatible bindings all apply. An excluded ordinary tool does not become deferred. Knowing an unoffered deferred name does not authorize a model call. Duplicate names resolve to one canonical owner before permissions are checked; denial never reveals a shadowed declaration. `agent.extensions` filters that owner without changing resolution order. Use `toolkits.registrations` or explicit bindings to choose a different registration.
 
 `ToolCatalog.deferred` exposes names, descriptions and parameter schemas for the current invocation. It uses the same leased generation and effective policy as admission, without opening other tools' resources. Access expires when the handler returns. Schema conversion failure is a typed `ToolCatalogError`, not an omitted candidate. The catalog contains no handlers, credentials or service contexts.
 
@@ -21,7 +21,7 @@ Search examines only deferred declarations that are permitted for the model but 
 
 Activation and the applied-round marker commit together. Reopening after result persistence resumes the barrier without repeating a completed search or changing declaration order. Only successful model-issued receipts activate tools; failures, blocked calls, cancelled calls and programmatic/nested calls do not. Hooks must pass final result/control validation.
 
-Selections survive reopen, compaction and history reset. Historical forks inherit the selection at the fork entry and then evolve independently. Explicit configuration changes remain authoritative.
+Selections survive reopen, compaction and history reset. Historical forks inherit the selection at the fork entry and then evolve independently. Explicit configuration changes remain authoritative. A later model selection change invalidates in-flight additions; current agent and registration restrictions are checked again inside the activation transaction.
 
 A search is scoped to its leased generation. If registration availability changes before a resumed barrier, unavailable or differently bound additions are rejected. If replacement happens after a barrier has acquired its lease, any committed addition still records the original owner/version; later requests cannot silently invoke the replacement. Absent, disabled or incompatible loaded tools disappear from offers. Restoring a compatible registration can expose the saved selection again. Changing to another owner or contract version requires explicit configuration.
 

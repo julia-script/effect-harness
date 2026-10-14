@@ -242,4 +242,69 @@ describe('deferred tools', () => {
         }),
       ).pipe(Effect.provide(Storage.layerMemory)),
   )
+  for (const change of [
+    { modelTools: { mode: 'explicit' as const, names: [] } },
+    { tools: ['tool_search'] },
+  ])
+    it.live(
+      `an in-flight result cannot override later configuration ${JSON.stringify(change)}`,
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            let request = 0
+            let configure: Effect.Effect<void, import('../src/HarnessError.js').HarnessError> =
+              Effect.void
+            const hidden = Toolkit.make(
+              Tool.make('lookup', {
+                deferred: true,
+                description: 'calendar',
+                success: Schema.String,
+              }),
+            )
+            const model = yield* ScriptedStream.make({
+              generateText: () =>
+                Effect.succeed(
+                  ++request === 1
+                    ? [
+                        {
+                          type: 'tool-call' as const,
+                          id: 'discover',
+                          name: 'tool_search',
+                          params: { query: 'calendar' },
+                          providerExecuted: false,
+                        },
+                        finish,
+                      ]
+                    : [
+                        { type: 'text' as const, text: 'done' },
+                        { ...finish, reason: 'stop' as const },
+                      ],
+                ),
+            })
+            const runtime = yield* HarnessRuntime.make({
+              tools: Toolkit.merge(Search.toolkit, hidden),
+              hooks: [Hook.make({ event: 'afterTools', execute: () => configure })],
+            }).pipe(
+              Effect.provide(
+                Layer.merge(
+                  Search.layer,
+                  hidden.toLayer({ lookup: () => Effect.die('must not execute') }),
+                ),
+              ),
+              Effect.provideService(LanguageModel.LanguageModel, model),
+            )
+            const root = yield* runtime.backend.root
+            configure = runtime.backend.configure({ conversationId: root, change })
+            const job = yield* runtime.backend.submit({
+              conversationId: root,
+              draft: { type: 'input', content: 'calendar' },
+            })
+            assert.deepInclude(yield* runtime.backend.wait(job.id), {
+              status: 'unanswered',
+              reason: 'failed',
+            })
+            assert.deepStrictEqual(yield* runtime.backend.agent(root), change)
+          }),
+        ).pipe(Effect.provide(Storage.layerMemory)),
+    )
 })
