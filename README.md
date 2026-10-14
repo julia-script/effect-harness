@@ -46,6 +46,43 @@ Run the same program after a crash. It opens the same store, resumes unfinished 
 
 The [single-file recovery example](apps/example/src/tour/Recovery.ts) supplies an offline model and handlers and runs without an API key.
 
+## Discover models lazily
+
+`Provider.make` accepts a provider ID, a `models` source with independent `list` and
+`get` Effects, and a `create` callback that builds an existing `Model` descriptor.
+`ModelCatalog.make({ providers })` preserves each provider's literal ID, error
+types, and service requirements. Construction performs no discovery.
+
+Use `ModelCatalog.list(catalog, { provider })` for lightweight model summaries and
+`ModelCatalog.get(catalog, { provider, modelId })` for capabilities, limits, and
+supported reasoning controls. A direct lookup does not enumerate models. Sources
+own pagination and query semantics; an upstream bulk endpoint may still require a
+bulk request. `Provider.fromModels` supplies local discovery with pagination and
+case-insensitive search.
+
+`ModelCatalog.resolve(catalog, { provider, modelId, options })` validates explicit
+effort and thinking controls before calling the selected provider's factory. It
+preserves the factory's requirements and the returned model's inference
+requirements. Provider factories translate controls and enforce any additional
+protocol-specific constraints. Effort values are per-model strings; unsupported
+values fail instead of being clamped. Omitted options stay omitted, and metadata
+defaults are informational. Unknown capabilities stay unknown;
+`ModelInfo.toDefinition` requires complete capability declarations before building
+a runtime model.
+
+`Provider.cached(provider, { capacity, timeToLive })` binds discovery services at
+cache construction without fetching data. Create one cache per account and
+endpoint. The cache shares concurrent requests, limits pages and model entries
+separately, and does not retain failures. Its `invalidate` Effect clears both
+caches. Model construction still requires its own services. Plain catalogs do not
+cache or capture services implicitly.
+
+The [model catalog example](apps/example/src/tour/ModelCatalog.ts) demonstrates
+lazy discovery and wiring the existing Codex model factory. Run it offline with
+`bun apps/example/src/tour/ModelCatalog.ts` after building the library. Remote
+catalog fetching and maintained model inventories are supplied through the source
+callbacks; this API does not assume a universal discovery endpoint.
+
 ## Declare tools, then supply handlers
 
 Declarations describe the shared contract. Handler Layers resolve the services used by the implementation.
