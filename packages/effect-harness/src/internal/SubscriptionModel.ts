@@ -15,6 +15,7 @@ export const make = <A extends object, I>(input: {
   readonly protocol: string
   readonly definition: Model.Definition
   readonly languageModel: typeof LanguageModel.LanguageModel.Service
+  readonly capabilities: Schema.Json
 }) =>
   Effect.gen(function* () {
     const configuration = yield* Model.makeConfiguration({
@@ -25,6 +26,7 @@ export const make = <A extends object, I>(input: {
         binding: Credential.Binding,
         model: Model.ReferenceSchema,
         settings: input.settings,
+        capabilities: Schema.Json,
       }),
       tags: [input.tag],
       capture: (context) =>
@@ -33,9 +35,11 @@ export const make = <A extends object, I>(input: {
           binding: input.binding,
           model: input.definition.ref,
           settings: Context.getOrUndefined(context, input.tag) ?? input.defaults,
+          capabilities: input.capabilities,
         }),
       restore: (snapshot) => {
         if (
+          !Schema.toEquivalence(Schema.Json)(snapshot.capabilities, input.capabilities) ||
           snapshot.protocol !== input.protocol ||
           snapshot.binding.identity !== input.binding.identity ||
           snapshot.binding.provider !== input.binding.provider ||
