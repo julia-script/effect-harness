@@ -13,6 +13,8 @@ import * as ToolResult from './ToolResult.ts'
 
 import type * as HttpClient from 'effect/http/HttpClient'
 import type * as Redacted from 'effect/Redacted'
+/** Constructs a LanguageModel using stored OAuth credentials. */
+export { layer as layerOAuth } from './OAuthLanguageModel.js'
 /**
  * Constructs the native model with provider-owned system history handling.
  *
