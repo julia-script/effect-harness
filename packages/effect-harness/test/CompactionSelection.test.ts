@@ -128,7 +128,10 @@ describe('safe compaction selection foundation', () => {
           yield* Compaction.select(view, policy, {
             reason: 'threshold',
             contextWindow: 100,
-            extra: [Prompt.userMessage({ content: [Prompt.textPart({ text: text(2) })] })],
+            prompt: Prompt.fromMessages([
+              ...view.prompt.content,
+              Prompt.userMessage({ content: [Prompt.textPart({ text: text(2) })] }),
+            ]),
           }),
         )
         assert.strictEqual(value.measurement.tokens, 71)
@@ -674,3 +677,100 @@ describe('safe compaction selection foundation', () => {
       ).pipe(Effect.provide(Storage.layerMemory)),
   )
 })
+
+it.effect(
+  'counts the full planned prompt, tool declarations and overhead without mistaking a tokenizer for exact wire usage',
+  () =>
+    Effect.gen(function* () {
+      const view = yield* Projection.project(root, [
+        entry(1, [user(text(20))]),
+        entry(2, [user(text(15))]),
+      ])
+      const prompt = Prompt.fromMessages([
+        Prompt.systemMessage({ content: text(50) }),
+        ...view.prompt.content,
+      ])
+      const tools = [
+        { name: 'lookup', description: 'look up records', parameters: { type: 'object' } },
+      ]
+      const measured = yield* Compaction.select(view, policy, {
+        reason: 'threshold',
+        contextWindow: 100,
+        prompt,
+        tools,
+        overheadTokens: 7,
+      })
+      assert.strictEqual(selected(measured).mode, 'blocking')
+      assert.isAbove(measured.measurement.tokens, 85)
+      const tokenized = yield* Compaction.select(view, policy, {
+        reason: 'manual',
+        prompt,
+        tools,
+        overheadTokens: 7,
+      }).pipe(
+        Effect.provideService(
+          Tokenizer.Tokenizer,
+          Tokenizer.make({ tokenize: () => Effect.succeed([1, 2]) }),
+        ),
+      )
+      assert.strictEqual(tokenized.measurement.method, 'tokenizer')
+      assert.strictEqual(
+        tokenized.measurement.tokens,
+        2 + tokenized.measurement.estimatedOverheadTokens!,
+      )
+    }),
+)
+
+it.effect(
+  'uses normalized recent input plus trailing estimates only with an unchanged prefix and tools',
+  () =>
+    Effect.gen(function* () {
+      const view = yield* Projection.project(root, [
+        entry(1, [user(text(20))]),
+        entry(2, [user(text(15))]),
+      ])
+      const tools = [{ name: 'lookup', description: '', parameters: { type: 'object' } }]
+      const baseline = {
+        identity: 'fixture',
+        prompt: Prompt.fromMessages(view.prompt.content.slice(0, 1)),
+        tools,
+        inputTokens: 100,
+      }
+      const estimate = yield* Compaction.select(view, policy, {
+        reason: 'manual',
+        baseline,
+        tools,
+        overheadTokens: 40,
+      })
+      assert.strictEqual(estimate.measurement.method, 'usage')
+      assert.strictEqual(estimate.measurement.tokens, 115)
+      for (const change of [
+        { tools: [] },
+        {
+          prompt: Prompt.fromMessages([
+            Prompt.systemMessage({ content: 'rewritten prefix' }),
+            ...view.prompt.content,
+          ]),
+        },
+      ]) {
+        const fallback = yield* Compaction.select(view, policy, {
+          reason: 'manual',
+          baseline,
+          tools,
+          ...change,
+        })
+        assert.strictEqual(fallback.measurement.method, 'estimate')
+      }
+      const tokenized = yield* Compaction.select(view, policy, {
+        reason: 'manual',
+        baseline,
+        tools,
+      }).pipe(
+        Effect.provideService(
+          Tokenizer.Tokenizer,
+          Tokenizer.make({ tokenize: () => Effect.succeed([1]) }),
+        ),
+      )
+      assert.strictEqual(tokenized.measurement.method, 'tokenizer')
+    }),
+)

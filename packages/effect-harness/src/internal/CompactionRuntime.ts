@@ -714,7 +714,19 @@ export const make = (services: Services) => {
     )
     if (Exit.isSuccess(response)) {
       const usage = ModelStream.usage(response.value.usage, checkpoint.envelope.preparation)
-      const summary = yield* Effect.exit(Compaction.validateSummary(response.value))
+      const summary = yield* Effect.exit(
+        Compaction.validateSummary(
+          response.value,
+          bound.capability.outputBudget === 'local-acceptance'
+            ? {
+                maximum: policy.maxOutputTokens,
+                ...(response.value.usage.outputTokens.total === undefined
+                  ? {}
+                  : { outputTokens: response.value.usage.outputTokens.total }),
+              }
+            : undefined,
+        ),
+      )
       if (Exit.isSuccess(summary))
         return yield* place(
           checkpoint.envelope.fingerprint,

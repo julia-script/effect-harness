@@ -269,8 +269,8 @@ export const validate = Effect.fnUntraced(function* (
 })
 
 /**
- * Pinned pi serializer labels and 2000-character tool-result truncation. Native reasoning maps
- * to thinking; JSON object params keep named arguments, other JSON params use their exact text.
+ * Visible transcript with 2000-character tool-result truncation; reasoning is excluded.
+ * JSON object params keep named arguments, other JSON params use their exact text.
  * Files are deliberately omitted and disclosed. Native unknown tool payloads are validated first.
  */
 export const serialize = Effect.fnUntraced(function* (
@@ -297,9 +297,6 @@ export const serialize = Effect.fnUntraced(function* (
         .join('\n')
       if (text.length > 0) parts.push(`[User]: ${text}`)
     } else if (message.role === 'assistant') {
-      const thinking = message.content.flatMap((part) =>
-        part.type === 'reasoning' ? [part.text] : [],
-      )
       const text = message.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
       const calls: Array<string> = []
       for (const part of message.content) {
@@ -315,7 +312,6 @@ export const serialize = Effect.fnUntraced(function* (
         }
         // Native provider-executed results may reside within the assistant message.
       }
-      if (thinking.length > 0) parts.push(`[Assistant thinking]: ${thinking.join('\n')}`)
       if (text.length > 0) parts.push(`[Assistant]: ${text.join('\n')}`)
       if (calls.length > 0) parts.push(`[Assistant tool calls]: ${calls.join('; ')}`)
     }

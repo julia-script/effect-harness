@@ -5,6 +5,7 @@ import * as Schema from 'effect/Schema'
 import type * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Model from '../Model.js'
 import { ModelError, ModelUnsupportedError } from '../ModelError.js'
+import * as Http from './SubscriptionHttp.js'
 import * as Credential from '../provider-auth/Credential.js'
 
 export const make = <A extends object, I>(input: {
@@ -15,6 +16,11 @@ export const make = <A extends object, I>(input: {
   readonly protocol: string
   readonly definition: Model.Definition
   readonly languageModel: typeof LanguageModel.LanguageModel.Service
+  readonly capabilities: Schema.Json
+  readonly summary: {
+    readonly outputBudget: 'provider' | 'local-acceptance'
+    readonly configure: (settings: A, maximum: number) => Effect.Effect<A, ModelError>
+  }
 }) =>
   Effect.gen(function* () {
     const configuration = yield* Model.makeConfiguration({
@@ -25,6 +31,7 @@ export const make = <A extends object, I>(input: {
         binding: Credential.Binding,
         model: Model.ReferenceSchema,
         settings: input.settings,
+        capabilities: Schema.Json,
       }),
       tags: [input.tag],
       capture: (context) =>
@@ -33,9 +40,11 @@ export const make = <A extends object, I>(input: {
           binding: input.binding,
           model: input.definition.ref,
           settings: Context.getOrUndefined(context, input.tag) ?? input.defaults,
+          capabilities: input.capabilities,
         }),
       restore: (snapshot) => {
         if (
+          !Schema.toEquivalence(Schema.Json)(snapshot.capabilities, input.capabilities) ||
           snapshot.protocol !== input.protocol ||
           snapshot.binding.identity !== input.binding.identity ||
           snapshot.binding.provider !== input.binding.provider ||
@@ -54,7 +63,31 @@ export const make = <A extends object, I>(input: {
         return Effect.succeed(Context.make(input.tag, snapshot.settings))
       },
     })
+    const compaction = yield* Model.makeCompaction({
+      binding: { id: `${input.protocol}/summary/${input.summary.outputBudget}`, version: 1 },
+      configuration,
+      outputBudget: input.summary.outputBudget,
+      isOverflow: Http.isOverflow,
+      configure: (context, policy) =>
+        input.summary
+          .configure(
+            Context.getOrUndefined(context, input.tag) ?? input.defaults,
+            policy.maxOutputTokens,
+          )
+          .pipe(Effect.map((settings) => Context.make(input.tag, settings))),
+    })
     return Model.make({
+      compaction,
+      measurement: {
+        identity: JSON.stringify([
+          input.protocol,
+          input.binding,
+          input.definition,
+          input.defaults,
+          input.capabilities,
+        ]),
+        overheadTokens: input.binding.provider === 'anthropic' ? 64 : 32,
+      },
       definition: input.definition,
       languageModel: input.languageModel,
       options: input.settings,
