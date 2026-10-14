@@ -1,3 +1,4 @@
+import * as Tracing from './Tracing.js'
 /** Scheduler adapter over canonical registry snapshots, never a second mutable registry. */
 import * as Effect from 'effect/Effect'
 import * as Context from 'effect/Context'
@@ -92,6 +93,41 @@ export const compile = <
       ),
     )
   }
+  // Cause identity is used by durable fault provenance; add a span without stack annotations.
+  const invokePhase = Effect.fnUntraced(function* (record: Record.Task, mode: 'run' | 'abort') {
+    yield* Effect.annotateCurrentSpan({
+      'task.id': record.id,
+      'conversation.id': record.conversationId,
+      'task.kind': record.kind,
+      'task.mode': mode,
+    })
+    const input = yield* Task.decode(self.input, record.input)
+    const checkpoint = yield* Task.decodeCheckpoint(self.checkpoint, record.state.checkpoint)
+    yield* Effect.annotateCurrentSpan('task.phase', checkpoint.phase)
+    // The validated exhaustive discriminator selects a concrete H member. This is the
+    // sole heterogeneous phase dispatch bridge; its E/R come from this exact Task's
+    // phantom channels and are satisfied by captured services plus fresh invocation keys.
+    const handler = (mode === 'abort' ? self.abort : self.phases[checkpoint.phase as keyof H]) as
+      | ((value: {
+          readonly input: I['Type']
+          readonly checkpoint: C['Type']
+        }) => Effect.Effect<
+          void,
+          Task.Error<typeof self>,
+          Task.ExecutionServices<I, C, S, F, H, B> | TaskExecution | Scope.Scope
+        >)
+      | undefined
+    if (handler === undefined) {
+      if (mode === 'abort')
+        return {
+          _tag: 'outcome',
+          outcome: { status: 'aborted' },
+        } as const
+      return fault('Task checkpoint names an unavailable phase')
+    }
+    yield* Effect.suspend(() => handler({ input, checkpoint }))
+    return { _tag: 'returned' } as const
+  }, Tracing.withSpan('Task.runPhase'))
   return {
     initialize: (input) =>
       Schema.encodeUnknownEffect(Schema.toCodecJson(self.input))(input).pipe(
@@ -108,39 +144,11 @@ export const compile = <
         Effect.updateContext((_context: Context.Context<never>) => captured),
       ),
     invoke: (record, mode) =>
-      Effect.gen(function* () {
-        const input = yield* Task.decode(self.input, record.input)
-        const checkpoint = yield* Task.decodeCheckpoint(self.checkpoint, record.state.checkpoint)
-        // The validated exhaustive discriminator selects a concrete H member. This is the
-        // sole heterogeneous phase dispatch bridge; its E/R come from this exact Task's
-        // phantom channels and are satisfied by captured services plus fresh invocation keys.
-        const handler = (
-          mode === 'abort' ? self.abort : self.phases[checkpoint.phase as keyof H]
-        ) as
-          | ((value: {
-              readonly input: I['Type']
-              readonly checkpoint: C['Type']
-            }) => Effect.Effect<
-              void,
-              Task.Error<typeof self>,
-              Task.ExecutionServices<I, C, S, F, H, B> | TaskExecution | Scope.Scope
-            >)
-          | undefined
-        if (handler === undefined) {
-          if (mode === 'abort')
-            return {
-              _tag: 'outcome',
-              outcome: { status: 'aborted' },
-            } as const
-          return fault('Task checkpoint names an unavailable phase')
-        }
-        yield* Effect.suspend(() => handler({ input, checkpoint }))
-        return { _tag: 'returned' } as const
-      }).pipe(
+      invokePhase(record, mode).pipe(
         Effect.catchCause(normalize),
         Effect.updateContext((invocation: Context.Context<TaskExecution | Scope.Scope>) =>
           Context.merge(
-            captured,
+            Tracing.context(captured, invocation),
             Context.make(TaskExecution, Context.get(invocation, TaskExecution)).pipe(
               Context.add(Scope.Scope, Context.get(invocation, Scope.Scope)),
             ),

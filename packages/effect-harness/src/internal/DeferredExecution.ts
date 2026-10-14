@@ -40,7 +40,7 @@ export const expiry = Effect.fnUntraced(function* (settings: Settings.Snapshot) 
   return yield* Schema.decodeEffect(deadline)((yield* Clock.currentTimeMillis) + duration)
 })
 
-export const run = Effect.fnUntraced(function* <E, R>(
+export const run = Effect.fn('DeferredModel.run')(function* <E, R>(
   initial: Starting | Polling,
   adapter: Model.Deferred,
   request: Model.DeferredRequest,
@@ -48,6 +48,11 @@ export const run = Effect.fnUntraced(function* <E, R>(
   policy: Effect.Effect<Settings.Snapshot>,
   create: boolean,
 ) {
+  yield* Effect.annotateCurrentSpan({
+    'request.id': request.requestId,
+    'request.attempt': request.attempt,
+    'deferred.create': create,
+  })
   let state = initial
   const publish = (checkpoint: Starting | Polling) =>
     save(checkpoint).pipe(
@@ -184,7 +189,7 @@ export type CancelReport = {
   readonly status: 'completed' | 'failed' | 'timeout'
   readonly message?: string
 }
-export const cancel = Effect.fnUntraced(function* <E, R>(
+export const cancel = Effect.fn('DeferredModel.cancel')(function* <E, R>(
   operation: Effect.Effect<void, E, R>,
   owner: import('effect/Scope').Closeable,
 ) {

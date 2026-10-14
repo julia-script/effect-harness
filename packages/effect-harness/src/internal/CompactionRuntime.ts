@@ -164,7 +164,7 @@ export type Ready =
   | { readonly _tag: 'Supplied'; readonly fingerprint: Plan.Fingerprint; readonly summary: string }
   | { readonly _tag: 'Prepared'; readonly envelope: Contract.Envelope }
 /** Validate hooks, summary capability and encoded configuration before incompatible progress. */
-export const prepare = Effect.fnUntraced(function* (
+export const prepare = Effect.fn('Compaction.prepare')(function* (
   services: Services,
   id: Record.ConversationId,
   input: typeof Contract.InputSchema.Type,
@@ -491,7 +491,7 @@ export const make = (services: Services) => {
       }),
     )
   })
-  const place = Effect.fnUntraced(function* (
+  const place = Effect.fn('Compaction.place')(function* (
     fingerprint: Plan.Fingerprint,
     text: string,
     envelope?: Contract.Envelope,
@@ -636,7 +636,7 @@ export const make = (services: Services) => {
       },
     })
   })
-  const summarize = Effect.fnUntraced(function* ({
+  const summarize = Effect.fn('Compaction.summarize')(function* ({
     checkpoint,
   }: Task.PhaseInput<typeof Contract.InputSchema, typeof Contract.CheckpointSchema, 'summarize'>) {
     const execution = yield* TaskExecution

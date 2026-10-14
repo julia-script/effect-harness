@@ -7,6 +7,7 @@ Start with the [README examples](../README.md) or run the [offline application](
 - [Tools](tools.md): schema declarations, handler Layers, dependencies, progress, and replay.
 - [Providers](providers.md): native Effect AI models and explicit model descriptors.
 - [Persistence](persistence.md): Storage, Session, documents, and atomic transactions.
+- [Tracing](tracing.md): durable span names, correlation attributes, and Effect tracer setup.
 - [Observations](observations.md): committed entries, document streams, and submission settlement.
 - [Composition](explanation/composition.md): the client, backend, local runtime, and service requirements.
 - [Recovery](explanation/recovery.md): restart, request identity, and interrupted actions.

@@ -1,3 +1,4 @@
+import * as Tracing from './Tracing.js'
 import * as ProviderState from './ProviderState.js'
 import { ProviderAffinity } from '../ProviderAffinity.js'
 import * as Usage from '../Usage.js'
@@ -132,7 +133,7 @@ export interface Services {
 }
 const jsonCodec = <S extends Schema.Constraint>(schema: S) => Schema.toCodecJson(schema)
 
-export const run = Effect.fnUntraced(function* (services: Services, initial: Record.Task) {
+export const run = Effect.fn('RunLoop.run')(function* (services: Services, initial: Record.Task) {
   const {
     session,
     context,
@@ -183,6 +184,12 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
   let { allTools, toolExtensions, sections, runHooks, lease } = services
   let task = initial
   let state = yield* Run.decode(task.state.checkpoint)
+  yield* Effect.annotateCurrentSpan({
+    'task.id': initial.id,
+    'conversation.id': initial.conversationId,
+    'submission.id': state.submissionId,
+    'run.phase': state.phase,
+  })
   if (state._tag !== 'queued') {
     yield* write((tx) =>
       Effect.gen(function* () {
@@ -1178,8 +1185,13 @@ export const run = Effect.fnUntraced(function* (services: Services, initial: Rec
               toolkit: nativeToolkit,
               disableToolCallResolution: true,
             })
-            .pipe(Stream.provideContext(requestContext)),
+            .pipe(
+              Stream.updateContext((current: Context.Context<never>) =>
+                Tracing.context(requestContext, current),
+              ),
+            ),
           preparation,
+          attempt,
           progressPolicy.progress.partialIntervalMs,
           (partial, revision) =>
             write((tx, current) =>

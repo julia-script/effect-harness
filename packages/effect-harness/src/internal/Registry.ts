@@ -1,3 +1,4 @@
+import * as Tracing from './Tracing.js'
 /** Registry-owned installation scopes, snapshot publication and invocation resource pins. */
 import * as Context from 'effect/Context'
 import * as Cause from 'effect/Cause'
@@ -294,7 +295,7 @@ const materialize = (
                     Effect.updateContext((input: Context.Context<ToolExecution | Scope.Scope>) =>
                       Context.add(
                         Context.add(
-                          binding.context,
+                          Tracing.context(binding.context, input),
                           ToolExecution,
                           Context.get(input, ToolExecution),
                         ),
