@@ -3,6 +3,7 @@ import * as Effect from 'effect/Effect'
 import type * as Model from '../Model.js'
 import * as SubscriptionModel from '../internal/SubscriptionModel.js'
 import * as OAuthLanguageModel from './OAuthLanguageModel.js'
+import { ModelError, ModelUnsupportedError } from '../ModelError.js'
 import * as ThinkingPolicy from './ThinkingPolicy.js'
 import * as Http from '../internal/SubscriptionHttp.js'
 
@@ -32,6 +33,20 @@ export const make = Effect.fnUntraced(function* (
       efforts: [...(options.efforts ?? [])],
       supportsLongCache: options.supportsLongCache ?? false,
       supportsTemperature: options.supportsTemperature ?? false,
+    },
+    summary: {
+      outputBudget: 'provider',
+      configure: (settings, maximum) => {
+        if (settings.thinking?.type === 'enabled' && settings.thinking.budget_tokens >= maximum)
+          return Effect.fail(
+            new ModelError({
+              reason: new ModelUnsupportedError({
+                message: 'Summary maxTokens must exceed the configured thinking budget',
+              }),
+            }),
+          )
+        return Effect.succeed({ ...settings, maxTokens: maximum, cache: 'none' as const })
+      },
     },
   })
 })

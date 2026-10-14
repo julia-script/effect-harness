@@ -13,6 +13,7 @@ import * as Settings from './Settings.js'
 import * as Usage from './Usage.js'
 import { CompactionError, modelFailure, type Failure } from './CompactionError.js'
 import * as Selection from './internal/CompactionSelection.js'
+import * as PromptUsage from './internal/PromptUsage.js'
 import * as Value from './internal/DocumentValue.js'
 
 export { CompactionError, modelFailure } from './CompactionError.js'
@@ -27,12 +28,18 @@ const Count = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MA
 export const InputSchema = Schema.Struct({
   reason: ReasonSchema,
   contextWindow: Schema.optionalKey(Count.check(Schema.isGreaterThan(0))),
-  extra: Schema.optionalKey(Schema.Array(Prompt.Message)),
+  /** Final planned prompt; sections can occur at the front or in the middle. */
+  prompt: Schema.optionalKey(Prompt.Prompt),
+  tools: Schema.optionalKey(Schema.Array(Projection.ToolDeclarationSchema)),
+  overheadTokens: Schema.optionalKey(Count),
+  baseline: Schema.optionalKey(PromptUsage.Baseline),
   instructions: Schema.optionalKey(Schema.String),
 })
 export type Input = typeof InputSchema.Type
 export const MeasurementSchema = Schema.Struct({
-  method: Schema.Literals(['tokenizer', 'estimate']),
+  method: Schema.Literals(['tokenizer', 'estimate', 'usage']),
+  /** Tool declarations and wire overhead remain estimated even with a prompt tokenizer. */
+  estimatedOverheadTokens: Schema.optionalKey(Count),
   tokens: Count,
 })
 export type Measurement = typeof MeasurementSchema.Type
@@ -87,11 +94,11 @@ const freeze = <A>(value: A): A => {
 const isErrorPart = Schema.is(Schema.Struct({ type: Schema.Literal('error') }))
 
 /**
- * Select only from a canonical bounded view. Supply planned native messages as extra for
+ * Select only from a canonical bounded view. Supply the complete planned prompt for
  * threshold counting. Strict thresholds are window-reserve and window-reserve-background.
  * Unknown windows disable thresholds; manual and explicit overflow can still select a cut.
  *
- * A supplied native Tokenizer is captured once and counts the full request and each safe
+ * A supplied native Tokenizer is captured once and counts the prompt and each safe
  * retained suffix. Without one, the explicit approximation uses 3.5 characters/token and
  * 4800 characters/file; it is not a provider guarantee. Tokenizer failures never fall back.
  * Every selected cut retains a whole newest entry and at least keepRecentTokens according
@@ -121,12 +128,29 @@ export const select = Effect.fnUntraced(function* (
           Effect.map((tokens) => tokens.length),
           Effect.mapError((cause) => modelFailure(cause)),
         )
-  const tokens = yield* count(
-    Prompt.fromMessages([...view.prompt.content, ...(options.extra ?? [])]),
-  )
+  const prompt = options.prompt ?? view.prompt
+  const tools = options.tools ?? []
+  const overhead =
+    (options.overheadTokens ?? 0) +
+    (tools.length === 0 ? 0 : Math.ceil(JSON.stringify(tools).length / 3.5))
+  let tokens = (yield* count(prompt)) + overhead
+  let method: Measurement['method'] = tokenizer === undefined ? 'estimate' : 'tokenizer'
+  if (
+    tokenizer === undefined &&
+    options.baseline !== undefined &&
+    PromptUsage.applicable(options.baseline, prompt, tools)
+  ) {
+    tokens =
+      options.baseline.inputTokens +
+      (yield* count(
+        Prompt.fromMessages(prompt.content.slice(options.baseline.prompt.content.length)),
+      ))
+    method = 'usage'
+  }
   const measurement: Measurement = {
-    method: tokenizer === undefined ? 'estimate' : 'tokenizer',
+    method,
     tokens,
+    ...(method === 'usage' ? {} : { estimatedOverheadTokens: overhead }),
   }
   const noop = (reason: Extract<Result, { readonly _tag: 'Noop' }>['reason']): Result =>
     freeze({ _tag: 'Noop', reason, measurement })
@@ -201,6 +225,7 @@ export const pinRequest = Effect.fnUntraced(function* (
 /** Only a clean native stop with nonempty text and no tool/error parts is a valid summary. */
 export const validateSummary = Effect.fnUntraced(function* (
   response: Pick<Model.DeferredResponse, 'content' | 'finishReason'>,
+  localBudget?: { readonly maximum: number; readonly outputTokens?: number },
 ): Effect.fn.Return<string, CompactionError> {
   if (response.finishReason !== 'stop')
     return yield* new CompactionError({
@@ -227,6 +252,16 @@ export const validateSummary = Effect.fnUntraced(function* (
     return yield* new CompactionError({
       reason: 'invalidSummary',
       message: 'Summary contains no text',
+    })
+  if (
+    localBudget !== undefined &&
+    ((localBudget.outputTokens !== undefined && localBudget.outputTokens > localBudget.maximum) ||
+      new TextEncoder().encode(text).length > localBudget.maximum * 4)
+  )
+    return yield* new CompactionError({
+      reason: 'invalidSummary',
+      message:
+        'Summary exceeds the local acceptance bound (reported output tokens or four UTF-8 bytes per budget token)',
     })
   return text
 })

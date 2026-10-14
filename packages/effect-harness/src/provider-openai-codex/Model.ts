@@ -29,5 +29,9 @@ export const make = Effect.fnUntraced(function* (
       reasoningEfforts: [...(options.reasoningEfforts ?? [])],
       supportsTemperature: options.supportsTemperature ?? false,
     },
+    summary: {
+      outputBudget: 'local-acceptance',
+      configure: (settings) => Effect.succeed({ ...settings, cache: 'none' as const }),
+    },
   })
 })

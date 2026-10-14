@@ -96,7 +96,10 @@ const events = Schema.Union([
   Generated.BetaContentBlockStartEvent,
   Generated.BetaContentBlockDeltaEvent,
   Generated.BetaContentBlockStopEvent,
-  Generated.BetaErrorResponse,
+  Schema.Struct({
+    type: Schema.Literal('error'),
+    error: Schema.Struct({ type: Schema.String, message: Schema.optionalKey(Schema.String) }),
+  }),
   Schema.Struct({ type: Schema.Literal('ping') }),
 ])
 
@@ -287,7 +290,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
         HttpClientRequest.bodyJsonUnsafe(body),
       )
       const response = yield* Http.execute(http, request)
-      yield* Http.checkStatus(response)
+      yield* Http.checkStatus(response, 'anthropic')
       return { response, originalName: (name: string) => names.get(name) ?? name }
     })
   const unused = yield* AnthropicClient.make({}).pipe(
@@ -327,7 +330,10 @@ export const make = Effect.fnUntraced(function* (options: Options) {
             Stream.mapError(Http.malformed),
             Stream.filter((event) => event.type !== 'ping'),
             Stream.mapEffect((event) => {
-              if (event.type === 'error') return Effect.fail(Http.providerFailure(event.error.type))
+              if (event.type === 'error')
+                return Effect.fail(
+                  Http.providerFailure(event.error.type, 'anthropic', event.error.message),
+                )
               if (event.type === 'message_stop') terminal = true
               if (event.type === 'content_block_start' && event.content_block.type === 'tool_use')
                 return Effect.succeed({
