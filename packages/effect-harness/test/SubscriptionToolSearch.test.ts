@@ -171,7 +171,7 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
                 )
               : yield* Claude.make({
                   model: modelId,
-                  binding: { ...binding, provider },
+                  binding: binding,
                   definition,
                   thinkingModes: ['adaptive'],
                   config: { thinking: { type: 'adaptive' } },

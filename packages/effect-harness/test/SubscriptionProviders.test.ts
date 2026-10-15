@@ -48,7 +48,7 @@ describe('Claude OAuth public LanguageModel protocol', () => {
         )
         const model = yield* Claude.make({
           model: 'claude-sonnet-4-6',
-          binding: { ...binding, provider: 'anthropic' },
+          binding: binding,
         }).pipe(
           Effect.provideService(Store.CredentialStore, store),
           Effect.provideService(HttpClient.HttpClient, http),
@@ -96,7 +96,7 @@ describe('Claude OAuth public LanguageModel protocol', () => {
       const store = yield* credentials('anthropic')
       const model = yield* Claude.make({
         model: 'claude-sonnet-4-6',
-        binding: { ...binding, provider: 'anthropic' },
+        binding: binding,
       }).pipe(
         Effect.provideService(Store.CredentialStore, store),
         Effect.provideService(
@@ -131,7 +131,7 @@ it.effect('Claude preserves prepared dynamic tool schemas without enabling stric
     }
     const model = yield* Claude.make({
       model: 'claude-sonnet-4-6',
-      binding: { ...binding, provider: 'anthropic' },
+      binding: binding,
     }).pipe(
       Effect.provideService(Store.CredentialStore, store),
       Effect.provideService(

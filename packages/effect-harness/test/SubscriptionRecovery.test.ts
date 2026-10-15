@@ -1,3 +1,4 @@
+import { encodeCredential } from './fixtures/Credentials.js'
 import * as RuntimeRecords from './fixtures/RuntimeRecords.js'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
@@ -37,14 +38,16 @@ it.live(
         const authPath = `${directory}/auth.json`
         const credentials = yield* FileSystemCredentialStore.make({ path: authPath })
         const accessToken = `header.${btoa(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'account-1' } }))}.SECRET-token`
-        yield* Store.save({
-          type: 'oauth',
-          binding,
-          accessToken: Redacted.make(accessToken),
-          refreshToken: Redacted.make('SECRET-refresh'),
-          accountId: 'account-1',
-          expiresAt: 1,
-        }).pipe(Effect.provideService(Store.CredentialStore, credentials))
+        yield* Store.save(
+          encodeCredential({
+            type: 'oauth',
+            binding,
+            accessToken: Redacted.make(accessToken),
+            refreshToken: Redacted.make('SECRET-refresh'),
+            accountId: 'account-1',
+            expiresAt: 1,
+          }),
+        ).pipe(Effect.provideService(Store.CredentialStore, credentials))
         const storageLayer = Storage.layerJsonl({ filePath: `${directory}/session.jsonl` })
         const storage = yield* Layer.build(Layer.fresh(storageLayer))
         const root = Record.ROOT_CONVERSATION_ID
@@ -171,7 +174,7 @@ it.effect('Claude recovery accepts an equivalent API version and rejects protoco
     const make = (apiVersion?: string) =>
       Claude.make({
         model: 'claude-sonnet-4-6',
-        binding: { ...binding, provider: 'anthropic' },
+        binding: binding,
         ...(apiVersion === undefined ? {} : { apiVersion }),
         definition: {
           ref: { provider: 'anthropic', modelId: 'claude-sonnet-4-6' },

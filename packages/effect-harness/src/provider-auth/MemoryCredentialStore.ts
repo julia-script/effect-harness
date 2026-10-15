@@ -8,7 +8,7 @@ import { CredentialStore } from './CredentialStore.js'
 /** Temporary, process-local storage. Share this service instance to coordinate refreshers. */
 export const make = Effect.gen(function* () {
   const lock = yield* Semaphore.make(1)
-  const values = new Map<string, Credential.Credential>()
+  const values = new Map<string, Credential.Stored>()
   return CredentialStore.of({
     read: (key) => Effect.sync(() => values.get(key)),
     list: Effect.sync(() => [...values.values()].map(Credential.metadata)),

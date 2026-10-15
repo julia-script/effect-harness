@@ -1,3 +1,4 @@
+import { encodeCredential, decodeOAuth } from './fixtures/Credentials.js'
 import * as Fs from 'node:fs/promises'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
@@ -9,17 +10,17 @@ import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Redacted from 'effect/Redacted'
 import { BunSecretsCredentialStore } from 'effect-harness/provider-auth-bun'
-import { Credential, CredentialStore } from 'effect-harness/provider-auth'
+import { CredentialStore } from 'effect-harness/provider-auth'
 
-const binding = { provider: 'anthropic', profile: 'test', identity: 'login' } as const
-const credential: Credential.OAuth = {
+const binding = { credentialId: 'test', identity: 'login' } as const
+const credential: import('./fixtures/Credentials.js').OAuthFixture = {
   type: 'oauth',
   binding,
   accessToken: Redacted.make('SECRET-access'),
   refreshToken: Redacted.make('SECRET-refresh'),
   expiresAt: 1,
 }
-const key = Credential.key(binding)
+const key = binding.credentialId
 const entries = new Map<string, string>()
 const addressKey = (address: { service: string; name: string }) =>
   JSON.stringify([address.service, address.name])
@@ -47,8 +48,15 @@ afterEach(async () => {
   vi.unstubAllGlobals()
   await Fs.rm(directory, { recursive: true, force: true })
 })
-const save = (store: CredentialStore.Service, value: Credential.Credential = credential) =>
-  CredentialStore.save(value).pipe(Effect.provideService(CredentialStore.CredentialStore, store))
+const save = (
+  store: CredentialStore.Service,
+  value:
+    | import('./fixtures/Credentials.js').OAuthFixture
+    | import('./fixtures/Credentials.js').ApiKeyFixture = credential,
+) =>
+  CredentialStore.save(encodeCredential(value)).pipe(
+    Effect.provideService(CredentialStore.CredentialStore, store),
+  )
 
 it('round-trips redacted credentials, lists only metadata, and deletes the final native entry', async () => {
   await Effect.runPromise(
@@ -57,25 +65,22 @@ it('round-trips redacted credentials, lists only metadata, and deletes the final
       expect(yield* first.read(key)).toBeUndefined()
       expect(yield* first.list).toEqual([])
       yield* save(first)
-      const apiKey: Credential.ApiKey = {
+      const apiKey: import('./fixtures/Credentials.js').ApiKeyFixture = {
         type: 'api-key',
-        binding: { ...binding, profile: 'second' },
+        binding: { ...binding, credentialId: 'second' },
         apiKey: Redacted.make('SECRET-key'),
       }
       yield* save(first, apiKey)
       const reopened = yield* BunSecretsCredentialStore.make(options)
-      const loaded = yield* reopened.read(key)
+      const loaded = decodeOAuth(yield* reopened.read(key))
       expect(loaded?.type === 'oauth' && Redacted.value(loaded.refreshToken)).toBe('SECRET-refresh')
-      expect(yield* reopened.list).toEqual([
-        { type: 'oauth', binding, expiresAt: 1 },
-        { type: 'api-key', binding: apiKey.binding },
-      ])
-      yield* CredentialStore.logout(binding).pipe(
+      expect(yield* reopened.list).toEqual([binding, apiKey.binding])
+      yield* CredentialStore.remove(binding).pipe(
         Effect.provideService(CredentialStore.CredentialStore, reopened),
       )
       expect(yield* first.read(key)).toBeUndefined()
-      expect(yield* first.read(Credential.key(apiKey.binding))).toEqual(apiKey)
-      yield* CredentialStore.logout(apiKey.binding).pipe(
+      expect(yield* first.read(apiKey.binding.credentialId)).toEqual(encodeCredential(apiKey))
+      yield* CredentialStore.remove(apiKey.binding).pipe(
         Effect.provideService(CredentialStore.CredentialStore, first),
       )
       expect(entries.size).toBe(0)
@@ -88,11 +93,11 @@ it('isolates named collections and provides the public layer', async () => {
   const first = await Effect.runPromise(BunSecretsCredentialStore.make(options))
   await Effect.runPromise(save(first))
   await Effect.runPromise(
-    CredentialStore.save({ ...credential, accessToken: Redacted.make('OTHER') }).pipe(
-      Effect.provide(BunSecretsCredentialStore.layer({ ...options, name: 'other' })),
-    ),
+    CredentialStore.save(
+      encodeCredential({ ...credential, accessToken: Redacted.make('OTHER') }),
+    ).pipe(Effect.provide(BunSecretsCredentialStore.layer({ ...options, name: 'other' }))),
   )
-  const original = await Effect.runPromise(first.read(key))
+  const original = decodeOAuth(await Effect.runPromise(first.read(key)))
   expect(original?.type === 'oauth' && Redacted.value(original.accessToken)).toBe('SECRET-access')
 })
 
@@ -110,7 +115,7 @@ it('failed callbacks and unchanged values do not mutate the native entry', async
       expect(secrets.set).toHaveBeenCalledTimes(1)
       expect(secrets.delete).not.toHaveBeenCalled()
       yield* save(store, { ...credential, expiresAt: 2 })
-      expect((yield* store.read(key))?.type).toBe('oauth')
+      expect(decodeOAuth(yield* store.read(key))?.type).toBe('oauth')
     }),
   )
 })
@@ -141,11 +146,11 @@ it('sanitizes native read errors and reports uncertain writes and deletes', asyn
   const writeError = await Effect.runPromise(Effect.flip(save(store)))
   expect(writeError.reason).toBe('StoreCommitUncertain')
   expect(JSON.stringify(writeError)).not.toContain('SECRET')
-  expect(await Effect.runPromise(store.read(key))).toEqual(credential)
+  expect(await Effect.runPromise(store.read(key))).toEqual(encodeCredential(credential))
   secrets.delete.mockRejectedValueOnce(new Error('SECRET-delete'))
   const deleteError = await Effect.runPromise(
     Effect.flip(
-      CredentialStore.logout(binding).pipe(
+      CredentialStore.remove(binding).pipe(
         Effect.provideService(CredentialStore.CredentialStore, store),
       ),
     ),
@@ -160,7 +165,7 @@ it('times out on an owned lock without running the callback or stealing the lock
   const store = await Effect.runPromise(
     BunSecretsCredentialStore.make({ ...options, lockTimeoutMs: 30 }),
   )
-  const callback = vi.fn(() => Effect.succeed([undefined, credential] as const))
+  const callback = vi.fn(() => Effect.succeed([undefined, encodeCredential(credential)] as const))
   const error = await Effect.runPromise(Effect.flip(store.modify(key, callback)))
   expect(error.reason).toBe('StoreFailure')
   expect(callback).not.toHaveBeenCalled()
@@ -179,7 +184,7 @@ it('finishes an interrupted transaction before another instance can modify its c
           Effect.gen(function* () {
             yield* Deferred.succeed(started, undefined)
             yield* Deferred.await(resume)
-            return [undefined, credential] as const
+            return [undefined, encodeCredential(credential)] as const
           }),
         ),
       )
@@ -187,7 +192,7 @@ it('finishes an interrupted transaction before another instance can modify its c
       yield* Effect.forkChild(Fiber.interrupt(worker))
       const follower = yield* Effect.forkChild(
         second.modify(key, (current) => {
-          expect(current).toEqual(credential)
+          expect(current).toEqual(encodeCredential(credential))
           return Effect.succeed([undefined, undefined] as const)
         }),
       )

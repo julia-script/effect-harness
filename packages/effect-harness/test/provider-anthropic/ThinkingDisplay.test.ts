@@ -65,7 +65,7 @@ for (const transport of ['oauth', 'api-key'] as const) {
           transport === 'oauth'
             ? Claude.make({
                 model: 'claude-sonnet-4-6',
-                binding: { ...binding, provider: 'anthropic' },
+                binding: binding,
                 thinkingModes: ['disabled', 'enabled', 'adaptive'],
                 config: {
                   ...(scenario.thinking === undefined ? {} : { thinking: scenario.thinking }),

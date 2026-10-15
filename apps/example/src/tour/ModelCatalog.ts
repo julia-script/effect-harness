@@ -1,52 +1,34 @@
-/** Concrete provider catalogs; only the selected provider's discovery runs. */
+/** Declare integrations once; create any number of user-configured instances. */
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
-import * as Catalog from 'effect-harness/ModelCatalog'
-import * as Provider from 'effect-harness/Provider'
-import * as Codex from 'effect-harness/provider-openai-codex/Provider'
-import * as Claude from 'effect-harness/provider-anthropic/Provider'
+import * as Layer from 'effect/Layer'
+import * as Providers from 'effect-harness/Providers'
+import * as ProviderStore from 'effect-harness/ProviderStore'
+import * as Compatible from 'effect-harness/provider-openai-compatible/Provider'
+import * as MemoryCredentials from 'effect-harness/provider-auth/MemoryCredentialStore'
 
-const claudeOptions = {
-  id: 'personal-claude',
-  binding: { provider: 'anthropic', profile: 'personal', identity: 'login' },
-} as const
-
-export const catalog = Catalog.make({
-  providers: [
-    Codex.make({
-      id: 'personal-codex',
-      binding: { provider: 'openai-codex', profile: 'personal', identity: 'login' },
-      clientVersion: '0.99.0',
-    }),
-    Claude.make(claudeOptions),
-  ],
-})
-
-// Both live catalogs need HttpClient and CredentialStore when executed.
-// Creating this Effect performs no network requests or credential lookup.
-export const selected = Catalog.resolve(catalog, {
-  provider: 'personal-claude',
-  modelId: 'claude-opus-5-5',
-  options: { reasoning: { effort: 'high' } },
-})
-
-// An application can also supply its own metadata. This illustrative source keeps
-// the executable example offline; it does not describe an actual remote model.
-const offline = Claude.makeWithSource(
-  claudeOptions,
-  Provider.fromModels([
-    {
-      id: 'example-model',
-      name: 'Example model',
-      capabilities: { tools: true, reasoning: true, images: false, structuredOutput: false },
-      reasoning: { effort: { values: ['low', 'high'] }, thinking: { modes: ['adaptive'] } },
-    },
-  ]),
-)
-
+// Static metadata is supplied in instance config when the gateway has no discovery API.
 await Effect.runPromise(
   Effect.gen(function* () {
-    yield* Console.log((yield* Provider.list(offline)).items)
-    yield* Console.log((yield* Provider.get(offline, 'example-model')).reasoning)
-  }),
+    const providers = yield* Providers.make({ definitions: { gateway: Compatible.definition } })
+    const instance = yield* providers.add({
+      provider: 'gateway',
+      label: 'Local model server',
+      config: {
+        baseUrl: 'http://localhost:8080/v1',
+        authentication: 'optional',
+        models: [
+          {
+            id: 'example-model',
+            name: 'Example model',
+            capabilities: { tools: true, images: false, reasoning: false, structuredOutput: false },
+          },
+        ],
+      },
+    })
+    yield* Console.log(yield* providers.models.list({ instanceId: instance.id }))
+    yield* Console.log(
+      yield* providers.models.get({ instanceId: instance.id, modelId: 'example-model' }),
+    )
+  }).pipe(Effect.provide(Layer.merge(ProviderStore.layerMemory, MemoryCredentials.layer))),
 )

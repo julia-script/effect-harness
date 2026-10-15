@@ -2,19 +2,34 @@
 
 `effect-harness/provider-auth` separates live credentials from conversation storage. It exposes schema-backed OAuth/API-key values, a credential store contract, sanitized errors, and per-attempt OAuth resolution. Optional Node/Bun file storage and loopback callbacks live in `effect-harness/provider-auth-node`.
 
+The provider manager captures an injected credential store. On `add` or credential
+replacement it validates the definition's secrets schema, asks the credential
+manager to allocate a fresh reference, and saves only `{ credentialId, identity }`
+in the public instance. `providers.list` and `providers.get` never return secrets.
+
 ```ts
-import * as Effect from 'effect/Effect'
-import { CredentialStore } from 'effect-harness/provider-auth'
-import { FileSystemCredentialStore } from 'effect-harness/provider-auth-node'
-
-const status = Effect.gen(function* () {
-  const store = yield* FileSystemCredentialStore.make({ path: './private/credentials.json' })
-  return yield* store.list // provider/profile/identity/type/expiry, never tokens
-})
-
-const logout = CredentialStore.logout({ provider: 'openai-codex', profile: 'personal' })
-// Provide the selected CredentialStore to logout and provider constructors.
+// Authentication is explicit; login helpers return secrets without persisting them.
+const secrets = yield * OAuth.loginBrowser({ interaction })
+yield * providers.update(instance.id, { secrets })
+// Local logout keeps the instance and its public config.
+yield * providers.update(instance.id, { secrets: null })
 ```
+
+The low-level `CredentialStore.create(schema, secrets)` returns a binding.
+`read(binding, schema)` verifies identity and decodes secrets. `save` imports an
+encoded `{ binding, value: Redacted<Json> }` envelope; `remove(binding)` deletes it.
+The acquired service's `list` returns only credential IDs and identities, never
+secret fields. Applications normally use `Providers` for these operations.
+
+Public instance and credential stores are separate transaction domains. The manager
+publishes the new credential reference before retiring the old credential. A known
+public commit failure cleans up the new credential; `StoreCommitUncertain` retains
+credentials that may still be referenced. `CredentialCleanupFailed` means publication
+may have succeeded but retirement failed: reread the instance before retrying.
+Interrupted acquired writes finish and reconcile references before cleanup.
+A process crash can still leave unreferenced credentials; reconcile references
+against all public instances before removing them. Never share one store path between
+public instances and credentials.
 
 Use `MemoryCredentialStore.layer` from `effect-harness/provider-auth` for temporary storage. The file store uses an explicit path, 0600 files, synchronized atomic replacement, and a cross-process lock. The store opens its directory for synchronization before publication. `StoreFailure` means publication did not occur; `StoreCommitUncertain` means the replacement was published but subsequent durability or lock cleanup failed. Reread the credential before retrying an uncertain commit, and never assume remote token rotation was rolled back. Its contents are plaintext secrets; use a private local directory or implement the service with a keychain. It never reads a home-directory credential file. Stale locks are not stolen: after a process crash, establish that the owner has stopped before removing its `.lock` file.
 
@@ -34,7 +49,7 @@ const credentials = BunSecretsCredentialStore.layer({
 
 [Bun Secrets](https://bun.com/docs/runtime/secrets) requires an available OS credential service (macOS Keychain, Linux libsecret, or Windows Credential Manager). The OS may prompt to unlock or grant access. Importing the module does not access the keychain; constructing it outside a runtime with `Bun.secrets` fails with `InvalidConfiguration`. Native operations have no cancellation API, so an acquired transaction waits for them to settle before releasing its lock; `lockTimeoutMs` bounds contention only. Native write/delete failures return `StoreCommitUncertain`, since Bun does not promise that a rejected mutation left the entry unchanged. Read/decode failures return `StoreFailure`, and raw keychain errors never escape. Stale locks require the same manual recovery as the file store.
 
-OAuth tokens are `Redacted` values. `expiresAt` is Unix milliseconds. Bindings identify `{ provider, profile, identity }`; each login or account replacement must assign a new identity, while refresh preserves it. `save` imports a credential, `list` returns metadata, and `logout` removes the selected profile locally. This does not remotely revoke tokens or retract accepted inference requests.
+OAuth tokens are `Redacted` values. `expiresAt` is Unix milliseconds. Bindings identify `{ credentialId, identity }`; the manager assigns a new reference and identity for each credential replacement, while refresh preserves both. Login helpers return unbound secrets. Removing secrets from an instance performs local logout. This does not remotely revoke tokens or retract accepted inference requests.
 
 `Resolver.make` captures the store and returns a `resolve` Effect. It checks an injected Clock for each attempt. Its default minimum validity is five minutes; zero checks only actual expiry. Omitting its refresh callback selects external-refresh mode, which rejects expired tokens. Refresh failures never select an ambient API key.
 

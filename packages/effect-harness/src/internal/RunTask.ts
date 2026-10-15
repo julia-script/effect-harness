@@ -408,7 +408,7 @@ export const make = (
                         savedModel._tag !== 'descriptor' ||
                         !Equal.equals(savedModel.binding, {
                           id: JSON.stringify([
-                            selected.definition.ref.provider,
+                            selected.definition.ref.instanceId ?? selected.definition.ref.provider,
                             selected.definition.ref.modelId,
                           ]),
                           version: selected.version ?? 1,

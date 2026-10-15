@@ -8,7 +8,7 @@ import * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as ModelInfo from '../ModelInfo.js'
-import * as Provider from '../Provider.js'
+import * as ModelCatalog from '../ModelCatalog.js'
 import { ModelCatalogError } from '../ModelCatalogError.js'
 import * as Resolver from '../provider-auth/Resolver.js'
 import { toAiError } from '../provider-auth/AuthError.js'
@@ -40,7 +40,7 @@ const Entry = Schema.Struct({
 const Response = Schema.Struct({ models: Schema.Array(Entry) })
 
 const fetch = Effect.fnUntraced(function* (options: Options) {
-  if (options.binding.provider !== 'openai-codex' || options.clientVersion.length === 0)
+  if (options.clientVersion.length === 0)
     return yield* Http.invalid('Codex discovery requires an openai-codex binding and clientVersion')
   const client = yield* HttpClient.HttpClient
   const refresh = yield* OAuth.makeRefresh(options)
@@ -120,9 +120,9 @@ const normalize = (entry: typeof Entry.Type) => {
 }
 
 const source = <E, R>(snapshot: Effect.Effect<ReadonlyArray<typeof Entry.Type>, E, R>) => ({
-  list: Effect.fnUntraced(function* (input: Provider.ListOptions) {
+  list: Effect.fnUntraced(function* (input: ModelCatalog.ListOptions) {
     const models = yield* snapshot
-    return yield* Provider.fromModels(
+    return yield* ModelCatalog.fromModels(
       models
         .filter((entry) => entry.visibility === undefined || entry.visibility === 'list')
         .map((entry) => ({ id: entry.slug, name: entry.display_name })),

@@ -13,13 +13,14 @@ import * as Claude from 'effect-harness/provider-anthropic/OAuthModel'
  * conversation must contain a safe cut. No login or credential bytes enter its history.
  */
 export const compactAndContinue = Effect.fnUntraced(function* (
+  provider: 'openai-codex' | 'anthropic',
   binding: Credential.Binding,
   conversationId: Record.ConversationId,
   contextWindow: number,
 ) {
   const capabilities = { tools: true, images: false, reasoning: true, structuredOutput: false }
   const model =
-    binding.provider === 'openai-codex'
+    provider === 'openai-codex'
       ? yield* Codex.make({
           binding,
           model: 'gpt-5.4',

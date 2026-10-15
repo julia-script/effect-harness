@@ -331,7 +331,7 @@ export const prepare = Effect.fn('Compaction.prepare')(function* (
               _tag: 'descriptor',
               binding: {
                 id: JSON.stringify([
-                  descriptor.definition.ref.provider,
+                  descriptor.definition.ref.instanceId ?? descriptor.definition.ref.provider,
                   descriptor.definition.ref.modelId,
                 ]),
                 version: descriptor.version ?? 1,

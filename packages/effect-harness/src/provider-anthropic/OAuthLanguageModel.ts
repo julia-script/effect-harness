@@ -107,10 +107,7 @@ const events = Schema.Union([
 ])
 
 export const make = Effect.fnUntraced(function* (options: Options) {
-  if (
-    options.binding.provider !== 'anthropic' ||
-    (options.transport !== undefined && options.transport !== 'sse')
-  )
+  if (options.transport !== undefined && options.transport !== 'sse')
     return yield* Http.invalid('Anthropic OAuth requires an anthropic binding and SSE transport')
   const thinkingPolicy = options.thinkingPolicy ?? ThinkingPolicy.forModel(options.model)
   const http = yield* HttpClient.HttpClient

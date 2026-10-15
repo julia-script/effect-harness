@@ -4,7 +4,6 @@ import * as Schema from 'effect/Schema'
 import * as Option from 'effect/Option'
 import * as HttpClient from 'effect/http/HttpClient'
 import type * as Credential from '../provider-auth/Credential.js'
-import * as CredentialStore from '../provider-auth/CredentialStore.js'
 import type * as Login from '../provider-auth/Login.js'
 import { AuthError } from '../provider-auth/AuthError.js'
 import * as OAuth from '../internal/ProviderOAuth.js'
@@ -53,7 +52,7 @@ export const loginDevice = (options: Login.Options & Endpoints) =>
   OAuth.bounded(
     Effect.gen(function* () {
       const base = (options.authBaseUrl ?? 'https://auth.openai.com').replace(/\/$/, '')
-      if (!options.profile || options.interaction.device === undefined)
+      if (options.interaction.device === undefined)
         return yield* new AuthError({ reason: 'InvalidConfiguration' })
       const response = yield* OAuth.post(`${base}/api/accounts/deviceauth/usercode`, {
         client_id: protocol.clientId,
@@ -113,17 +112,13 @@ export const loginDevice = (options: Login.Options & Endpoints) =>
           orElse: () => Effect.fail(new AuthError({ reason: 'ExpiredCredential' })),
         }),
       )
-      const credential = yield* OAuth.exchange(
-        selected(options),
-        { provider: 'openai-codex', profile: options.profile, identity: crypto.randomUUID() },
-        {
-          grant_type: 'authorization_code',
-          code: code.authorization_code,
-          code_verifier: code.code_verifier,
-          redirect_uri: `${base}/deviceauth/callback`,
-        },
-      )
-      return yield* CredentialStore.save(credential)
+      const credential = yield* OAuth.exchange(selected(options), {
+        grant_type: 'authorization_code',
+        code: code.authorization_code,
+        code_verifier: code.code_verifier,
+        redirect_uri: `${base}/deviceauth/callback`,
+      })
+      return credential
     }).pipe(Effect.scoped),
     options.timeoutMs ?? 900_000,
   )

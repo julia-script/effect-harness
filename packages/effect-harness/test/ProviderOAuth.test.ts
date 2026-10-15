@@ -65,7 +65,6 @@ describe('provider OAuth protocol fixtures', () => {
               }),
             )
             const options = {
-              profile: 'personal',
               interaction: {
                 authorize: (url: string) =>
                   Effect.sync(() => {
@@ -87,12 +86,11 @@ describe('provider OAuth protocol fixtures', () => {
             )
             if (valid) {
               const status = yield* login
-              assert.strictEqual(status.binding.provider, provider)
-              assert.strictEqual(status.binding.profile, 'personal')
+              assert.strictEqual(status.type, 'oauth')
               assert.strictEqual(status.expiresAt, 3_600_000)
               assert.strictEqual(calls, 1)
               assert.notInclude(JSON.stringify(status), 'SECRET')
-              assert.strictEqual((yield* store.list).length, 1)
+              assert.strictEqual((yield* store.list).length, 0)
             } else {
               assert.strictEqual((yield* Effect.flip(login)).reason, 'InvalidState')
               assert.strictEqual(calls, 0)
@@ -157,7 +155,6 @@ describe('provider OAuth protocol fixtures', () => {
           }),
         )
         const login = yield* Codex.loginDevice({
-          profile: 'device',
           interaction: {
             authorize: () => Effect.die('Not browser login'),
             complete: Effect.never,
@@ -180,7 +177,7 @@ describe('provider OAuth protocol fixtures', () => {
         assert.strictEqual(polls, 1)
         assert.isFalse(exchanged)
         yield* TestClock.adjust(2000)
-        assert.strictEqual((yield* Fiber.join(login)).binding.provider, 'openai-codex')
+        assert.strictEqual((yield* Fiber.join(login)).type, 'oauth')
         assert.strictEqual(polls, 2)
       }),
   )
@@ -191,7 +188,6 @@ describe('provider OAuth protocol fixtures', () => {
         const store = yield* MemoryCredentialStore.make
         let state = ''
         const error = yield* Claude.loginCopyCode({
-          profile: 'test',
           interaction: {
             authorize: (url) =>
               Effect.sync(() => {
@@ -232,7 +228,6 @@ it.effect('device expiry interrupts a pending interaction before any poll or tok
     let requests = 0
     let interrupted = false
     const login = yield* Codex.loginDevice({
-      profile: 'expiry',
       timeoutMs: 60_000,
       interaction: {
         authorize: () => Effect.void,
@@ -287,7 +282,7 @@ for (const provider of ['anthropic', 'openai-codex'] as const)
       Effect.gen(function* () {
         const credential = {
           type: 'oauth' as const,
-          binding: { provider, profile: 'test', identity: 'login' },
+          binding: { provider, identity: 'login' },
           accessToken: Redacted.make('SECRET-access'),
           refreshToken: Redacted.make('SECRET-refresh'),
           expiresAt: 1,

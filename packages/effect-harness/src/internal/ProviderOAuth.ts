@@ -9,12 +9,11 @@ import * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import type * as Credential from '../provider-auth/Credential.js'
-import * as CredentialStore from '../provider-auth/CredentialStore.js'
 import * as Login from '../provider-auth/Login.js'
 import { AuthError } from '../provider-auth/AuthError.js'
 
 export interface Protocol {
-  readonly provider: Credential.Provider
+  readonly provider: 'openai-codex' | 'anthropic'
   readonly clientId: string
   readonly authorizeUrl: string
   readonly tokenUrl: string
@@ -70,11 +69,7 @@ export const post = (url: string, body: Record<string, string>, form = false) =>
     )
   })
 
-export const exchange = (
-  protocol: Protocol,
-  binding: Credential.Binding,
-  fields: Record<string, string>,
-) =>
+export const exchange = (protocol: Protocol, fields: Record<string, string>) =>
   Effect.gen(function* () {
     const response = yield* post(
       protocol.tokenUrl,
@@ -94,7 +89,6 @@ export const exchange = (
     if (!Number.isSafeInteger(expiresAt)) return yield* invalid()
     return {
       type: 'oauth',
-      binding,
       accessToken: token.access_token,
       refreshToken: token.refresh_token,
       expiresAt,
@@ -105,7 +99,7 @@ export const exchange = (
   }).pipe(Effect.scoped)
 
 export const refresh = (protocol: Protocol, credential: Credential.OAuth) =>
-  exchange(protocol, credential.binding, {
+  exchange(protocol, {
     grant_type: 'refresh_token',
     refresh_token: Redacted.value(credential.refreshToken),
   })
@@ -169,8 +163,6 @@ export const browserLogin = (protocol: Protocol, options: Login.Options, useCall
   bounded(
     Effect.scoped(
       Effect.gen(function* () {
-        if (options.profile.length === 0)
-          return yield* new AuthError({ reason: 'InvalidConfiguration' })
         const { verifier, challenge, state: randomState } = yield* pkce
         const state = protocol.provider === 'anthropic' ? verifier : randomState
         const host = yield* Effect.serviceOption(Login.CallbackServer)
@@ -215,18 +207,14 @@ export const browserLogin = (protocol: Protocol, options: Login.Options, useCall
               manual,
             )
           : yield* manual
-        const credential = yield* exchange(
-          protocol,
-          { provider: protocol.provider, profile: options.profile, identity: crypto.randomUUID() },
-          {
-            grant_type: 'authorization_code',
-            code,
-            code_verifier: verifier,
-            redirect_uri: redirectUri,
-            ...(protocol.provider === 'anthropic' ? { state } : {}),
-          },
-        )
-        return yield* CredentialStore.save(credential)
+        const credential = yield* exchange(protocol, {
+          grant_type: 'authorization_code',
+          code,
+          code_verifier: verifier,
+          redirect_uri: redirectUri,
+          ...(protocol.provider === 'anthropic' ? { state } : {}),
+        })
+        return credential
       }),
     ),
     options.timeoutMs,

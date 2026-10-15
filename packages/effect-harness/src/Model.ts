@@ -23,6 +23,8 @@ import type * as Prepared from './PreparedRequest.js'
 export const TypeId = '~effect-harness/Model'
 
 export const ReferenceSchema = Schema.Struct({
+  /** Present for managed providers; native descriptors may be supplied directly. */
+  instanceId: Schema.optionalKey(Schema.NonEmptyString),
   provider: Schema.NonEmptyString,
   modelId: Schema.NonEmptyString,
 })

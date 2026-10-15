@@ -1,3 +1,5 @@
+import { managed } from './fixtures/ManagedProvider.js'
+import { encodeCredential } from './fixtures/Credentials.js'
 import { assert, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -6,7 +8,6 @@ import type * as Schema from 'effect/Schema'
 import * as Prompt from 'effect/ai/Prompt'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
-import * as Provider from '../src/Provider.js'
 import * as Claude from '../src/provider-anthropic/Provider.js'
 import * as Catalog from '../src/provider-anthropic/Catalog.js'
 import * as Store from '../src/provider-auth/CredentialStore.js'
@@ -22,6 +23,9 @@ for (const mode of ['adaptive', 'enabled'] as const) {
         const bodies: Schema.JsonObject[] = []
         const headers: string[] = []
         const store = yield* credentials('anthropic')
+        const provider = yield* managed(Claude.definition, {}, binding).pipe(
+          Effect.provideService(Store.CredentialStore, store),
+        )
         const client = HttpClient.make((request) =>
           Effect.sync(() => {
             if (request.method === 'GET')
@@ -60,8 +64,6 @@ for (const mode of ['adaptive', 'enabled'] as const) {
         const context = Context.make(Store.CredentialStore, store).pipe(
           Context.add(HttpClient.HttpClient, client),
         )
-        const options = { id: 'claude', binding: { ...binding, provider: 'anthropic' } } as const
-        const provider = Claude.make(options)
         const selection = {
           modelId,
           options: {
@@ -70,14 +72,10 @@ for (const mode of ['adaptive', 'enabled'] as const) {
             },
           },
         }
-        const original = yield* Provider.resolve(provider, selection).pipe(
-          Effect.provideContext(context),
-        )
+        const original = yield* provider.resolve(selection).pipe(Effect.provideContext(context))
         const response = yield* original.languageModel.generateText({ prompt: 'hello' })
         const encoded = yield* original.configuration!.encode(Context.empty())
-        const reopened = yield* Provider.resolve(provider, selection).pipe(
-          Effect.provideContext(context),
-        )
+        const reopened = yield* provider.resolve(selection).pipe(Effect.provideContext(context))
         const restored = yield* reopened.configuration!.restore(encoded)
         yield* reopened.languageModel
           .generateText({
@@ -97,16 +95,18 @@ for (const mode of ['adaptive', 'enabled'] as const) {
         assert.include(JSON.stringify(bodies[1]?.messages), 'future-signature')
         for (const header of headers) assert.notInclude(header, 'thinking-binding-controls')
         if (mode === 'adaptive') {
-          const protectedProvider = Claude.make({
-            ...options,
+          const protectedDefinition = Claude.define(Claude.definition.models, {
             thinkingPolicy: (info) => {
               assert.equal(info.id, modelId)
               return 'server-drop'
             },
           })
-          const protectedModel = yield* Provider.resolve(protectedProvider, selection).pipe(
-            Effect.provideContext(context),
+          const protectedProvider = yield* managed(protectedDefinition, {}, binding).pipe(
+            Effect.provideService(Store.CredentialStore, store),
           )
+          const protectedModel = yield* protectedProvider
+            .resolve(selection)
+            .pipe(Effect.provideContext(context))
           assert.equal(
             (yield* Effect.flip(protectedModel.configuration!.restore(encoded))).reason._tag,
             'ModelUnsupportedError',
@@ -128,14 +128,16 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const store = yield* MemoryCredentialStore.make
-      const account = { ...binding, provider: 'anthropic' } as const
-      yield* Store.save({
-        type: 'oauth',
-        binding: account,
-        accessToken: Redacted.make('expired'),
-        refreshToken: Redacted.make('refresh'),
-        expiresAt: 0,
-      }).pipe(Effect.provideService(Store.CredentialStore, store))
+      const account = binding
+      yield* Store.save(
+        encodeCredential({
+          type: 'oauth',
+          binding: account,
+          accessToken: Redacted.make('expired'),
+          refreshToken: Redacted.make('refresh'),
+          expiresAt: 1,
+        }),
+      ).pipe(Effect.provideService(Store.CredentialStore, store))
       const paths: string[] = []
       const tokens: Array<string | undefined> = []
       let fail = false
@@ -174,26 +176,28 @@ it.effect(
           )
         }),
       )
-      const provider = Claude.make({ id: 'claude', binding: account })
+      const provider = yield* managed(Claude.definition, {}, account).pipe(
+        Effect.provideService(Store.CredentialStore, store),
+      )
       const context = Context.make(Store.CredentialStore, store).pipe(
         Context.add(HttpClient.HttpClient, client),
       )
-      const first = Provider.list(provider, { limit: 1 })
+      const first = provider.list({ limit: 1 })
       assert.deepEqual(paths, [])
       const page = yield* first.pipe(Effect.provideContext(context))
       assert.equal(page.nextCursor, 'first')
       assert.equal(paths.length, 2)
-      const next = yield* Provider.list(provider, { cursor: page.nextCursor!, limit: 1 }).pipe(
-        Effect.provideContext(context),
-      )
+      const next = yield* provider
+        .list({ cursor: page.nextCursor!, limit: 1 })
+        .pipe(Effect.provideContext(context))
       assert.deepEqual(next, { items: [{ id: 'second', name: 'Model' }] })
       assert.deepEqual(tokens, ['Bearer fresh', 'Bearer fresh'])
       assert.equal(paths.filter((path) => path.endsWith('/oauth/token')).length, 1)
       fail = true
-      const error = yield* Effect.flip(Provider.list(provider).pipe(Effect.provideContext(context)))
+      const error = yield* Effect.flip(provider.list().pipe(Effect.provideContext(context)))
       assert.equal(error._tag, 'AiError')
       assert.notInclude(JSON.stringify(error), 'SECRET')
-      const wrong = Catalog.oauth({ binding: { ...account, provider: 'openai-codex' } })
+      const wrong = Catalog.oauth({ binding: { ...account, identity: 'another-login' } })
       const before = paths.length
       yield* Effect.flip(wrong.list({}).pipe(Effect.provideContext(context)))
       assert.equal(paths.length, before)

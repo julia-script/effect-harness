@@ -32,7 +32,7 @@ await Effect.runPromise(
       lockPath,
     })
     const { resolve } = yield* Resolver.make({
-      binding: { provider: 'anthropic', profile: 'test', identity: 'login' },
+      binding: { credentialId: 'test', identity: 'login' },
       refresh: (old) =>
         Effect.gen(function* () {
           yield* Effect.promise(() => Fs.appendFile(`${path}.rotations`, 'rotation\n'))

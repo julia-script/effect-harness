@@ -68,10 +68,7 @@ const endpoint = (base = 'https://chatgpt.com/backend-api') => {
 
 /** Provides only LanguageModel. Unsupported native compatibility methods stay private. */
 export const make = Effect.fnUntraced(function* (options: Options) {
-  if (
-    options.binding.provider !== 'openai-codex' ||
-    (options.transport !== undefined && options.transport !== 'sse')
-  )
+  if (options.transport !== undefined && options.transport !== 'sse')
     return yield* Http.invalid('Codex requires openai-codex OAuth and SSE transport')
   const http = yield* HttpClient.HttpClient
   const refresh = yield* OAuth.makeRefresh(options)

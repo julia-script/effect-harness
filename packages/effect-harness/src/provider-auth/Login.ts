@@ -35,7 +35,6 @@ export class CallbackServer extends Context.Service<
 >()('effect-harness/provider-auth/CallbackServer') {}
 
 export interface Options {
-  readonly profile: string
   readonly interaction: Interaction
   /** Defaults to ten minutes (device login is also bounded by provider expiry). */
   readonly timeoutMs?: number

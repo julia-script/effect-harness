@@ -1,8 +1,8 @@
 /**
- * bun apps/example/src/SubscriptionProviders.ts login-codex-browser ./private/auth.json
- * Commands: login-codex-browser, login-codex-device, login-claude-browser, login-claude-copy,
- * run-codex, run-claude, recover-codex, recover-claude, claude-api-key, status, logout-codex.
- * Set MODEL explicitly. Recovery takes the printed submission id as the fourth argument.
+ * bun apps/example/src/SubscriptionProviders.ts <command> ./private/providers.json [instance-id-or-label]
+ * Commands: add-codex, add-claude, status, authenticate-browser, authenticate-device,
+ * list-models, run, recover, logout, remove. Set MODEL for run/recover; recovery adds a submission ID.
+ * Set CODEX_CLIENT_VERSION when adding Codex. This example stores credentials in a separate private file.
  */
 import * as Readline from 'node:readline/promises'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
@@ -19,14 +19,12 @@ import * as Storage from 'effect-harness/Storage'
 import * as Record from 'effect-harness/Record'
 import * as Tool from 'effect-harness/Tool'
 import * as Toolkit from 'effect-harness/Toolkit'
-import { AuthError, CredentialStore } from 'effect-harness/provider-auth'
+import * as Providers from 'effect-harness/Providers'
+import * as ProviderStoreNode from 'effect-harness/ProviderStoreNode'
+import { AuthError } from 'effect-harness/provider-auth'
 import { CallbackServer, FileSystemCredentialStore } from 'effect-harness/provider-auth-node'
-import { Model as CodexModel, OAuth as CodexOAuth } from 'effect-harness/provider-openai-codex'
-import {
-  AnthropicLanguageModel,
-  OAuth as ClaudeOAuth,
-  OAuthModel,
-} from 'effect-harness/provider-anthropic'
+import { Provider as Codex, OAuth as CodexOAuth } from 'effect-harness/provider-openai-codex'
+import { Provider as Claude, OAuth as ClaudeOAuth } from 'effect-harness/provider-anthropic'
 
 const tools = Toolkit.make(
   Tool.make('countCharacters', {
@@ -54,95 +52,105 @@ const interaction = {
     Console.log(`Open ${url} and enter ${code}`),
 }
 
+const definitions = { codex: Codex.definition, claude: Claude.definition }
+
 export const program = Effect.scoped(
   Effect.gen(function* () {
     const command = process.argv[2] ?? 'status'
     const path = process.argv[3]
     if (path === undefined)
       return yield* new AuthError.AuthError({ reason: 'InvalidConfiguration' })
-    const store = yield* FileSystemCredentialStore.make({ path })
-    const loginOptions = { profile: 'personal', interaction }
     const execute = Effect.gen(function* () {
-      switch (command) {
-        case 'login-codex-browser':
-          return yield* Console.log(yield* CodexOAuth.loginBrowser(loginOptions))
-        case 'login-codex-device':
-          return yield* Console.log(yield* CodexOAuth.loginDevice(loginOptions))
-        case 'login-claude-browser':
-          return yield* Console.log(yield* ClaudeOAuth.loginBrowser(loginOptions))
-        case 'login-claude-copy':
-          return yield* Console.log(yield* ClaudeOAuth.loginCopyCode(loginOptions))
-        case 'status':
-          return yield* Console.log(yield* store.list)
-        case 'logout-codex':
-          return yield* CredentialStore.logout({ provider: 'openai-codex', profile: 'personal' })
-      }
-      const model = process.env.MODEL
-      if (!model) return yield* new AuthError.AuthError({ reason: 'InvalidConfiguration' })
-      if (command === 'claude-api-key') {
-        const runtime = yield* HarnessRuntime.make({ tools }).pipe(
-          Effect.provide(
-            AnthropicLanguageModel.layerDefaultConfig({ model: Config.succeed(model) }),
-          ),
+      const providers = yield* Providers.make({ definitions })
+      if (command === 'status') return yield* Console.log(yield* providers.list)
+      if (command === 'add-codex')
+        return yield* Console.log(
+          yield* providers.add({
+            provider: 'codex',
+            label: process.argv[4] ?? 'Codex',
+            config: { clientVersion: yield* Config.String('CODEX_CLIENT_VERSION') },
+          }),
         )
-        const root = yield* runtime.backend.root
-        const submission = yield* runtime.backend.submit({
-          conversationId: root,
-          draft: {
-            type: 'input',
-            content: 'Use countCharacters to count hello, then tell me the result.',
-          },
+      if (command === 'add-claude')
+        return yield* Console.log(
+          yield* providers.add({
+            provider: 'claude',
+            label: process.argv[4] ?? 'Claude',
+            config: {},
+          }),
+        )
+      const instance = yield* providers.get(process.argv[4] ?? '')
+      if (command.startsWith('authenticate-')) {
+        if (instance.provider === 'codex') {
+          const options = {
+            interaction,
+            ...(instance.config.authBaseUrl === undefined
+              ? {}
+              : { authBaseUrl: instance.config.authBaseUrl }),
+          }
+          const secrets =
+            command === 'authenticate-device'
+              ? yield* CodexOAuth.loginDevice(options)
+              : yield* CodexOAuth.loginBrowser(options)
+          return yield* Console.log(yield* providers.update(instance.id, { secrets }))
+        }
+        const secrets = yield* ClaudeOAuth.loginBrowser({
+          interaction,
+          ...(instance.config.authorizeUrl === undefined
+            ? {}
+            : { authorizeUrl: instance.config.authorizeUrl }),
+          ...(instance.config.tokenUrl === undefined ? {} : { tokenUrl: instance.config.tokenUrl }),
         })
-        return yield* Console.log(yield* runtime.backend.wait(submission.id))
+        return yield* Console.log(yield* providers.update(instance.id, { secrets }))
       }
-      if (!['run-codex', 'run-claude', 'recover-codex', 'recover-claude'].includes(command))
+      if (command === 'logout')
+        return yield* Console.log(yield* providers.update(instance.id, { secrets: null }))
+      if (command === 'remove') return yield* providers.remove(instance.id)
+      if (command === 'list-models')
+        return yield* Console.log(yield* providers.models.list({ instanceId: instance.id }))
+      if (command !== 'run' && command !== 'recover')
         return yield* new AuthError.AuthError({ reason: 'InvalidConfiguration' })
-      const provider = command.endsWith('codex') ? 'openai-codex' : 'anthropic'
-      const status = (yield* store.list).find(
-        (value) => value.binding.provider === provider && value.binding.profile === 'personal',
-      )
-      if (status === undefined)
-        return yield* new AuthError.AuthError({ reason: 'MissingCredential' })
-      const definition = {
-        ref: { provider, modelId: model },
-        capabilities: { tools: true, images: false, reasoning: true, structuredOutput: false },
-      }
-      const selected =
-        provider === 'openai-codex'
-          ? yield* CodexModel.make({ model, binding: status.binding, definition })
-          : yield* OAuthModel.make({
-              model,
-              binding: status.binding,
-              definition,
-            })
-      // Reopening uses the live store: an expired credential refreshes at dispatch, not during decoding.
-      const runtime = yield* HarnessRuntime.make({ models: [selected], tools })
-      const root = yield* runtime.backend.root
-      let id: Record.SubmissionId
-      if (command.startsWith('recover-'))
-        id = yield* Schema.decodeUnknownEffect(Record.SubmissionId)(process.argv[4])
-      else {
-        const submission = yield* runtime.backend.submit({
-          conversationId: root,
-          draft: {
-            type: 'input',
-            content: 'Use countCharacters to count hello, then tell me the result.',
-          },
-        })
-        id = submission.id
-        yield* Console.log(
-          `Submission: ${id}. Reopen with recover-${provider === 'openai-codex' ? 'codex' : 'claude'} and this id.`,
+      const selected = yield* providers.models.resolve({
+        instanceId: instance.id,
+        modelId: yield* Config.String('MODEL'),
+      })
+      yield* Effect.gen(function* () {
+        const runtime = yield* HarnessRuntime.make({ models: [selected], tools })
+        const root = yield* runtime.backend.root
+        let id: Record.SubmissionId
+        if (command === 'recover')
+          id = yield* Schema.decodeUnknownEffect(Record.SubmissionId)(process.argv[5])
+        else {
+          const submission = yield* runtime.backend.submit({
+            conversationId: root,
+            draft: {
+              type: 'input',
+              content: 'Use countCharacters to count hello, then tell me the result.',
+            },
+          })
+          id = submission.id
+          yield* Console.log(
+            `Submission: ${id}. Reopen with recover, the instance ID, and this submission ID.`,
+          )
+        }
+        yield* runtime.backend.wait(id)
+        const entries = yield* Session.scanEntries(runtime.session, { conversationId: root }).pipe(
+          Stream.runCollect,
         )
-      }
-      yield* runtime.backend.wait(id)
-      const entries = yield* Session.scanEntries(runtime.session, { conversationId: root }).pipe(
-        Stream.runCollect,
+        yield* Console.log(entries.filter((entry) => entry.kind === 'assistant'))
+      }).pipe(
+        Effect.provide(
+          Storage.layerJsonl({ filePath: `${path}.${instance.id}.conversation.jsonl` }),
+        ),
       )
-      yield* Console.log(entries.filter((entry) => entry.kind === 'assistant'))
     })
-    return yield* execute.pipe(
-      Effect.provideService(CredentialStore.CredentialStore, store),
-      Effect.provide(Storage.layerJsonl({ filePath: `${path}.conversation.jsonl` })),
+    yield* execute.pipe(
+      Effect.provide(
+        Layer.merge(
+          ProviderStoreNode.layer({ path }),
+          FileSystemCredentialStore.layer({ path: `${path}.credentials` }),
+        ),
+      ),
     )
   }),
 ).pipe(

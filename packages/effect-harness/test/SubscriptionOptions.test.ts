@@ -1,3 +1,4 @@
+import { encodeCredential, decodeOAuth } from './fixtures/Credentials.js'
 import { assert, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Redacted from 'effect/Redacted'
@@ -8,7 +9,6 @@ import * as Toolkit from 'effect/ai/Toolkit'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import * as Store from '../src/provider-auth/CredentialStore.js'
-import * as Credential from '../src/provider-auth/Credential.js'
 import * as Codex from '../src/provider-openai-codex/CodexLanguageModel.js'
 import * as Claude from '../src/provider-anthropic/OAuthLanguageModel.js'
 import { ProviderAffinity } from '../src/ProviderAffinity.js'
@@ -121,7 +121,7 @@ it.effect(
       )
       const model = yield* Claude.make({
         model: 'claude-sonnet-4-6',
-        binding: { ...binding, provider: 'anthropic' },
+        binding: binding,
         thinkingModes: ['adaptive'],
         efforts: ['high'],
         config: {
@@ -138,11 +138,14 @@ it.effect(
       )
       const first = yield* model.generateText({ prompt: 'hello' })
       assert.strictEqual(first.reasoning.length, 2)
-      yield* store.modify(Credential.key({ ...binding, provider: 'anthropic' }), (current) =>
+      yield* store.modify(binding.credentialId, (current) =>
         Effect.succeed([
           undefined,
-          current?.type === 'oauth'
-            ? { ...current, accessToken: Redacted.make('SECRET-updated') }
+          current !== undefined
+            ? encodeCredential({
+                ...decodeOAuth(current)!,
+                accessToken: Redacted.make('SECRET-updated'),
+              })
             : current,
         ] as const),
       )
@@ -193,7 +196,7 @@ it.effect('Claude cache opt-out preserves application schemas and historical too
     let body: Record<string, unknown> = {}
     const model = yield* Claude.make({
       model: 'claude-sonnet-4-6',
-      binding: { ...binding, provider: 'anthropic' },
+      binding: binding,
       config: { cache: 'none' },
     }).pipe(
       Effect.provideService(Store.CredentialStore, store),
@@ -264,7 +267,7 @@ it.effect('Claude gates temperature and xhigh effort against explicit model decl
     const make = (options: Partial<Claude.Options>) =>
       Claude.make({
         model: 'claude-sonnet-4-6',
-        binding: { ...binding, provider: 'anthropic' },
+        binding: binding,
         ...options,
       }).pipe(
         Effect.provideService(Store.CredentialStore, store),
