@@ -85,7 +85,7 @@ Claude OAuth settings:
 - `maxTokens`: positive integer, default 4096.
 - `thinking`: disabled, enabled with a budget of at least 1024 and smaller than `maxTokens`, or adaptive. The host must declare supported `thinkingModes`.
 - `effort`: `low`, `medium`, `high`, `xhigh`, or `max`, only for adaptive thinking and declared host `efforts`.
-- `thinkingDisplay`: `summarized` or `omitted`, only when thinking is enabled. Native continuity signatures are preserved.
+- `thinkingDisplay`: `summarized` (default) or `omitted`, only when thinking is enabled. `summarized` requests the fullest standard thinking output; no display setting returns raw reasoning. Native continuity signatures are preserved. The API-key adapter also defaults explicitly configured enabled/adaptive thinking to `display: "summarized"`. See Anthropic's [thinking display documentation](https://platform.claude.com/docs/en/build-with-claude/thinking#controlling-thinking-display).
 - `temperature`: 0–1, only with `supportsTemperature: true`; rejected when combined with enabled/adaptive thinking.
 - `cache`: omitted preserves existing block controls, `none` strips every cache directive, `short` requests ephemeral caching, and `long` requests one hour only with `supportsLongCache: true`.
 - `userId`: explicit attribution. Affinity/account identifiers are never substituted for this value.

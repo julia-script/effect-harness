@@ -209,6 +209,7 @@ it.effect(
       for (const body of bodies)
         assert.deepEqual(body.thinking, {
           type: 'adaptive',
+          display: 'summarized',
           block_binding: { prefix_mismatch_behavior: 'drop_block' },
         })
       assert.equal(
