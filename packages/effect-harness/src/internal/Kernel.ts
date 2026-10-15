@@ -66,13 +66,17 @@ const documentHeader = Effect.fnUntraced(function* (
 
 export interface Access {
   readonly metadata: Effect.Effect<Metadata.Metadata, Errors.StorageError>
-  readonly get: (id: number) => Effect.Effect<Option.Option<Row.Stored>, Errors.StorageError>
+  readonly get: (
+    id: number,
+    metadataOnly?: boolean,
+  ) => Effect.Effect<Option.Option<Row.Stored>, Errors.StorageError>
   readonly page: (
     kind: Row.Kind,
     after: number | undefined,
     limit: number,
     filter: Row.Filter,
     order: Data.ScanOrder,
+    metadataOnly?: boolean,
   ) => Effect.Effect<ReadonlyArray<Row.Stored>, Errors.StorageError>
   readonly save: (
     rows: ReadonlyArray<Row.Stored>,
@@ -130,7 +134,7 @@ export const make = Effect.fnUntraced(function* (access: Access) {
   const scan = (kind: Row.Kind, filter: Row.Filter, order: Data.ScanOrder = 'ascending') =>
     Stream.paginate(undefined, (after: number | undefined) =>
       open.pipe(
-        Effect.andThen(access.page(kind, after, 64, filter, order)),
+        Effect.andThen(access.page(kind, after, 64, filter, order, kind === 'document')),
         Effect.map((rows) => {
           const last = rows.at(-1)
           return [
@@ -277,7 +281,7 @@ export const make = Effect.fnUntraced(function* (access: Access) {
         }
         const loaded = new Map<number, Row.Row>()
         for (const id of ids) {
-          const row = yield* access.get(id)
+          const row = yield* access.get(id, retireIds.has(id) && !contentIds.has(id))
           if (Option.isNone(row)) {
             if (retireIds.has(id))
               return yield* Errors.make('notFound', 'commit', 'Document is absent or retired')
@@ -306,8 +310,9 @@ export const make = Effect.fnUntraced(function* (access: Access) {
             2,
             { address, at: 'current' },
             'ascending',
+            true,
           ))
-            if (!retirements.has(Row.idOf(row)))
+            if (!retirements.has(Row.idOf(row)) && !loaded.has(Row.idOf(row)))
               loaded.set(
                 Row.idOf(row),
                 yield* Schema.decodeUnknownEffect(Row.Row)(row).pipe(
@@ -404,7 +409,7 @@ export const make = Effect.fnUntraced(function* (access: Access) {
       yield* Schema.decodeEffect(Data.DocumentId)(id).pipe(
         Effect.mapError(Errors.invalid('documentMetadata')),
       )
-      const row = yield* access.get(id)
+      const row = yield* access.get(id, true)
       if (Option.isNone(row) || row.value._tag !== 'document') return Option.none()
       const metadata = yield* access.metadata
       const header = yield* documentHeader(row.value.value, id, metadata.nextSeq)
@@ -481,6 +486,7 @@ export const make = Effect.fnUntraced(function* (access: Access) {
         2,
         { address: Domain.addressKey(valid), at: point },
         'ascending',
+        true,
       )
       if (rows.length > 1)
         return yield* Errors.make(

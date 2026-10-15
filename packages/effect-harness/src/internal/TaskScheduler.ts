@@ -200,7 +200,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
     readonly token: object
     readonly diagnostic: TaskError
     readonly session: typeof state
-    readonly operation: 'task.read' | 'task.scan' | 'task.conversationGuard'
+    readonly operation: 'task.read' | 'task.scan' | 'task.conversationGuard' | 'scheduler.guard'
     readonly cause: Cause.Cause<unknown>
   }
   let nativeDiagnostic:
@@ -284,6 +284,28 @@ export const make = Effect.fnUntraced(function* <R = never>(
         }
         yield* health(diagnostic)
       }).pipe(Effect.ignoreCause)
+
+  // Observe poison before coordinator shutdown, and callback/read failures at exit.
+  // Deduplicate only the same cause within this one commit execution, never later
+  // occurrences that happen to reuse an error object.
+  const observeNativeCommit = <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+    provenance: object,
+    operation: 'task.commit' | 'task.conversationCommit',
+  ): Effect.Effect<A, E, R> =>
+    Effect.suspend(() => {
+      let observed: Cause.Cause<unknown> | undefined
+      const observe = observeCommit(provenance, operation)
+      return effect.pipe(
+        Effect.provideService(SessionRuntime.CommitFailure, (cause) => {
+          observed = cause
+          return observe(Exit.failCause(cause))
+        }),
+        Effect.onExit((exit) =>
+          Exit.isFailure(exit) && exit.cause === observed ? Effect.void : observe(exit),
+        ),
+      )
+    })
 
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
@@ -786,7 +808,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
                   )
                 }),
               { taskId: invocation.taskId, conversationId: invocation.conversationId },
-            ).pipe(Effect.onExit(observeCommit(provenance, 'task.commit'))),
+            ).pipe((effect) => observeNativeCommit(effect, provenance, 'task.commit')),
           ),
         ),
       progress: <T extends Task.Contract>(
@@ -1020,7 +1042,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
               )
             }),
           ).pipe(
-            Effect.onExit(observeCommit(provenance, 'task.conversationCommit')),
+            (effect) => observeNativeCommit(effect, provenance, 'task.conversationCommit'),
             Effect.onExit((exit) =>
               callbackEntered ? Effect.void : observeProjection('task.conversationGuard')(exit),
             ),
@@ -1462,8 +1484,10 @@ export const make = Effect.fnUntraced(function* <R = never>(
   const reconcile = Effect.gen(function* () {
     yield* notify
     if (!enabled || closed || failed !== undefined) return
-    yield* guard
-    yield* Session.commit(session, Supervision.reconcile)
+    yield* guard.pipe(Effect.onExit(observeProjection('scheduler.guard')))
+    yield* Session.commit(session, Supervision.reconcile).pipe(
+      Effect.onExit(observeProjection('scheduler.guard')),
+    )
     const records = yield* Session.scanTasks(session).pipe(
       Stream.runCollect,
       Effect.onExit(observeProjection('task.scan')),
@@ -1480,12 +1504,15 @@ export const make = Effect.fnUntraced(function* <R = never>(
         yield* reserve(record.id)
     }
   }).pipe(
-    Effect.catch((failure) => health(failure)),
-    Effect.catchCause((cause) =>
-      Cause.hasInterruptsOnly(cause)
+    Effect.catchCause((cause) => {
+      if (cause.reasons.length === 1 && Cause.isFailReason(cause.reasons[0]!)) {
+        const reason = cause.reasons[0]
+        return health(reason.error, occurrence(reason))
+      }
+      return Cause.hasInterruptsOnly(cause)
         ? Effect.void
-        : health(error('faulted', 'scheduler.reconcile', Cause.pretty(cause), cause)),
-    ),
+        : health(error('faulted', 'scheduler.reconcile', Cause.pretty(cause), cause))
+    }),
   )
   yield* registry.listen(() => wake)
   yield* Stream.fromQueue(signals).pipe(

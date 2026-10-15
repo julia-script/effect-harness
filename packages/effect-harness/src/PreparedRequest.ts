@@ -1,7 +1,7 @@
+import * as PromptWire from './PromptWire.js'
 /** Immutable request facts committed before provider I/O. Live capabilities remain outside the wire. */
 import * as Context from 'effect/Context'
 import * as Schema from 'effect/Schema'
-import * as Prompt from 'effect/ai/Prompt'
 import * as Agent from './Agent.js'
 import * as Model from './Model.js'
 import * as Identity from './Identity.js'
@@ -31,7 +31,7 @@ export const SnapshotSchema = Schema.Struct({
   /** Logical requests in this durable run, independent of retries and process restarts. */
   ordinal: Schema.Natural,
   attempt: Usage.AttemptId,
-  prompt: Prompt.Prompt,
+  prompt: PromptWire.Prompt,
   agent: Agent.StateSchema,
   settings: Settings.SnapshotSchema,
   affinity: Schema.NonEmptyString,

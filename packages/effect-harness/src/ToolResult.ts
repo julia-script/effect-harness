@@ -1,23 +1,8 @@
 import * as Usage from './Usage.js'
 import * as Schema from 'effect/Schema'
-import * as SchemaTransformation from 'effect/SchemaTransformation'
+import { FilePart } from './PromptWire.js'
 import * as Prompt from 'effect/ai/Prompt'
 import * as ToolControl from './ToolControl.js'
-
-const Bytes = Schema.Uint8Array.annotate({
-  toCodecJson: () =>
-    Schema.link<Uint8Array>()(
-      Schema.TaggedStruct('@effect-harness/Bytes', { data: Schema.Uint8ArrayFromBase64 }),
-      SchemaTransformation.transform({
-        decode: (encoded) => encoded.data,
-        encode: (data) => ({ _tag: '@effect-harness/Bytes' as const, data }),
-      }),
-    ),
-})
-const FilePart = Prompt.FilePart.mapFields((fields) => ({
-  ...fields,
-  data: Schema.Union([Schema.String, Bytes, Schema.URL]),
-}))
 
 /**
  * Model-visible content uses native Effect text and media parts.

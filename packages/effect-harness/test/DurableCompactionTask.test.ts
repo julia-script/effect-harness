@@ -31,6 +31,7 @@ import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as Prompt from 'effect/ai/Prompt'
+import * as PromptWire from 'effect-harness/PromptWire'
 import * as Response from 'effect/ai/Response'
 import * as CompactionTask from 'effect-harness/CompactionTask'
 import * as CompactionStatus from 'effect-harness/CompactionStatus'
@@ -44,6 +45,7 @@ import * as Settings from 'effect-harness/Settings'
 import * as Storage from 'effect-harness/Storage'
 import * as StorageFormat from 'effect-harness/StorageFormat'
 import * as Transaction from 'effect-harness/Transaction'
+import * as Task from 'effect-harness/Task'
 import * as Usage from 'effect-harness/Usage'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 
@@ -75,14 +77,28 @@ const fixture = Effect.gen(function* () {
         : Layer.build(Layer.fresh(backend === 'sqlite' ? sql : jsonl)),
   }
 })
-const seed = (runtime: HarnessRuntime.HarnessRuntimeService) =>
+const imageParts = [
+  Prompt.filePart({
+    mediaType: 'image/png',
+    data: new Uint8Array([1, 2, 3]),
+    fileName: 'old.png',
+    options: { openai: { imageDetail: 'high' } },
+  }),
+  Prompt.filePart({ mediaType: 'image/png', data: new URL('https://example.test/old.png') }),
+]
+const seed = (runtime: HarnessRuntime.HarnessRuntimeService, images = false) =>
   Session.commit(runtime.session, (tx) =>
     Effect.gen(function* () {
       for (const text of ['old '.repeat(40), 'recent '.repeat(12)])
         yield* Transaction.appendEntry(tx, root, {
           kind: 'input',
-          model: yield* Schema.encodeEffect(Schema.Array(Schema.toCodecJson(Prompt.Message)))([
-            Prompt.userMessage({ content: [Prompt.textPart({ text })] }),
+          model: yield* Schema.encodeEffect(Schema.Array(Schema.toCodecJson(PromptWire.Message)))([
+            Prompt.userMessage({
+              content: [
+                Prompt.textPart({ text }),
+                ...(images && text.startsWith('old ') ? imageParts : []),
+              ],
+            }),
           ]),
         })
     }),
@@ -99,13 +115,14 @@ const descriptor = (
   native: Model.Any['languageModel'],
   capability?: Model.CompactionCapability,
   contextWindow?: number,
+  images = false,
 ) =>
   Model.make({
     definition: {
       ref: { provider: 'fixture', modelId: 'summary' },
       maxOutputTokens: 9,
       ...(contextWindow === undefined ? {} : { contextWindow }),
-      capabilities: { tools: true, images: false, reasoning: false, structuredOutput: false },
+      capabilities: { tools: true, images, reasoning: false, structuredOutput: false },
     },
     languageModel: native,
     options: Schema.Struct({}),
@@ -187,7 +204,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(storage)))
                 .minimumReaderVersion,
-              11,
+              12,
             )
             assert.strictEqual(calls, 1)
             assert.deepEqual(yield* runtime.backend.waitCompaction!(handle), result)
@@ -260,7 +277,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             const firstScope = yield* Scope.make()
             yield* Effect.addFinalizer(() => Scope.close(firstScope, Exit.void))
             const first = yield* open.pipe(Effect.provideService(Scope.Scope, firstScope))
-            yield* seed(first)
+            yield* seed(first, true)
             const handle = yield* first.backend.compact!(root)
             yield* Deferred.await(entered).pipe(Effect.timeout('5 seconds'))
             const saved = yield* first.backend.compactionTask!(handle)
@@ -275,6 +292,16 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             const secondScope = yield* Scope.make()
             yield* Effect.addFinalizer(() => Scope.close(secondScope, Exit.void))
             const second = yield* open.pipe(Effect.provideService(Scope.Scope, secondScope))
+            const restoredTask = yield* second.backend.compactionTask!(handle)
+            const checkpoint = yield* Task.decode(
+              CompactionTask.CheckpointSchema,
+              restoredTask.state.checkpoint,
+            )
+            if (checkpoint.phase !== 'summarize')
+              return assert.fail('Expected restored summary checkpoint')
+            const contribution = checkpoint.envelope.fingerprint.selected[0]!.contribution[0]!
+            if (contribution.role !== 'user') return assert.fail('Expected original user message')
+            assert.deepEqual(contribution.content.slice(1), imageParts)
             const outcome = yield* second.backend.waitCompaction!(handle).pipe(
               Effect.timeout('5 seconds'),
             )
@@ -336,13 +363,13 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               configure: (context) => Effect.succeed(context),
             })
             const runtime = yield* HarnessRuntime.make({
-              models: [descriptor(native, capability, 80)],
+              models: [descriptor(native, capability, 80, true)],
             }).pipe(
               Effect.provideContext(storage),
               Effect.provideService(Settings.Settings, settings),
             )
             yield* runtime.backend.root
-            yield* seed(runtime)
+            yield* seed(runtime, true)
             const job = yield* runtime.backend.submit({
               conversationId: root,
               draft: { type: 'input', content: 'go' },
@@ -599,7 +626,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               assert.strictEqual(
                 (yield* StorageFormat.inspect.pipe(Effect.provideContext(storage)))
                   .minimumReaderVersion,
-                11,
+                12,
               )
             } else
               assert.deepEqual(
@@ -2005,7 +2032,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             const after = yield* StorageFormat.inspect.pipe(Effect.provideContext(storage))
             assert.strictEqual(
               after.minimumReaderVersion,
-              Math.max(format.minimumReaderVersion, 11),
+              Math.max(format.minimumReaderVersion, 12),
             )
             assert.strictEqual(
               (yield* entries(first)).filter(
@@ -2660,7 +2687,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(storage)))
                 .minimumReaderVersion,
-              11,
+              12,
             )
             yield* Scope.close(owner, Exit.void)
             if (mode !== 'interrupt') {

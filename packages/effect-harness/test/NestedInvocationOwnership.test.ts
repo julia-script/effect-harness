@@ -64,6 +64,7 @@ describe('native nested recovery and ownership', () => {
           const registry = yield* Registry.make
           let opened = 0
           let closed = 0
+          const released = yield* Deferred.make<void>()
           let hostScope: Scope.Scope | undefined
           let factoryScope: Scope.Scope | undefined
           const scheduler = yield* TaskScheduler.make(session, {
@@ -93,7 +94,7 @@ describe('native nested recovery and ownership', () => {
                   yield* Effect.acquireRelease(Effect.void, () =>
                     Effect.sync(() => {
                       closed++
-                    }),
+                    }).pipe(Effect.andThen(Deferred.succeed(released, undefined))),
                   )
                   return Invocation.unsupported
                 }),
@@ -142,6 +143,7 @@ describe('native nested recovery and ownership', () => {
             result: 'done',
           })
           assert.strictEqual(opened, 1)
+          yield* Deferred.await(released)
           assert.strictEqual(closed, 1)
           assert.isTrue(Option.isNone(yield* scheduler.failure))
         }),

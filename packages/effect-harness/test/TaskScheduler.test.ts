@@ -134,8 +134,8 @@ describe('standalone custom task scheduler', () => {
           assert.strictEqual(entries.filter((entry) => entry.kind === 'counter.one').length, 1)
           assert.strictEqual((yield* scheduler.inspect(ref.id)).record.state.status, 'terminal')
           assert.deepStrictEqual(yield* StorageFormat.inspect, {
-            formatVersion: 2,
-            minimumReaderVersion: 2,
+            formatVersion: 12,
+            minimumReaderVersion: 12,
           })
         }),
       ).pipe(Effect.provide(Storage.layerMemory)),

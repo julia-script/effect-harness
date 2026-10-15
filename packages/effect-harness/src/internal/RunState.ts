@@ -1,7 +1,7 @@
+import * as PromptWire from '../PromptWire.js'
 /** Schema-backed durable checkpoints. A started tool intent is persisted before its handler runs. */
 import * as Schema from 'effect/Schema'
 import * as Struct from 'effect/Struct'
-import * as Prompt from 'effect/ai/Prompt'
 import * as Record from '../Record.js'
 import * as Agent from '../Agent.js'
 import * as Submission from '../Submission.js'
@@ -181,7 +181,7 @@ export const encode = (state: RunState) =>
       : state,
   )
 export const decode = Schema.decodeUnknownEffect(Schema.toCodecJson(RunStateSchema))
-export const Messages = Schema.Array(Schema.toCodecJson(Prompt.Message))
+export const Messages = Schema.Array(Schema.toCodecJson(PromptWire.Message))
 
 /** Validate committed prefixes without repairing, discarding or replaying stored work. */
 export const validPrefix = (state: RunState): boolean => {
@@ -243,7 +243,7 @@ export const persist = Effect.fnUntraced(function* (
           ...Struct.omit(state, ['preparation']),
           ...(state.overflow === undefined ? {} : { overflow: safeOverflow(state.overflow) }),
         }
-  return yield* Schema.decodeUnknownEffect(StoredSchema)({
+  return yield* Schema.decodeUnknownEffect(Schema.toType(StoredSchema))({
     ...safe,
     ...(preparation === undefined ? {} : { preparation }),
   })
@@ -255,7 +255,7 @@ export const hydrate = Effect.fnUntraced(function* <E>(
   if (state._tag === 'queued') return state
   const preparation =
     state.preparation === undefined ? undefined : yield* resolve(state.preparation)
-  return yield* Schema.decodeUnknownEffect(RunStateSchema)({
+  return yield* Schema.decodeUnknownEffect(Schema.toType(RunStateSchema))({
     ...state,
     ...(preparation === undefined ? {} : { preparation }),
   })

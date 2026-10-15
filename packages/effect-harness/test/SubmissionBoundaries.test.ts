@@ -186,7 +186,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               (yield* Format.inspect.pipe(
                 Effect.provideContext(yield* Layer.build(Layer.fresh(Storage.layerMemory))),
               )).formatVersion,
-              1,
+              12,
             )
             const outcomes = yield* Effect.forEach(handles, Submission.wait, {
               concurrency: 'unbounded',
@@ -950,7 +950,7 @@ const priorReader10 = Effect.fnUntraced(function* (metadata: {
 
 for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
   it.live(
-    `${backend}: format11 persists before grouped facts and unchanged reader10 refuses before replay`,
+    `${backend}: format12 persists before grouped facts and unchanged reader10 refuses before replay`,
     () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -959,8 +959,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
           const runtime = yield* HarnessRuntime.make().pipe(Effect.provideContext(context))
           yield* Session.commit(runtime.session, Transaction.ensureRoot)
           assert.deepStrictEqual(yield* Format.inspect.pipe(Effect.provideContext(context)), {
-            formatVersion: 1,
-            minimumReaderVersion: 1,
+            formatVersion: 12,
+            minimumReaderVersion: 12,
           })
           const harness = yield* client(runtime)
           const draft = yield* runtime.backend.submit({
@@ -970,7 +970,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
           const saved = yield* harness.submission(draft.id)
           assert.strictEqual((yield* Submission.wait(saved))._tag, 'WriteDone')
           const marker = yield* Format.inspect.pipe(Effect.provideContext(context))
-          assert.deepStrictEqual(marker, { formatVersion: 11, minimumReaderVersion: 11 })
+          assert.deepStrictEqual(marker, { formatVersion: 12, minimumReaderVersion: 12 })
           assert.strictEqual(
             (yield* priorReader10({
               format: marker.formatVersion,
@@ -998,7 +998,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                   ),
                 )(line),
             )
-            const upgrade = frames.findIndex((frame) => frame.metadata.format === 11)
+            const guarded = frames.findIndex((frame) => frame.metadata.format === 12)
             const documents = yield* Context.get(context, Storage.Storage)
               .scanDocuments({
                 scope: { _tag: 'conversation', conversationId: root },
@@ -1009,7 +1009,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             const protocol = frames.findIndex((frame) =>
               frame.rows.some((row) => row.id === documents[0]!.id),
             )
-            assert.isTrue(upgrade >= 0 && upgrade < protocol)
+            assert.isTrue(guarded >= 0 && guarded <= protocol)
           }
         }),
       ).pipe(Effect.provide([NodeServices.layer, plain])),

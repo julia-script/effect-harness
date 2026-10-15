@@ -135,7 +135,7 @@ export const protection = (inspect: Effect.Effect<StorageFormat.Format, StorageF
   Effect.gen(function* () {
     const marker = yield* inspect
     yield* StorageFormat.validate(marker)
-    if (marker.minimumReaderVersion < 11)
+    if (marker.minimumReaderVersion < 12)
       return yield* new StorageFormat.StorageFormatError({
         reason: 'unsupported',
         message: 'Nested execution requires container and minimum reader protection 11/11',

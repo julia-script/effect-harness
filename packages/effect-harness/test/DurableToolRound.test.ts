@@ -235,7 +235,7 @@ describe('durable native tool rounds', () => {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(context)))
                 .minimumReaderVersion,
-              11,
+              12,
             )
           }),
         ).pipe(Effect.provide(NodeServices.layer)),
@@ -1958,7 +1958,12 @@ describe('durable native tool rounds', () => {
             )
             const storage = Context.get(context, Storage.Storage)
             const format = Context.get(context, StorageFormat.StorageFormat)
-            const session = yield* Session.make().pipe(Effect.provideContext(context))
+            let inspected = { formatVersion: 1, minimumReaderVersion: 1 }
+            const legacyCapability = Context.add(context, StorageFormat.StorageFormat, {
+              ...format,
+              inspect: Effect.sync(() => inspected),
+            })
+            const session = yield* Session.make().pipe(Effect.provideContext(legacyCapability))
             const root = (yield* Session.commit(session, Transaction.ensureRoot)).id
             const task = yield* Session.commit(session, (tx) =>
               Transaction.createTask(tx, {
@@ -2003,13 +2008,12 @@ describe('durable native tool rounds', () => {
             ]
             for (const prior of old) yield* Session.commit(session, (tx) => Usage.record(tx, prior))
             assert.deepStrictEqual(yield* format.inspect, {
-              formatVersion: 1,
-              minimumReaderVersion: 1,
+              formatVersion: 12,
+              minimumReaderVersion: 12,
             })
             let callback = 0
             for (const version of [1, 8]) {
-              if (version === 8)
-                yield* format.requireSupportedFormat({ formatVersion: 8, minimumReaderVersion: 8 })
+              inspected = { formatVersion: version, minimumReaderVersion: version }
               const before = yield* format.inspect
               const bytes = backend === 'memory' ? undefined : yield* fs.readFile(filename)
               const documents = yield* storage
@@ -2054,10 +2058,10 @@ describe('durable native tool rounds', () => {
             assert.strictEqual(callback, 0)
             for (const prior of old) yield* Session.commit(session, (tx) => Usage.record(tx, prior))
             assert.deepStrictEqual(yield* format.inspect, {
-              formatVersion: 8,
-              minimumReaderVersion: 8,
+              formatVersion: 12,
+              minimumReaderVersion: 12,
             })
-            yield* format.requireSupportedFormat({ formatVersion: 9, minimumReaderVersion: 9 })
+            inspected = { formatVersion: 12, minimumReaderVersion: 12 }
             const committed = yield* Session.commit(session, (tx) =>
               Usage.settle(tx, receipt, () =>
                 Effect.sync(() => {
@@ -2179,8 +2183,8 @@ describe('durable native tool rounds', () => {
           }
           assert.strictEqual(reads, mode === 'missing' || mode === 'mismatched' ? 0 : 1)
           assert.deepStrictEqual(yield* format.inspect, {
-            formatVersion: 1,
-            minimumReaderVersion: 1,
+            formatVersion: 12,
+            minimumReaderVersion: 12,
           })
           assert.deepStrictEqual(
             yield* storage
@@ -2297,8 +2301,8 @@ describe('durable native tool rounds', () => {
                 { phase: fault === 'uncertain' ? 'after' : 'before' },
               )
               assert.deepStrictEqual(yield* format.inspect, {
-                formatVersion: 9,
-                minimumReaderVersion: 9,
+                formatVersion: 12,
+                minimumReaderVersion: 12,
               })
             }),
           ).pipe(Effect.provide(NodeServices.layer)),

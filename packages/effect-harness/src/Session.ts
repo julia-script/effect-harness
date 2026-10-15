@@ -556,7 +556,8 @@ const commitImpl = Effect.fnUntraced(function* <A, E, R>(
                       message: 'Commit settlement was uncertain; reopen Session',
                       cause,
                     })
-                yield* SessionRuntime.stop(state, poison)
+                const observe = yield* SessionRuntime.CommitFailure
+                yield* SessionRuntime.stop(state, poison, observe(cause))
               }
               return yield* Effect.failCause(cause)
             }),

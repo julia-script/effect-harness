@@ -44,3 +44,11 @@ Conversation documents declare history (`latest` or `rewindable`) and fork behav
 The local `HarnessRuntime` owns its Session. Tools access transactions through `ToolExecution.commit`. Applications read through `Conversation.snapshot` and observe through `Conversation.watch`; transaction callbacks remain on the runtime side of the backend boundary.
 
 See the [document example](../apps/example/src/tour/Documents.ts).
+
+## Image persistence and backups
+
+Built-in stores share image bytes across retained requests, entries and document revisions while returning hydrated values. Native prompt bytes and URL objects survive JSON encoding through `effect-harness/PromptWire`; custom adapters may remain inline if they honor the runtime-12 logical contract. Current stores require format 12/12, SQL persistence schema 4 or JSONL sidecars-v4. Older stores are rejected without migration.
+
+A closed JSONL backup must include the journal and both adjacent `.parts` and `.media` directories. SQL objects and owner manifests live in the database. Historical entries and rewindable revisions retain their images even when omitted from the current context; only removal of the final retained owner permits reclamation.
+
+Packed bodies use version 2. Each body carries a checksum of its complete media occurrence list, including paths and presentation, so a missing repeated occurrence fails validation even if another occurrence retains the same object. `StorageMedia.manifest` validates this physical coverage independently of application content eligibility, without decoding opaque document bodies. JSONL also commits ownership in its journal before reclamation. These checks detect corruption; they do not authenticate coordinated edits to metadata. Custom adapters using the helpers must still publish records, objects and ownership atomically.

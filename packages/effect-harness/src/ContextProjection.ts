@@ -1,3 +1,4 @@
+import * as PromptWire from './PromptWire.js'
 import * as ToolResultEntry from './internal/ToolResultEntry.js'
 /** Immutable, bounded canonical context. This module performs no model or tool execution. */
 import * as Prompt from 'effect/ai/Prompt'
@@ -23,7 +24,7 @@ export const messages = (
 ): Effect.Effect<ReadonlyArray<Prompt.Message>, Schema.SchemaError> =>
   entry.kind === 'tool.result'
     ? ToolResultEntry.messages(entry)
-    : Schema.decodeEffect(Schema.Array(Schema.toCodecJson(Prompt.Message)))(entry.model ?? [])
+    : Schema.decodeEffect(Schema.Array(Schema.toCodecJson(PromptWire.Message)))(entry.model ?? [])
 
 /** Ordered declarative state; tool handlers and service environments are never serialized. */
 export const SectionSchema = Schema.Struct({ key: Schema.NonEmptyString, text: Schema.String })
@@ -79,8 +80,8 @@ export type Bounds = typeof BoundsSchema.Type
 export const ContextViewSchema = Schema.Struct({
   bounds: BoundsSchema,
   activeEntries: Schema.Array(Record.Entry),
-  contributions: Schema.Array(Schema.Array(Prompt.Message)),
-  prompt: Prompt.Prompt,
+  contributions: Schema.Array(Schema.Array(PromptWire.Message)),
+  prompt: PromptWire.Prompt,
   positionalFacts: Schema.Array(Schema.Struct({ entryId: Record.EntryId, fact: FactSchema })),
   orderedSections: Schema.Array(SectionSchema),
   toolDeclarations: Schema.Array(ToolDeclarationSchema),
@@ -109,7 +110,13 @@ const invalid = (message: string) => new ContextProjectionError({ reason: 'inval
 
 /** Freeze only owned values, including nested provider options and JSON tool results. */
 const freeze = <A>(value: A): A => {
-  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    !ArrayBuffer.isView(value) &&
+    !(value instanceof URL) &&
+    !Object.isFrozen(value)
+  ) {
     for (const child of Object.values(value)) freeze(child)
     Object.freeze(value)
   }
@@ -188,7 +195,13 @@ export const project = Effect.fnUntraced(function* (
     contributions.push(
       edit?._tag === 'omit'
         ? []
-        : yield* Schema.decodeUnknownEffect(Schema.Array(Prompt.Message))(eligible),
+        : yield* Schema.decodeEffect(
+            Schema.Array(
+              entry.kind === 'tool.result' && edit === undefined
+                ? Schema.toType(PromptWire.Message)
+                : Schema.toCodecJson(PromptWire.Message),
+            ),
+          )(eligible),
     )
   }
   const tail = bounded.at(-1)?.id

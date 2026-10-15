@@ -291,8 +291,18 @@ export const publish = Effect.fnUntraced(function* (
   }
 })
 
-export const stop = Effect.fnUntraced(function* (state: State, error?: Failure) {
+// A scoped commit observer sees the original cause before poison wakes coordinators.
+export const CommitFailure = Context.Reference<
+  (cause: Cause.Cause<Failure>) => Effect.Effect<void>
+>('effect-harness/CommitFailure', { defaultValue: () => () => Effect.void })
+
+export const stop = Effect.fnUntraced(function* (
+  state: State,
+  error?: Failure,
+  beforeClose: Effect.Effect<void> = Effect.void,
+) {
   state.poison = error
+  yield* beforeClose
   if (state.cacheWorker !== undefined) {
     yield* Fiber.interrupt(state.cacheWorker)
     state.cacheWorker = undefined

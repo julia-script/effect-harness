@@ -106,7 +106,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                       Effect.provideContext(activeStore),
                       Effect.orDie,
                     ),
-                    { formatVersion: 11, minimumReaderVersion: 11 },
+                    { formatVersion: 12, minimumReaderVersion: 12 },
                   )
                   const results = prompt.content.flatMap((message) =>
                     message.role === 'tool'

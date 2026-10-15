@@ -97,3 +97,6 @@ export * as RemoteDocumentHttp from './RemoteDocumentHttp.js'
 export * as ToolCatalog from './ToolCatalog.js'
 export * as ToolSearch from './ToolSearch.js'
 export * as ToolSearchRanking from './ToolSearchRanking.js'
+
+export * as PromptWire from './PromptWire.js'
+export * as StorageMedia from './StorageMedia.js'

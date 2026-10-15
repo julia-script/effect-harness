@@ -1,6 +1,7 @@
 /** Latest successful input measurement. A rewritten prefix or tool set invalidates it. */
 import * as Schema from 'effect/Schema'
 import * as Prompt from 'effect/ai/Prompt'
+import * as PromptWire from '../PromptWire.js'
 import * as Document from '../Document.js'
 import * as Projection from '../ContextProjection.js'
 import * as Model from '../Model.js'
@@ -10,7 +11,7 @@ export { target }
 export const Baseline = Schema.Struct({
   identity: Schema.String,
   model: Schema.optionalKey(Model.SelectionSchema),
-  prompt: Prompt.Prompt,
+  prompt: PromptWire.Prompt,
   tools: Schema.Array(Projection.ToolDeclarationSchema),
   inputTokens: Schema.Natural,
 })

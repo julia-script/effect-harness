@@ -161,7 +161,7 @@ export function admit(
 ) {
   return atomic(tx, (child) =>
     Effect.gen(function* () {
-      const draft = yield* Value.copy(DraftSchema, input)
+      const draft = yield* Value.copy(Schema.toCodecJson(DraftSchema), input)
       if (draft.compaction !== undefined) {
         yield* validateCompaction(child, conversationId, draft.compaction)
         if (draft.mode !== 'write' || draft.payload.head !== draft.compaction.firstKept)

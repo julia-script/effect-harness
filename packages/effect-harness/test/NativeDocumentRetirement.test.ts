@@ -1,3 +1,5 @@
+import * as PackedBody from './fixtures/PackedBody.js'
+import * as Media from '../src/StorageMedia.js'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -9,6 +11,7 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
+import * as SchemaTransformation from 'effect/SchemaTransformation'
 import * as Struct from 'effect/Struct'
 import * as Document from 'effect-harness/Document'
 import * as Retirement from 'effect-harness/DocumentRetirement'
@@ -47,7 +50,31 @@ const RawRow = Schema.Union([
     }),
   }),
 ])
-const RowJson = Schema.fromJsonString(RawRow)
+const PackedContent = Media.PackedBodySchema.pipe(
+  Schema.decodeTo(
+    Schema.Json,
+    SchemaTransformation.transform({
+      decode: (packed) => packed.body,
+      encode: PackedBody.empty,
+    }),
+  ),
+)
+const RowJson = Schema.fromJsonString(
+  Schema.Struct({
+    category: Schema.Literals(['conversation', 'entry', 'task', 'submission', 'document']),
+    value: PackedContent,
+    revisions: Schema.Array(Schema.Json),
+  }).pipe(
+    Schema.decodeTo(
+      Schema.toType(RawRow),
+      SchemaTransformation.transform({
+        decode: (packed) =>
+          Schema.decodeUnknownSync(RawRow)({ _tag: packed.category, value: packed.value }),
+        encode: (row) => ({ category: row._tag, value: row.value, revisions: [] }),
+      }),
+    ),
+  ),
+)
 const FrameJson = Schema.fromJsonString(
   Schema.Struct({
     metadata: Metadata.Metadata,
@@ -82,7 +109,7 @@ const readSql = (id: number) =>
       value: {
         ...row.value,
         revisions: yield* Effect.forEach(revisions, (revision) =>
-          Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(revision.content).pipe(
+          Schema.decodeUnknownEffect(Schema.fromJsonString(PackedContent))(revision.content).pipe(
             Effect.map((content) => ({ seq: damagedSeq(Number(revision.seq)), content })),
           ),
         ),
@@ -99,7 +126,7 @@ const writeSql = (row: Row.Stored) =>
     if (row._tag === 'document') {
       yield* sql`DELETE FROM effect_harness_revisions WHERE document_id=${row.value.record.id}`
       for (const revision of row.value.revisions) {
-        const content = JSON.stringify(revision.content)
+        const content = JSON.stringify(PackedBody.empty(revision.content))
         yield* sql`INSERT INTO effect_harness_revisions (document_id,seq,content)
         VALUES (${row.value.record.id},${revision.seq},${content})`
       }
@@ -130,15 +157,18 @@ const readJsonl = (filePath: string, id: number) =>
       .pipe(Effect.flatMap(Schema.decodeEffect(RowJson)))
     if (row._tag !== 'document') return row
     const revisions = yield* Effect.forEach(ref.revisions, (seq) =>
-      fs
-        .readFileString(`${filePath}.parts/${id}-${seq}.revision`)
-        .pipe(
-          Effect.flatMap(
-            Schema.decodeEffect(
-              Schema.fromJsonString(RawRow.members[4].fields.value.fields.revisions.value),
+      fs.readFileString(`${filePath}.parts/${id}-${seq}.revision`).pipe(
+        Effect.flatMap(
+          Schema.decodeEffect(
+            Schema.fromJsonString(
+              RawRow.members[4].fields.value.fields.revisions.value.mapFields((fields) => ({
+                ...fields,
+                content: PackedContent,
+              })),
             ),
           ),
         ),
+      ),
     )
     return { ...row, value: { ...row.value, revisions } }
   }).pipe(Effect.mapError(testError))
@@ -149,14 +179,63 @@ const writeJsonl = (filePath: string, row: Row.Stored) =>
     const ref = yield* jsonlReference(filePath, id)
     const header =
       row._tag === 'document' ? { ...row, value: { ...row.value, revisions: [] } } : row
-    yield* fs.writeFileString(`${filePath}.parts/${id}-${ref.seq}.row`, JSON.stringify(header))
+    yield* fs.writeFileString(
+      `${filePath}.parts/${id}-${ref.seq}.row`,
+      yield* Schema.encodeEffect(RowJson)(header),
+    )
     if (row._tag === 'document')
       for (const [index, seq] of ref.revisions.entries())
         yield* fs.writeFileString(
           `${filePath}.parts/${id}-${seq}.revision`,
-          JSON.stringify(row.value.revisions[index]),
+          JSON.stringify({
+            seq: row.value.revisions[index]!.seq,
+            content: PackedBody.empty(row.value.revisions[index]!.content),
+          }),
         )
   }).pipe(Effect.mapError(testError))
+const readMemory = (access: Effect.Success<typeof Memory.makeAccess>, id: number) =>
+  access.snapshot.pipe(
+    Effect.map((state) => {
+      const packed = state.rows.get(id)!
+      const value = packed.value.body
+      return Schema.decodeUnknownSync(RawRow)({
+        _tag: packed.category,
+        value:
+          packed.category === 'document'
+            ? {
+                ...Struct.assign(value as Schema.JsonObject, {}),
+                revisions: packed.revisions.map((revision) => ({
+                  seq: revision.seq,
+                  content: revision.content.body,
+                })),
+              }
+            : value,
+      })
+    }),
+  )
+const writeMemory = (
+  access: Effect.Success<typeof Memory.makeAccess>,
+  row: Row.Stored,
+  metadata?: Metadata.Metadata,
+) =>
+  Effect.gen(function* () {
+    const state = yield* access.snapshot
+    const rows = new Map(state.rows)
+    rows.set(Row.idOf(row), {
+      category: row._tag,
+      value: PackedBody.empty(
+        row._tag === 'document' ? { record: row.value.record, revisions: [] } : row.value,
+      ),
+      revisions:
+        row._tag === 'document'
+          ? row.value.revisions.map((revision) => ({
+              seq: revision.seq,
+              content: PackedBody.empty(revision.content),
+            }))
+          : [],
+    })
+    yield* access.publish({ ...state, rows, metadata: metadata ?? state.metadata })
+  })
 const modes = [
   'missing-body',
   'malformed-body',
@@ -360,9 +439,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               yield* verifyCommit(
                 storage,
                 mode,
-                (id) => access.get(id).pipe(Effect.map(Option.getOrThrow)),
-                (row) =>
-                  access.metadata.pipe(Effect.flatMap((metadata) => access.save([row], metadata))),
+                (id) => readMemory(access, id),
+                (row) => writeMemory(access, row),
                 access.metadata,
               )
             } else if (backend === 'sqlite') {
@@ -468,13 +546,10 @@ for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
               const access = yield* Memory.makeAccess
               const storage = yield* Kernel.make(access)
               const selected = yield* seed.pipe(Effect.provideService(Storage.Storage, storage))
-              const changed = yield* corrupt(
-                Option.getOrThrow(yield* access.get(selected.id)),
-                mode,
-              )
+              const changed = yield* corrupt(yield* readMemory(access, selected.id), mode)
               const counters = yield* access.metadata
-              yield* access.save([changed], counters)
-              const read = access.get(selected.id).pipe(Effect.map(Option.getOrThrow))
+              yield* writeMemory(access, changed, counters)
+              const read = readMemory(access, selected.id)
               const unchanged = Effect.gen(function* () {
                 assert.deepEqual(yield* access.metadata, counters)
                 assert.deepEqual(yield* read, changed)
@@ -556,23 +631,23 @@ it.effect(
         const access = yield* Memory.makeAccess
         const storage = yield* Kernel.make(access)
         const selected = yield* seed.pipe(Effect.provideService(Storage.Storage, storage))
-        const original = Option.getOrThrow(yield* access.get(selected.id))
+        const original = yield* readMemory(access, selected.id)
         const changed = yield* corrupt(original, 'missing-body')
         const counters = yield* access.metadata
-        yield* access.save([changed], counters)
+        yield* writeMemory(access, changed, counters)
         const session = yield* Session.make().pipe(Effect.provideService(Storage.Storage, storage))
         const outcome = yield* Session.commit(session, (tx) =>
           Effect.gen(function* () {
             yield* Transaction.ensureRoot(tx)
             yield* Transaction.retireDocumentMetadata(tx, policy, selected)
             // A native seam mutation tests commit's own validation, rather than a reader override.
-            yield* access.save([yield* corrupt(changed, 'missing-version')], counters)
+            yield* writeMemory(access, yield* corrupt(changed, 'missing-version'), counters)
           }),
         ).pipe(Effect.flip)
         assert.strictEqual(outcome._tag, 'StorageError')
         assert.deepEqual(yield* access.metadata, counters)
         assert.isTrue(Option.isNone(yield* storage.conversation(Storage.ROOT_CONVERSATION_ID)))
-        const after = Option.getOrThrow(yield* access.get(selected.id))
+        const after = yield* readMemory(access, selected.id)
         if (after._tag === 'document') assert.isUndefined(after.value.record.retiredAt)
       }),
     ),
@@ -716,11 +791,8 @@ it.effect(
         const access = yield* Memory.makeAccess
         const storage = yield* Kernel.make(access)
         const selected = yield* seed.pipe(Effect.provideService(Storage.Storage, storage))
-        const changed = yield* corrupt(
-          Option.getOrThrow(yield* access.get(selected.id)),
-          'malformed-body',
-        )
-        yield* access.save([changed], yield* access.metadata)
+        const changed = yield* corrupt(yield* readMemory(access, selected.id), 'malformed-body')
+        yield* writeMemory(access, changed)
         const session = yield* Session.make().pipe(Effect.provideService(Storage.Storage, storage))
         const recreated = yield* Session.commit(session, (tx) =>
           Effect.gen(function* () {
@@ -748,7 +820,7 @@ it.effect(
           Option.getOrThrow(yield* storage.findDocument(selected.address)).id,
           recreated.record.id,
         )
-        const retired = Option.getOrThrow(yield* access.get(selected.id))
+        const retired = yield* readMemory(access, selected.id)
         if (changed._tag === 'document' && retired._tag === 'document')
           assert.deepEqual(retired.value.revisions, [])
       }),
