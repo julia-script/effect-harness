@@ -57,6 +57,20 @@ export const CommitOptionsSchema = Schema.Struct({
 })
 export type CommitOptions = typeof CommitOptionsSchema.Type
 
+/** Options for the scoped coordinator and its materialization cache. */
+export interface Options<I extends ReadonlyArray<ConversationInitializer.Any> = readonly []> {
+  readonly initializers?: I
+  /**
+   * Idle document retention in milliseconds, default 600,000 (ten minutes).
+   * Zero evicts unattached materializations once the coordination line is available;
+   * Infinity retains them until Session closes. Negative values and NaN fail construction.
+   * Reads and committed updates refresh retention. Watches and remote mounts pin their
+   * incarnation until release. Missing-document lookups expire too. This limits idle
+   * memory retention, not total bytes or durable document/history lifetime.
+   */
+  readonly documentRetentionMs?: number
+}
+
 /**
  * Captures Storage and registers Scope cleanup. Construction does no storage I/O.
  * One active Session coordinates a Storage instance; a second make fails with conflict.
@@ -70,7 +84,7 @@ export type CommitOptions = typeof CommitOptionsSchema.Type
 export const make = Effect.fnUntraced(function* <
   const I extends ReadonlyArray<ConversationInitializer.Any> = readonly [],
 >(
-  options: { readonly initializers?: I } = {},
+  options: Options<I> = {},
 ): Effect.fn.Return<
   Session,
   SessionFailure,
@@ -107,7 +121,7 @@ export const make = Effect.fnUntraced(function* <
         )
     },
   )
-  const state = yield* SessionRuntime.make(initializers)
+  const state = yield* SessionRuntime.make(initializers, options.documentRetentionMs)
   const self: Session = {
     [TypeId]: TypeId,
     pipe() {
@@ -634,7 +648,7 @@ const watchImpl = <S extends Document.Codec>(
               message: 'Document is absent',
             })
           const initial = yield* Value.snapshot(document, stored.value)
-          const subscriber = yield* SessionRuntime.subscribe(state, stored.value.record.id)
+          const subscriber = yield* SessionRuntime.subscribe(state, stored.value)
           return { initial, subscriber }
         }),
       )
@@ -731,7 +745,7 @@ const watchMaterializedImpl = <S extends Document.Codec>(
               message: 'Document is absent',
             })
           const initial = yield* Value.materialize(document, stored.value)
-          const subscriber = yield* SessionRuntime.subscribe(state, stored.value.record.id)
+          const subscriber = yield* SessionRuntime.subscribe(state, stored.value)
           return { initial, subscriber }
         }),
       )

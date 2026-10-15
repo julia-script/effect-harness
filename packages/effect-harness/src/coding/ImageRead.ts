@@ -6,8 +6,12 @@ import * as Prompt from 'effect/ai/Prompt'
 import type * as FileReader from '../FileReader.js'
 import * as Images from '../ImagePreparation.js'
 import type * as ToolResult from '../ToolResult.js'
+import * as ImageOutput from '../internal/ToolImageOutput.js'
+import { detect } from '../internal/ImageFormat.js'
 import type { Policy } from './ImageReadPolicy.js'
 import { CodingFileError, positiveInteger } from './FileError.js'
+
+export { detect } from '../internal/ImageFormat.js'
 
 /** Image file/adapter failures remain semantic to direct consumers. */
 export class ImageReadError extends Schema.TaggedError<ImageReadError>()('ImageReadError', {
@@ -30,41 +34,18 @@ export const Failure = Schema.Struct({
 })
 export type Failure = typeof Failure.Type
 
-const Positive = Schema.Int.check(
-  Schema.isGreaterThan(0),
-  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
-)
-const Dimensions = Schema.Struct({ width: Positive, height: Positive })
-const InputMime = Schema.Literals([
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
-  'image/bmp',
-])
 export const Outcome = Schema.Struct({
+  ...ImageOutput.Metadata.fields,
   kind: Schema.Literal('image'),
   path: Schema.String,
   fileBytes: Schema.String,
-  mimeType: Schema.Literals(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
-  outputBytes: Positive,
-  base64Bytes: Positive,
-  original: Dimensions,
-  oriented: Dimensions,
-  dimensions: Dimensions,
-  orientation: Schema.Literals([1, 2, 3, 4, 5, 6, 7, 8]),
-  passthrough: Schema.Boolean,
-  animation: Schema.Literals(['unchanged', 'first-frame', 'static']),
-  transparency: Schema.Literals(['unchanged', 'preserved', 'flattened-white', 'opaque']),
-  convertedFrom: Schema.optionalKey(InputMime),
-  resized: Schema.optionalKey(Schema.Struct({ from: Dimensions, to: Dimensions })),
 })
 export type Outcome = typeof Outcome.Type
 export const Placeholder = Schema.Struct({
   kind: Schema.Literal('image-placeholder'),
   path: Schema.String,
   fileBytes: Schema.String,
-  mimeType: InputMime,
+  mimeType: Schema.Literals(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp']),
   reason: Schema.Literal('modelDoesNotSupportImages'),
 })
 export type Placeholder = typeof Placeholder.Type
@@ -77,28 +58,6 @@ export const failureOutput = (error: ImageReadError): ToolResult.Output<Failure>
 
 const readerError = (cause: FileReader.FileReaderError) =>
   new CodingFileError({ reason: 'filesystem', path: cause.path, message: cause.message, cause })
-const prefix = (bytes: Uint8Array, signature: ReadonlyArray<number>, offset = 0) =>
-  signature.every((value, index) => bytes[offset + index] === value)
-const ascii = (bytes: Uint8Array, value: string, offset = 0) =>
-  prefix(
-    bytes,
-    Array.from(value, (character) => character.charCodeAt(0)),
-    offset,
-  )
-
-/** Only bounded header bytes are inspected; full content validation belongs to ImagePreparation. */
-export const detect = (bytes: Uint8Array): string | undefined => {
-  if (prefix(bytes, [0x89, 0x50, 0x4e, 0x47])) return 'image/png'
-  if (prefix(bytes, [0xff, 0xd8])) return 'image/jpeg'
-  if (ascii(bytes, 'GIF8')) return 'image/gif'
-  if (ascii(bytes, 'RIFF') && ascii(bytes, 'WEBP', 8)) return 'image/webp'
-  if (ascii(bytes, 'BM')) return 'image/bmp'
-  if (prefix(bytes, [0x49, 0x49, 0x2a, 0]) || prefix(bytes, [0x4d, 0x4d, 0, 0x2a]))
-    return 'image/tiff'
-  if (prefix(bytes, [0, 0, 1, 0])) return 'image/x-icon'
-  if (ascii(bytes, 'ftyp', 4)) return 'image/unsupported-container'
-  return undefined
-}
 const extensionMime = (path: string): string | undefined => {
   const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
   switch (extension) {
@@ -214,58 +173,25 @@ export const read = Effect.fn('CodingImageRead.read')(function* (
       path,
       message: 'Image content changed MIME type after header inspection',
     })
-  const prepared = yield* Images.prepare(bytes, mimeType, limits)
-  // Recheck replaceable service output before the tool's JSON codec allocates base64.
-  const base64Bytes = Images.base64Length(prepared.bytes.byteLength)
-  if (!Number.isSafeInteger(base64Bytes) || base64Bytes > limits.maxBytes)
-    return yield* new ImageReadError({
-      reason: 'outputBudget',
-      path,
-      message: 'Prepared image exceeds the model base64 budget',
-    })
-  if (
-    detect(prepared.bytes) !== prepared.mimeType ||
-    prepared.dimensions.width > limits.maxWidth ||
-    prepared.dimensions.height > limits.maxHeight
-  )
-    return yield* new ImageReadError({
-      reason: 'invalidOutput',
-      path,
-      message: 'Prepared image MIME or dimensions violate model policy',
-    })
-  const { bytes: output, ...metadata } = prepared
-  const outcome = yield* Schema.decodeEffect(Outcome)({
-    ...metadata,
-    kind: 'image',
-    path,
-    fileBytes: size.toString(),
-    outputBytes: output.byteLength,
-    base64Bytes,
-  }).pipe(
-    Effect.mapError(
-      (cause) =>
+  const output = yield* ImageOutput.prepare(bytes, mimeType, limits).pipe(
+    Effect.catchTag('InvalidImageOutput', (error) =>
+      Effect.fail(
         new ImageReadError({
-          reason: 'invalidOutput',
+          reason: error.reason,
           path,
-          message: 'Invalid prepared image metadata',
-          cause,
+          message: error.message,
+          cause: error,
         }),
+      ),
     ),
   )
-  const notes = [`Read image file (${outcome.mimeType}).`]
-  if (outcome.convertedFrom !== undefined) notes.push(`Converted from ${outcome.convertedFrom}.`)
-  if (outcome.resized !== undefined)
-    notes.push(
-      `Resized from ${outcome.resized.from.width}x${outcome.resized.from.height} to ${outcome.resized.to.width}x${outcome.resized.to.height}.`,
-    )
-  if (outcome.orientation !== 1) notes.push(`Normalized orientation ${outcome.orientation}.`)
-  const message = notes.join(' ')
   return {
-    content: [
-      Prompt.filePart({ mediaType: outcome.mimeType, data: output }),
-      Prompt.textPart({ text: message }),
-    ],
-    structuredOutput: outcome,
-    diagnostics: [{ severity: 'info', code: 'image', message }],
+    ...output,
+    structuredOutput: {
+      ...output.structuredOutput,
+      kind: 'image',
+      path,
+      fileBytes: size.toString(),
+    },
   } satisfies ToolResult.Output<Outcome>
 })

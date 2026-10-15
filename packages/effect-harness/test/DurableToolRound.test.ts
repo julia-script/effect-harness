@@ -1,3 +1,4 @@
+import * as ResultEntry from '../src/internal/ToolResultEntry.js'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { assert, describe, it } from '@effect/vitest'
@@ -34,7 +35,6 @@ import * as Fiber from 'effect/Fiber'
 import * as Cause from 'effect/Cause'
 import * as Registry from '../src/Registry.js'
 import * as ToolWrapper from '../src/ToolWrapper.js'
-import * as ToolResult from '../src/ToolResult.js'
 import { StorageError } from '../src/StorageError.js'
 import * as ProgressInternal from '../src/internal/ToolProgress.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
@@ -174,7 +174,7 @@ describe('durable native tool rounds', () => {
             assert.strictEqual(new Set(childIds).size, 2)
             const wire = parent.state.checkpoint as Schema.JsonObject
             const round = yield* Session.commit(runtime.session, (tx) =>
-              Round.read(tx, root, Schema.decodeUnknownSync(Schema.String)(wire.roundKey)),
+              Round.receipt(tx, root, Schema.decodeUnknownSync(Schema.String)(wire.roundKey)),
             )
             assert.isUndefined(round.slots[0]?.result)
             assert.strictEqual(round.slots[1]?.receipt?.status, 'succeeded')
@@ -192,7 +192,7 @@ describe('durable native tool rounds', () => {
             assert.strictEqual(progress.output.text, 'last 😀\n')
             assert.isTrue(progress.output.truncated)
             const finalRound = yield* Session.commit(runtime.session, (tx) =>
-              Round.read(tx, root, Schema.decodeUnknownSync(Schema.String)(wire.roundKey)),
+              Round.receipt(tx, root, Schema.decodeUnknownSync(Schema.String)(wire.roundKey)),
             )
             assert.isTrue(finalRound.applied)
             assert.deepStrictEqual(
@@ -235,7 +235,7 @@ describe('durable native tool rounds', () => {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(context)))
                 .minimumReaderVersion,
-              9,
+              11,
             )
           }),
         ).pipe(Effect.provide(NodeServices.layer)),
@@ -308,7 +308,7 @@ describe('durable native tool rounds', () => {
             assert.strictEqual(secondRuns, 0)
             const parent = records.find((record) => record.kind === 'harness.run')!
             const round = yield* Session.commit(runtime.session, (tx) =>
-              Round.read(
+              Round.receipt(
                 tx,
                 root,
                 Schema.decodeUnknownSync(Schema.Struct({ roundKey: Schema.String }))(
@@ -388,7 +388,7 @@ describe('durable native tool rounds', () => {
           assert.strictEqual(secondRuns, 0)
           assert.strictEqual(requests, 2)
           const round = yield* Session.commit(runtime.session, (tx) =>
-            Round.read(
+            Round.receipt(
               tx,
               root,
               Schema.decodeUnknownSync(Schema.Struct({ roundKey: Schema.String }))(
@@ -472,7 +472,7 @@ describe('durable native tool rounds', () => {
         assert.strictEqual(requests, 2)
         const parent = tasks.find((task) => task.kind === 'harness.run')!
         const round = yield* Session.commit(runtime.session, (tx) =>
-          Round.read(
+          Round.receipt(
             tx,
             root,
             Schema.decodeUnknownSync(Schema.Struct({ roundKey: Schema.String }))(
@@ -536,7 +536,7 @@ describe('durable native tool rounds', () => {
           assert.strictEqual((yield* runtime.backend.wait(job.id)).status, 'unanswered')
           assert.strictEqual(secondRuns, 0)
           const round = yield* Session.commit(runtime.session, (tx) =>
-            Round.read(
+            Round.receipt(
               tx,
               root,
               Schema.decodeUnknownSync(Schema.Struct({ roundKey: Schema.String }))(
@@ -1298,12 +1298,7 @@ describe('durable native tool rounds', () => {
           const entry = (yield* Session.scanEntries(runtime.session, { conversationId: root }).pipe(
             Stream.runCollect,
           )).find((entry) => entry.kind === 'tool.result')!
-          assert.strictEqual(
-            (yield* Schema.decodeUnknownEffect(Schema.toCodecJson(ToolResult.ResultSchema))(
-              entry.data,
-            )).structuredOutput,
-            'after:2',
-          )
+          assert.strictEqual((yield* ResultEntry.read(entry)).structuredOutput, 'after:2')
         }),
       ).pipe(Effect.provide(Storage.layerMemory)),
   )
@@ -1685,7 +1680,7 @@ describe('durable native tool rounds', () => {
                   3,
                 )
                 const round = yield* Session.commit(next.session, (tx) =>
-                  Round.read(
+                  Round.receipt(
                     tx,
                     root,
                     `tool-round:${parent.id}:${Schema.decodeUnknownSync(Round.InputSchema)(tasks.find((task) => task.id === ids[0])!.input).preparation.requestId}`,

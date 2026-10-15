@@ -1,3 +1,4 @@
+import * as ToolResultEntry from './internal/ToolResultEntry.js'
 /** Immutable, bounded canonical context. This module performs no model or tool execution. */
 import * as Prompt from 'effect/ai/Prompt'
 import * as Effect from 'effect/Effect'
@@ -12,6 +13,17 @@ import * as Value from './internal/DocumentValue.js'
 
 export { ContextProjectionError } from './ContextProjectionError.js'
 export type { Failure } from './ContextProjectionError.js'
+
+/**
+ * Decode an entry's original native messages before context edits or tool-pair repair.
+ * Tool-result messages are reconstructed from their canonical stored content.
+ */
+export const messages = (
+  entry: Record.Entry,
+): Effect.Effect<ReadonlyArray<Prompt.Message>, Schema.SchemaError> =>
+  entry.kind === 'tool.result'
+    ? ToolResultEntry.messages(entry)
+    : Schema.decodeEffect(Schema.Array(Schema.toCodecJson(Prompt.Message)))(entry.model ?? [])
 
 /** Ordered declarative state; tool handlers and service environments are never serialized. */
 export const SectionSchema = Schema.Struct({ key: Schema.NonEmptyString, text: Schema.String })
@@ -166,7 +178,9 @@ export const project = Effect.fnUntraced(function* (
         else tools.set(change.declaration.name, change.declaration)
       }
     }
-    const raw = edit?._tag === 'replace' ? edit.messages : (entry.model ?? [])
+    // Inspect durable stop markers before the native message codec discards extra fields.
+    const original = entry.kind === 'tool.result' ? yield* messages(entry) : (entry.model ?? [])
+    const raw = edit?._tag === 'replace' ? edit.messages : original
     const eligible = raw.filter(
       (message) =>
         !excludedAssistant(message) && !(fact?.assistantStopReason && isAssistant(message)),

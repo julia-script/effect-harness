@@ -172,23 +172,12 @@ describe('durable semantic replica', () => {
               latest,
             )
             assert.strictEqual(latest.value.nested.length, 2)
-            assert.strictEqual(latest.value.nested[0]!.availability, 'available')
-            assert.strictEqual(latest.value.nested[0]!.receipts[0]!.result.valueKind, 'content')
-            const receipt = latest.value.nested[0]!.receipts[0]!
-            if (receipt.result.valueKind === 'content')
-              assert.strictEqual(receipt.result.structuredOutput, 'public-actual-nested')
-            assert.notProperty(receipt, 'legacyValue')
-            assert.notProperty(receipt.result, 'control')
-            const mediaReceipt = latest.value.nested[1]!.receipts[0]!
-            assert.strictEqual(mediaReceipt.result.valueKind, 'content')
-            if (mediaReceipt.result.valueKind !== 'content')
-              return yield* Effect.die('Native media required')
-            const file = yield* Schema.decodeUnknownEffect(Prompt.FilePart)(
-              mediaReceipt.result.structuredOutput,
-            )
-            assert.deepStrictEqual(file.data, new Uint8Array([3, 8, 13]))
-            assert.notProperty(mediaReceipt, 'legacyValue')
-            assert.notProperty(mediaReceipt.result, 'control')
+            for (const nested of latest.value.nested) {
+              assert.strictEqual(nested.availability, 'unavailable')
+              assert.strictEqual(nested.receipts[0]?.status, 'succeeded')
+              assert.isUndefined(nested.receipts[0]?.result)
+              assert.notProperty(nested.receipts[0]!, 'legacyValue')
+            }
             assert.isTrue(
               latest.value.progress.some((item) =>
                 JSON.stringify(item.value).includes('retained native output'),

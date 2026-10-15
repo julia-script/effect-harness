@@ -922,12 +922,12 @@ it.live(
     ).pipe(Effect.provide([Storage.layerMemory, plain])),
 )
 
-/** Unchanged reader3 validation rules from approved27b7b979 Metadata.ts, before domain rows. */
-const priorReader3 = Effect.fnUntraced(function* (metadata: {
+/** Reader10 validation rules from b3e650f77 Metadata.ts, before domain rows. */
+const priorReader10 = Effect.fnUntraced(function* (metadata: {
   format: number
   minimumReader?: number
 }) {
-  if (metadata.format > 3 || (metadata.minimumReader ?? 1) > 3)
+  if (metadata.format > 10 || (metadata.minimumReader ?? 1) > 10)
     return yield* new Storage.StorageError({
       reason: 'unsupportedFormat',
       operation: 'metadata',
@@ -950,7 +950,7 @@ const priorReader3 = Effect.fnUntraced(function* (metadata: {
 
 for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
   it.live(
-    `${backend}: format4 persists before grouped facts and unchanged reader3 refuses before replay`,
+    `${backend}: format11 persists before grouped facts and unchanged reader10 refuses before replay`,
     () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -970,17 +970,17 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
           const saved = yield* harness.submission(draft.id)
           assert.strictEqual((yield* Submission.wait(saved))._tag, 'WriteDone')
           const marker = yield* Format.inspect.pipe(Effect.provideContext(context))
-          assert.deepStrictEqual(marker, { formatVersion: 4, minimumReaderVersion: 4 })
+          assert.deepStrictEqual(marker, { formatVersion: 11, minimumReaderVersion: 11 })
           assert.strictEqual(
-            (yield* priorReader3({
+            (yield* priorReader10({
               format: marker.formatVersion,
               minimumReader: marker.minimumReaderVersion,
             }).pipe(Effect.flip)).reason,
             'unsupportedFormat',
           )
-          for (const version of [1, 2, 3])
+          for (const version of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
             assert.strictEqual(
-              (yield* priorReader3({ format: version, minimumReader: version })).format,
+              (yield* priorReader10({ format: version, minimumReader: version })).format,
               version,
             )
           if (backend === 'jsonl') {
@@ -988,17 +988,26 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               (yield* disk.fs.readFileString(`${disk.directory}/submissions.jsonl`))
                 .trim()
                 .split('\n'),
-              (line) => Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(line),
+              (line) =>
+                Schema.decodeEffect(
+                  Schema.fromJsonString(
+                    Schema.Struct({
+                      metadata: Schema.Struct({ format: Schema.Finite }),
+                      rows: Schema.Array(Schema.Struct({ id: Schema.Finite })),
+                    }),
+                  ),
+                )(line),
             )
-            const upgrade = frames.findIndex(
-              (frame) =>
-                frame !== null &&
-                typeof frame === 'object' &&
-                !Array.isArray(frame) &&
-                JSON.stringify(frame).includes('"format":4'),
-            )
+            const upgrade = frames.findIndex((frame) => frame.metadata.format === 11)
+            const documents = yield* Context.get(context, Storage.Storage)
+              .scanDocuments({
+                scope: { _tag: 'conversation', conversationId: root },
+                kind: 'harness.contextProtocol',
+              })
+              .pipe(Stream.runCollect)
+            assert.lengthOf(documents, 1)
             const protocol = frames.findIndex((frame) =>
-              JSON.stringify(frame).includes('harness.contextProtocol'),
+              frame.rows.some((row) => row.id === documents[0]!.id),
             )
             assert.isTrue(upgrade >= 0 && upgrade < protocol)
           }

@@ -219,7 +219,7 @@ it.effect(
         assert.strictEqual(yield* second.mintId(), 3)
         assert.strictEqual((yield* first.commit([]).pipe(Effect.flip)).reason, 'closed')
         assert.deepEqual(yield* Format.inspect.pipe(Effect.provide(Storage.layerMemory)), legacy)
-        yield* access.save([], { format: 11, minimumReader: 11, nextId: 4, nextSeq: 1 })
+        yield* access.save([], { format: 12, minimumReader: 12, nextId: 4, nextSeq: 1 })
         assert.strictEqual(
           (yield* Kernel.make(access).pipe(Effect.flip)).reason,
           'unsupportedFormat',
@@ -317,8 +317,8 @@ for (const backend of ['sqlite', 'jsonl'] as const)
 for (const marker of [
   { format: 7, minimumReader: 2 },
   { format: 2, minimumReader: 7 },
-  { format: 11, minimumReader: 2 },
-  { format: 2, minimumReader: 11 },
+  { format: 12, minimumReader: 2 },
+  { format: 2, minimumReader: 12 },
 ])
   it.live(
     `rejects JSONL mismatched or future marker ${JSON.stringify(marker)} before decoding domain rows, preserving bytes`,
@@ -340,7 +340,7 @@ for (const marker of [
           if (error instanceof Storage.StorageError)
             assert.strictEqual(
               error.reason,
-              marker.format > 10 || marker.minimumReader > 10 ? 'unsupportedFormat' : 'corrupt',
+              marker.format > 11 || marker.minimumReader > 11 ? 'unsupportedFormat' : 'corrupt',
             )
           assert.strictEqual(yield* fs.readFileString(filename), bytes)
         }),
@@ -360,12 +360,12 @@ it.live(
           for (const [version, reader] of [
             [7, 2],
             [2, 7],
-            [11, 2],
-            [2, 11],
+            [12, 2],
+            [2, 12],
           ] as const) {
             yield* sql`UPDATE effect_harness_metadata SET format=${version},minimum_reader=${reader}`
             const before = yield* sql`SELECT * FROM effect_harness_metadata`
-            const reason = version > 10 || reader > 10 ? 'unsupportedFormat' : 'corrupt'
+            const reason = version > 11 || reader > 11 ? 'unsupportedFormat' : 'corrupt'
             const failed = yield* format.requireSupportedFormat(current).pipe(Effect.flip)
             assert.instanceOf(failed, Storage.StorageError)
             if (failed instanceof Storage.StorageError) assert.strictEqual(failed.reason, reason)
@@ -391,6 +391,7 @@ for (const failure of ['partial', 'synced-but-reported-failed'] as const)
         }).pipe(Effect.provide(Storage.layerJsonl({ filePath: filename })))
         const original = yield* fs.readFileString(filename)
         const fault = yield* fs.readFile(`${filename}.missing`).pipe(Effect.flip)
+        let armed = false
         const injected: FileSystem.FileSystem = {
           ...fs,
           open: (path, options) =>
@@ -401,16 +402,18 @@ for (const failure of ['partial', 'synced-but-reported-failed'] as const)
                   failure === 'partial'
                     ? file.writeAll(bytes.subarray(0, 12)).pipe(Effect.andThen(Effect.fail(fault)))
                     : file.writeAll(bytes),
-                sync:
-                  failure === 'synced-but-reported-failed'
+                sync: Effect.suspend(() =>
+                  armed && failure === 'synced-but-reported-failed' && path === filename
                     ? file.sync.pipe(Effect.andThen(Effect.fail(fault)))
                     : file.sync,
+                ),
               })),
             ),
         }
         yield* Effect.gen(function* () {
           const storage = yield* Storage.Storage
           const format = yield* Format.StorageFormat
+          armed = true
           const failed = yield* format.requireSupportedFormat(current).pipe(Effect.flip)
           assert.instanceOf(failed, Storage.StorageError)
           if (failed instanceof Storage.StorageError) assert.strictEqual(failed.reason, 'uncertain')
@@ -442,6 +445,7 @@ it.live('interruption during JSONL sync cannot expose a partially activated in-m
       const { fs, filename } = yield* fixture
       const syncing = yield* Deferred.make<void>()
       const release = yield* Deferred.make<void>()
+      let armed = false
       const injected: FileSystem.FileSystem = {
         ...fs,
         open: (path, options) =>
@@ -449,15 +453,20 @@ it.live('interruption during JSONL sync cannot expose a partially activated in-m
             Effect.map((file) => ({
               ...file,
               writeAll: (bytes) => file.writeAll(bytes),
-              sync: Deferred.succeed(syncing, undefined).pipe(
-                Effect.andThen(Deferred.await(release)),
-                Effect.andThen(file.sync),
+              sync: Effect.suspend(() =>
+                !armed || path !== filename
+                  ? file.sync
+                  : Deferred.succeed(syncing, undefined).pipe(
+                      Effect.andThen(Deferred.await(release)),
+                      Effect.andThen(file.sync),
+                    ),
               ),
             })),
           ),
       }
       yield* Effect.gen(function* () {
         const format = yield* Format.StorageFormat
+        armed = true
         const fiber = yield* Effect.forkChild(format.requireSupportedFormat(current))
         yield* Deferred.await(syncing)
         const interrupt = yield* Effect.forkChild(Fiber.interrupt(fiber), {

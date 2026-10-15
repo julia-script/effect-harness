@@ -47,6 +47,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
             const denied = yield* fs.makeTempDirectoryScoped({ prefix: 'runtime-denied-' })
             const extension = backend === 'sqlite' ? 'sqlite' : 'jsonl'
             yield* fs.copyFile(`${directory}/store.${extension}`, `${denied}/store.${extension}`)
+            if (backend === 'jsonl')
+              yield* fs.copy(`${directory}/store.jsonl.parts`, `${denied}/store.jsonl.parts`)
             yield* fs.copyFile(`${directory}/manifest.json`, `${denied}/manifest.json`)
             yield* child(denied, 'prepare-denial')
             for (const phase of ['missing', 'version'] as const) yield* child(denied, phase)

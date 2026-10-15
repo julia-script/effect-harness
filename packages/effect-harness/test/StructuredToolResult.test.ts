@@ -1,3 +1,4 @@
+import * as ResultEntry from '../src/internal/ToolResultEntry.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { NodeServices } from '@effect/platform-node'
 import { assert, describe, it } from '@effect/vitest'
@@ -32,7 +33,6 @@ const finish = {
   response: undefined,
 }
 const text = (value: string) => [Prompt.textPart({ text: value })]
-const encodedResult = Schema.toCodecJson(ToolResult.ResultSchema)
 const toolkit = Toolkit.make(
   Tool.makeResult('work', {
     success: Schema.Struct({ count: Schema.Finite }),
@@ -122,13 +122,16 @@ describe('independent tool result channels', () => {
           assert.strictEqual(observed, 'redacted caption')
           assert.deepEqual(receipt?.structuredOutput, { count: 7 })
           assert.deepEqual(receipt?.details, { ui: 'private panel' })
-          const restored = yield* Schema.decodeUnknownEffect(encodedResult)(persisted?.data)
+          const restored = yield* ResultEntry.read(persisted!)
           assert.deepEqual(restored, completed[0])
           assert.deepEqual(restored.structuredOutput, { count: 7 })
           assert.deepEqual(restored.details, { ui: 'private panel' })
           assert.deepEqual(restored.content, text('redacted caption'))
-          assert.notInclude(JSON.stringify(persisted?.model), 'private panel')
-          assert.notInclude(JSON.stringify(persisted?.model), 'count')
+          assert.notInclude(
+            JSON.stringify(yield* ResultEntry.messages(persisted!)),
+            'private panel',
+          )
+          assert.notInclude(JSON.stringify(yield* ResultEntry.messages(persisted!)), 'count')
         }),
       ),
   )
@@ -150,7 +153,7 @@ describe('independent tool result channels', () => {
         )
         assert.strictEqual(settled.status, 'done')
         assert.strictEqual(observed, 'Please try again')
-        const result = yield* Schema.decodeUnknownEffect(encodedResult)(persisted?.data)
+        const result = yield* ResultEntry.read(persisted!)
         assert.isTrue(result.isError)
         assert.deepEqual(result.structuredOutput, { reason: 'private domain reason' })
         assert.deepEqual(result.details, { ui: 'retry button' })
@@ -200,7 +203,7 @@ describe('independent tool result channels', () => {
           ),
         )
         assert.strictEqual(omitted.settled.status, 'done')
-        const absent = yield* Schema.decodeUnknownEffect(encodedResult)(omitted.persisted?.data)
+        const absent = yield* ResultEntry.read(omitted.persisted!)
         assert.isFalse(Object.hasOwn(absent, 'structuredOutput'))
       }),
     ),
@@ -219,7 +222,7 @@ describe('independent tool result channels', () => {
         )
         assert.strictEqual(fallback.settled.status, 'done')
         assert.strictEqual(fallback.observed, '')
-        const present = yield* Schema.decodeUnknownEffect(encodedResult)(fallback.persisted?.data)
+        const present = yield* ResultEntry.read(fallback.persisted!)
         assert.isTrue(Object.hasOwn(present, 'structuredOutput'))
         assert.isNull(present.structuredOutput)
       }),
@@ -247,7 +250,7 @@ describe('independent tool result channels', () => {
           ),
         )
         assert.strictEqual(settled.status, 'done')
-        const result = yield* Schema.decodeUnknownEffect(encodedResult)(persisted?.data)
+        const result = yield* ResultEntry.read(persisted!)
         assert.deepEqual(result.structuredOutput, { count: 9 })
         assert.deepEqual(result.details, { panel: 'replacement' })
       }),
@@ -274,8 +277,34 @@ describe('independent tool result channels', () => {
         )
         assert.strictEqual(settled.status, 'done')
         assert.strictEqual(observed, 'visible result')
-        const result = yield* Schema.decodeUnknownEffect(encodedResult)(persisted?.data)
+        const result = yield* ResultEntry.read(persisted!)
         assert.deepEqual(result.details, privateEnvelope)
+      }),
+    ),
+  )
+
+  it.effect('matching content envelopes preserve additional detail fields', () =>
+    memory(
+      Effect.gen(function* () {
+        const content = text('shared content')
+        const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.Envelope))({
+          _tag: '@effect-harness/ToolContent',
+          content,
+        })
+        const details = {
+          ...(yield* Schema.decodeUnknownEffect(Schema.JsonObject)(encoded)),
+          panel: 'private metadata',
+        }
+        const { observed, settled, persisted } = yield* execute(toolkit).pipe(
+          Effect.provide(
+            toolkit.toLayer({
+              work: () => Effect.succeed({ content, structuredOutput: { count: 1 }, details }),
+            }),
+          ),
+        )
+        assert.strictEqual(settled.status, 'done')
+        assert.strictEqual(observed, 'shared content')
+        assert.deepStrictEqual((yield* ResultEntry.read(persisted!)).details, details)
       }),
     ),
   )
@@ -301,7 +330,7 @@ describe('independent tool result channels', () => {
           ),
         )
         assert.strictEqual(settled.status, 'done')
-        const result = yield* Schema.decodeUnknownEffect(encodedResult)(persisted?.data)
+        const result = yield* ResultEntry.read(persisted!)
         assert.isFalse(Object.hasOwn(result, 'structuredOutput'))
         assert.isFalse(Object.hasOwn(result, 'details'))
       }),
@@ -327,7 +356,7 @@ describe('independent tool result channels', () => {
           Effect.provideService(Codec, 'codec'),
         )
         assert.strictEqual(result.settled.status, 'done')
-        const restored = yield* Schema.decodeUnknownEffect(encodedResult)(result.persisted?.data)
+        const restored = yield* ResultEntry.read(result.persisted!)
         const decoded = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(schema))(
           restored.structuredOutput,
         ).pipe(Effect.provideService(Codec, 'codec'))
@@ -439,7 +468,7 @@ describe('independent tool result channels', () => {
           Stream.runCollect,
         )
         const saved = entries.find((entry) => entry.kind === 'tool.result')
-        const restored = yield* Schema.decodeUnknownEffect(encodedResult)(saved?.data)
+        const restored = yield* ResultEntry.read(saved!)
         assert.deepEqual(recoveredResults, [restored])
         assert.deepEqual(restored.content, visible)
         assert.deepEqual(restored.structuredOutput, { count: 3 })

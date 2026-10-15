@@ -23,6 +23,8 @@ import * as Protocol from './ContextProtocol.js'
 import * as Projection from '../ContextProjection.js'
 import * as Round from './ToolRound.js'
 import * as Run from './RunState.js'
+import * as Request from './RequestRecord.js'
+import * as ResultEntry from './ToolResultEntry.js'
 import * as Nested from './NestedInvocation.js'
 import * as NestedState from './NestedObservationState.js'
 import * as Supervisor from './SubagentTask.js'
@@ -50,6 +52,7 @@ const conversationKinds = new Set([
   NestedState.document.definition.kind,
 ])
 const taskKinds = new Set([
+  Request.document.definition.kind,
   Nested.calls.definition.kind,
   Nested.results.definition.kind,
   'harness.subagent.slots',
@@ -241,21 +244,23 @@ export const project = Effect.fnUntraced(function* (facts: Facts) {
             assistant: saved.round.assistant,
             mode: saved.round.mode,
             applied: saved.round.applied,
-            slots: saved.round.slots.map((slot) => ({
-              callId: slot.call.id,
-              name: slot.call.name,
-              ...(slot.taskId === undefined ? {} : { taskId: slot.taskId }),
-              ...(slot.entryId === undefined ? {} : { entryId: slot.entryId }),
-              ...(slot.receipt === undefined ? {} : { status: slot.receipt.status }),
-              ...(slot.result === undefined
-                ? {}
-                : {
-                    result: ToolResult.nested(
-                      slot.result,
-                      slot.result.structuredOutput !== undefined,
-                    ),
-                  }),
-            })),
+            slots: yield* Effect.forEach(saved.round.slots, (slot) =>
+              Effect.gen(function* () {
+                const entry =
+                  slot.entryId === undefined ? undefined : facts.entries.get(slot.entryId)
+                const result = entry === undefined ? slot.result : yield* ResultEntry.read(entry)
+                return {
+                  callId: slot.call.id,
+                  name: slot.call.name,
+                  ...(slot.taskId === undefined ? {} : { taskId: slot.taskId }),
+                  ...(slot.entryId === undefined ? {} : { entryId: slot.entryId }),
+                  ...(slot.receipt === undefined ? {} : { status: slot.receipt.status }),
+                  ...(result === undefined
+                    ? {}
+                    : { result: ToolResult.nested(result, result.structuredOutput !== undefined) }),
+                }
+              }),
+            ),
           })
         break
       }
@@ -273,19 +278,20 @@ export const project = Effect.fnUntraced(function* (facts: Facts) {
               (r) => r.taskId === saved.receipt!.taskId && r.attempt === saved.receipt!.attempt,
             )
           )
-            nestedReceipts.push(Struct.omit(saved.receipt, ['legacyValue']))
+            nestedReceipts.push(saved.receipt)
         }
         break
       }
       case 'harness.tool.nested.result': {
         const saved = yield* decode(Nested.results.definition.schema, doc)
-        if (
-          saved.receipt !== undefined &&
-          !nestedReceipts.some(
-            (r) => r.taskId === saved.receipt!.taskId && r.attempt === saved.receipt!.attempt,
+        if (saved.receipt !== undefined) {
+          const receipt = Struct.omit(saved.receipt, ['legacyValue'])
+          const index = nestedReceipts.findIndex(
+            (r) => r.taskId === receipt.taskId && r.attempt === receipt.attempt,
           )
-        )
-          nestedReceipts.push(Struct.omit(saved.receipt, ['legacyValue']))
+          if (index < 0) nestedReceipts.push(receipt)
+          else nestedReceipts[index] = receipt
+        }
         break
       }
       default:
@@ -335,7 +341,32 @@ export const project = Effect.fnUntraced(function* (facts: Facts) {
       })
     }
     if (task.kind === 'harness.run' && task.version === 1 && task.state.checkpoint !== undefined) {
-      const state = yield* Run.decode(task.state.checkpoint)
+      const stored = yield* Run.decodeStored(task.state.checkpoint)
+      const state = yield* Run.hydrate(stored, (ref) =>
+        Effect.gen(function* () {
+          const doc = docs.find(
+            (doc) =>
+              doc.record.kind === Request.document.definition.kind &&
+              doc.record.scope._tag === 'task' &&
+              doc.record.scope.taskId === ref.ownerTaskId &&
+              doc.record.key === ref.requestId,
+          )
+          if (doc === undefined)
+            return yield* new ObservationError({
+              reason: 'projection',
+              operation: 'view.request',
+              message: 'Prepared request document is absent',
+            })
+          const saved = yield* decode(Request.document.definition.schema, doc)
+          if (saved.request === undefined)
+            return yield* new ObservationError({
+              reason: 'projection',
+              operation: 'view.request',
+              message: 'Prepared request value is absent',
+            })
+          return Request.restore(saved.request)
+        }),
+      )
       generations.push({
         taskId: task.id,
         phase: state.phase,
@@ -365,11 +396,13 @@ export const project = Effect.fnUntraced(function* (facts: Facts) {
       })
     }
     if (task.kind === 'harness.tool.nested' && task.version === 1) {
-      const input = yield* Schema.decodeEffect(Schema.toCodecJson(Nested.InputSchema))(task.input)
+      const input = yield* Schema.decodeEffect(Schema.toCodecJson(Nested.ReferenceSchema))(
+        task.input,
+      )
       const receipts = nestedReceipts.filter((r) => r.taskId === task.id)
       let availability: View.Value['nested'][number]['availability'] =
         task.state.status === 'terminal' ? 'unavailable' : 'pending'
-      if (receipts.length > 0) availability = 'available'
+      if (receipts.some((receipt) => receipt.result !== undefined)) availability = 'available'
       nested.push({
         taskId: task.id,
         parentTaskId: input.parentTaskId,

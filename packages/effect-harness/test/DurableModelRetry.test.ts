@@ -1,3 +1,4 @@
+import * as RequestRecord from '../src/internal/RequestRecord.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import { SqliteClient } from '@effect/sql-sqlite-node'
@@ -232,7 +233,7 @@ const checkpoint = Schema.Struct({
   until: Schema.Finite,
   attempt: Usage.AttemptId,
   retries: Schema.Finite,
-  preparation: Schema.toCodecJson(Prepared.SnapshotSchema),
+  preparation: RequestRecord.ReferenceSchema,
 })
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
@@ -302,7 +303,10 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
               assert.strictEqual(saved.until, admittedAt + 200)
               assert.strictEqual(saved.attempt, 1)
               assert.strictEqual(saved.retries, 1)
-              assert.deepEqual(saved.preparation, requests[0])
+              assert.deepEqual(
+                yield* RequestRecord.get(first.session, saved.preparation),
+                requests[0],
+              )
               assert.strictEqual(
                 (yield* Session.usage(first.session, root)).models[0]?.tokens.input,
                 3,
