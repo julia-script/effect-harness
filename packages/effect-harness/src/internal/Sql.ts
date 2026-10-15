@@ -286,10 +286,14 @@ export const make = Effect.gen(function* () {
   ) {
     // One statement gives headers and revisions the same snapshot, including during retirement.
     const direction = sql.literal(order === 'ascending' ? 'ASC' : 'DESC')
+    const revisionSequence = sql.onDialectOrElse({
+      sqlite: () => sql`CAST(v.seq AS TEXT)`,
+      orElse: () => sql`v.seq`,
+    })
     const joined = yield* io(
       'read',
       sql`SELECT r.id, r.category, r.payload,
-      v.seq AS revision_seq, v.content AS revision_content FROM (${query}) r
+      ${revisionSequence} AS revision_seq, v.content AS revision_content FROM (${query}) r
       LEFT JOIN ${revisionsTable} v ON v.document_id = r.id
       ORDER BY r.id ${direction}, v.seq ASC`,
     )
