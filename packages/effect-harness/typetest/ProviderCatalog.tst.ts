@@ -9,6 +9,8 @@ import type * as Instance from 'effect-harness/ProviderInstance'
 import * as Codex from 'effect-harness/provider-openai-codex/Provider'
 import * as Claude from 'effect-harness/provider-anthropic/Provider'
 import * as Compatible from 'effect-harness/provider-openai-compatible/Provider'
+import type * as OpenRouter from 'effect-harness/provider-openrouter/Provider'
+import type * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
 import * as CodexAuth from 'effect-harness/provider-openai-codex/OAuth'
 import type * as Login from 'effect-harness/provider-auth/Login'
@@ -56,4 +58,21 @@ test('gateway factory infers custom config while reusing typed model settings', 
     readonly host: string
     readonly region: string
   }>()
+})
+
+declare const router: Providers.Service<{ openrouter: typeof OpenRouter.definition }>
+declare const routerKey: Redacted.Redacted<string>
+declare const routerId: Instance.Id<'openrouter'>
+test('OpenRouter requires no endpoint or metadata config and retains typed API-key secrets', () => {
+  expect(
+    router.add({
+      provider: 'openrouter',
+      label: 'OpenRouter',
+      config: {},
+      secrets: { apiKey: routerKey },
+    }),
+  ).type.toBeAssignableTo<Effect.Effect<unknown, unknown>>()
+  expect(router.update(routerId, { secrets: { accessToken: routerKey } })).type.toRaiseError()
+  const listing = router.models.list({ instanceId: routerId })
+  expect<Effect.Services<typeof listing>>().type.toBe<HttpClient.HttpClient>()
 })

@@ -147,6 +147,57 @@ batch, with each image group identified by its original call ID. This preserves
 the tool-call/result ordering required by Chat Completions. Unsupported tool media,
 such as PDFs, fail explicitly before HTTP dispatch.
 
+### OpenRouter
+
+`provider-openrouter/Provider.definition` is ready to register: its endpoint,
+OpenRouter reasoning format, and public catalog discovery are already configured.
+Add instances with `config: {}` and optional API-key secrets:
+
+```ts
+import * as Effect from 'effect/Effect'
+import type * as Redacted from 'effect/Redacted'
+import * as Providers from 'effect-harness/Providers'
+import * as OpenRouter from 'effect-harness/provider-openrouter/Provider'
+
+const connectOpenRouter = (apiKey: Redacted.Redacted<string>) =>
+  Effect.gen(function* () {
+    const providers = yield* Providers.make({
+      definitions: { openrouter: OpenRouter.definition },
+    })
+    const account = yield* providers.add({
+      provider: 'openrouter',
+      label: 'OpenRouter',
+      config: {},
+      secrets: { apiKey },
+    })
+    const page = yield* providers.models.list({ instanceId: account.id, limit: 20 })
+    return { providers, account, page }
+  })
+```
+
+Provide `ProviderStore`, `CredentialStore`, and `HttpClient` as described above.
+Omit `secrets` to browse before authentication, then update the instance with the
+API key. Multiple accounts use the same definition and separate instances.
+
+Discovery uses OpenRouter's public [`/models` and `/model/{author}/{slug}` APIs](https://openrouter.ai/docs/guides/overview/models).
+Listing fetches text-output models and applies search and pagination locally;
+detail lookup fetches only the requested model. Neither operation reads credentials.
+Aliases and routing suffixes retain the requested ID when constructing inference requests.
+The `provider-openrouter/Catalog` module also exposes standalone `list` and `get` Effects.
+
+Capabilities, context/output limits, base token pricing, and
+[effort choices](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
+come from live metadata. Omitted effort support stays unavailable; a null effort
+list accepts OpenRouter's documented gateway efforts. Mandatory reasoning removes
+`none`; models with reasoning disabled by default remain disabled until an effort
+is selected. Defaults are applied only when compatible with that state.
+Token-budget reasoning is not exposed by the compatible transport.
+
+Pricing uses OpenRouter's USD-per-token units directly. Negative dynamic-price
+sentinels remain unknown. These are base input/output estimates, excluding cache
+discounts, request charges, routing differences, and conditional price overrides;
+they are not billing quotes. Discovery is lazy and has no global cache.
+
 `ModelCatalog.cached(source, { capacity, timeToLive })` captures discovery services
 without fetching and shares concurrent successful lookups. Create a separate cache
 for each instance revision and endpoint; `invalidate` clears pages and details.
