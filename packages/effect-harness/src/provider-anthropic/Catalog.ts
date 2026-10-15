@@ -5,39 +5,13 @@ import * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as ModelInfo from '../ModelInfo.js'
-import * as Provider from '../Provider.js'
+import type * as Provider from '../Provider.js'
 import { ModelCatalogError } from '../ModelCatalogError.js'
 import * as Http from '../internal/SubscriptionHttp.js'
 import * as Native from './OAuthLanguageModel.js'
-
-/**
- * OAuth-compatible inventory, verified 2026-10-14 against the model overview and effort guide:
- * https://platform.claude.com/docs/en/models/overview
- * https://platform.claude.com/docs/en/build-with-claude/effort
- * Adaptive-only controls reflect the transport's safe thinking-history policy.
- * These declarations do not assert subscription/account availability.
- */
-export const models: ReadonlyArray<ModelInfo.ModelInfo> = (
-  [
-    ['claude-fable-5-1', 'Claude Fable 5.1', 'high'],
-    ['claude-opus-5-5', 'Claude Opus 5.5', 'medium'],
-    ['claude-sonnet-5-5', 'Claude Sonnet 5.5', 'high'],
-    ['claude-haiku-5-5', 'Claude Haiku 5.5', 'medium'],
-  ] as const
-).map(([id, name, defaultEffort]) => ({
-  id,
-  name,
-  contextWindow: 1_000_000,
-  maxOutputTokens: 128_000,
-  capabilities: { tools: true, reasoning: true, images: true, structuredOutput: false },
-  reasoning: {
-    effort: { values: ['low', 'medium', 'high', 'xhigh', 'max'], default: defaultEffort },
-    thinking: { modes: ['adaptive'] },
-  },
-}))
-
-/** Subscription discovery is local; it never sends OAuth tokens to the Models API. */
-export const bundled = () => Provider.fromModels(models)
+import * as OAuth from './OAuth.js'
+import * as Resolver from '../provider-auth/Resolver.js'
+import { toAiError } from '../provider-auth/AuthError.js'
 
 const Support = Schema.Struct({ supported: Schema.Boolean })
 const Capabilities = Schema.Struct({
@@ -81,13 +55,14 @@ const Page = Schema.Struct({
 
 export interface ApiKeyOptions {
   readonly apiKey: Redacted.Redacted<string>
-  /** API base, default https://api.anthropic.com/v1. */
+  /** API origin, default https://api.anthropic.com. */
   readonly apiUrl?: string
   readonly apiVersion?: string
 }
 
 const request = Effect.fnUntraced(function* (
-  options: ApiKeyOptions,
+  options: Pick<ApiKeyOptions, 'apiUrl' | 'apiVersion'>,
+  headers: Readonly<Record<string, string>>,
   path: string,
   input?: Provider.ListOptions,
 ) {
@@ -99,10 +74,10 @@ const request = Effect.fnUntraced(function* (
     })
   const client = yield* HttpClient.HttpClient
   let request = HttpClientRequest.get(
-    `${(options.apiUrl ?? 'https://api.anthropic.com/v1').replace(/\/$/, '')}${path}`,
+    `${(options.apiUrl ?? 'https://api.anthropic.com').replace(/\/$/, '')}/v1${path}`,
   ).pipe(
     HttpClientRequest.setHeaders({
-      'x-api-key': Redacted.value(options.apiKey),
+      ...headers,
       'anthropic-version': options.apiVersion ?? '2023-06-01',
     }),
   )
@@ -115,7 +90,7 @@ const request = Effect.fnUntraced(function* (
   return yield* response.json.pipe(Effect.mapError(() => Http.malformed()))
 })
 
-const normalize = (entry: typeof Entry.Type) => {
+const normalize = (entry: typeof Entry.Type, oauth: boolean) => {
   const capabilities = entry.capabilities
   const efforts = ['low', 'medium', 'high', 'xhigh', 'max'].filter(
     (effort) =>
@@ -137,9 +112,10 @@ const normalize = (entry: typeof Entry.Type) => {
       ...(capabilities?.thinking === undefined
         ? {}
         : { reasoning: capabilities.thinking.supported || efforts.length > 0 }),
-      ...(capabilities?.structured_outputs === undefined
-        ? {}
-        : { structuredOutput: capabilities.structured_outputs.supported }),
+      ...(oauth ? { structuredOutput: false } : {}),
+      ...(!oauth && capabilities?.structured_outputs !== undefined
+        ? { structuredOutput: capabilities.structured_outputs.supported }
+        : {}),
     },
     ...(entry.max_input_tokens == null ? {} : { contextWindow: entry.max_input_tokens }),
     ...(entry.max_tokens == null ? {} : { maxOutputTokens: entry.max_tokens }),
@@ -168,10 +144,13 @@ const normalize = (entry: typeof Entry.Type) => {
   })
 }
 
-/** API-key discovery uses one server page or a direct GET /models/:id. Queries filter that page only. */
-export const apiKey = (options: ApiKeyOptions) => ({
+const source = <E, R>(
+  options: Pick<ApiKeyOptions, 'apiUrl' | 'apiVersion'>,
+  auth: Effect.Effect<Readonly<Record<string, string>>, E, R>,
+  oauth: boolean,
+) => ({
   list: Effect.fnUntraced(function* (input: Provider.ListOptions) {
-    const page = yield* request(options, '/models', input).pipe(
+    const page = yield* request(options, yield* auth, '/models', input).pipe(
       Effect.flatMap((value) =>
         Schema.decodeUnknownEffect(Page)(value).pipe(Effect.mapError(() => Http.malformed())),
       ),
@@ -186,11 +165,61 @@ export const apiKey = (options: ApiKeyOptions) => ({
     }
   }),
   get: Effect.fnUntraced(function* (modelId: string) {
-    const entry = yield* request(options, `/models/${encodeURIComponent(modelId)}`).pipe(
+    const entry = yield* request(
+      options,
+      yield* auth,
+      `/models/${encodeURIComponent(modelId)}`,
+    ).pipe(
       Effect.flatMap((value) =>
         Schema.decodeUnknownEffect(Entry)(value).pipe(Effect.mapError(() => Http.malformed())),
       ),
     )
-    return yield* normalize(entry)
+    return yield* normalize(entry, oauth)
   }),
 })
+
+/** API-key discovery uses one server page or direct lookup; queries filter that page only. */
+export const apiKey = (options: ApiKeyOptions) =>
+  source(
+    options,
+    Effect.sync(() => ({ 'x-api-key': Redacted.value(options.apiKey) })),
+    false,
+  )
+
+export interface OAuthOptions extends Pick<
+  Native.Options,
+  | 'binding'
+  | 'apiUrl'
+  | 'apiVersion'
+  | 'tokenUrl'
+  | 'minimumValidityMs'
+  | 'refreshTimeoutMs'
+  | 'automaticRefresh'
+> {}
+
+/** Live subscription discovery using refreshed account credentials, with no eager IO. */
+export const oauth = (options: OAuthOptions) =>
+  source(
+    options,
+    Effect.gen(function* () {
+      if (options.binding.provider !== 'anthropic')
+        return yield* Http.invalid('Claude discovery requires an anthropic binding')
+      const refresh = yield* OAuth.makeRefresh(options)
+      const auth = yield* Resolver.make({
+        binding: options.binding,
+        refresh: options.automaticRefresh === false ? undefined : refresh,
+        ...(options.minimumValidityMs === undefined
+          ? {}
+          : { minimumValidityMs: options.minimumValidityMs }),
+        ...(options.refreshTimeoutMs === undefined
+          ? {}
+          : { refreshTimeoutMs: options.refreshTimeoutMs }),
+      }).pipe(Effect.mapError(toAiError))
+      const credential = yield* auth.resolve.pipe(Effect.mapError(toAiError))
+      return {
+        authorization: `Bearer ${Redacted.value(credential.accessToken)}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+      }
+    }),
+    true,
+  )

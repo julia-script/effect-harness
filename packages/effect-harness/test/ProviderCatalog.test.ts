@@ -34,6 +34,27 @@ const codexEntry = {
   input_modalities: ['text', 'image'],
 }
 
+const claudeEntry = {
+  id: 'claude-opus-5-5',
+  display_name: 'Claude Opus 5.5',
+  max_input_tokens: 1_000_000,
+  max_tokens: 128_000,
+  capabilities: {
+    image_input: { supported: true },
+    structured_outputs: { supported: true },
+    effort: {
+      supported: true,
+      low: { supported: true },
+      high: { supported: true },
+      max: { supported: true },
+    },
+    thinking: {
+      supported: true,
+      types: { adaptive: { supported: true }, disabled: { supported: false } },
+    },
+  },
+}
+
 it.effect(
   'Codex discovers lazily with account auth, filters adapter efforts, and restores a pinned selection',
   () =>
@@ -119,24 +140,28 @@ it.effect(
 )
 
 it.effect(
-  'Claude OAuth lists bundled models without services and creates durable adaptive effort settings',
+  'Claude OAuth discovers lazily with bearer auth and creates durable adaptive effort settings',
   () =>
     Effect.gen(function* () {
       const provider = Claude.make({
         id: 'claude-personal',
         binding: { ...binding, provider: 'anthropic' },
       })
-      const page = yield* Provider.list(provider)
-      assert.isTrue(page.items.some((entry) => entry.id === 'claude-opus-5-5'))
-      for (const entry of page.items) {
-        const info = yield* Provider.get(provider, entry.id)
-        assert.deepEqual(info.reasoning?.thinking?.modes, ['adaptive'])
-        assert.include(info.reasoning?.effort?.values ?? [], 'max')
-      }
+      const paths: string[] = []
       const bodies: Schema.JsonObject[] = []
       const store = yield* credentials('anthropic')
       const client = HttpClient.make((request) =>
         Effect.sync(() => {
+          if (request.method === 'GET') {
+            paths.push(request.url)
+            assert.equal(request.headers.authorization, 'Bearer SECRET-access')
+            assert.equal(request.headers['x-api-key'], undefined)
+            assert.equal(request.headers['anthropic-beta'], 'oauth-2025-04-20')
+            const body = request.url.endsWith('/models')
+              ? { data: [claudeEntry], has_more: true, last_id: claudeEntry.id }
+              : claudeEntry
+            return HttpClientResponse.fromWeb(request, new Response(JSON.stringify(body)))
+          }
           bodies.push(payload(request))
           return HttpClientResponse.fromWeb(request, new Response(JSON.stringify(claudeResponse)))
         }),
@@ -144,6 +169,22 @@ it.effect(
       const context = Context.make(Store.CredentialStore, store).pipe(
         Context.add(HttpClient.HttpClient, client),
       )
+      const listing = Provider.list(provider, { limit: 1 })
+      assert.deepEqual(paths, [])
+      const page = yield* listing.pipe(Effect.provideContext(context))
+      assert.deepEqual(page, {
+        items: [{ id: claudeEntry.id, name: claudeEntry.display_name }],
+        nextCursor: claudeEntry.id,
+      })
+      const info = yield* Provider.get(provider, claudeEntry.id).pipe(
+        Effect.provideContext(context),
+      )
+      assert.deepEqual(info.reasoning?.effort?.values, ['low', 'high', 'max'])
+      assert.equal(info.capabilities?.structuredOutput, false)
+      assert.deepEqual(paths, [
+        'https://api.anthropic.com/v1/models',
+        'https://api.anthropic.com/v1/models/claude-opus-5-5',
+      ])
       const original = yield* Provider.resolve(provider, {
         modelId: 'claude-opus-5-5',
         options: { reasoning: { effort: 'high' } },
@@ -178,10 +219,6 @@ it.effect(
           }).pipe(Effect.provideContext(context)),
         ))._tag,
         'ModelCatalogError',
-      )
-      assert.equal(
-        (yield* Effect.flip(Provider.get(provider, 'unknown-model'))).reason,
-        'modelNotFound',
       )
     }),
 )

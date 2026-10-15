@@ -11,9 +11,11 @@ import * as ThinkingPolicy from './ThinkingPolicy.js'
 
 export interface Options<Id extends string> extends Omit<
   Native.Options,
-  'model' | 'thinkingModes' | 'efforts'
+  'model' | 'thinkingModes' | 'efforts' | 'thinkingPolicy'
 > {
   readonly id: Id
+  /** Per-model replay compatibility; defaults cover known binding-control models. */
+  readonly thinkingPolicy?: (info: ModelInfo.ModelInfo) => ThinkingPolicy.Policy
 }
 
 /** Preserve custom discovery requirements while fixing protocol construction and option translation. */
@@ -25,6 +27,7 @@ export const makeWithSource = <const Id extends string, LE, LR, GE, GR>(
     id: options.id,
     models,
     create: Effect.fnUntraced(function* ({ info, options: selected }: Provider.Resolved) {
+      const thinkingPolicy = options.thinkingPolicy?.(info) ?? ThinkingPolicy.forModel(info.id)
       const effort =
         selected.reasoning?.effort ?? options.config?.effort ?? info.reasoning?.effort?.default
       const modes: ReadonlyArray<'disabled' | 'enabled' | 'adaptive'> =
@@ -47,10 +50,7 @@ export const makeWithSource = <const Id extends string, LE, LR, GE, GR>(
         },
       })
       if (
-        (ThinkingPolicy.forModel(info.id) === 'server-drop' && thinking?.mode !== 'adaptive') ||
-        (ThinkingPolicy.forModel(info.id) === 'unverified' &&
-          thinking !== undefined &&
-          thinking.mode !== 'disabled') ||
+        (thinkingPolicy === 'server-drop' && thinking?.mode !== 'adaptive') ||
         (effort !== undefined && thinking?.mode !== 'adaptive')
       )
         return yield* new ModelCatalogError({
@@ -87,6 +87,7 @@ export const makeWithSource = <const Id extends string, LE, LR, GE, GR>(
       return yield* Model.make({
         ...options,
         model: info.id,
+        thinkingPolicy,
         definition: yield* ModelInfo.toDefinition(info, 'anthropic'),
         config,
         thinkingModes: modes,
@@ -95,6 +96,6 @@ export const makeWithSource = <const Id extends string, LE, LR, GE, GR>(
     }),
   })
 
-/** Bundled OAuth-compatible definitions; listing and detail lookup require no network services. */
+/** Live OAuth discovery; requests run only when the selected operation is executed. */
 export const make = <const Id extends string>(options: Options<Id>) =>
-  makeWithSource(options, Catalog.bundled())
+  makeWithSource(options, Catalog.oauth(options))

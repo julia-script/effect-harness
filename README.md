@@ -89,11 +89,13 @@ Concrete subscription providers connect discovery to the durable adapters:
   lazy account-bound snapshot source for `makeWithSource`. Its list/get calls
   share one fetch; expiration or `invalidate` refreshes the whole snapshot.
   The generic provider cache alone caches pages and model IDs separately.
-- `provider-anthropic/Provider.make({ id, binding })` uses bundled Claude OAuth
-  model definitions. Listing and detail lookup require no services; resolving a
-  model requires `HttpClient` and `CredentialStore`. These definitions describe
-  adapter support, not account entitlement. Thinking controls reflect the
-  adapter's durable history policy.
+- `provider-anthropic/Provider.make({ id, binding })` discovers Claude models live
+  through the Models API using the account's OAuth credentials. Listing, detail
+  lookup, and resolution require `HttpClient` and `CredentialStore`. Each list call
+  fetches one page; detail lookup requests only the selected ID. Expired tokens
+  use the existing serialized refresh flow. `Catalog.oauth(options)` exposes the
+  source separately. New model IDs and advertised efforts require no bundled
+  inventory update. Discovery failures propagate instead of returning a static list.
 - `provider-anthropic/Catalog.apiKey({ apiKey })` supplies live API-key discovery:
   one Models API page per list call and a direct request per detail lookup.
   Queries filter only the returned page, so an empty page can still have a cursor.
@@ -103,13 +105,21 @@ Both concrete providers expose `makeWithSource(options, source)` for custom
 inventories, preserving each source operation's errors and services. They choose
 reasoning effort from explicit selection, provider configuration, then metadata
 default, and pin the effective settings in the existing durable configuration.
-Claude OAuth uses adaptive thinking when advertised. Unsupported selections fail
+Claude OAuth uses adaptive thinking when advertised. Known models with thinking
+binding controls default to server-side removal of invalidated thinking blocks;
+other models use ordinary replay without a model-family rejection. Set
+the Claude provider's `thinkingPolicy(info)` callback to return `server-drop` or
+`preserve` for per-model compatibility, or set `thinkingPolicy` directly on
+`OAuthModel.make`.
+The effective policy is pinned as a durable capability; changing it rejects
+restoration. Server-side removal requires adaptive thinking. This compatibility
+is separate from the thinking modes reported by the Models API. Unsupported selections fail
 before inference. API metadata can advertise controls beyond the OAuth adapter;
 its factory still enforces the adapter's restrictions. Missing capabilities must
 be supplied by a custom source before resolving a runtime model.
 
 The [model catalog example](apps/example/src/tour/ModelCatalog.ts) composes both
-concrete providers and runs only Claude's offline discovery. Run it with
+live providers and demonstrates an explicit application-owned offline source. Run it with
 `bun apps/example/src/tour/ModelCatalog.ts` after building the library.
 
 ## Declare tools, then supply handlers
