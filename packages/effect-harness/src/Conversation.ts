@@ -1,5 +1,6 @@
-import type * as Usage from './Usage.js'
 /** Pipeable client handles; every backend operation carries schema-backed data. */
+import * as PromptWire from './PromptWire.js'
+import type * as Usage from './Usage.js'
 import * as Effect from 'effect/Effect'
 import { dual } from 'effect/Function'
 import * as Option from 'effect/Option'
@@ -183,7 +184,7 @@ export const reset: {
       const model =
         options.handoff === undefined
           ? undefined
-          : yield* Schema.encodeEffect(Schema.Array(Schema.toCodecJson(Prompt.Message)))([
+          : yield* Schema.encodeEffect(Schema.Array(Schema.toCodecJson(PromptWire.Message)))([
               Prompt.userMessage({ content: [Prompt.textPart({ text: options.handoff })] }),
             ]).pipe(
               Effect.mapError(

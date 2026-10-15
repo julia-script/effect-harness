@@ -93,13 +93,15 @@ describe('bound caller admission', () => {
         }
         assert.strictEqual(calls, 0)
         assert.strictEqual(
-          (yield* ToolInventory.invoke(lease, call, 'model', { agent: { modelTools: [] } }).pipe(
-            Effect.flip,
-          ))._tag,
+          (yield* ToolInventory.invoke(lease, call, 'model', {
+            agent: { modelTools: { mode: 'explicit', names: [] } },
+          }).pipe(Effect.flip))._tag,
           'ToolAdmissionDenied',
         )
         assert.strictEqual(calls, 0)
-        yield* ToolInventory.invoke(lease, call, 'tools', { agent: { modelTools: [] } })
+        yield* ToolInventory.invoke(lease, call, 'tools', {
+          agent: { modelTools: { mode: 'explicit', names: [] } },
+        })
         assert.strictEqual(calls, 1)
       }),
     ).pipe(Effect.provide(execution)),
@@ -258,7 +260,7 @@ describe('bound caller admission', () => {
           const lease = yield* Scope.provide(registry.acquire, scope)
           const agent: Agent.State = {
             tools: ['same'],
-            modelTools: [],
+            modelTools: { mode: 'explicit', names: [] },
             toolkits: { inherit: false, registrations: ['last', 'first'] },
           }
           const fork = yield* Schema.decodeEffect(Schema.toCodecJson(Agent.StateSchema))(
@@ -310,7 +312,7 @@ describe('bound caller admission', () => {
         }),
       ).pipe(Effect.provide(execution)),
   )
-  it.effect('legacy extension selection filters and orders owners before caller inventories', () =>
+  it.effect('extension availability never reveals shadows; registration selection owns order', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const calls: string[] = []
@@ -346,6 +348,21 @@ describe('bound caller admission', () => {
           (yield* ToolInventory.invoke(lease, call, 'tools', {
             agent: { extensions: ['last', 'first'] },
           })).details,
+          'last',
+        )
+        assert.strictEqual(
+          ToolInventory.inspect(lease.snapshot, 'same', 'model', {
+            agent: { extensions: ['first'] },
+          })._tag,
+          'denied',
+        )
+        assert.strictEqual(
+          (yield* ToolInventory.invoke(lease, call, 'tools', {
+            agent: {
+              extensions: ['first', 'last'],
+              toolkits: { inherit: false, registrations: ['owner-last', 'owner-first'] },
+            },
+          })).details,
           'first',
         )
         const filtered = {
@@ -362,7 +379,7 @@ describe('bound caller admission', () => {
           (yield* ToolInventory.invoke(lease, call, 'model', filtered).pipe(Effect.flip))._tag,
           'ToolAdmissionDenied',
         )
-        assert.deepStrictEqual(calls, ['first'])
+        assert.deepStrictEqual(calls, ['last', 'first'])
         const bindings: NonNullable<Agent.ToolkitSelection['bindings']> = {}
         Object.setPrototypeOf(bindings, { same: { binding: 'missing' } })
         assert.strictEqual(

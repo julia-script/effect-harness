@@ -1,4 +1,5 @@
 /** Built-in durable compaction uses the existing scheduler and Session transaction line. */
+import * as PromptWire from '../PromptWire.js'
 import * as Cause from 'effect/Cause'
 import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
@@ -516,15 +517,17 @@ export const make = (services: Services) => {
           const draft = {
             kind: 'compaction',
             head: fingerprint.firstKept,
-            model: yield* Schema.encodeEffect(Schema.Array(Schema.toCodecJson(Prompt.Message)))([
-              Prompt.userMessage({
-                content: [
-                  Prompt.textPart({
-                    text: `The conversation history before this point was compacted into the following summary:\n\n<summary>\n${summary}\n</summary>`,
-                  }),
-                ],
-              }),
-            ]),
+            model: yield* Schema.encodeEffect(Schema.Array(Schema.toCodecJson(PromptWire.Message)))(
+              [
+                Prompt.userMessage({
+                  content: [
+                    Prompt.textPart({
+                      text: `The conversation history before this point was compacted into the following summary:\n\n<summary>\n${summary}\n</summary>`,
+                    }),
+                  ],
+                }),
+              ],
+            ),
           }
           let result: Contract.Result
           if (input.blocking) {
@@ -714,7 +717,19 @@ export const make = (services: Services) => {
     )
     if (Exit.isSuccess(response)) {
       const usage = ModelStream.usage(response.value.usage, checkpoint.envelope.preparation)
-      const summary = yield* Effect.exit(Compaction.validateSummary(response.value))
+      const summary = yield* Effect.exit(
+        Compaction.validateSummary(
+          response.value,
+          bound.capability.outputBudget === 'local-acceptance'
+            ? {
+                maximum: policy.maxOutputTokens,
+                ...(response.value.usage.outputTokens.total === undefined
+                  ? {}
+                  : { outputTokens: response.value.usage.outputTokens.total }),
+              }
+            : undefined,
+        ),
+      )
       if (Exit.isSuccess(summary))
         return yield* place(
           checkpoint.envelope.fingerprint,

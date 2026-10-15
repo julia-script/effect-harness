@@ -280,6 +280,8 @@ export const createTask: {
 /**
  * Stages a task replacement. Becoming terminal retires all active task documents
  * in the same commit, including drafts created earlier in this callback.
+ * Cleanup of unstaged documents requires Storage.documentMetadata, supplied by built-in
+ * adapters. A custom adapter without it fails with SessionError(invalid), without reading bodies.
  * Retirement preparation failure stages neither replacement nor retirement, even if caught.
  * Terminal receipts remain immutable; this does not sweep legacy terminal tasks.
  */
@@ -471,6 +473,9 @@ export const patchDocument: {
  * Retires the current incarnation; a later ensureDocument allocates a fresh identity
  * when its owner is still nonterminal. May explicitly clean up legacy terminal documents.
  * A new draft retired in its creation transaction is omitted from persistence.
+ * Unstaged documents require Storage.documentMetadata, supplied by built-in adapters.
+ * A custom adapter without it fails with SessionError(invalid); retirement does not
+ * decode the body or fall back to a content read.
  */
 export const retireDocument: {
   <S extends Document.Codec>(
@@ -505,7 +510,7 @@ export const retireDocument: {
  * Missing/invalid version metadata fails rather than guessing. This operation uses
  * Session transaction coordination; it does not add CAS against foreign raw writers.
  * Failure stages no retirement, and prior drafts survive caught errors. Publication and
- * watch termination occur only after storage success. Exact retireDocument is unchanged.
+ * watch termination occur only after storage success.
  */
 export const retireDocumentMetadata: {
   (

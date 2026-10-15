@@ -10,6 +10,7 @@ import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Session from 'effect-harness/Session'
 import * as Storage from 'effect-harness/Storage'
+import * as ToolResultRecord from 'effect-harness/ToolResultRecord'
 import * as Toolkit from 'effect-harness/Toolkit'
 import * as ToolkitFileSystem from 'effect-harness/ToolkitFileSystem'
 import * as Edit from 'effect-harness/coding/Edit'
@@ -108,7 +109,7 @@ NodeRuntime.runMain(
       )
       const receipts = saved.filter((entry) => entry.kind === 'tool.result')
       if (receipts.length !== 2) return yield* Effect.die('Missing edit receipts')
-      for (const entry of receipts) yield* Effect.log(entry.data)
+      for (const entry of receipts) yield* Effect.log(yield* ToolResultRecord.read(entry))
       const actual = yield* fs.readFile(`${root}/file`)
       const expected = new TextEncoder().encode(after)
       if (

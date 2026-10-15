@@ -381,7 +381,7 @@ for (const [name, values, reason] of [
   ['future protocol', [{ ...frame, version: 2, rows: [{}] }], 'unsupportedFormat'],
   [
     'future reader',
-    [{ ...frame, metadata: { ...metadata, format: 11, minimumReader: 11 }, rows: [{}] }],
+    [{ ...frame, metadata: { ...metadata, format: 13, minimumReader: 13 }, rows: [{}] }],
     'unsupportedFormat',
   ],
   [

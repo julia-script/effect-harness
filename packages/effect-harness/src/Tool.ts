@@ -34,6 +34,12 @@ export const progress = (tool: Any): ProgressPolicy.Policy =>
 export const outputRetention = (tool: Any): OutputRetention.Policy =>
   Context.get(tool.annotations, Retention)
 
+/** Deferred declarations require an explicit offer or a successful discovery round. */
+export const Deferred = Context.Reference<boolean>('effect-harness/Tool/Deferred', {
+  defaultValue: () => false,
+})
+export const isDeferred = (tool: Any): boolean => Context.get(tool.annotations, Deferred)
+
 export const CallerSchema = Schema.Literals(['model', 'tools'])
 export type Caller = typeof CallerSchema.Type
 export const CallersSchema = Schema.Array(CallerSchema)
@@ -97,6 +103,7 @@ export const make = <
     readonly failure?: F
     readonly replay?: Replay
     readonly executionMode?: ExecutionMode
+    readonly deferred?: boolean
     readonly callers?: ReadonlyArray<Caller>
     readonly progress?: ProgressPolicy.Policy
     readonly outputRetention?: OutputRetention.Policy
@@ -107,6 +114,7 @@ export const make = <
       replay: options?.replay ?? 'unsafe',
       executionMode: options?.executionMode ?? 'sequential',
     })
+    .annotate(Deferred, options?.deferred ?? false)
     .annotate(Callers, Object.freeze([...(options?.callers ?? ['model', 'tools'])]))
     .annotate(Progress, Object.freeze({ ...(options?.progress ?? ProgressPolicy.defaultPolicy) }))
     .annotate(
@@ -140,6 +148,7 @@ type ResultOptions<
   readonly failure?: F
   readonly replay?: Replay
   readonly executionMode?: ExecutionMode
+  readonly deferred?: boolean
   readonly callers?: ReadonlyArray<Caller>
   readonly progress?: ProgressPolicy.Policy
   readonly outputRetention?: OutputRetention.Policy

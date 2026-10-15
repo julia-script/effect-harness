@@ -1,4 +1,7 @@
 /** Pure compaction preparation. A fingerprint is advisory until revalidated in the placement transaction. */
+import * as Result from 'effect/Result'
+import * as ToolResult from '../ToolResult.js'
+import * as PromptWire from '../PromptWire.js'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Prompt from 'effect/ai/Prompt'
@@ -19,7 +22,7 @@ export interface CanonicalInput {
 }
 const ItemSchema = Schema.Struct({
   entry: Record.Entry,
-  contribution: Schema.Array(Prompt.Message),
+  contribution: Schema.Array(PromptWire.Message),
   fact: Schema.optionalKey(Projection.FactSchema),
 })
 export const FingerprintSchema = Schema.Struct({
@@ -43,6 +46,10 @@ export const TranscriptSchema = Schema.Struct({
     Schema.Struct({
       message: Schema.Int,
       part: Schema.Int,
+      contentPart: Schema.optionalKey(Schema.Int),
+      callId: Schema.optionalKey(Schema.String),
+      name: Schema.optionalKey(Schema.String),
+      isFailure: Schema.optionalKey(Schema.Boolean),
       mediaType: Schema.String,
       fileName: Schema.optionalKey(Schema.String),
     }),
@@ -51,7 +58,12 @@ export const TranscriptSchema = Schema.Struct({
 export type Transcript = typeof TranscriptSchema.Type
 
 const freeze = <A>(value: A): A => {
-  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    !ArrayBuffer.isView(value) &&
+    !Object.isFrozen(value)
+  ) {
     for (const child of Object.values(value)) freeze(child)
     Object.freeze(value)
   }
@@ -107,17 +119,12 @@ const requireJson = Effect.fnUntraced(function* (
   return yield* Schema.decodeUnknownEffect(Schema.Json)(value)
 })
 
-const checkMessages = Effect.fnUntraced(function* (
-  messages: ReadonlyArray<Prompt.Message>,
-  canonical: boolean,
-) {
+const checkMessages = Effect.fnUntraced(function* (messages: ReadonlyArray<Prompt.Message>) {
   for (const message of messages) {
     if (message.role === 'system') continue
     for (const part of message.content) {
       if (part.type === 'tool-call') yield* requireJson(part.params)
       if (part.type === 'tool-result') yield* requireJson(part.result)
-      if (canonical && part.type === 'file' && typeof part.data !== 'string')
-        return yield* invalid('Canonical entry media must use its persisted JSON representation')
     }
   }
 })
@@ -128,12 +135,12 @@ const sameFingerprint = Schema.toEquivalence(FingerprintSchema)
 const canonical = Effect.fnUntraced(function* (
   input: CanonicalInput,
 ): Effect.fn.Return<CanonicalInput, Failure> {
-  // Validate before JSON copying: URL serialization must not silently become a string branch.
-  yield* checkMessages(input.view.prompt.content, true)
-  for (const messages of input.view.contributions) yield* checkMessages(messages, true)
+  // Validate unknown payloads before copying; typed media uses the lossless prompt codec.
+  yield* checkMessages(input.view.prompt.content)
+  for (const messages of input.view.contributions) yield* checkMessages(messages)
   const protocol = freeze(yield* Value.copy(Protocol.ProtocolSchema, input.protocol))
   const entries = freeze(yield* Value.copy(Schema.Array(Record.Entry), input.entries))
-  const view = yield* Value.copy(Projection.ContextViewSchema, input.view)
+  const view = yield* Value.copy(Schema.toCodecJson(Projection.ContextViewSchema), input.view)
   const expected = yield* Protocol.project(view.bounds.conversationId, entries, protocol, {
     legacyMode: view.bounds.legacyInterpretation._tag,
   })
@@ -202,7 +209,7 @@ const fingerprint = Effect.fnUntraced(function* (
       entry.edits?.some((edit) => ids.has(edit.target)),
   )
   return freeze(
-    yield* Value.copy(FingerprintSchema, {
+    yield* Value.copy(Schema.toCodecJson(FingerprintSchema), {
       version: 1,
       conversationId: view.bounds.conversationId,
       protocol: input.protocol,
@@ -222,9 +229,9 @@ export const capture = Effect.fnUntraced(function* (
   inputSelection: Compaction.Selected,
   input: CanonicalInput,
 ): Effect.fn.Return<Fingerprint, Failure> {
-  yield* checkMessages(inputSelection.source.content, true)
-  yield* checkMessages(inputSelection.retained.content, true)
-  const selection = yield* Value.copy(Compaction.SelectedSchema, inputSelection)
+  yield* checkMessages(inputSelection.source.content)
+  yield* checkMessages(inputSelection.retained.content)
+  const selection = yield* Value.copy(Schema.toCodecJson(Compaction.SelectedSchema), inputSelection)
   const current = yield* canonical(input)
   const { view } = current
   const cut = view.activeEntries.findIndex((entry) => entry.id === selection.firstKept)
@@ -259,8 +266,8 @@ export const validate = Effect.fnUntraced(function* (
   input: CanonicalInput,
 ): Effect.fn.Return<Fingerprint, Failure> {
   for (const item of [...inputFingerprint.selected, ...inputFingerprint.retained])
-    yield* checkMessages(item.contribution, true)
-  const pinned = freeze(yield* Value.copy(FingerprintSchema, inputFingerprint))
+    yield* checkMessages(item.contribution)
+  const pinned = freeze(yield* Value.copy(Schema.toCodecJson(FingerprintSchema), inputFingerprint))
   const current = yield* canonical(input)
   const observed = yield* fingerprint(current, pinned.firstKept, pinned.tail)
   if (!sameFingerprint(pinned, observed))
@@ -269,15 +276,15 @@ export const validate = Effect.fnUntraced(function* (
 })
 
 /**
- * Pinned pi serializer labels and 2000-character tool-result truncation. Native reasoning maps
- * to thinking; JSON object params keep named arguments, other JSON params use their exact text.
+ * Visible transcript with 2000-character tool-result truncation; reasoning is excluded.
+ * JSON object params keep named arguments, other JSON params use their exact text.
  * Files are deliberately omitted and disclosed. Native unknown tool payloads are validated first.
  */
 export const serialize = Effect.fnUntraced(function* (
   input: Prompt.Prompt,
 ): Effect.fn.Return<Transcript, CompactionError | Schema.SchemaError> {
   const prompt = yield* Schema.decodeEffect(Prompt.Prompt)(input)
-  yield* checkMessages(prompt.content, false)
+  yield* checkMessages(prompt.content)
   const parts: Array<string> = []
   const omittedMedia: Array<Transcript['omittedMedia'][number]> = []
   for (const [messageIndex, message] of prompt.content.entries()) {
@@ -297,9 +304,6 @@ export const serialize = Effect.fnUntraced(function* (
         .join('\n')
       if (text.length > 0) parts.push(`[User]: ${text}`)
     } else if (message.role === 'assistant') {
-      const thinking = message.content.flatMap((part) =>
-        part.type === 'reasoning' ? [part.text] : [],
-      )
       const text = message.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
       const calls: Array<string> = []
       for (const part of message.content) {
@@ -315,18 +319,41 @@ export const serialize = Effect.fnUntraced(function* (
         }
         // Native provider-executed results may reside within the assistant message.
       }
-      if (thinking.length > 0) parts.push(`[Assistant thinking]: ${thinking.join('\n')}`)
       if (text.length > 0) parts.push(`[Assistant]: ${text.join('\n')}`)
       if (calls.length > 0) parts.push(`[Assistant tool calls]: ${calls.join('; ')}`)
     }
     if (message.role === 'assistant' || message.role === 'tool') {
-      for (const part of message.content) {
+      for (const [partIndex, part] of message.content.entries()) {
         if (part.type === 'tool-result') {
           const result = yield* requireJson(part.result)
-          const text = typeof result === 'string' ? result : JSON.stringify(result)
+          const envelope = Schema.decodeResult(Schema.toCodecJson(ToolResult.Envelope))(result, {
+            onExcessProperty: 'error',
+          })
+          let text: string
+          if (Result.isSuccess(envelope)) {
+            text = envelope.success.content
+              .flatMap((content, contentPart) => {
+                if (content.type === 'text') return [content.text]
+                omittedMedia.push({
+                  message: messageIndex,
+                  part: partIndex,
+                  contentPart,
+                  callId: part.id,
+                  name: part.name,
+                  isFailure: part.isFailure,
+                  mediaType: content.mediaType,
+                  ...(content.fileName === undefined ? {} : { fileName: content.fileName }),
+                })
+                return []
+              })
+              .join('\n')
+          } else text = typeof result === 'string' ? result : JSON.stringify(result)
+          const label = Result.isSuccess(envelope)
+            ? `[Tool result ${part.name} (id=${part.id}${part.isFailure ? ', error' : ''})]`
+            : '[Tool result]'
           if (text.length > 0)
             parts.push(
-              `[Tool result]: ${text.length <= 2000 ? text : `${text.slice(0, 2000)}\n\n[... ${text.length - 2000} more characters truncated]`}`,
+              `${label}: ${text.length <= 2000 ? text : `${text.slice(0, 2000)}\n\n[... ${text.length - 2000} more characters truncated]`}`,
             )
         }
       }
@@ -342,7 +369,7 @@ const SUMMARIZATION_PROMPT =
   'The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work. If the conversation starts with an earlier summary, preserve its information and fold the newer messages into it.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or "(none)" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or "(none)" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.'
 
 export const PreparedTranscriptSchema = Schema.Struct({
-  prompt: Prompt.Prompt,
+  prompt: PromptWire.Prompt,
   transcript: TranscriptSchema,
 })
 export type PreparedTranscript = typeof PreparedTranscriptSchema.Type

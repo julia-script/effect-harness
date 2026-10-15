@@ -1,29 +1,14 @@
 import * as Usage from './Usage.js'
 import * as Schema from 'effect/Schema'
-import * as SchemaTransformation from 'effect/SchemaTransformation'
+import * as PromptWire from './PromptWire.js'
 import * as Prompt from 'effect/ai/Prompt'
 import * as ToolControl from './ToolControl.js'
 
-const Bytes = Schema.Uint8Array.annotate({
-  toCodecJson: () =>
-    Schema.link<Uint8Array>()(
-      Schema.TaggedStruct('@effect-harness/Bytes', { data: Schema.Uint8ArrayFromBase64 }),
-      SchemaTransformation.transform({
-        decode: (encoded) => encoded.data,
-        encode: (data) => ({ _tag: '@effect-harness/Bytes' as const, data }),
-      }),
-    ),
-})
-const FilePart = Prompt.FilePart.mapFields((fields) => ({
-  ...fields,
-  data: Schema.Union([Schema.String, Bytes, Schema.URL]),
-}))
-
 /**
  * Model-visible content uses native Effect text and media parts.
- * JSON codecs tag byte arrays to distinguish them from literal string data.
+ * JSON codecs tag byte arrays and URLs to distinguish them from literal string data.
  */
-export const ContentSchema = Schema.Array(Schema.Union([Prompt.TextPart, FilePart]))
+export const ContentSchema = Schema.Array(Schema.Union([Prompt.TextPart, PromptWire.FilePart]))
 export type Content = typeof ContentSchema.Type
 
 export const DiagnosticSchema = Schema.Struct({
@@ -42,7 +27,8 @@ export const ProgressSchema = Schema.Struct({
 export type Progress = typeof ProgressSchema.Type
 
 /**
- * Handler-owned channels for Tool.makeResult. Only content is sent to the model.
+ * Handler-owned channels for Tool.makeResult. Content and rendered diagnostics reach the model.
+ * Structured output and details remain private to programmatic and UI consumers.
  * Omitted structured output stays absent; details are optional JSON for UI consumers.
  * The same shape is used for successful values and declared failures.
  * spend is opt-in reported cost with caller currency/source; unknown spend is omitted.
@@ -110,7 +96,12 @@ export const NestedSchema = Schema.Union([
   Schema.Struct({
     ...NestedFields,
     valueKind: Schema.Literal('content'),
-    structuredOutput: Schema.Union([Schema.String, Prompt.TextPart, FilePart, ContentSchema]),
+    structuredOutput: Schema.Union([
+      Schema.String,
+      Prompt.TextPart,
+      PromptWire.FilePart,
+      ContentSchema,
+    ]),
   }),
 ])
 export type Nested = typeof NestedSchema.Type

@@ -159,6 +159,8 @@ export interface PreparationPolicy {
 
 /** Explicit summary adapter contract. Its configuration codec must encode every returned native tag. */
 export interface CompactionCapability {
+  /** Local acceptance does not constrain remote generation or spend. */
+  readonly outputBudget?: 'provider' | 'local-acceptance'
   readonly binding: Prepared.Binding
   readonly configuration: Configuration
   readonly configure: (
@@ -177,6 +179,7 @@ export const makeCompaction = <R>(input: {
     configured: Context.Context<never>,
     policy: PreparationPolicy & import('./CompactionRequest.js').Policy,
   ) => Effect.Effect<Context.Context<never>, ModelError, R>
+  readonly outputBudget?: 'provider' | 'local-acceptance'
   readonly isOverflow?: (error: AiError.AiError) => boolean
 }): Effect.Effect<CompactionCapability, Schema.SchemaError, R> =>
   Effect.gen(function* () {
@@ -193,6 +196,7 @@ export const makeCompaction = <R>(input: {
     return {
       binding: Object.freeze({ ...binding }),
       configuration: input.configuration ?? emptyConfiguration,
+      ...(input.outputBudget === undefined ? {} : { outputBudget: input.outputBudget }),
       isOverflow: isOverflow ?? (() => false),
       configure: (configured, policy) =>
         Effect.flatMap(Effect.serviceOption(Scope.Scope), (scope) =>
@@ -442,6 +446,8 @@ export interface Any extends Pipeable.Pipeable {
   readonly options: Schema.Constraint
   readonly configure: (options: never, preparation: PreparationPolicy) => unknown
   readonly deferred?: Deferred | undefined
+  /** Stable provider/account/configuration identity and disclosed fallback wire overhead estimate. */
+  readonly measurement?: { readonly identity: string; readonly overheadTokens: number }
   readonly compaction?: CompactionCapability | undefined
   /** Stable provider construction contract. Increase on incompatible callback/default changes. */
   readonly version?: number | undefined
@@ -477,6 +483,8 @@ export const make: <Options extends Schema.Constraint, R>(input: {
   readonly languageModel: typeof LanguageModel.LanguageModel.Service
   readonly options: Options
   readonly deferred?: Deferred | undefined
+  /** Stable provider/account/configuration identity and disclosed fallback wire overhead estimate. */
+  readonly measurement?: { readonly identity: string; readonly overheadTokens: number }
   readonly compaction?: CompactionCapability | undefined
   readonly version?: number | undefined
   readonly configuration?: Configuration | undefined

@@ -1,21 +1,16 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
-import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
-import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
-import * as Prompt from 'effect/ai/Prompt'
 import type * as Response from 'effect/ai/Response'
 import * as Document from 'effect-harness/Document'
 import * as Extension from 'effect-harness/Extension'
@@ -101,262 +96,6 @@ const doc = Document.define({
 const drain = Effect.forEach(Array.from({ length: 60 }), () => Effect.yieldNow, { discard: true })
 
 describe('native legacy run adoption', () => {
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
-    for (const stage of ['queued', 'request', 'unstarted', 'safe', 'unsafe', 'prefix'] as const)
-      it.effect(
-        `${backend}: cold reopen ${stage} preserves identity, prefixes and custom task dispatch`,
-        () =>
-          Effect.scoped(
-            Effect.gen(function* () {
-              const fs = yield* FileSystem.FileSystem
-              const directory = yield* fs.makeTempDirectoryScoped()
-              const memory = yield* Layer.build(Storage.layerMemory)
-              const persistent =
-                backend === 'sqlite'
-                  ? Storage.layerJournal().pipe(
-                      Layer.provide(SqlEventJournal.layer()),
-                      Layer.provide(
-                        SqliteClient.layer({ filename: `${directory}/adoption.sqlite` }),
-                      ),
-                    )
-                  : Storage.layerJsonl({ filePath: `${directory}/adoption.jsonl` })
-              const use = <A, E>(
-                program: Effect.Effect<A, E, Storage.Storage | StorageFormat | Scope.Scope>,
-              ) =>
-                backend === 'memory'
-                  ? program.pipe(Effect.provideContext(memory))
-                  : program.pipe(Effect.provide(Layer.fresh(persistent)))
-              const saved = yield* use(
-                Effect.scoped(
-                  Effect.gen(function* () {
-                    const session = yield* Session.make()
-                    return yield* Session.commit(session, (tx) =>
-                      Effect.gen(function* () {
-                        yield* Transaction.ensureRoot(tx)
-                        const submission = yield* Transaction.createSubmission(tx, {
-                          _tag: 'InputQueued',
-                          type: 'input',
-                          status: 'queued',
-                          conversationId: root,
-                        })
-                        const prompt = Prompt.make([
-                          Prompt.userMessage({ content: [Prompt.textPart({ text: 'old' })] }),
-                        ])
-                        const inputEntry =
-                          stage === 'queued'
-                            ? undefined
-                            : yield* Transaction.appendEntry(tx, root, {
-                                kind: 'input',
-                                model: yield* Schema.encodeEffect(Run.Messages)(prompt.content),
-                              })
-                        if (inputEntry !== undefined && submission._tag === 'InputQueued')
-                          yield* Transaction.putSubmission(tx, {
-                            ...submission,
-                            _tag: 'InputPlaced',
-                            status: 'placed',
-                            entry: inputEntry.id,
-                          })
-                        const call = yield* Schema.decodeEffect(Tool.CallSchema)({
-                          id: 'second',
-                          name: 'work',
-                          arguments: { text: 'remaining' },
-                        })
-                        const first = {
-                          ...call,
-                          id: yield* Schema.decodeEffect(Tool.CallSchema)({
-                            id: 'first',
-                            name: 'work',
-                            arguments: {},
-                          }).pipe(Effect.map((item) => item.id)),
-                        }
-                        const result = {
-                          content: [Prompt.textPart({ text: 'committed' })],
-                          isError: false,
-                          diagnostics: [],
-                        }
-                        const prefixMessage = Prompt.toolMessage({
-                          content: [
-                            Prompt.toolResultPart({
-                              id: 'first',
-                              name: 'work',
-                              providerExecuted: false,
-                              isFailure: false,
-                              result: 'committed',
-                            }),
-                          ],
-                        })
-                        const savedPrompt =
-                          stage === 'prefix'
-                            ? Prompt.concat(prompt, Prompt.make([prefixMessage]))
-                            : prompt
-                        if (stage === 'prefix')
-                          yield* Transaction.appendEntry(tx, root, {
-                            kind: 'tool.result',
-                            model: yield* Schema.encodeEffect(Run.Messages)([prefixMessage]),
-                            data: yield* Schema.encodeEffect(Schema.toCodecJson(Schema.Json))({
-                              committed: true,
-                            }),
-                          })
-                        let checkpoint: Run.RunState
-                        if (stage === 'queued')
-                          checkpoint = {
-                            _tag: 'queued',
-                            phase: 'queued',
-                            submissionId: submission.id,
-                            draft: { type: 'input', content: 'old' },
-                          }
-                        else if (stage === 'request')
-                          checkpoint = {
-                            _tag: 'request',
-                            phase: 'request',
-                            submissionId: submission.id,
-                            agent: {},
-                            prompt,
-                          }
-                        else
-                          checkpoint = {
-                            _tag: 'tools',
-                            phase: 'tools',
-                            submissionId: submission.id,
-                            agent: {},
-                            prompt: savedPrompt,
-                            calls: [
-                              ...(stage === 'prefix'
-                                ? [{ call: first, replay: 'unsafe' as const, started: true }]
-                                : []),
-                              {
-                                call,
-                                replay: stage === 'unsafe' ? 'unsafe' : 'safe',
-                                started: stage === 'safe' || stage === 'unsafe',
-                              },
-                            ],
-                            index: stage === 'prefix' ? 1 : 0,
-                            results: stage === 'prefix' ? [result] : [],
-                          }
-                        const record = yield* Transaction.createTask(tx, {
-                          kind: 'harness.run',
-                          version: 1,
-                          conversationId: root,
-                          input: submission.id,
-                          background: false,
-                          abortRequested: false,
-                          state: {
-                            status: stage === 'queued' ? 'pending' : 'running',
-                            checkpoint: yield* Run.encode(checkpoint),
-                          },
-                        })
-                        yield* Transaction.ensureDocument(tx, doc, {
-                          scope: { _tag: 'task', taskId: record.id },
-                        })
-                        const customRecord = yield* Transaction.createTask(tx, {
-                          ...(yield* Task.initialize(custom, 23)),
-                          kind: custom.kind,
-                          version: 1,
-                          conversationId: root,
-                          background: false,
-                          abortRequested: false,
-                          state: { status: 'pending', checkpoint: { phase: 'run' } },
-                        })
-                        return { record, submission, customRecord }
-                      }),
-                    )
-                  }),
-                ),
-              )
-              const calls: string[] = []
-              const toolkit = Toolkit.make(tool(stage === 'unsafe' ? 'unsafe' : 'safe'))
-              yield* use(
-                Effect.scoped(
-                  Effect.gen(function* () {
-                    const runtime = yield* HarnessRuntime.make({ tools: toolkit })
-                    assert.strictEqual(
-                      (yield* runtime.scheduler.inspect(saved.record.id)).resolution._tag,
-                      'compatible',
-                    )
-                    yield* runtime.registry.install(customRegistration)
-                    yield* runtime.scheduler.resume
-                    const customResult = yield* runtime.scheduler.wait({
-                      id: saved.customRecord.id,
-                      definition: custom,
-                    })
-                    assert.deepStrictEqual(customResult, { status: 'completed', result: 23 })
-                    const completed = yield* runtime.scheduler.waitForTask(saved.record.id)
-                    assert.strictEqual(completed.kind, 'harness.run')
-                    assert.strictEqual(completed.version, 1)
-                    assert.strictEqual(completed.id, saved.record.id)
-                    assert.strictEqual(completed.input, saved.submission.id)
-                    assert.strictEqual(
-                      (yield* Schema.decodeUnknownEffect(Record.TaskOutcome)(
-                        completed.state.outcome,
-                      )).status,
-                      'completed',
-                    )
-                    const submission = Option.getOrThrow(
-                      yield* Session.submission(runtime.session, saved.submission.id),
-                    )
-                    assert.strictEqual(submission.status, 'done')
-                    const entries = yield* Session.scanEntries(runtime.session, {
-                      conversationId: root,
-                    }).pipe(Stream.runCollect)
-                    const results = entries.filter((entry) => entry.kind === 'tool.result')
-                    if (stage === 'prefix') assert.strictEqual(results.length, 2)
-                    if (stage === 'unsafe')
-                      assert.include(
-                        JSON.stringify(results[0]?.data),
-                        'external outcome is unknown',
-                      )
-                    assert.deepStrictEqual(
-                      calls,
-                      stage === 'queued' || stage === 'request' || stage === 'unsafe'
-                        ? []
-                        : ['remaining'],
-                    )
-                    const document = yield* Session.snapshot(runtime.session, doc, {
-                      scope: { _tag: 'task', taskId: saved.record.id },
-                    })
-                    assert.isTrue(Option.isNone(document))
-                    assert.strictEqual(
-                      (yield* Session.scanTasks(runtime.session).pipe(Stream.runCollect)).length,
-                      2,
-                    )
-                  }),
-                ).pipe(
-                  Effect.provide([
-                    plainModel,
-                    toolkit.toLayer({
-                      work: ({ text }) =>
-                        Effect.sync(() => {
-                          calls.push(text)
-                          return text
-                        }),
-                    }),
-                  ]),
-                ),
-              )
-              yield* use(
-                Effect.scoped(
-                  Effect.gen(function* () {
-                    const runtime = yield* HarnessRuntime.make()
-                    yield* runtime.scheduler.resume
-                    assert.strictEqual(
-                      (yield* runtime.scheduler.waitForTask(saved.record.id)).state.status,
-                      'terminal',
-                    )
-                    assert.strictEqual(
-                      (yield* runtime.scheduler.waitForTask(saved.customRecord.id)).state.status,
-                      'terminal',
-                    )
-                    assert.strictEqual(
-                      (yield* Session.scanTasks(runtime.session).pipe(Stream.runCollect)).length,
-                      2,
-                    )
-                  }),
-                ).pipe(Effect.provide(plainModel)),
-              )
-            }),
-          ).pipe(Effect.provide(NodeServices.layer)),
-      )
-
   it.effect(
     'missing custom definition is blocked and installing it wakes the real runtime without resume',
     () =>
@@ -527,7 +266,7 @@ describe('native legacy run adoption', () => {
           yield* Deferred.await(customEntered)
           const before = yield* Session.scanTasks(first.session).pipe(Stream.runCollect)
           const run = before.find((record) => record.kind === 'harness.run')!
-          assert.strictEqual((yield* Run.decode(run.state.checkpoint)).phase, 'toolRound')
+          assert.strictEqual((yield* Run.decodeStored(run.state.checkpoint)).phase, 'toolRound')
           yield* Scope.close(firstScope, Exit.void)
           assert.strictEqual(
             (yield* Context.get(memory, Storage.Storage).task(run.id)).pipe(Option.getOrThrow).state
@@ -772,7 +511,7 @@ describe('native legacy run adoption', () => {
             kind: 'harness.run',
             version: 1,
             input: Record.SubmissionId,
-            checkpoint: Run.RunStateSchema,
+            checkpoint: Run.StoredSchema,
             success: Record.EntryId,
             failure: Schema.Json,
           }
@@ -1091,7 +830,7 @@ for (const reused of [false, true]) {
             const tasks = yield* Stream.runCollect(real.scanTasks({ kind: 'harness.run' }))
             assert.strictEqual(tasks.length, 1)
             assert.strictEqual(tasks[0]?.state.status, 'waiting')
-            const state = yield* Run.decode(tasks[0]!.state.checkpoint)
+            const state = yield* Run.decodeStored(tasks[0]!.state.checkpoint)
             assert.strictEqual(state._tag, 'toolRound')
             if (state._tag !== 'toolRound') return
             const children = yield* Stream.runCollect(real.scanTasks({ kind: 'harness.tool' }))

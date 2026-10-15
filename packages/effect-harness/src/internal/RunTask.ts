@@ -1,4 +1,4 @@
-/** In-place native adapter: legacy wire checkpoints remain authoritative. */
+/** Native run adapter resolves immutable request references before execution. */
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -31,6 +31,7 @@ import * as Inbox from './Inbox.js'
 import { NativeWriteFailure } from './NativeWriteFailure.js'
 import { StreamPublicationFailure } from './StreamPublicationFailure.js'
 import * as Preparation from './RequestPreparation.js'
+import * as Request from './RequestRecord.js'
 import { PreparationRestoreFailure } from './PreparationRestoreFailure.js'
 import * as Model from '../Model.js'
 import * as Prepared from '../PreparedRequest.js'
@@ -61,7 +62,7 @@ type BaseServices = Omit<
 export const make = (
   services: (lease: RegistryScope.Lease) => BaseServices,
   registry: Registry.Service,
-  bindings: Pick<RunLoop.Services, 'models' | 'nativeModel' | 'nativeDefault'>,
+  bindings: Pick<RunLoop.Services, 'models' | 'nativeModel' | 'nativeDefault' | 'session'>,
 ): {
   readonly adapter: TaskScheduler.NativeRunAdapter
   readonly registration: Registry.Registration
@@ -87,6 +88,7 @@ export const make = (
     const { record, lease } = yield* NativeInvocation
     const execution = yield* TaskExecution
     const base = services(lease)
+    yield* base.requireSubmissionFormat
     let active = true
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
@@ -144,7 +146,8 @@ export const make = (
         write,
         writeCallback,
         saveState: (tx, current, checkpoint) =>
-          Run.encode(checkpoint).pipe(
+          Run.persist(tx, current, checkpoint).pipe(
+            Effect.flatMap(Schema.encodeEffect(Schema.toCodecJson(Run.StoredSchema))),
             Effect.flatMap((wire) =>
               Transaction.putTask(tx, {
                 ...current,
@@ -157,7 +160,8 @@ export const make = (
         waitCompaction: (tx, checkpoint) =>
           Effect.gen(function* () {
             // Task progress encodes its definition directly; use the same safe wire boundary.
-            const safe = yield* Run.encode(checkpoint).pipe(Effect.flatMap(Run.decode))
+            const current = Option.getOrThrow(yield* Transaction.task(tx, record.id))
+            const safe = yield* Run.persist(tx, current, checkpoint)
             yield* execution.progress(tx, definition, {
               status: 'waiting',
               checkpoint: safe,
@@ -166,11 +170,15 @@ export const make = (
             })
           }),
         waitTools: (tx, checkpoint) =>
-          execution.progress(tx, definition, {
-            status: 'waiting',
-            checkpoint,
-            on: checkpoint.children,
-            policy: 'allSettled',
+          Effect.gen(function* () {
+            const current = Option.getOrThrow(yield* Transaction.task(tx, record.id))
+            const saved = yield* Run.persist(tx, current, checkpoint)
+            yield* execution.progress(tx, definition, {
+              status: 'waiting',
+              checkpoint: saved,
+              on: checkpoint.children,
+              policy: 'allSettled',
+            })
           }),
         invocationActive: () => active,
       },
@@ -183,7 +191,7 @@ export const make = (
     kind: 'harness.run',
     version: 1,
     input: Record.SubmissionId,
-    checkpoint: Run.RunStateSchema,
+    checkpoint: Run.StoredSchema,
     success: Record.EntryId,
     failure: Schema.Json,
     initial: (submissionId) => ({
@@ -199,7 +207,6 @@ export const make = (
       retry: phase,
       'deferred-start': phase,
       deferred: phase,
-      tools: phase,
       toolRound: phase,
       compaction: phase,
     },
@@ -215,7 +222,8 @@ export const make = (
     yield* execution.commit((tx) =>
       Effect.gen(function* () {
         const current = yield* Transaction.task(tx, record.id)
-        const checkpoint = yield* Run.decode(
+        const checkpoint = yield* Run.read(
+          tx,
           Option.isSome(current) ? current.value.state.checkpoint : record.state.checkpoint,
         )
         if (checkpoint._tag === 'toolRound')
@@ -295,7 +303,23 @@ export const make = (
         Effect.flatMap((inspection) =>
           Effect.gen(function* () {
             if (inspection._tag !== 'compatible') return inspection
-            const checkpoint = inspection.checkpoint
+            const stored = inspection.checkpoint
+            if (
+              stored._tag !== 'queued' &&
+              stored.preparation !== undefined &&
+              stored.preparation.ownerTaskId !== record.id
+            )
+              return {
+                _tag: 'blocked' as const,
+                error: TaskResolution.blocked(
+                  record,
+                  'incompatible',
+                  'The prepared request belongs to another run',
+                ),
+              }
+            const checkpoint = yield* Run.hydrate(inspection.checkpoint, (ref) =>
+              Request.inspect(bindings.session, ref),
+            )
             if (
               checkpoint.submissionId !== inspection.input ||
               !Run.validPrefix(checkpoint) ||
@@ -308,7 +332,7 @@ export const make = (
                 error: TaskResolution.blocked(
                   record,
                   'incompatible',
-                  'Legacy run identity or committed tool prefix is inconsistent',
+                  'Run identity or committed tool prefix is inconsistent',
                 ),
               }
             // Completed results have already passed their pinned codec and hook validation.
@@ -317,8 +341,7 @@ export const make = (
               checkpoint._tag !== 'queued' &&
               checkpoint._tag !== 'toolRound' &&
               !record.abortRequested &&
-              checkpoint.preparation !== undefined &&
-              (checkpoint._tag !== 'tools' || checkpoint.index < checkpoint.calls.length)
+              checkpoint.preparation !== undefined
             ) {
               const snapshot = yield* registry.snapshot
               // This read-only check neither renders nor activates the persisted format.
@@ -344,7 +367,19 @@ export const make = (
                 }
             }
             return inspection
-          }),
+          }).pipe(
+            Effect.catch((cause) =>
+              Effect.succeed({
+                _tag: 'blocked' as const,
+                error: TaskResolution.blocked(
+                  record,
+                  'incompatible',
+                  'Prepared request cannot be restored',
+                  cause,
+                ),
+              }),
+            ),
+          ),
         ),
       ),
     invoke: (record, mode, lease) =>
@@ -352,7 +387,8 @@ export const make = (
         return (
           mode === 'abort'
             ? Effect.gen(function* () {
-                const checkpoint = yield* Run.decode(record.state.checkpoint)
+                yield* services(lease).requireSubmissionFormat
+                const checkpoint = yield* Run.get(bindings.session, record.state.checkpoint)
                 let report: DeferredExecution.CancelReport | undefined
                 if (checkpoint._tag === 'deferred') {
                   const base = services(lease)

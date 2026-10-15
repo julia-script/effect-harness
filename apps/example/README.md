@@ -15,6 +15,7 @@ The development commands use Bun; the built example entrypoints run with Node. T
 - [main.ts](src/main.ts): submit input through Harness and wait for the settled record.
 - [Application.ts](src/Application.ts): compose tool handlers and a model, leaving Storage to the application.
 - [Uppercase.ts](src/Uppercase.ts): schema declarations separated from handler Layers, with durable output.
+- [StructuredResult.ts](src/StructuredResult.ts): read independent result channels with `ToolResultRecord.read`; run `node apps/example/dist/StructuredResult.js` from the repository root after building.
 - [DemoModel.ts](src/DemoModel.ts): an offline native LanguageModel returning tool intents.
 - [Tour](TOUR.md): forks, documents, extensions, and recovery.
 - [Portable.ts](src/Portable.ts): the same client/tool/runtime APIs with in-memory storage, including reopening the same store.

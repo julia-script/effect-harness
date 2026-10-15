@@ -1,4 +1,5 @@
 /** Read-only declaration planning over a bounded context and one caller-held registry lease. */
+import * as PromptWire from '../PromptWire.js'
 import * as Effect from 'effect/Effect'
 import * as Equal from 'effect/Equal'
 import * as Schema from 'effect/Schema'
@@ -38,7 +39,7 @@ export interface Renderer<E, R> {
   readonly snapshot: RegistryScope.Snapshot
   readonly renderSection: (
     key: string,
-    prompt: Prompt.Prompt,
+    prompt: PromptWire.Prompt,
     selection?: RegistryScope.Selection,
   ) => Effect.Effect<string | undefined, E, R>
 }
@@ -51,14 +52,14 @@ export interface RenderOptions extends Inventory.Options {
 }
 
 const immutable = <A>(value: A): A => {
-  if (value !== null && typeof value === 'object') {
+  if (value !== null && typeof value === 'object' && !ArrayBuffer.isView(value)) {
     for (const child of Object.values(value)) immutable(child)
     Object.freeze(value)
   }
   return value
 }
 const own = Effect.fnUntraced(function* <S extends Schema.Constraint>(schema: S, input: S['Type']) {
-  return immutable(yield* Value.copy(schema, input))
+  return immutable(yield* Value.copy(Schema.toCodecJson(schema), input))
 })
 
 const unique = (names: ReadonlyArray<string>) => new Set(names).size === names.length
@@ -236,7 +237,7 @@ export const ToolPositionSchema = Schema.Struct({
 export type ToolPosition = typeof ToolPositionSchema.Type
 export const TranslationSchema = Schema.Struct({
   positioning: PositioningSchema,
-  prompt: Prompt.Prompt,
+  prompt: PromptWire.Prompt,
   tools: Schema.Array(Projection.ToolDeclarationSchema),
   /** Complete ordered declaration states at each fact, for capable adapters and audit/replay. */
   frames: Schema.Array(FrameSchema),

@@ -194,8 +194,6 @@ describe('nested result and no-entry accounting', () => {
                       let expected: unknown = shapes[mode]
                       if (mode === 'empty') expected = ''
                       else if (mode === 'text') expected = 'single'
-                      else if (mode === 'url')
-                        expected = Prompt.filePart({ mediaType: 'image/png', data: url.href })
                       else if (mode !== 'mixed') expected = shapes[mode][0]
                       assert.deepStrictEqual(
                         receipt.value,
@@ -208,7 +206,8 @@ describe('nested result and no-entry accounting', () => {
                             receipt.value !== null &&
                             !Array.isArray(receipt.value) &&
                             'data' in receipt.value &&
-                            receipt.value.data === url.href,
+                            receipt.value.data instanceof URL &&
+                            receipt.value.data.href === url.href,
                         )
                       }
                     }
@@ -554,9 +553,9 @@ describe('nested result and no-entry accounting', () => {
             ),
           )
           for (const agent of [
-            { modelTools: [] },
+            { modelTools: { mode: 'explicit' as const, names: [] } },
             { tools: [] },
-            { tools: ['tools'], modelTools: [] },
+            { tools: ['tools'], modelTools: { mode: 'explicit' as const, names: [] } },
           ]) {
             const root = yield* runtime.backend.create({ agent })
             const parent = yield* runtime.scheduler.start(program, undefined, {

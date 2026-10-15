@@ -1,4 +1,5 @@
 import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as NativePrompt from './fixtures/NativePrompt.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Cause from 'effect/Cause'
@@ -132,7 +133,10 @@ const cold = (backend: Backend, scenario: Scenario) =>
                 m.role === 'user' &&
                 m.content.some((p) => p.type === 'text' && p.text === 'paid child'),
             )
-            if (child) return [{ type: 'text' as const, text: 'paid' }, finish]
+            if (child) {
+              NativePrompt.assertFiles(prompt)
+              return [{ type: 'text' as const, text: 'paid' }, finish]
+            }
             return [
               {
                 type: 'tool-call' as const,
@@ -228,7 +232,7 @@ const cold = (backend: Backend, scenario: Scenario) =>
                     yield* late.output('accepted output\n')
                     yield* late.details({ accepted: true })
                     saved = yield* Subagent.spawn(late, {
-                      draft: { type: 'input', content: 'paid child' },
+                      draft: { type: 'input', content: NativePrompt.content('paid child') },
                       options: { key: 'saved' },
                     })
                     const paid = yield* Subagent.wait(late, saved)

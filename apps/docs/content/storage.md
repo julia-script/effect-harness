@@ -41,3 +41,5 @@ The writer owns an append-only journal. Commit frames require a final newline; i
 One active local runtime coordinates each store. Multiple independent active runtimes must not share the same persisted store. The storage layer does not provide a distributed scheduler or recover the external resources used by tools.
 
 [Preserve conversations across restarts](/guides/persistence) supplies a SQLite composition. [Client and runtime](/explanation/composition) describes the service boundaries.
+
+Journal events retain superseded payloads, including retired current-only documents and task checkpoints. The journal adapter has no physical reclamation or compaction; JSONL retains its separate sidecar reclamation behavior.

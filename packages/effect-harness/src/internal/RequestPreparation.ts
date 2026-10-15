@@ -1,8 +1,9 @@
 /** Durable request ownership and compatibility; no callbacks run while checking recovered work. */
+import * as PromptWire from '../PromptWire.js'
 import * as Effect from 'effect/Effect'
 import * as Equal from 'effect/Equal'
 import * as Schema from 'effect/Schema'
-import * as Prompt from 'effect/ai/Prompt'
+import type * as Prompt from 'effect/ai/Prompt'
 import * as NativeTool from 'effect/ai/Tool'
 import type * as Model from '../Model.js'
 import * as Prepared from '../PreparedRequest.js'
@@ -54,7 +55,7 @@ export const align = Effect.fnUntraced(function* (
   translation: Plan.Translation,
   input: Prompt.Prompt,
 ) {
-  const prompt = yield* Value.copy(Schema.toCodecJson(Prompt.Prompt), input)
+  const prompt = yield* Value.copy(Schema.toCodecJson(PromptWire.Prompt), input)
   if (Equal.equals(translation.prompt.content, prompt.content)) return { ...translation, prompt }
   const indices = new Set(translation.toolPositions.map((position) => position.messageIndex))
   if (translation.positioning.sections === 'positional')
@@ -93,23 +94,13 @@ export const align = Effect.fnUntraced(function* (
   }
 })
 
-/** Legacy extension filters deny the canonical owner; explicit toolkit selection defines its own order. */
+/** Request preparation shares the admission inventory, including ownership and permission filters. */
 export const inventory = (
   snapshot: RegistryScope.Snapshot,
   caller: Tool.Caller,
   agent: Agent.State,
-) => {
-  if (agent.toolkits !== undefined) return Inventory.inventory(snapshot, caller, { agent })
-  const { extensions, ...unfiltered } = agent
-  return Inventory.inventory(snapshot, caller, { agent: unfiltered }).filter((item) => {
-    const extension = snapshot.extensions.find((entry) => entry.owner.id === item.owner.id)
-    return (
-      extension === undefined ||
-      extensions === undefined ||
-      extensions.includes(extension.declaration.name)
-    )
-  })
-}
+  selection: Inventory.Options['selection'] = 'offered',
+) => Inventory.inventory(snapshot, caller, { agent, selection })
 
 export const unavailable = (message: string) =>
   new HarnessError({
@@ -128,6 +119,7 @@ export const declaration = (item: RegistryScope.BoundTool) =>
       binding: { id: item.owner.id, version: item.owner.version },
       callers: Tool.callers(item.declaration),
       replay: Tool.policy(item.declaration).replay,
+      deferred: Tool.isDeferred(item.declaration),
       ...(NativeTool.getStrictMode(item.declaration) === undefined
         ? {}
         : { strict: NativeTool.getStrictMode(item.declaration) }),

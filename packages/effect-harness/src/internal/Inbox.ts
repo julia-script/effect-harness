@@ -161,7 +161,7 @@ export function admit(
 ) {
   return atomic(tx, (child) =>
     Effect.gen(function* () {
-      const draft = yield* Value.copy(DraftSchema, input)
+      const draft = yield* Value.copy(Schema.toCodecJson(DraftSchema), input)
       if (draft.compaction !== undefined) {
         yield* validateCompaction(child, conversationId, draft.compaction)
         if (draft.mode !== 'write' || draft.payload.head !== draft.compaction.firstKept)
@@ -599,7 +599,7 @@ export const boundary = Effect.fnUntraced(function* (
       task.state.status === 'completing'
     )
       continue
-    const checkpoint = yield* Run.decode(task.state.checkpoint)
+    const checkpoint = yield* Run.decodeStored(task.state.checkpoint)
     if (checkpoint._tag !== 'queued') continue
     const receipt = yield* Transaction.submission(tx, checkpoint.submissionId)
     if (Option.isSome(receipt) && receipt.value._tag === 'InputQueued') deferFinalUsers = true

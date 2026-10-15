@@ -109,7 +109,7 @@ describe('obsolete document metadata retirement', () => {
               return Effect.succeedSome({ ...raw, value: { unavailable: true } })
             },
           } satisfies Storage.Storage['Service']
-          // The adapter really denies/invalidates content; exact acquisition is a positive guard.
+          // Exact retirement still refuses an older version, without acquiring its body.
           const cleanup = yield* Session.make().pipe(
             Effect.provideService(Storage.Storage, wrapped),
           )
@@ -130,8 +130,9 @@ describe('obsolete document metadata retirement', () => {
           const denied = yield* Session.commit(cleanup, (tx) =>
             Transaction.retireDocument(tx, obsolete, target),
           ).pipe(Effect.flip)
-          assert.isTrue(denied._tag === 'SessionError' || denied._tag === 'StorageError')
-          assert.strictEqual(reads, 1)
+          assert.strictEqual(denied._tag, 'SessionError')
+          if (denied._tag === 'SessionError') assert.strictEqual(denied.reason, 'conflict')
+          assert.strictEqual(reads, 0)
           reads = 0
           finds = 0
           yield* Session.commit(cleanup, (tx) =>
@@ -724,68 +725,92 @@ for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
   }
 }
 
-for (const mode of ['unavailable', 'absent', 'invalid', 'future', 'wrong-owner', 'io'] as const) {
-  it.effect(`metadata ${mode} fails without content fallback or partial retirement`, () =>
-    withMemory(
-      Effect.gen(function* () {
-        const storage = yield* Storage.Storage
-        const seed = yield* Session.make()
-        const { snapshot } = yield* initialize(seed)
-        const selected = DocumentRetirement.target(snapshot)
-        let contentReads = 0
-        const wrapped = {
-          ...Struct.omit(storage, ['documentMetadata']),
-          document: (id: Record.DocumentId, at?: Record.DocumentPoint) => {
-            contentReads++
-            return storage.document(id, at)
-          },
-          ...(mode === 'unavailable'
-            ? {}
-            : {
-                documentMetadata: () => {
-                  if (mode === 'io') return Effect.fail(failure)
-                  if (mode === 'absent') return Effect.succeedNone
-                  let version = 1
-                  if (mode === 'future') version = 4
-                  if (mode === 'invalid') version = 0
-                  return Effect.succeedSome({
-                    record:
-                      mode === 'wrong-owner'
-                        ? { ...snapshot.record, scope: { _tag: 'session' as const } }
-                        : snapshot.record,
-                    version,
-                  })
-                },
-              }),
-        } satisfies Storage.Storage['Service']
-        const session = yield* Session.make().pipe(Effect.provideService(Storage.Storage, wrapped))
-        yield* Session.commit(session, (tx) =>
+for (const ordinary of [false, true]) {
+  for (const mode of [
+    'unavailable',
+    'absent',
+    'invalid',
+    'future',
+    'wrong-owner',
+    'wrong-id',
+    'io',
+  ] as const) {
+    it.effect(
+      `${ordinary ? 'ordinary' : 'metadata'} ${mode} fails without content fallback or partial retirement`,
+      () =>
+        withMemory(
           Effect.gen(function* () {
-            const prior = yield* Transaction.appendEntry(tx, root, {
-              kind: 'obsolete.metadata.failure',
-            })
-            const error = yield* Transaction.retireDocumentMetadata(tx, policy, selected).pipe(
-              Effect.flip,
+            const storage = yield* Storage.Storage
+            const seed = yield* Session.make()
+            const { snapshot } = yield* initialize(seed)
+            const selected = DocumentRetirement.target(snapshot)
+            let contentReads = 0
+            const wrapped = {
+              ...Struct.omit(storage, ['documentMetadata']),
+              document: (id: Record.DocumentId, at?: Record.DocumentPoint) => {
+                contentReads++
+                return storage.document(id, at)
+              },
+              ...(mode === 'unavailable'
+                ? {}
+                : {
+                    documentMetadata: () => {
+                      if (mode === 'io') return Effect.fail(failure)
+                      if (mode === 'absent') return Effect.succeedNone
+                      let version = 1
+                      if (mode === 'future') version = 4
+                      if (mode === 'invalid') version = 0
+                      let record = snapshot.record
+                      if (mode === 'wrong-id')
+                        record = { ...record, id: Record.DocumentId.make(999) }
+                      return Effect.succeedSome({
+                        record:
+                          mode === 'wrong-owner'
+                            ? { ...snapshot.record, scope: { _tag: 'session' as const } }
+                            : record,
+                        version,
+                      })
+                    },
+                  }),
+            } satisfies Storage.Storage['Service']
+            const session = yield* Session.make().pipe(
+              Effect.provideService(Storage.Storage, wrapped),
             )
-            if (mode === 'io') assert.strictEqual(error, failure)
-            else if (mode === 'invalid') assert.strictEqual(error._tag, 'SchemaError')
-            else if (mode === 'future' || mode === 'wrong-owner') conflict(error)
-            else {
-              assert.strictEqual(error._tag, 'SessionError')
-              if (error._tag === 'SessionError') assert.strictEqual(error.reason, 'invalid')
-            }
+            yield* Session.commit(session, (tx) =>
+              Effect.gen(function* () {
+                const prior = yield* Transaction.appendEntry(tx, root, {
+                  kind: 'obsolete.metadata.failure',
+                })
+                const error = yield* (
+                  ordinary
+                    ? Transaction.retireDocument(tx, old, target)
+                    : Transaction.retireDocumentMetadata(tx, policy, selected)
+                ).pipe(Effect.flip)
+                if (mode === 'io') assert.strictEqual(error, failure)
+                else if (mode === 'invalid') assert.strictEqual(error._tag, 'SchemaError')
+                else if (mode === 'future' || mode === 'wrong-owner' || mode === 'wrong-id') {
+                  if (!ordinary) conflict(error)
+                  else {
+                    assert.strictEqual(error._tag, 'SessionError')
+                    if (error._tag === 'SessionError') assert.strictEqual(error.reason, 'conflict')
+                  }
+                } else {
+                  assert.strictEqual(error._tag, 'SessionError')
+                  if (error._tag === 'SessionError') assert.strictEqual(error.reason, 'invalid')
+                }
+                assert.strictEqual(contentReads, 0)
+                assert.strictEqual(
+                  some(yield* Transaction.entry(tx, prior.id)).kind,
+                  'obsolete.metadata.failure',
+                )
+              }),
+            )
+            assert.strictEqual(some(yield* storage.findDocument(selected.address)).id, selected.id)
             assert.strictEqual(contentReads, 0)
-            assert.strictEqual(
-              some(yield* Transaction.entry(tx, prior.id)).kind,
-              'obsolete.metadata.failure',
-            )
           }),
-        )
-        assert.strictEqual(some(yield* storage.findDocument(selected.address)).id, selected.id)
-        assert.strictEqual(contentReads, 0)
-      }),
-    ),
-  )
+        ),
+    )
+  }
 }
 
 it.effect(

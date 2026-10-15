@@ -35,3 +35,6 @@ export * as Prompt from './Prompt.ts'
  * @category re-exports
  */
 export * as ToolResult from './ToolResult.ts'
+export * as Catalog from './Catalog.js'
+export * as Provider from './Provider.js'
+export * as ThinkingPolicy from './ThinkingPolicy.js'

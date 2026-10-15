@@ -1,3 +1,4 @@
+import * as ToolResult from 'effect-harness/ToolResult'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Result from 'effect/Result'
@@ -540,7 +541,7 @@ describe('native text-only compaction transcript', () => {
           ],
         }),
       ])
-      const expected = `[User]: question\n\n[Assistant thinking]: think\n\n[Assistant]: answer\n\n[Assistant tool calls]: lookup(path="a", n=2)\n\n[Tool result]: ${'x'.repeat(2000)}\n\n[... 2 more characters truncated]`
+      const expected = `[User]: question\n\n[Assistant]: answer\n\n[Assistant tool calls]: lookup(path="a", n=2)\n\n[Tool result]: ${'x'.repeat(2000)}\n\n[... 2 more characters truncated]`
       assert.strictEqual((yield* Plan.serialize(source)).text, expected)
       const prepared = yield* Plan.preparePrompt(source, 'Focus on paths')
       assert.strictEqual(prepared.prompt.content.length, 2)
@@ -608,8 +609,7 @@ describe('native text-only compaction transcript', () => {
           [1, 2, 3],
         )
         assert.isTrue(Object.isFrozen(transcript.omittedMedia[0]))
-        // The actual codec lowers native bytes and URL to strings; canonical fingerprints
-        // compare persisted JSON and do not invent branch identity that storage does not retain.
+        // Native Effect codecs normalize file branches; harness persistence uses PromptWire.
         const json = yield* Schema.encodeEffect(Schema.toCodecJson(Prompt.Prompt))(source)
         assert.isTrue(Schema.is(Schema.Json)(json))
         const { input, selection } = yield* pin(history())
@@ -663,3 +663,127 @@ describe('native text-only compaction transcript', () => {
     }),
   )
 })
+
+for (const data of [
+  new Uint8Array(4096),
+  new URL('https://example.com/image.png'),
+  'A'.repeat(8192),
+]) {
+  it.effect(
+    `extracts trailing tool image captions (${typeof data === 'string' ? 'base64' : data.constructor.name})`,
+    () =>
+      Effect.gen(function* () {
+        const envelope = yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.Envelope))({
+          _tag: '@effect-harness/ToolContent',
+          content: [
+            Prompt.filePart({ mediaType: 'image/png', fileName: 'screen.png', data }),
+            Prompt.textPart({ text: 'Click at x=200, y=100; scale x=2 y=2.' }),
+          ],
+        })
+        const transcript = yield* Plan.serialize(
+          Prompt.fromMessages([
+            Prompt.toolMessage({
+              content: [
+                Prompt.toolResultPart({
+                  id: 'capture-1',
+                  name: 'screenshot',
+                  result: envelope,
+                  isFailure: true,
+                  providerExecuted: false,
+                }),
+              ],
+            }),
+          ]),
+        )
+        assert.include(transcript.text, '[Tool result screenshot (id=capture-1, error)]')
+        assert.include(transcript.text, 'Click at x=200, y=100; scale x=2 y=2.')
+        assert.notInclude(transcript.text, 'AAAA')
+        assert.deepEqual(transcript.omittedMedia, [
+          {
+            message: 0,
+            part: 0,
+            contentPart: 0,
+            callId: 'capture-1',
+            name: 'screenshot',
+            isFailure: true,
+            mediaType: 'image/png',
+            fileName: 'screen.png',
+          },
+        ])
+      }),
+  )
+}
+
+it.effect('keeps malformed or extended envelope-shaped application JSON opaque', () =>
+  Effect.gen(function* () {
+    for (const result of [
+      { _tag: '@effect-harness/ToolContent', content: [{ type: 'file', data: 'private' }] },
+      {
+        _tag: '@effect-harness/ToolContent',
+        content: [{ type: 'text', text: 'caption' }],
+        application: true,
+      },
+      {
+        _tag: '@effect-harness/ToolContent',
+        content: [
+          {
+            type: 'file',
+            mediaType: 'image/png',
+            data: { _tag: '@effect-harness/Bytes', data: 'invalid!' },
+          },
+        ],
+      },
+    ]) {
+      const transcript = yield* Plan.serialize(
+        Prompt.fromMessages([
+          Prompt.toolMessage({
+            content: [
+              Prompt.toolResultPart({
+                id: 'a',
+                name: 'json',
+                result,
+                isFailure: false,
+                providerExecuted: false,
+              }),
+            ],
+          }),
+        ]),
+      )
+      assert.include(transcript.text, JSON.stringify(result))
+      assert.deepEqual(transcript.omittedMedia, [])
+    }
+  }),
+)
+
+it.effect('applies the result text budget after excluding media payloads', () =>
+  Effect.gen(function* () {
+    const result = yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.Envelope))({
+      _tag: '@effect-harness/ToolContent',
+      content: [
+        Prompt.filePart({ mediaType: 'image/png', data: 'A'.repeat(8192) }),
+        Prompt.textPart({ text: 'caption' }),
+        Prompt.textPart({ text: 'x'.repeat(2000) }),
+      ],
+    })
+    const transcript = yield* Plan.serialize(
+      Prompt.fromMessages([
+        Prompt.toolMessage({
+          content: [
+            Prompt.toolResultPart({
+              id: 'b',
+              name: 'screen',
+              result,
+              isFailure: false,
+              providerExecuted: false,
+            }),
+          ],
+        }),
+      ]),
+    )
+    assert.strictEqual(
+      transcript.text,
+      `[Tool result screen (id=b)]: caption\n${'x'.repeat(1992)}\n\n[... 8 more characters truncated]`,
+    )
+    assert.lengthOf(transcript.omittedMedia, 1)
+  }),
+)

@@ -75,7 +75,13 @@ export class Storage extends Context.Service<
       id: Record.DocumentId,
       at?: DocumentPoint,
     ) => Effect.Effect<Option.Option<StoredDocument>, StorageError>
-    /** Optional for structural adapters; consumers must reject unavailable metadata support. */
+    /**
+     * Reads validated identity, policy and version without decoding the document body.
+     * Built-in adapters supply this optional capability. Custom adapters must supply it
+     * for ordinary unstaged document retirement and terminal task document cleanup,
+     * as well as explicit metadata retirement. Without it those operations fail with
+     * SessionError(invalid); they never fall back to reading the body.
+     */
     readonly documentMetadata?: (
       id: Record.DocumentId,
     ) => Effect.Effect<Option.Option<DocumentMetadata>, StorageError>
@@ -120,6 +126,11 @@ export const layerJournal = (
 
 /**
  * Scoped single-writer journal. Own one writer per file, including across processes.
+ * Keep the file and its adjacent `<filePath>.parts` directory together when copying or
+ * backing up a closed store. This physical layout rejects older inline-row journals.
+ * New sidecars and directory entries are synced before each journal marker. Normal
+ * commits reclaim superseded task rows and current-only document content after the
+ * marker is durable; reopening removes orphan sidecars left by interrupted writes.
  * Format upgrades and domain writes share that writer's semaphore and synced frames.
  * The marker rejects old readers on reopen; it cannot stop an already-open foreign
  * writer appending a legacy frame. Such downgrade frames are corruption on reopen.

@@ -79,7 +79,6 @@ export const GenerationSchema = Schema.Struct({
     'deferred',
     'streaming',
     'retry',
-    'tools',
     'toolRound',
   ]),
   requestId: Schema.optionalKey(Live.GenerationSchema.fields.requestId),
@@ -108,9 +107,12 @@ export const RoundSchema = Schema.Struct({
   applied: Schema.Boolean,
   slots: Schema.Array(RoundSlotSchema),
 })
-/** Original private legacyValue is deliberately not a new conversation result channel. */
+/** Nested status survives caller completion; result bodies are available only while the caller is active. */
 export const ReceiptSchema = Schema.toCodecJson(
-  Invocation.WireReceiptSchema.mapFields(Struct.omit(['legacyValue'])),
+  Invocation.WireReceiptSchema.mapFields((fields) => ({
+    ...Struct.omit(fields, ['legacyValue']),
+    result: Schema.optionalKey(fields.result),
+  })),
 )
 export const NestedSchema = Schema.Struct({
   taskId: Record.TaskId,

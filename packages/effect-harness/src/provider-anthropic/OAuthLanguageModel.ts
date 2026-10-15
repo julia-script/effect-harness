@@ -17,9 +17,11 @@ import type * as Credential from '../provider-auth/Credential.js'
 import { toAiError } from '../provider-auth/AuthError.js'
 import * as Resolver from '../provider-auth/Resolver.js'
 import * as OAuth from './OAuth.js'
+import * as ThinkingPolicy from './ThinkingPolicy.js'
 import * as ToolResult from './ToolResult.js'
 import * as Http from '../internal/SubscriptionHttp.js'
 
+export const Effort = Schema.Literals(['low', 'medium', 'high', 'xhigh', 'max'])
 export const Settings = Schema.Struct({
   maxTokens: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   thinking: Schema.optionalKey(
@@ -32,7 +34,7 @@ export const Settings = Schema.Struct({
       Schema.Struct({ type: Schema.Literal('adaptive') }),
     ]),
   ),
-  effort: Schema.optionalKey(Schema.Literals(['low', 'medium', 'high', 'xhigh', 'max'])),
+  effort: Schema.optionalKey(Effort),
   thinkingDisplay: Schema.optionalKey(Schema.Literals(['summarized', 'omitted'])),
   temperature: Schema.optionalKey(
     Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
@@ -54,6 +56,8 @@ export interface Options extends OAuth.Endpoints {
   readonly refreshTimeoutMs?: number
   readonly automaticRefresh?: boolean
   readonly transport?: 'sse'
+  /** Replay compatibility override; omitted values use the known model defaults. */
+  readonly thinkingPolicy?: ThinkingPolicy.Policy
   readonly thinkingModes?: ReadonlyArray<'disabled' | 'enabled' | 'adaptive'>
   readonly efforts?: ReadonlyArray<NonNullable<Settings['effort']>>
   readonly supportsLongCache?: boolean
@@ -95,7 +99,10 @@ const events = Schema.Union([
   Generated.BetaContentBlockStartEvent,
   Generated.BetaContentBlockDeltaEvent,
   Generated.BetaContentBlockStopEvent,
-  Generated.BetaErrorResponse,
+  Schema.Struct({
+    type: Schema.Literal('error'),
+    error: Schema.Struct({ type: Schema.String, message: Schema.optionalKey(Schema.String) }),
+  }),
   Schema.Struct({ type: Schema.Literal('ping') }),
 ])
 
@@ -105,6 +112,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     (options.transport !== undefined && options.transport !== 'sse')
   )
     return yield* Http.invalid('Anthropic OAuth requires an anthropic binding and SSE transport')
+  const thinkingPolicy = options.thinkingPolicy ?? ThinkingPolicy.forModel(options.model)
   const http = yield* HttpClient.HttpClient
   const refresh = yield* OAuth.makeRefresh(options)
   const auth = yield* Resolver.make({
@@ -131,6 +139,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       const config = yield* Schema.decodeEffect(Settings, { onExcessProperty: 'error' })(
         Option.getOrElse(dynamic, () => options.config ?? {}),
       ).pipe(Effect.mapError(() => Http.invalid('Unsupported Anthropic OAuth settings')))
+      const thinkingBinding = yield* ThinkingPolicy.configure(thinkingPolicy, config.thinking?.type)
       const maximum = config.maxTokens ?? 4096
       if (config.temperature !== undefined && options.supportsTemperature !== true)
         return yield* Http.invalid('Temperature is not declared supported for this model')
@@ -219,6 +228,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
           : {
               thinking: {
                 ...config.thinking,
+                ...thinkingBinding,
                 ...(config.thinkingDisplay === undefined
                   ? {}
                   : { display: config.thinkingDisplay }),
@@ -256,6 +266,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       const betas = new Set([
         'claude-code-20250219',
         'oauth-2025-04-20',
+        ...(thinkingPolicy === 'server-drop' ? [ThinkingPolicy.beta] : []),
         ...(translated.params?.['anthropic-beta']?.split(',').filter(Boolean) ?? []),
       ])
       const request = HttpClientRequest.post(
@@ -273,7 +284,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
         HttpClientRequest.bodyJsonUnsafe(body),
       )
       const response = yield* Http.execute(http, request)
-      yield* Http.checkStatus(response)
+      yield* Http.checkStatus(response, 'anthropic')
       return { response, originalName: (name: string) => names.get(name) ?? name }
     })
   const unused = yield* AnthropicClient.make({}).pipe(
@@ -313,7 +324,10 @@ export const make = Effect.fnUntraced(function* (options: Options) {
             Stream.mapError(Http.malformed),
             Stream.filter((event) => event.type !== 'ping'),
             Stream.mapEffect((event) => {
-              if (event.type === 'error') return Effect.fail(Http.providerFailure(event.error.type))
+              if (event.type === 'error')
+                return Effect.fail(
+                  Http.providerFailure(event.error.type, 'anthropic', event.error.message),
+                )
               if (event.type === 'message_stop') terminal = true
               if (event.type === 'content_block_start' && event.content_block.type === 'tool_use')
                 return Effect.succeed({

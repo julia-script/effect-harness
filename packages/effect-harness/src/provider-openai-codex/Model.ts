@@ -25,5 +25,13 @@ export const make = Effect.fnUntraced(function* (
     protocol: 'effect-harness/openai-codex/sse-v1',
     definition: options.definition,
     languageModel,
+    capabilities: {
+      reasoningEfforts: [...(options.reasoningEfforts ?? [])],
+      supportsTemperature: options.supportsTemperature ?? false,
+    },
+    summary: {
+      outputBudget: 'local-acceptance',
+      configure: (settings) => Effect.succeed({ ...settings, cache: 'none' as const }),
+    },
   })
 })

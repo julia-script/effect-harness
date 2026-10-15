@@ -1,7 +1,10 @@
 /** One scoped coordination line, document cache and bounded non-blocking observers. */
 import * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
+import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 import * as Option from 'effect/Option'
 import * as Queue from 'effect/Queue'
 import * as Semaphore from 'effect/Semaphore'
@@ -25,6 +28,7 @@ export type Event =
 export interface Subscriber {
   readonly queue: Queue.Queue<Event, SessionError | Cause.Done>
   readonly documentId?: Domain.DocumentId
+  readonly release: () => void
 }
 
 export interface State {
@@ -32,6 +36,13 @@ export interface State {
   readonly storage: Storage['Service']
   readonly semaphore: Semaphore.Semaphore
   readonly cache: Map<string, Option.Option<Record.StoredDocument>>
+  readonly clock: Clock.Clock
+  readonly documentRetentionMs: number
+  readonly idleDocuments: Map<string, number>
+  readonly documentPins: Map<Domain.DocumentId, number>
+  readonly cacheWake: Queue.Queue<void>
+  cacheWorker: Fiber.Fiber<void> | undefined
+  cacheTimersUnavailable: boolean
   readonly subscribers: Set<Subscriber>
   readonly reconciliations: Set<Queue.Queue<void, Cause.Done | SessionError>>
   readonly observations: Map<string, ObservationRuntime.Mount>
@@ -97,7 +108,13 @@ export const line = Effect.fnUntraced(function* <A, E, R>(
   return yield* state.semaphore.withPermit(
     Effect.gen(function* () {
       yield* open(state)
-      return yield* use(state)
+      return yield* use(state).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (state.cacheTimersUnavailable) sweepDocuments(state)
+          }),
+        ),
+      )
     }),
   )
 })
@@ -116,10 +133,118 @@ export const scan = <A, E>(
     }).pipe(Effect.map(({ pull }) => line(self, operation, () => pull))),
   ).pipe(Stream.scoped)
 
+const cacheTime = (state: State): number =>
+  Number(state.clock.monotonicTimeNanosUnsafe()) / 1_000_000
+
+/** Caller holds the Session line; bookkeeping never reacquires it. */
+export const touchDocument = (state: State, key: string): void => {
+  if (state.closed || state.poison !== undefined || state.documentRetentionMs === Infinity) return
+  const cached = state.cache.get(key)
+  if (
+    cached === undefined ||
+    (Option.isSome(cached) && state.documentPins.has(cached.value.record.id))
+  )
+    return
+  const wasEmpty = state.idleDocuments.size === 0
+  state.idleDocuments.delete(key)
+  state.idleDocuments.set(key, cacheTime(state))
+  if (wasEmpty) Queue.offerUnsafe(state.cacheWake, undefined)
+}
+
+export const dropDocument = (state: State, key: string): void => {
+  state.cache.delete(key)
+  state.idleDocuments.delete(key)
+}
+
+export const cacheDocument = (
+  state: State,
+  key: string,
+  stored: Option.Option<Record.StoredDocument>,
+): void => {
+  dropDocument(state, key)
+  state.cache.set(key, stored)
+  touchDocument(state, key)
+}
+
+/** Releases are idempotent and cannot refresh a replacement at the same address. */
+export const pinDocument = (state: State, key: string, id: Domain.DocumentId): (() => void) => {
+  state.documentPins.set(id, (state.documentPins.get(id) ?? 0) + 1)
+  state.idleDocuments.delete(key)
+  let active = true
+  return () => {
+    if (!active) return
+    active = false
+    const count = (state.documentPins.get(id) ?? 1) - 1
+    if (count > 0) state.documentPins.set(id, count)
+    else {
+      state.documentPins.delete(id)
+      const cached = state.cache.get(key)
+      if (cached !== undefined && Option.isSome(cached) && cached.value.record.id === id)
+        touchDocument(state, key)
+    }
+  }
+}
+
+/** Caller holds the Session line. Returns the oldest remaining idle deadline. */
+const sweepDocuments = (state: State): number | undefined => {
+  if (state.closed || state.poison !== undefined) return undefined
+  const now = cacheTime(state)
+  for (const [key, since] of state.idleDocuments) {
+    const remaining = state.documentRetentionMs - (now - since)
+    if (remaining > 0) return remaining
+    dropDocument(state, key)
+  }
+  return undefined
+}
+
+const sleepForEviction = (state: State, delay: number): Effect.Effect<boolean> => {
+  // Clock has no unref option. Preserve supplied clocks (including TestClock) exactly.
+  if (state.clock !== Context.get(Context.empty(), Clock.Clock))
+    return state.clock.sleep(Duration.millis(delay)).pipe(Effect.as(true))
+  if (state.cacheTimersUnavailable) return Effect.succeed(false)
+  return Effect.callback<boolean>((resume) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      timer = setTimeout(() => resume(Effect.succeed(true)), delay)
+      if (
+        typeof timer === 'object' &&
+        timer !== null &&
+        'unref' in timer &&
+        typeof timer.unref === 'function'
+      ) {
+        timer.unref()
+        return Effect.sync(() => clearTimeout(timer))
+      }
+    } catch {
+      // Timer-restricted runtimes still reclaim expired entries on the Session line.
+    }
+    if (timer !== undefined) clearTimeout(timer)
+    state.cacheTimersUnavailable = true
+    resume(Effect.succeed(false))
+  })
+}
+
+/** One sleeper per Session. Ordered idle entries avoid scans over active documents. */
+const evictDocuments = (state: State) =>
+  Effect.gen(function* () {
+    while (true) {
+      yield* Queue.take(state.cacheWake)
+      while (true) {
+        const delay = yield* state.semaphore.withPermit(Effect.sync(() => sweepDocuments(state)))
+        if (delay === undefined) break
+        // Platform clocks may implement sleep with a signed 32-bit millisecond timer.
+        if (!(yield* sleepForEviction(state, Math.min(delay, 2_147_483_647)))) break
+      }
+    }
+  })
+
 export const load = Effect.fnUntraced(function* (state: State, address: Record.DocumentAddress) {
   const key = yield* Value.key(address)
   const cached = state.cache.get(key)
-  if (cached !== undefined) return cached
+  if (cached !== undefined) {
+    touchDocument(state, key)
+    return cached
+  }
   const record = yield* state.storage.findDocument(address)
   let stored: Option.Option<Record.StoredDocument> = Option.none()
   if (Option.isSome(record)) {
@@ -131,20 +256,29 @@ export const load = Effect.fnUntraced(function* (state: State, address: Record.D
         message: 'Current document has no stored content',
       })
   }
-  state.cache.set(key, stored)
+  cacheDocument(state, key, stored)
   return stored
 })
 
 export const subscribe = Effect.fnUntraced(function* (
   state: State,
-  documentId?: Domain.DocumentId,
+  stored?: Record.StoredDocument,
 ) {
   const queue = yield* Queue.dropping<Event, SessionError | Cause.Done>(64)
-  const subscriber: Subscriber = { queue, ...(documentId === undefined ? {} : { documentId }) }
+  const release =
+    stored === undefined
+      ? () => {}
+      : pinDocument(state, yield* Value.key(stored.record), stored.record.id)
+  const subscriber: Subscriber = {
+    queue,
+    release,
+    ...(stored === undefined ? {} : { documentId: stored.record.id }),
+  }
   state.subscribers.add(subscriber)
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
       state.subscribers.delete(subscriber)
+      subscriber.release()
       yield* Queue.shutdown(queue)
     }),
   )
@@ -158,6 +292,7 @@ export const emit = Effect.fnUntraced(function* (
 ) {
   if (!(yield* Queue.offer(subscriber.queue, event))) {
     state.subscribers.delete(subscriber)
+    subscriber.release()
     yield* Queue.fail(
       subscriber.queue,
       new SessionError({
@@ -185,6 +320,7 @@ export const publish = Effect.fnUntraced(function* (
       const value = documents.get(subscriber.documentId) ?? null
       if (value === null) {
         state.subscribers.delete(subscriber)
+        subscriber.release()
         yield* Queue.end(subscriber.queue)
       } else yield* emit(state, subscriber, { _tag: 'document', value })
     }
@@ -193,6 +329,14 @@ export const publish = Effect.fnUntraced(function* (
 
 export const stop = Effect.fnUntraced(function* (state: State, error?: Failure) {
   state.poison = error
+  if (state.cacheWorker !== undefined) {
+    yield* Fiber.interrupt(state.cacheWorker)
+    state.cacheWorker = undefined
+  }
+  state.cache.clear()
+  state.idleDocuments.clear()
+  state.documentPins.clear()
+  yield* Queue.shutdown(state.cacheWake)
   for (const mount of state.documentMounts) yield* mount.close(error)
   state.documentMounts.clear()
   for (const mount of state.observations.values()) yield* mount.close(error)
@@ -200,6 +344,7 @@ export const stop = Effect.fnUntraced(function* (state: State, error?: Failure) 
   for (const queue of state.reconciliations) yield* Queue.end(queue)
   state.reconciliations.clear()
   for (const subscriber of state.subscribers) {
+    subscriber.release()
     if (error === undefined) yield* Queue.end(subscriber.queue)
     else
       yield* Queue.fail(
@@ -215,7 +360,17 @@ export const stop = Effect.fnUntraced(function* (state: State, error?: Failure) 
   state.subscribers.clear()
 })
 
-export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Initializer> = []) {
+export const make = Effect.fnUntraced(function* (
+  initializers: ReadonlyArray<Initializer> = [],
+  documentRetentionMs = 600_000,
+) {
+  if (typeof documentRetentionMs !== 'number' || !(documentRetentionMs >= 0))
+    return yield* new SessionError({
+      reason: 'invalid',
+      operation: 'session.make',
+      message: 'documentRetentionMs must be nonnegative milliseconds or Infinity',
+    })
+  const clock = yield* Clock.Clock
   const storage = yield* Storage
   const capability = yield* Effect.serviceOption(StorageFormat.StorageFormat)
   const guardContext = Context.make(Storage, storage)
@@ -281,6 +436,13 @@ export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Ini
     storage,
     semaphore,
     cache: new Map(),
+    clock,
+    documentRetentionMs,
+    idleDocuments: new Map(),
+    documentPins: new Map(),
+    cacheWake: yield* Queue.dropping<void>(1),
+    cacheWorker: undefined,
+    cacheTimersUnavailable: false,
     subscribers: new Set(),
     reconciliations: new Set(),
     observations: new Map(),
@@ -293,7 +455,7 @@ export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Ini
     closed: false,
     poison: undefined,
   }
-  return yield* Effect.acquireRelease(
+  yield* Effect.acquireRelease(
     Effect.suspend(() => {
       if (owners.has(storage))
         return Effect.fail(
@@ -312,12 +474,14 @@ export const make = Effect.fnUntraced(function* (initializers: ReadonlyArray<Ini
         yield* semaphore.withPermit(
           Effect.gen(function* () {
             yield* stop(state)
-            state.cache.clear()
             if (owners.get(storage) === state) owners.delete(storage)
           }),
         )
       }),
   )
+  if (documentRetentionMs !== Infinity)
+    state.cacheWorker = yield* evictDocuments(state).pipe(Effect.forkScoped)
+  return state
 })
 
 /** Latest-state scheduler signals attach atomically. Overflow coalesces into a full scan. */

@@ -1,4 +1,5 @@
 import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as RuntimeRecords from './fixtures/RuntimeRecords.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
@@ -6,6 +7,8 @@ import { SqliteClient } from '@effect/sql-sqlite-node'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
+import * as Deferred from 'effect/Deferred'
+import * as Fiber from 'effect/Fiber'
 import * as Exit from 'effect/Exit'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
@@ -23,6 +26,7 @@ import { ModelError, ModelUnsupportedError } from 'effect-harness/ModelError'
 import * as Prepared from 'effect-harness/PreparedRequest'
 import * as PromptSection from 'effect-harness/PromptSection'
 import * as Record from 'effect-harness/Record'
+import * as References from 'effect/References'
 import * as Storage from 'effect-harness/Storage'
 import * as StorageFormat from 'effect-harness/StorageFormat'
 
@@ -42,6 +46,16 @@ const answer: Response.PartEncoded[] = [
     response: undefined,
   },
 ]
+class ActivationProbe extends Context.Service<ActivationProbe, true>()(
+  'test/restore/ActivationProbe',
+) {}
+interface ActivationGate {
+  readonly schedulerCalls?: number
+  readonly restoreEntered: Deferred.Deferred<void>
+  readonly releaseRestore: Deferred.Deferred<void>
+  readonly activationEntered: Deferred.Deferred<void>
+  readonly releaseActivation: Deferred.Deferred<void>
+}
 const fixture = Effect.fnUntraced(function* (
   backend: 'memory' | 'sqlite' | 'jsonl',
   mode:
@@ -52,6 +66,7 @@ const fixture = Effect.fnUntraced(function* (
     | 'defect'
     | 'interrupt'
     | 'mixedInterrupt' = 'failure',
+  gate?: ActivationGate,
 ) {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
   const layer =
@@ -61,8 +76,56 @@ const fixture = Effect.fnUntraced(function* (
           Layer.provide(SqliteClient.layer({ filename: `${directory}/restore.db` })),
         )
       : Storage.layerJsonl({ filePath: `${directory}/restore.jsonl` })
-  const store = yield* Layer.build(backend === 'memory' ? Storage.layerMemory : Layer.fresh(layer))
-  const storage = Context.get(store, Storage.Storage)
+  let store = yield* Layer.build(backend === 'memory' ? Storage.layerMemory : Layer.fresh(layer))
+  let pauseActivation = false
+  let activationFiber: number | undefined
+  let schedulerCalls = 0
+  const original = Context.get(store, Storage.Storage)
+  const storage: Storage.Storage['Service'] =
+    gate === undefined
+      ? original
+      : {
+          ...original,
+          scanTasks: (filter) =>
+            Stream.unwrap(
+              Effect.gen(function* () {
+                if (
+                  gate !== undefined &&
+                  gate.schedulerCalls === undefined &&
+                  pauseActivation &&
+                  filter?.kind === 'harness.run' &&
+                  Option.isSome(yield* Effect.serviceOption(ActivationProbe))
+                ) {
+                  pauseActivation = false
+                  yield* Deferred.succeed(gate.activationEntered, undefined)
+                  yield* Deferred.await(gate.releaseActivation)
+                }
+                return original.scanTasks(filter)
+              }),
+            ),
+        }
+  const format = Context.get(store, StorageFormat.StorageFormat)
+  store = Context.add(Context.add(store, Storage.Storage, storage), StorageFormat.StorageFormat, {
+    ...format,
+    storage,
+    requireSupportedFormat: (requested) =>
+      Effect.withFiber((fiber) =>
+        Effect.gen(function* () {
+          if (
+            gate?.schedulerCalls !== undefined &&
+            pauseActivation &&
+            fiber.id === activationFiber &&
+            requested.formatVersion === 2 &&
+            ++schedulerCalls === gate.schedulerCalls
+          ) {
+            pauseActivation = false
+            yield* Deferred.succeed(gate.activationEntered, undefined)
+            yield* Deferred.await(gate.releaseActivation)
+          }
+          return yield* format.requireSupportedFormat(requested)
+        }),
+      ),
+  })
   const open = () =>
     backend === 'memory' ? Effect.succeed(store) : Layer.build(Layer.fresh(layer))
   const counters = { configure: 0, render: 0, hook: 0, restore: 0, provider: 0 }
@@ -87,14 +150,16 @@ const fixture = Effect.fnUntraced(function* (
       Effect.gen(function* () {
         counters.restore++
         const task = (yield* tasks).find((task) => task.state.checkpoint !== undefined)!
-        accepted ??= yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ preparation: Schema.toCodecJson(Prepared.SnapshotSchema) }),
-        )(task.state.checkpoint).pipe(Effect.map((wire) => wire.preparation))
+        accepted ??= yield* RuntimeRecords.preparation(storage, task.state.checkpoint)
         assert.strictEqual(
           (yield* entries).filter((entry) => entry.kind === 'context.change').length,
           1,
         )
         if (recovered) return Context.make(Configuration, value)
+        if (gate !== undefined) {
+          yield* Deferred.succeed(gate.restoreEntered, undefined)
+          yield* Deferred.await(gate.releaseRestore)
+        }
         if (mode === 'caughtProvider') {
           yield* Effect.fail(failure).pipe(Effect.ignore)
           return Context.make(Configuration, value)
@@ -183,6 +248,14 @@ const fixture = Effect.fnUntraced(function* (
   })
   return {
     first,
+    markActivationFiber: Effect.withFiber((fiber) =>
+      Effect.sync(() => {
+        activationFiber = fiber.id
+      }),
+    ),
+    armActivation: () => {
+      pauseActivation = true
+    },
     job,
     scope,
     store,
@@ -191,6 +264,7 @@ const fixture = Effect.fnUntraced(function* (
     tasks,
     entries,
     submission: storage.submission(job.id),
+    storage,
     counters,
     accepted: () => accepted!,
     received: () => received!,
@@ -218,10 +292,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             }
             const task = (yield* f.tasks)[0]!
             assert.strictEqual(task.state.status, 'running')
-            const wire = yield* Schema.decodeUnknownEffect(
-              Schema.Struct({ preparation: Schema.toCodecJson(Prepared.SnapshotSchema) }),
-            )(task.state.checkpoint)
-            assert.deepStrictEqual(wire.preparation, f.accepted())
+            const wire = yield* RuntimeRecords.preparation(f.storage, task.state.checkpoint)
+            assert.deepStrictEqual(wire, f.accepted())
             assert.notStrictEqual(Option.getOrThrow(yield* f.submission).status, 'unanswered')
             yield* Effect.sleep('50 millis')
             assert.deepStrictEqual(f.counters, {
@@ -233,7 +305,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             })
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(f.store))).formatVersion,
-              5,
+              12,
             )
             yield* Scope.close(f.scope, Exit.void)
             assert.isTrue(Exit.isFailure(yield* f.first.backend.wait(f.job.id).pipe(Effect.exit)))
@@ -362,3 +434,96 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
     }
   })
 }
+
+it.live(
+  'automatic activation cannot resume a restore failure published while its scan is suspended',
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const gate: ActivationGate = {
+          restoreEntered: yield* Deferred.make<void>(),
+          releaseRestore: yield* Deferred.make<void>(),
+          activationEntered: yield* Deferred.make<void>(),
+          releaseActivation: yield* Deferred.make<void>(),
+        }
+        const f = yield* fixture('memory', 'failure', gate)
+        yield* Deferred.await(gate.restoreEntered)
+        const notifications = yield* Stream.toPull(f.first.scheduler.changes)
+        f.armActivation()
+        const waiting = yield* Effect.forkChild(
+          f.first.backend
+            .wait(f.job.id)
+            .pipe(Effect.provideService(ActivationProbe, true), Effect.exit),
+        )
+        yield* Deferred.await(gate.activationEntered)
+        yield* Deferred.succeed(gate.releaseRestore, undefined)
+        while (Option.isNone(yield* f.first.scheduler.failure)) yield* notifications
+        yield* Deferred.succeed(gate.releaseActivation, undefined)
+        const result = yield* Fiber.join(waiting)
+        assert.isTrue(Exit.isFailure(result))
+        if (Exit.isFailure(result)) assert.include(Cause.pretty(result.cause), 'restore offline')
+        assert.isTrue(Option.isSome(yield* f.first.scheduler.failure))
+        assert.strictEqual((yield* f.tasks)[0]!.state.status, 'running')
+        assert.strictEqual(f.counters.restore, 1)
+        assert.strictEqual(f.counters.provider, 0)
+        yield* Scope.close(f.scope, Exit.void)
+        f.recover()
+        const cold = yield* f.make(yield* f.open())
+        assert.strictEqual((yield* cold.backend.wait(f.job.id)).status, 'done')
+        assert.deepStrictEqual(f.received(), f.accepted())
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+)
+
+for (const operation of ['waitCompaction', 'abortCompaction', 'abortConversation'] as const)
+  for (const budget of [20, 100, 2048])
+    it.live(`${operation} preserves concurrent restore health at yield budget ${budget}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const gate: ActivationGate = {
+            schedulerCalls: operation === 'waitCompaction' ? 2 : 1,
+            restoreEntered: yield* Deferred.make<void>(),
+            releaseRestore: yield* Deferred.make<void>(),
+            activationEntered: yield* Deferred.make<void>(),
+            releaseActivation: yield* Deferred.make<void>(),
+          }
+          const f = yield* fixture('memory', 'failure', gate)
+          yield* Deferred.await(gate.restoreEntered)
+          const other = yield* f.first.backend.create()
+          const compaction = yield* f.first.backend.compact!(other)
+          const notifications = yield* Stream.toPull(f.first.scheduler.changes)
+          const control =
+            operation === 'abortConversation'
+              ? f.first.backend.abort(other)
+              : f.first.backend[operation]!(compaction)
+          f.armActivation()
+          const waiting = yield* Effect.forkChild(
+            f.markActivationFiber.pipe(Effect.andThen(control), Effect.exit),
+          )
+          yield* Deferred.await(gate.activationEntered)
+          yield* Deferred.succeed(gate.releaseRestore, undefined)
+          while (Option.isNone(yield* f.first.scheduler.failure)) yield* notifications
+          yield* Deferred.succeed(gate.releaseActivation, undefined)
+          yield* Fiber.join(waiting)
+          while (
+            Option.isNone(yield* f.first.scheduler.failure) &&
+            (yield* f.tasks)[0]!.state.status !== 'terminal'
+          )
+            yield* notifications
+          assert.strictEqual(f.counters.restore, 1)
+          assert.strictEqual(f.counters.provider, 0)
+          assert.isTrue(Option.isSome(yield* f.first.scheduler.failure))
+          assert.strictEqual((yield* f.tasks)[0]!.state.status, 'running')
+          yield* Scope.close(f.scope, Exit.void)
+          f.recover()
+          const cold = yield* f.make(yield* f.open())
+          assert.strictEqual((yield* cold.backend.wait(f.job.id)).status, 'done')
+          assert.deepStrictEqual(f.received(), f.accepted())
+          assert.strictEqual(f.counters.restore, 2)
+          assert.strictEqual(f.counters.provider, 1)
+        }),
+      ).pipe(
+        Effect.provide(NodeServices.layer),
+        Effect.provideService(References.MaxOpsBeforeYield, budget),
+      ),
+    )

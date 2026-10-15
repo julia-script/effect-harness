@@ -1,3 +1,4 @@
+import * as RuntimeRecords from './fixtures/RuntimeRecords.js'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Context from 'effect/Context'
@@ -7,7 +8,6 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Redacted from 'effect/Redacted'
-import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as HttpClient from 'effect/http/HttpClient'
@@ -20,7 +20,7 @@ import * as Storage from '../src/Storage.js'
 import * as Session from '../src/Session.js'
 import * as Record from '../src/Record.js'
 import * as Store from '../src/provider-auth/CredentialStore.js'
-import * as FileStore from '../src/provider-auth-node/CredentialStore.js'
+import * as FileSystemCredentialStore from '../src/provider-auth-node/FileSystemCredentialStore.js'
 import * as Codex from '../src/provider-openai-codex/Model.js'
 import * as Claude from '../src/provider-anthropic/OAuthModel.js'
 import * as ClaudeLanguageModel from '../src/provider-anthropic/OAuthLanguageModel.js'
@@ -35,7 +35,7 @@ it.live(
       Effect.gen(function* () {
         const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
         const authPath = `${directory}/auth.json`
-        const credentials = yield* FileStore.make({ path: authPath })
+        const credentials = yield* FileSystemCredentialStore.make({ path: authPath })
         const accessToken = `header.${btoa(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'account-1' } }))}.SECRET-token`
         yield* Store.save({
           type: 'oauth',
@@ -117,14 +117,15 @@ it.live(
         const tasks = yield* Context.get(storage, Storage.Storage)
           .scanTasks({ conversationId: root, kind: 'harness.run' })
           .pipe(Stream.runCollect)
-        const checkpoint = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ preparation: Schema.toCodecJson(Prepared.SnapshotSchema) }),
-        )(tasks[0]!.state.checkpoint)
+        const checkpoint = yield* RuntimeRecords.preparation(
+          Context.get(storage, Storage.Storage),
+          tasks[0]!.state.checkpoint,
+        )
         assert.notInclude(JSON.stringify(checkpoint), 'SECRET')
         assert.strictEqual(generations, 0)
         assert.strictEqual(refreshes, 0)
         yield* Scope.close(firstScope, Exit.void)
-        const reopenedStore = yield* FileStore.make({ path: authPath })
+        const reopenedStore = yield* FileSystemCredentialStore.make({ path: authPath })
         const restoredModel = yield* Codex.make({
           model: 'gpt-5.4',
           binding,
@@ -141,7 +142,7 @@ it.live(
         assert.strictEqual((yield* second.backend.wait(job.id)).status, 'done')
         assert.strictEqual(refreshes, 1)
         assert.strictEqual(generations, 1)
-        assert.deepEqual(prepared, checkpoint.preparation)
+        assert.deepEqual(prepared, checkpoint)
         const entries = yield* Session.scanEntries(second.session, { conversationId: root }).pipe(
           Stream.runCollect,
         )

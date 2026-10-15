@@ -1,3 +1,4 @@
+import * as ResultEntry from '../src/internal/ToolResultEntry.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
@@ -95,13 +96,9 @@ describe('model-visible tool content', () => {
           observed,
         )
         assert.deepEqual(envelope.content, [Prompt.textPart({ text: 'caption' }), image])
-        const persistedResult = yield* Schema.decodeUnknownEffect(
-          Schema.toCodecJson(ToolResult.ResultSchema),
-        )(persisted?.data)
+        const persistedResult = yield* ResultEntry.read(persisted!)
         assert.deepEqual(persistedResult.content, envelope.content)
-        const persistedMessages = yield* Schema.decodeUnknownEffect(
-          Schema.toCodecJson(Schema.Array(Prompt.Message)),
-        )(persisted?.model)
+        const persistedMessages = yield* ResultEntry.messages(persisted!)
         const persistedPart = persistedMessages
           .flatMap((message) => (message.role === 'tool' ? message.content : []))
           .find((part) => part.type === 'tool-result')
@@ -173,9 +170,7 @@ describe('model-visible tool content', () => {
         )
         assert.strictEqual(observed, 'redacted')
         assert.notInclude(JSON.stringify(observed), 'original text')
-        const persistedResult = yield* Schema.decodeUnknownEffect(
-          Schema.toCodecJson(ToolResult.ResultSchema),
-        )(persisted?.data)
+        const persistedResult = yield* ResultEntry.read(persisted!)
         assert.strictEqual(persistedResult.details, 'original text')
         assert.include(JSON.stringify(persisted?.data), 'redacted')
       }),

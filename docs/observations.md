@@ -9,7 +9,7 @@ const entries = root.pipe(Conversation.entries())
 const nextEntries = root.pipe(Conversation.entries({ after: lastSeen }))
 ```
 
-Entries include user input, assistant messages, tool progress, diagnostics, and results. `InputDone.answer` identifies the final assistant entry; entry `model` values encode native Effect AI prompt messages through schemas.
+Entries include user input, assistant messages, tool progress, diagnostics, and results. `InputDone.answer` identifies the final assistant entry; use `ContextProjection.messages(entry)` to obtain native Effect AI prompt messages. Tool results store their canonical channels in entry data and reconstruct model messages during projection. For programmatic values, UI details, or structured diagnostics, use `ToolResultRecord.read(entry)` on a `tool.result` entry; it restores aliases without requiring services.
 
 `Conversation.snapshot(document, target)` returns an optional decoded document revision. `Conversation.watch(document, target)` returns a Stream starting with the current revision and then committed revisions of that document. Watching a missing document fails; retiring the document ends the stream. Decoding happens on the client, using the supplied schema. The backend carries schema-backed JSON data.
 

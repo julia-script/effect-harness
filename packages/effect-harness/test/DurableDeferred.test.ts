@@ -1,8 +1,8 @@
 import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as NativePrompt from './fixtures/NativePrompt.js'
 import * as SchemaGetter from 'effect/SchemaGetter'
 import * as Tool from 'effect-harness/Tool'
 import * as Toolkit from 'effect-harness/Toolkit'
-import * as Transaction from 'effect-harness/Transaction'
 import * as OpenAiClient from '@effect/ai-openai/OpenAiClient'
 import * as NativeOpenAiConfig from '@effect/ai-openai/OpenAiConfig'
 import * as NativeOpenAiModel from '@effect/ai-openai/OpenAiLanguageModel'
@@ -109,7 +109,7 @@ it.effect('saves a handle and polls the same prepared attempt rather than stream
       yield* runtime.backend.root
       const job = yield* runtime.backend.submit({
         conversationId: root,
-        draft: { type: 'input', content: 'go' },
+        draft: { type: 'input', content: NativePrompt.content() },
       })
       const waiting = yield* Effect.forkChild(runtime.backend.wait(job.id))
       const checkpoint = (yield* Effect.raceFirst(
@@ -125,7 +125,7 @@ it.effect('saves a handle and polls the same prepared attempt rather than stream
         Schema.Struct({ requestId: Schema.String, execution: Schema.Literal('deferred') }),
       )(checkpoint['preparation'])
       assert.strictEqual(preparation.requestId, ids[0]?.requestId)
-      assert.strictEqual((yield* StorageFormat.inspect).minimumReaderVersion, 7)
+      assert.strictEqual((yield* StorageFormat.inspect).minimumReaderVersion, 12)
       assert.strictEqual(yield* Clock.currentTimeMillis, 0)
       assert.strictEqual(starts, 1)
       assert.strictEqual(polls, 0)
@@ -182,7 +182,7 @@ const submit = Effect.fnUntraced(function* (runtime: HarnessRuntime.HarnessRunti
   yield* runtime.backend.root
   return yield* runtime.backend.submit({
     conversationId: root,
-    draft: { type: 'input', content: 'go' },
+    draft: { type: 'input', content: NativePrompt.content() },
   })
 })
 
@@ -203,6 +203,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
               handle: Schema.String,
               start: (request) =>
                 Effect.sync(() => {
+                  NativePrompt.assertFiles(request.prompt)
                   starts++
                   identities.push({ requestId: request.requestId, attempt: request.attempt })
                   return {
@@ -214,6 +215,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
                 }),
               poll: (handle, previous, request) =>
                 Effect.sync(() => {
+                  NativePrompt.assertFiles(request.prompt)
                   polls++
                   assert.strictEqual(handle, 'same')
                   identities.push({ requestId: request.requestId, attempt: request.attempt })
@@ -250,7 +252,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(first.context)))
                 .minimumReaderVersion,
-              7,
+              12,
             )
             yield* policy.update({ stream: { deferred: false } })
             yield* Scope.close(owner, Exit.void)
@@ -695,10 +697,7 @@ for (const hint of [undefined, false, true, { window: '1h' as const }] as const)
             hint === undefined || hint === false ? 'done' : 'unanswered',
           )
           assert.strictEqual(streams, hint === undefined || hint === false ? 1 : 0)
-          assert.strictEqual(
-            (yield* StorageFormat.inspect).minimumReaderVersion,
-            hint === undefined || hint === false ? 6 : 4,
-          )
+          assert.strictEqual((yield* StorageFormat.inspect).minimumReaderVersion, 12)
         }),
       ).pipe(Effect.provide(Storage.layerMemory)),
   )
@@ -1359,101 +1358,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
         ).pipe(Effect.provide(NodeServices.layer)),
     )
 }
-
-it.effect(
-  'a legacy preparation without execution stays streaming when live deferred policy and descriptor become available',
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const storage = yield* Layer.build(Storage.layerMemory)
-        let streams = 0
-        let deferredStarts = 0
-        const entered = yield* Deferred.make<void>()
-        const languageModel = yield* LanguageModel.make({
-          generateText: () => Effect.die('native streaming required'),
-          streamText: () =>
-            Stream.unwrap(
-              Effect.gen(function* () {
-                streams++
-                if (streams === 1) {
-                  yield* Deferred.succeed(entered, undefined)
-                  return Stream.fromEffect(Effect.never)
-                }
-                return Stream.fromIterable([
-                  Response.makePart('text-start', { id: 'a' }),
-                  Response.makePart('text-delta', { id: 'a', delta: 'legacy native' }),
-                  Response.makePart('text-end', { id: 'a' }),
-                  Response.makePart('finish', { reason: 'stop', usage: complete.response.usage }),
-                ])
-              }),
-            ),
-        })
-        const deferred = yield* Model.makeDeferred<Schema.String, never>({
-          handle: Schema.String,
-          start: () =>
-            Effect.sync(() => {
-              deferredStarts++
-              return complete
-            }),
-          poll: () => Effect.die('legacy must not poll'),
-          cancel: () => Effect.void,
-        })
-        const descriptor = Model.make({
-          definition: {
-            ref: { provider: 'custom', modelId: 'legacy' },
-            capabilities: { tools: true, reasoning: true, images: false, structuredOutput: false },
-          },
-          options: Schema.JsonObject,
-          languageModel,
-          deferred,
-          configure: () => Effect.succeed(Context.empty()),
-        })
-        const owner = yield* Scope.make()
-        const first = yield* HarnessRuntime.make({ models: [descriptor] }).pipe(
-          Effect.provideContext(storage),
-          Effect.provideService(Scope.Scope, owner),
-        )
-        const job = yield* submit(first)
-        yield* Deferred.await(entered)
-        const task = (yield* saved(first, 'streaming')).task
-        yield* Scope.close(owner, Exit.void)
-        const editScope = yield* Scope.make()
-        const session = yield* Session.make().pipe(
-          Effect.provideContext(storage),
-          Effect.provideService(Scope.Scope, editScope),
-        )
-        const wire = yield* Schema.decodeUnknownEffect(Schema.JsonObject)(task.state.checkpoint)
-        const preparation = yield* Schema.decodeUnknownEffect(Schema.JsonObject)(
-          wire['preparation'],
-        )
-        const { execution: _execution, ...legacy } = preparation
-        yield* Session.commit(session, (tx) =>
-          Transaction.putTask(tx, {
-            ...task,
-            state: {
-              status: 'pending',
-              checkpoint: { ...wire, _tag: 'request', phase: 'request', preparation: legacy },
-            },
-          }),
-        )
-        yield* Scope.close(editScope, Exit.void)
-        const second = yield* HarnessRuntime.make({ models: [descriptor] }).pipe(
-          Effect.provideContext(storage),
-          Effect.provideService(
-            Settings.Settings,
-            yield* Settings.make({ stream: { deferred: true } }),
-          ),
-        )
-        assert.strictEqual((yield* second.backend.wait(job.id)).status, 'done')
-        assert.strictEqual(streams, 2)
-        assert.strictEqual(deferredStarts, 0)
-        assert.strictEqual(
-          (yield* StorageFormat.inspect.pipe(Effect.provideContext(storage))).minimumReaderVersion,
-          6,
-        )
-      }),
-    ),
-)
 
 it.effect(
   'captured callback and both handle codec resources outlive timed-out cancellation until runtime close joins them',

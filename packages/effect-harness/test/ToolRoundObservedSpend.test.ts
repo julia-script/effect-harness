@@ -377,7 +377,7 @@ describe('checkpoint observed spend during cold denial', () => {
                 : expectedCost.amount + (mode === 'sibling' ? 3 : 0),
             )
             const round = yield* Session.commit(third.session, (tx) =>
-              Round.read(tx, root, roundKey),
+              Round.receipt(tx, root, roundKey),
             )
             const slot = round.slots[0]!
             const denied = binding !== 'compatible'
@@ -438,12 +438,15 @@ describe('checkpoint observed spend during cold denial', () => {
               const storedRound = values
                 .flatMap((value) => {
                   const decoded = Schema.decodeUnknownOption(
-                    Schema.Struct({ round: Round.RoundSchema }),
+                    Schema.Struct({ round: Round.StoredSchema }),
                   )(value)
                   return Option.isSome(decoded) ? [decoded.value.round] : []
                 })
                 .find((value) => value.ownerTaskId === parent.id)!
-              assert.deepStrictEqual(storedRound.slots[0], slot)
+              assert.deepStrictEqual(storedRound.slots[0]?.receipt, slot.receipt)
+              assert.strictEqual(storedRound.slots[0]?.taskId, slot.taskId)
+              assert.strictEqual(storedRound.slots[0]?.entryId, slot.entryId)
+              if (entry !== undefined) assert.isUndefined(storedRound.slots[0]?.result)
               const progress = values
                 .flatMap((value) => {
                   const decoded = Schema.decodeUnknownOption(ToolProgress.Snapshot)(value)

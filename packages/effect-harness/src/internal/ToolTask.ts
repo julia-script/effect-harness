@@ -26,6 +26,7 @@ import * as Usage from '../Usage.js'
 import * as Subagent from '../Subagent.js'
 import * as Stream from 'effect/Stream'
 import * as Round from './ToolRound.js'
+import * as ResultEntry from './ToolResultEntry.js'
 import * as Progress from './ToolProgress.js'
 import * as Preparation from './RequestPreparation.js'
 
@@ -307,10 +308,9 @@ export const pipeline = (registry: Registry.Service) => {
           Effect.mapError(reportingFailure),
         ),
     }
-    const { modelTools: _modelTools, ...allAgent } = options.agent ?? {}
     const available = Inventory.inventory(lease.snapshot, input.caller, {
       ...options,
-      agent: allAgent,
+      selection: 'permitted',
     }).map((item) => item.declaration.name)
     let call = checkpoint.acceptedCall ?? input.call
     let invoked = interrupted || checkpoint.observedResult !== undefined
@@ -619,28 +619,32 @@ export const pipeline = (registry: Registry.Service) => {
   return { execute, abort, clear: () => cancelled.clear() }
 }
 
-const modelInput = (input: Round.Input): PipelineInput => ({
-  call: input.call,
+const modelInput = (
+  input: Round.Input,
+  preparation: Prepared.Snapshot,
+  call: Tool.Call,
+): PipelineInput => ({
+  call,
   replay: input.replay,
   caller: 'model',
   retention: input.retention,
   progress: input.progress,
   progressEnabled: true,
-  ...(input.preparation.tools.find((item) => item.declaration.name === input.call.name) ===
-  undefined
+  ...(preparation.tools.find((item) => item.declaration.name === input.call.name) === undefined
     ? {}
     : {
-        offered: input.preparation.tools.find((item) => item.declaration.name === input.call.name)!,
+        offered: preparation.tools.find((item) => item.declaration.name === input.call.name)!,
       }),
   options: {
+    preparedTools: preparation.allTools,
     agent: {
-      ...input.preparation.agent,
+      ...preparation.agent,
       toolkits: {
-        ...input.preparation.agent.toolkits,
+        ...preparation.agent.toolkits,
         inherit: false,
-        registrations: input.preparation.requiredBindings.map((item) => item.id),
+        registrations: preparation.requiredBindings.map((item) => item.id),
         bindings: Object.fromEntries(
-          input.preparation.allTools.map((item) => [
+          preparation.allTools.map((item) => [
             item.declaration.name,
             { binding: item.binding.id, version: item.binding.version },
           ]),
@@ -649,10 +653,10 @@ const modelInput = (input: Round.Input): PipelineInput => ({
     },
   },
   imageReadPolicy:
-    input.preparation.model._tag === 'descriptor' &&
-    input.preparation.model.definition.capabilities.images === true &&
-    input.preparation.model.definition.imageLimits !== undefined
-      ? { vision: true, limits: input.preparation.model.definition.imageLimits }
+    preparation.model._tag === 'descriptor' &&
+    preparation.model.definition.capabilities.images === true &&
+    preparation.model.definition.imageLimits !== undefined
+      ? { vision: true, limits: preparation.model.definition.imageLimits }
       : { vision: false },
 })
 const modelSink = (execution: TaskExecutionAccess.Access, input: Round.Input): Sink => ({
@@ -716,27 +720,6 @@ const modelSink = (execution: TaskExecutionAccess.Access, input: Round.Input): S
         observedSpend,
         disposition,
       } = meta
-      const plain = result.content.flatMap((part) =>
-        part.type === 'text' && Object.keys(part.options).length === 0 ? [part.text] : [],
-      )
-      const value =
-        !explicitEnvelope && plain.length === result.content.length
-          ? plain.join('\n')
-          : yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.Envelope))({
-              _tag: '@effect-harness/ToolContent',
-              content: result.content,
-            })
-      const output = Prompt.toolMessage({
-        content: [
-          Prompt.toolResultPart({
-            id: call.id,
-            name: call.name,
-            providerExecuted: false,
-            isFailure: result.isError,
-            result: value,
-          }),
-        ],
-      })
       return yield* Effect.gen(function* () {
         const { round, found } = yield* Round.slot(
           tx,
@@ -758,10 +741,12 @@ const modelSink = (execution: TaskExecutionAccess.Access, input: Round.Input): S
         const entry = yield* Transaction.appendEntry(tx, execution.conversationId, {
           kind: 'tool.result',
           ...(usage === undefined ? {} : { usage }),
-          model: yield* Schema.encodeEffect(Schema.Array(Schema.toCodecJson(Prompt.Message)))([
-            output,
-          ]),
-          data: yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.ResultSchema))(result),
+          data: yield* ResultEntry.encode({
+            ...result,
+            callId: call.id,
+            name: call.name,
+            explicitEnvelope,
+          }),
         })
         let receiptOutcome: Usage.Outcome = { _tag: 'completed', value: { entryId: entry.id } }
         if (interrupted)
@@ -868,12 +853,16 @@ const disposals = new WeakMap<Task.Any, () => void>()
 export const clear = (definition: Task.Any) => disposals.get(definition)?.()
 /** Native cold disposition; the parent also verifies the child, slot and accounting facts. */
 export const unsafeSubagentRecovery = 'unsafe-subagent-recovery'
-export const make = (registry: Registry.Service) => {
+export const make = (
+  registry: Registry.Service,
+  protect: Effect.Effect<unknown, import('../StorageFormat.js').Failure>,
+) => {
   const runner = pipeline(registry)
   const execute = Effect.fnUntraced(function* ({
     input,
     checkpoint,
   }: Task.PhaseInput<typeof Round.InputSchema, typeof Round.CheckpointSchema, 'execute'>) {
+    yield* protect
     const execution = yield* TaskExecution
     if (
       input.replay === 'unsafe' &&
@@ -946,7 +935,14 @@ export const make = (registry: Registry.Service) => {
         return
       }
     }
-    return yield* runner.execute(modelInput(input), checkpoint, modelSink(execution, input))
+    const { round, found } = yield* execution.commit((tx) =>
+      Round.slot(tx, execution.conversationId, execution.taskId, input),
+    )
+    return yield* runner.execute(
+      modelInput(input, round.preparation, found.call),
+      checkpoint,
+      modelSink(execution, input),
+    )
   })
   const abort = Effect.fnUntraced(function* ({
     input,
@@ -955,8 +951,16 @@ export const make = (registry: Registry.Service) => {
     readonly input: Round.Input
     readonly checkpoint: Round.Checkpoint
   }) {
+    yield* protect
     const execution = yield* TaskExecution
-    return yield* runner.abort(modelInput(input), checkpoint, modelSink(execution, input))
+    const { round, found } = yield* execution.commit((tx) =>
+      Round.slot(tx, execution.conversationId, execution.taskId, input),
+    )
+    return yield* runner.abort(
+      modelInput(input, round.preparation, found.call),
+      checkpoint,
+      modelSink(execution, input),
+    )
   })
   const definition = Task.make({
     ...contract,

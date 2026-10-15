@@ -543,6 +543,7 @@ it.live('poisons a JSONL writer after a partial append and recovers on reopen', 
           fs.open(path, options).pipe(
             Effect.map((file) => ({
               ...file,
+              sync: file.sync,
               writeAll: (bytes) =>
                 file.writeAll(bytes.subarray(0, 12)).pipe(Effect.andThen(Effect.fail(fault))),
             })),

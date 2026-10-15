@@ -113,6 +113,11 @@ export const attach = Effect.fnUntraced(function* (
     revision: 0,
     value: raw.value,
   }
+  const release = Runtime.pinDocument(
+    runtime,
+    yield* Value.key(request.address),
+    initial.incarnation,
+  )
   let latest: Remote.WireFrame = initial
   let revision = 0
   let taken = 0
@@ -120,6 +125,7 @@ export const attach = Effect.fnUntraced(function* (
   let rebasing = false
   const detach = Effect.gen(function* () {
     active = false
+    release()
     runtime.documentMounts.delete(mount)
     yield* Queue.shutdown(queue)
   })
@@ -151,14 +157,18 @@ export const attach = Effect.fnUntraced(function* (
         }
         if (value === null) {
           active = false
+          release()
           runtime.documentMounts.delete(mount)
           yield* Queue.end(queue)
         }
       }),
     close: (error) =>
-      error === undefined
-        ? Queue.end(queue).pipe(Effect.asVoid)
-        : Queue.fail(queue, error).pipe(Effect.asVoid),
+      Effect.gen(function* () {
+        active = false
+        release()
+        if (error === undefined) yield* Queue.end(queue)
+        else yield* Queue.fail(queue, error)
+      }),
   }
   runtime.documentMounts.add(mount)
   yield* Scope.addFinalizer(scope, detach)

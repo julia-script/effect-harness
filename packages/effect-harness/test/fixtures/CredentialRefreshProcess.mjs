@@ -1,7 +1,7 @@
 import * as Fs from 'node:fs/promises'
 import * as Effect from 'effect/Effect'
 import { CredentialStore, Resolver } from 'effect-harness/provider-auth'
-import { CredentialStore as FileStore } from 'effect-harness/provider-auth-node'
+import { FileSystemCredentialStore } from 'effect-harness/provider-auth-node'
 
 const [path, id] = process.argv.slice(2)
 const other = id === 'a' ? 'b' : 'a'
@@ -18,7 +18,7 @@ await Effect.runPromise(
       ))
     )
       yield* Effect.sleep(5)
-    const store = yield* FileStore.make({ path })
+    const store = yield* FileSystemCredentialStore.make({ path })
     const { resolve } = yield* Resolver.make({
       binding,
       refresh: (old) =>

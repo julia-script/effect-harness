@@ -11,6 +11,7 @@ import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Session from 'effect-harness/Session'
 import * as Storage from 'effect-harness/Storage'
+import * as ToolResultRecord from 'effect-harness/ToolResultRecord'
 import * as ToolSpill from 'effect-harness/ToolSpill'
 import * as Toolkit from 'effect-harness/Toolkit'
 import * as ToolkitFileSystem from 'effect-harness/ToolkitFileSystem'
@@ -111,7 +112,7 @@ NodeRuntime.runMain(
         Stream.runCollect,
       )
       for (const entry of entries.filter((entry) => entry.kind === 'tool.result'))
-        yield* Effect.log(entry.data)
+        yield* Effect.log(yield* ToolResultRecord.read(entry))
     }),
   ).pipe(Effect.provide(files)),
 )
