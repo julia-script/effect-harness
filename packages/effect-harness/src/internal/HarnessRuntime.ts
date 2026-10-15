@@ -81,6 +81,9 @@ export const make = Effect.fnUntraced(function* <
     Effect.gen(function* () {
       const storage = yield* Storage
       const session = yield* Session.make({
+        ...(options.documentRetentionMs === undefined
+          ? {}
+          : { documentRetentionMs: options.documentRetentionMs }),
         initializers: [
           ConversationInitializer.make({
             execute: (tx, record) =>

@@ -545,13 +545,13 @@ const taskDocuments = Effect.fnUntraced(function* (state: State, taskId: Domain.
 const load = Effect.fnUntraced(function* (state: State, address: Record.DocumentAddress) {
   const key = yield* Value.key(address)
   const previous = state.documents.get(key)
-  if (previous !== undefined) return previous.retired ? Option.none<Draft>() : Option.some(previous)
-  const record = yield* state.runtime.storage.findDocument(address)
-  if (Option.isNone(record)) return Option.none<Draft>()
-  if (state.retirements.has(record.value.id)) return Option.none<Draft>()
-  const stored = yield* state.runtime.storage.document(record.value.id)
-  if (Option.isNone(stored))
-    return yield* error('invalid', 'document.load', 'Document content is absent')
+  if (previous !== undefined) {
+    Runtime.touchDocument(state.runtime, key)
+    return previous.retired ? Option.none<Draft>() : Option.some(previous)
+  }
+  const stored = yield* Runtime.load(state.runtime, address)
+  if (Option.isNone(stored) || state.retirements.has(stored.value.record.id))
+    return Option.none<Draft>()
   const draft: Draft = {
     key,
     original: stored,
@@ -564,7 +564,7 @@ const load = Effect.fnUntraced(function* (state: State, address: Record.Document
   }
   yield* active(state)
   state.documents.set(key, draft)
-  state.incarnations.set(record.value.id, draft)
+  state.incarnations.set(stored.value.record.id, draft)
   return Option.some(draft)
 })
 
@@ -1189,13 +1189,13 @@ export const writes = Effect.fnUntraced(function* (state: State) {
 export const adopt = Effect.fnUntraced(function* (state: State, seq: Sequence.Sequence) {
   const documents = new Map<Domain.DocumentId, Record.StoredDocument | null>()
   for (const [id, retirement] of state.retirements) {
-    state.runtime.cache.delete(retirement.key)
+    Runtime.dropDocument(state.runtime, retirement.key)
     documents.set(id, null)
   }
   for (const draft of state.incarnations.values()) {
     if (draft.record === undefined && !draft.changed && !draft.retired) continue
     if (draft.retired) {
-      state.runtime.cache.delete(draft.key)
+      Runtime.dropDocument(state.runtime, draft.key)
       if (draft.record === undefined) documents.set(draft.value.record.id, null)
     } else {
       const stored = yield* Schema.decodeEffect(Record.StoredDocumentSchema)({
@@ -1205,7 +1205,7 @@ export const adopt = Effect.fnUntraced(function* (state: State, seq: Sequence.Se
           createdAt: draft.record === undefined ? draft.value.record.createdAt : seq,
         },
       })
-      state.runtime.cache.set(draft.key, Option.some(stored))
+      Runtime.cacheDocument(state.runtime, draft.key, Option.some(stored))
       documents.set(stored.record.id, stored)
     }
   }
