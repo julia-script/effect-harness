@@ -148,7 +148,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
               assert.strictEqual(
                 (yield* StorageFormat.inspect.pipe(Effect.provideContext(first.context)))
                   .minimumReaderVersion,
-                6,
+                12,
               )
               yield* Scope.close(owner, Exit.void)
               const second = yield* open

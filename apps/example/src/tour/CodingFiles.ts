@@ -11,6 +11,7 @@ import * as FileReader from 'effect-harness/FileReader'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Session from 'effect-harness/Session'
 import * as Storage from 'effect-harness/Storage'
+import * as ToolResultRecord from 'effect-harness/ToolResultRecord'
 import * as Toolkit from 'effect-harness/Toolkit'
 import * as ToolkitFileSystem from 'effect-harness/ToolkitFileSystem'
 import * as MutationCoordinator from 'effect-harness/coding/MutationCoordinator'
@@ -91,7 +92,7 @@ NodeRuntime.runMain(
         Stream.runCollect,
       )
       for (const entry of saved.filter((entry) => entry.kind === 'tool.result'))
-        yield* Effect.log(entry.data)
+        yield* Effect.log(yield* ToolResultRecord.read(entry))
       if (
         (yield* fs.readFileString(`${root}/notes/greeting.txt`)) !==
         'Hello from ready-made tools!\n'

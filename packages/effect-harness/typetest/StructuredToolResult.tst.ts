@@ -7,6 +7,8 @@ import * as Prompt from 'effect/ai/Prompt'
 import * as Extension from 'effect-harness/Extension'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Hook from 'effect-harness/Hook'
+import type * as Record from 'effect-harness/Record'
+import * as ToolResultRecord from 'effect-harness/ToolResultRecord'
 import type * as Storage from 'effect-harness/Storage'
 import type { StorageFormat } from 'effect-harness/StorageFormat'
 import type * as LanguageModel from 'effect/ai/LanguageModel'
@@ -111,4 +113,10 @@ test('hooks expose the durable JSON channel independently of visible content and
       return Effect.succeed({ ...result, content: [] })
     },
   })
+})
+
+test('canonical result reading has a typed schema error and no services', () => {
+  expect(ToolResultRecord.read).type.toBe<
+    (entry: Record.Entry) => Effect.Effect<ToolResult.Result, Schema.SchemaError>
+  >()
 })

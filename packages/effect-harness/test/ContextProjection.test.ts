@@ -1,5 +1,6 @@
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
+import * as Prompt from 'effect/ai/Prompt'
 import * as Schema from 'effect/Schema'
 import * as Queue from 'effect/Queue'
 import * as Stream from 'effect/Stream'
@@ -732,3 +733,49 @@ describe('bounded canonical context projection', () => {
       ).pipe(Effect.provide(Storage.layerMemory)),
   )
 })
+
+it.effect(
+  'entry messages preserve native multi-message content and reject malformed canonical results',
+  () =>
+    Effect.gen(function* () {
+      const expected = [
+        Prompt.userMessage({
+          content: [
+            Prompt.filePart({
+              mediaType: 'image/png',
+              data: new Uint8Array([0, 1, 254, 255]),
+              options: { openai: { imageDetail: 'high' } },
+            }),
+          ],
+        }),
+        Prompt.assistantMessage({ content: [Prompt.textPart({ text: 'second message' })] }),
+      ]
+      const model = yield* Schema.encodeEffect(Schema.Array(Schema.toCodecJson(Prompt.Message)))(
+        expected,
+      )
+      assert.deepStrictEqual(yield* Projection.messages(entry(2, { model })), [
+        Prompt.userMessage({
+          content: [
+            Prompt.filePart({
+              mediaType: 'image/png',
+              data: 'AAH+/w==',
+              options: { openai: { imageDetail: 'high' } },
+            }),
+          ],
+        }),
+        expected[1]!,
+      ])
+      assert.deepStrictEqual(yield* Projection.messages(entry(3)), [])
+      assert.isTrue(
+        Schema.isSchemaError(
+          yield* Projection.messages(
+            entry(4, {
+              kind: 'tool.result',
+              data: null,
+              model,
+            }),
+          ).pipe(Effect.flip),
+        ),
+      )
+    }),
+)

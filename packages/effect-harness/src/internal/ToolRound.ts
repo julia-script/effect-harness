@@ -13,14 +13,18 @@ import * as ToolControl from '../ToolControl.js'
 import * as ToolResult from '../ToolResult.js'
 import * as Transaction from '../Transaction.js'
 import * as Usage from '../Usage.js'
+import * as Request from './RequestRecord.js'
+import * as ResultEntry from './ToolResultEntry.js'
+import * as ResultRecord from './ResultRecord.js'
+import * as Struct from 'effect/Struct'
 
 export const InputSchema = Schema.Struct({
   ownerTaskId: Record.TaskId,
   roundKey: Schema.NonEmptyString,
   index: Schema.Natural,
-  call: Tool.CallSchema,
+  call: Tool.CallSchema.mapFields(Struct.omit(['arguments'])),
   replay: Tool.ReplaySchema,
-  preparation: Prepared.SnapshotSchema,
+  preparation: Request.ReferenceSchema,
   retention: OutputRetention.Policy,
   progress: ProgressPolicy.Policy,
 })
@@ -30,7 +34,7 @@ export const CheckpointSchema = Schema.TaggedStruct('execute', {
   started: Schema.Boolean,
   attempt: Usage.AttemptId,
   acceptedCall: Schema.optionalKey(Tool.CallSchema),
-  observedResult: Schema.optionalKey(ToolResult.ResultSchema),
+  observedResult: Schema.optionalKey(ResultRecord.result),
   explicitEnvelope: Schema.optionalKey(Schema.Boolean),
 })
 export type Checkpoint = typeof CheckpointSchema.Type
@@ -55,13 +59,26 @@ export const RoundSchema = Schema.Struct({
   slots: Schema.Array(SlotSchema),
 })
 export type Round = typeof RoundSchema.Type
+export const StoredSchema = RoundSchema.mapFields((fields) => ({
+  ...fields,
+  preparation: Schema.optionalKey(Request.ReferenceSchema),
+  slots: Schema.Array(
+    SlotSchema.mapFields((slot) => ({
+      ...slot,
+      call: Tool.CallSchema.mapFields((call) => ({
+        ...call,
+        arguments: Schema.optionalKey(call.arguments),
+      })),
+    })),
+  ),
+}))
 export const document = Document.family({
   kind: 'harness.tool.round',
   version: 1,
   scope: 'conversation',
   history: 'latest',
   fork: 'initial',
-  schema: Schema.Struct({ round: Schema.optionalKey(Schema.toCodecJson(RoundSchema)) }),
+  schema: Schema.Struct({ round: Schema.optionalKey(Schema.toCodecJson(StoredSchema)) }),
   initial: () => ({}),
 })
 export const target = (conversationId: Record.ConversationId, key: string): Document.Target => ({
@@ -71,12 +88,12 @@ export const target = (conversationId: Record.ConversationId, key: string): Docu
 export const progressKey = (taskId: Record.TaskId) => `tool:${taskId}`
 export const invalid = (message: string) =>
   new SessionError({ reason: 'invalid', operation: 'tool.round', message })
-const sameCall = Schema.toEquivalence(Tool.CallSchema)
-const samePreparation = Schema.toEquivalence(Prepared.SnapshotSchema)
+const samePreparation = Schema.toEquivalence(Request.ReferenceSchema)
 const sameRetention = Schema.toEquivalence(OutputRetention.Policy)
 const sameProgress = Schema.toEquivalence(ProgressPolicy.Policy)
 
-export const read = Effect.fnUntraced(function* (
+/** Resolve canonical entry results without requiring a completed round's retired request. */
+export const receipt = Effect.fnUntraced(function* (
   tx: Transaction.Transaction,
   conversationId: Record.ConversationId,
   key: string,
@@ -84,7 +101,37 @@ export const read = Effect.fnUntraced(function* (
   const saved = yield* Transaction.snapshot(tx, document, target(conversationId, key))
   if (Option.isNone(saved) || saved.value.value.round === undefined)
     return yield* invalid('The durable tool round is absent')
-  const round = saved.value.value.round
+  const stored = saved.value.value.round
+  return {
+    ...stored,
+    slots: yield* Effect.forEach(stored.slots, (slot) =>
+      Effect.gen(function* () {
+        if (slot.entryId === undefined) return slot
+        const entry = yield* Transaction.entry(tx, slot.entryId)
+        if (
+          Option.isNone(entry) ||
+          entry.value.conversationId !== conversationId ||
+          entry.value.kind !== 'tool.result' ||
+          entry.value.byTaskId !== slot.taskId
+        )
+          return yield* invalid('The canonical tool result is absent or belongs to another child')
+        return { ...slot, result: yield* ResultEntry.read(entry.value) }
+      }),
+    ),
+  }
+})
+export const read = Effect.fnUntraced(function* (
+  tx: Transaction.Transaction,
+  conversationId: Record.ConversationId,
+  key: string,
+) {
+  const stored = yield* receipt(tx, conversationId, key)
+  if (stored.preparation === undefined)
+    return yield* invalid('The tool round has already released its request')
+  const round = yield* Schema.decodeUnknownEffect(RoundSchema)({
+    ...stored,
+    preparation: yield* Request.read(tx, stored.preparation),
+  })
   if (
     key !== `tool-round:${round.ownerTaskId}:${round.preparation.requestId}` ||
     round.slots.length === 0 ||
@@ -165,7 +212,19 @@ export const write = (
   conversationId: Record.ConversationId,
   key: string,
   round: Round,
-) => Transaction.setDocument(tx, document, target(conversationId, key), { round })
+) =>
+  Transaction.setDocument(tx, document, target(conversationId, key), {
+    round: {
+      ...Struct.omit(round, ['preparation']),
+      ...(round.applied
+        ? {}
+        : { preparation: Request.reference(round.ownerTaskId, round.preparation) }),
+      slots: round.slots.map((slot) => ({
+        ...(slot.entryId !== undefined || round.applied ? Struct.omit(slot, ['result']) : slot),
+        ...(round.applied ? { call: Struct.omit(slot.call, ['arguments']) } : {}),
+      })),
+    },
+  })
 
 export const slot = Effect.fnUntraced(function* (
   tx: Transaction.Transaction,
@@ -181,9 +240,10 @@ export const slot = Effect.fnUntraced(function* (
     round.ownerTaskId !== input.ownerTaskId ||
     found === undefined ||
     found.taskId !== taskId ||
-    !sameCall(found.call, input.call) ||
+    found.call.id !== input.call.id ||
+    found.call.name !== input.call.name ||
     found.replay !== input.replay ||
-    !samePreparation(round.preparation, input.preparation) ||
+    !samePreparation(Request.reference(round.ownerTaskId, round.preparation), input.preparation) ||
     !sameRetention(found.retention, input.retention) ||
     !sameProgress(found.progress, input.progress) ||
     Option.isNone(current) ||

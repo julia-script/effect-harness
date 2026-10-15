@@ -1,6 +1,7 @@
 /** Latest successful input measurement. A rewritten prefix or tool set invalidates it. */
+import * as PromptWire from '../PromptWire.js'
 import * as Schema from 'effect/Schema'
-import * as Prompt from 'effect/ai/Prompt'
+import type * as Prompt from 'effect/ai/Prompt'
 import * as Document from '../Document.js'
 import * as Projection from '../ContextProjection.js'
 import * as Model from '../Model.js'
@@ -10,7 +11,7 @@ export { target }
 export const Baseline = Schema.Struct({
   identity: Schema.String,
   model: Schema.optionalKey(Model.SelectionSchema),
-  prompt: Prompt.Prompt,
+  prompt: PromptWire.Prompt,
   tools: Schema.Array(Projection.ToolDeclarationSchema),
   inputTokens: Schema.Natural,
 })
@@ -24,7 +25,7 @@ export const document = Document.define({
   schema: Schema.Struct({ baseline: Schema.optionalKey(Schema.toCodecJson(Baseline)) }),
   initial: () => ({}),
 })
-const sameMessages = Schema.toEquivalence(Schema.Array(Prompt.Message))
+const sameMessages = Schema.toEquivalence(Schema.Array(PromptWire.Message))
 const sameTools = Schema.toEquivalence(Schema.Array(Projection.ToolDeclarationSchema))
 /** Provider input totals already include cache reads/writes. Never add their subcounts again. */
 export const applicable = (

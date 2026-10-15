@@ -1,6 +1,8 @@
+import * as ToolResultRecord from 'effect-harness/ToolResultRecord'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { NodeServices } from '@effect/platform-node'
 import { assert, describe, it } from '@effect/vitest'
+import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -11,7 +13,11 @@ import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
+import * as Response from 'effect/ai/Response'
+import * as Model from 'effect-harness/Model'
+import * as Settings from 'effect-harness/Settings'
 import * as Prompt from 'effect/ai/Prompt'
+import * as ContextProjection from 'effect-harness/ContextProjection'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Hook from 'effect-harness/Hook'
 import * as Session from 'effect-harness/Session'
@@ -32,7 +38,6 @@ const finish = {
   response: undefined,
 }
 const text = (value: string) => [Prompt.textPart({ text: value })]
-const encodedResult = Schema.toCodecJson(ToolResult.ResultSchema)
 const toolkit = Toolkit.make(
   Tool.makeResult('work', {
     success: Schema.Struct({ count: Schema.Finite }),
@@ -82,6 +87,54 @@ const memory = <A, E, R>(program: Effect.Effect<A, E, R>) =>
   Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
 
 describe('independent tool result channels', () => {
+  it.effect('empty content still delivers actionable diagnostics to the model', () =>
+    memory(
+      Effect.gen(function* () {
+        const diagnostics: ReadonlyArray<ToolResult.Diagnostic> = [
+          { severity: 'warning', code: 'pagination', message: 'Rows truncated; rerun with page=2' },
+          { severity: 'info', message: 'Results are ordered by date' },
+          { severity: 'error', message: 'One source could not be reached' },
+        ]
+        const { observed, settled, persisted } = yield* execute(toolkit).pipe(
+          Effect.provide(
+            toolkit.toLayer({
+              work: () =>
+                Effect.succeed({
+                  content: [],
+                  structuredOutput: { count: 7 },
+                  details: { panel: 'private' },
+                  diagnostics,
+                }),
+            }),
+          ),
+        )
+        assert.strictEqual(settled.status, 'done')
+        assert.strictEqual(
+          observed,
+          '<harness>\n[warning] Rows truncated; rerun with page=2\n[info] Results are ordered by date\n[error] One source could not be reached\n</harness>',
+        )
+        const restored = yield* ToolResultRecord.read(persisted!)
+        assert.deepEqual(restored.content, [])
+        assert.deepEqual(restored.diagnostics, diagnostics)
+        assert.deepEqual(restored.structuredOutput, { count: 7 })
+        assert.deepEqual(restored.details, { panel: 'private' })
+        assert.isUndefined(persisted!.model)
+        const snapshot = JSON.stringify(persisted)
+        for (let index = 0; index < 3; index++) {
+          const messages = yield* ContextProjection.messages(persisted!)
+          const part = messages
+            .flatMap((message) => (message.role === 'tool' ? message.content : []))
+            .find((part) => part.type === 'tool-result')
+          assert.strictEqual(part?.result, observed)
+          assert.strictEqual(part?.id, 'call-1')
+          assert.strictEqual(part?.name, 'work')
+          assert.isFalse(part?.isFailure)
+        }
+        assert.strictEqual(JSON.stringify(persisted), snapshot)
+      }),
+    ),
+  )
+
   it.effect(
     'hooks and durable receipts retain data while the model receives selected content',
     () =>
@@ -122,15 +175,243 @@ describe('independent tool result channels', () => {
           assert.strictEqual(observed, 'redacted caption')
           assert.deepEqual(receipt?.structuredOutput, { count: 7 })
           assert.deepEqual(receipt?.details, { ui: 'private panel' })
-          const restored = yield* Schema.decodeUnknownEffect(encodedResult)(persisted?.data)
+          const restored = yield* ToolResultRecord.read(persisted!)
           assert.deepEqual(restored, completed[0])
           assert.deepEqual(restored.structuredOutput, { count: 7 })
           assert.deepEqual(restored.details, { ui: 'private panel' })
           assert.deepEqual(restored.content, text('redacted caption'))
-          assert.notInclude(JSON.stringify(persisted?.model), 'private panel')
-          assert.notInclude(JSON.stringify(persisted?.model), 'count')
+          assert.notInclude(
+            JSON.stringify(yield* ContextProjection.messages(persisted!)),
+            'private panel',
+          )
+          assert.notInclude(JSON.stringify(yield* ContextProjection.messages(persisted!)), 'count')
         }),
       ),
+  )
+
+  it.live('deferred starts and polls receive the same rendered diagnostics', () =>
+    memory(
+      Effect.gen(function* () {
+        let calls = 0
+        let starts = 0
+        let polls = 0
+        let accepted: Prompt.Prompt | undefined
+        const adapter = yield* Model.makeDeferred<Schema.String, never>({
+          handle: Schema.String,
+          start: (request) =>
+            Effect.gen(function* () {
+              starts++
+              const part = request.prompt.content
+                .flatMap((message) => (message.role === 'tool' ? message.content : []))
+                .find((part) => part.type === 'tool-result')
+              if (part === undefined)
+                return {
+                  _tag: 'Complete' as const,
+                  response: new LanguageModel.GenerateTextResponse([
+                    Response.makePart('tool-call', {
+                      id: 'call-1',
+                      name: 'work',
+                      params: {},
+                      providerExecuted: false,
+                    }),
+                    Response.makePart('finish', { ...finish, reason: 'tool-calls' }),
+                  ]),
+                }
+              assert.strictEqual(
+                part.result,
+                '<harness>\n[warning] Rows truncated; rerun with page=2\n</harness>',
+              )
+              accepted = request.prompt
+              return {
+                _tag: 'Deferred' as const,
+                handle: 'result-request',
+                nextPollAt: (yield* Clock.currentTimeMillis) + 1000,
+              }
+            }),
+          poll: (handle, _previous, request) =>
+            Effect.sync(() => {
+              polls++
+              assert.strictEqual(handle, 'result-request')
+              assert.deepEqual(request.prompt, accepted)
+              return {
+                _tag: 'Complete' as const,
+                response: new LanguageModel.GenerateTextResponse([
+                  Response.makePart('text', { text: 'done' }),
+                  Response.makePart('finish', finish),
+                ]),
+              }
+            }),
+          cancel: () => Effect.void,
+        })
+        const native = yield* LanguageModel.make({
+          generateText: () => Effect.die('Expected deferred execution'),
+          streamText: () => Stream.die('Expected deferred execution'),
+        })
+        const model = Model.make({
+          definition: {
+            ref: { provider: 'custom', modelId: 'diagnostics' },
+            capabilities: { tools: true, images: false, reasoning: false, structuredOutput: false },
+          },
+          languageModel: native,
+          options: Schema.JsonObject,
+          configure: () => Effect.succeed(Context.empty()),
+          deferred: adapter,
+        })
+        const runtime = yield* HarnessRuntime.make({ tools: toolkit, models: [model] }).pipe(
+          Effect.provideService(
+            Settings.Settings,
+            yield* Settings.make({ stream: { deferred: true } }),
+          ),
+          Effect.provide(
+            toolkit.toLayer({
+              work: () =>
+                Effect.sync(() => {
+                  calls++
+                  return {
+                    content: [],
+                    structuredOutput: { count: 7 },
+                    diagnostics: [
+                      {
+                        severity: 'warning' as const,
+                        message: 'Rows truncated; rerun with page=2',
+                      },
+                    ],
+                  }
+                }),
+            }),
+          ),
+        )
+        const root = yield* runtime.backend.root
+        const job = yield* runtime.backend.submit({
+          conversationId: root,
+          draft: { type: 'input', content: 'go' },
+        })
+        const settled = yield* runtime.backend.wait(job.id)
+        assert.strictEqual(settled.status, 'done', JSON.stringify(settled))
+        assert.strictEqual(starts, 2)
+        assert.strictEqual(polls, 1)
+        assert.strictEqual(calls, 1)
+      }),
+    ),
+  )
+
+  it.effect('public reading restores aliases and rejects noncanonical entries', () =>
+    memory(
+      Effect.gen(function* () {
+        const content = [
+          Prompt.filePart({ mediaType: 'image/png', data: new Uint8Array([1, 2, 3]) }),
+        ]
+        const tools = Toolkit.make(Tool.make('work', { success: ToolResult.Envelope }))
+        const { persisted, settled } = yield* execute(tools).pipe(
+          Effect.provide(
+            tools.toLayer({
+              work: () => Effect.succeed({ _tag: '@effect-harness/ToolContent' as const, content }),
+            }),
+          ),
+        )
+        assert.strictEqual(settled.status, 'done')
+        const restored = yield* ToolResultRecord.read(persisted!)
+        assert.deepEqual(restored.content, content)
+        const details = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(ToolResult.Envelope))(
+          restored.details,
+        )
+        assert.deepEqual(details.content, content)
+        assert.strictEqual(JSON.stringify(persisted!.data).split('AQID').length - 1, 1)
+        const oldShape = yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.ResultSchema))(
+          restored,
+        )
+        for (const invalid of [
+          { ...persisted!, kind: 'assistant' },
+          { ...persisted!, data: oldShape },
+          {
+            ...persisted!,
+            data: { callId: 'call-1', name: 'work', explicitEnvelope: true, result: {} },
+          },
+        ]) {
+          const error = yield* ToolResultRecord.read(invalid).pipe(Effect.flip)
+          assert.isTrue(Schema.isSchemaError(error))
+        }
+      }),
+    ),
+  )
+
+  for (const variant of ['explicit', 'options'] as const) {
+    it.effect(`diagnostics preserve ${variant} text envelopes`, () =>
+      memory(
+        Effect.gen(function* () {
+          const content = [
+            Prompt.textPart({
+              text: 'caption',
+              options:
+                variant === 'options' ? { anthropic: { cacheControl: { type: 'ephemeral' } } } : {},
+            }),
+          ]
+          const diagnostics: ReadonlyArray<ToolResult.Diagnostic> = [
+            { severity: 'warning', message: 'Try page 2' },
+          ]
+          const tools = Toolkit.make(Tool.make('work', { success: ToolResult.Envelope }))
+          const hook = Hook.make({
+            event: 'afterTool',
+            execute: ({ result }) => Effect.succeed({ ...result, diagnostics }),
+          })
+          const { observed, settled, persisted } = yield* execute(tools, [hook]).pipe(
+            Effect.provide(
+              tools.toLayer({
+                work: () =>
+                  Effect.succeed({ _tag: '@effect-harness/ToolContent' as const, content }),
+              }),
+            ),
+          )
+          assert.strictEqual(settled.status, 'done')
+          const envelope = yield* Schema.decodeUnknownEffect(
+            Schema.toCodecJson(ToolResult.Envelope),
+          )(observed)
+          assert.deepEqual(envelope.content, [
+            ...content,
+            Prompt.textPart({ text: '<harness>\n[warning] Try page 2\n</harness>' }),
+          ])
+          const restored = yield* ToolResultRecord.read(persisted!)
+          assert.deepEqual(restored.content, content)
+          assert.deepEqual(restored.diagnostics, diagnostics)
+        }),
+      ),
+    )
+  }
+
+  it.effect('model diagnostics survive the tool text retention limit', () =>
+    memory(
+      Effect.gen(function* () {
+        const tools = Toolkit.make(
+          Tool.makeResult('work', {
+            outputRetention: { retain: 'head', maxBytes: 3, maxLines: 1 },
+          }),
+        )
+        const { observed, settled, persisted } = yield* execute(tools).pipe(
+          Effect.provide(
+            tools.toLayer({
+              work: () =>
+                Effect.succeed({
+                  content: text('abcdef'),
+                  diagnostics: [{ severity: 'warning', message: 'Use page=2' }],
+                }),
+            }),
+          ),
+        )
+        assert.strictEqual(settled.status, 'done')
+        const restored = yield* ToolResultRecord.read(persisted!)
+        assert.deepEqual(restored.content, text('abc'))
+        assert.deepEqual(
+          restored.diagnostics.map((diagnostic) => diagnostic.code),
+          [undefined, 'output_truncated'],
+        )
+        assert.isString(observed)
+        assert.include(
+          observed as string,
+          'abc\n<harness>\n[warning] Use page=2\n[warning] Retained 3 UTF-8 bytes',
+        )
+        assert.notInclude(observed as string, 'abcdef')
+      }),
+    ),
   )
 
   it.effect('declared failures choose independent visible, structured and UI values', () =>
@@ -142,6 +423,9 @@ describe('independent tool result channels', () => {
               work: () =>
                 Effect.fail({
                   content: text('Please try again'),
+                  diagnostics: [
+                    { severity: 'error', message: 'Retry after refreshing credentials' },
+                  ],
                   structuredOutput: { reason: 'private domain reason' },
                   details: { ui: 'retry button' },
                 }),
@@ -149,8 +433,16 @@ describe('independent tool result channels', () => {
           ),
         )
         assert.strictEqual(settled.status, 'done')
-        assert.strictEqual(observed, 'Please try again')
-        const result = yield* Schema.decodeUnknownEffect(encodedResult)(persisted?.data)
+        assert.strictEqual(
+          observed,
+          'Please try again\n<harness>\n[error] Retry after refreshing credentials\n</harness>',
+        )
+        const messages = yield* ContextProjection.messages(persisted!)
+        const part = messages
+          .flatMap((message) => (message.role === 'tool' ? message.content : []))
+          .find((part) => part.type === 'tool-result')
+        assert.isTrue(part?.isFailure)
+        const result = yield* ToolResultRecord.read(persisted!)
         assert.isTrue(result.isError)
         assert.deepEqual(result.structuredOutput, { reason: 'private domain reason' })
         assert.deepEqual(result.details, { ui: 'retry button' })
@@ -200,7 +492,7 @@ describe('independent tool result channels', () => {
           ),
         )
         assert.strictEqual(omitted.settled.status, 'done')
-        const absent = yield* Schema.decodeUnknownEffect(encodedResult)(omitted.persisted?.data)
+        const absent = yield* ToolResultRecord.read(omitted.persisted!)
         assert.isFalse(Object.hasOwn(absent, 'structuredOutput'))
       }),
     ),
@@ -219,7 +511,7 @@ describe('independent tool result channels', () => {
         )
         assert.strictEqual(fallback.settled.status, 'done')
         assert.strictEqual(fallback.observed, '')
-        const present = yield* Schema.decodeUnknownEffect(encodedResult)(fallback.persisted?.data)
+        const present = yield* ToolResultRecord.read(fallback.persisted!)
         assert.isTrue(Object.hasOwn(present, 'structuredOutput'))
         assert.isNull(present.structuredOutput)
       }),
@@ -247,7 +539,7 @@ describe('independent tool result channels', () => {
           ),
         )
         assert.strictEqual(settled.status, 'done')
-        const result = yield* Schema.decodeUnknownEffect(encodedResult)(persisted?.data)
+        const result = yield* ToolResultRecord.read(persisted!)
         assert.deepEqual(result.structuredOutput, { count: 9 })
         assert.deepEqual(result.details, { panel: 'replacement' })
       }),
@@ -274,8 +566,34 @@ describe('independent tool result channels', () => {
         )
         assert.strictEqual(settled.status, 'done')
         assert.strictEqual(observed, 'visible result')
-        const result = yield* Schema.decodeUnknownEffect(encodedResult)(persisted?.data)
+        const result = yield* ToolResultRecord.read(persisted!)
         assert.deepEqual(result.details, privateEnvelope)
+      }),
+    ),
+  )
+
+  it.effect('matching content envelopes preserve additional detail fields', () =>
+    memory(
+      Effect.gen(function* () {
+        const content = text('shared content')
+        const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.Envelope))({
+          _tag: '@effect-harness/ToolContent',
+          content,
+        })
+        const details = {
+          ...(yield* Schema.decodeUnknownEffect(Schema.JsonObject)(encoded)),
+          panel: 'private metadata',
+        }
+        const { observed, settled, persisted } = yield* execute(toolkit).pipe(
+          Effect.provide(
+            toolkit.toLayer({
+              work: () => Effect.succeed({ content, structuredOutput: { count: 1 }, details }),
+            }),
+          ),
+        )
+        assert.strictEqual(settled.status, 'done')
+        assert.strictEqual(observed, 'shared content')
+        assert.deepStrictEqual((yield* ToolResultRecord.read(persisted!)).details, details)
       }),
     ),
   )
@@ -301,7 +619,7 @@ describe('independent tool result channels', () => {
           ),
         )
         assert.strictEqual(settled.status, 'done')
-        const result = yield* Schema.decodeUnknownEffect(encodedResult)(persisted?.data)
+        const result = yield* ToolResultRecord.read(persisted!)
         assert.isFalse(Object.hasOwn(result, 'structuredOutput'))
         assert.isFalse(Object.hasOwn(result, 'details'))
       }),
@@ -327,7 +645,7 @@ describe('independent tool result channels', () => {
           Effect.provideService(Codec, 'codec'),
         )
         assert.strictEqual(result.settled.status, 'done')
-        const restored = yield* Schema.decodeUnknownEffect(encodedResult)(result.persisted?.data)
+        const restored = yield* ToolResultRecord.read(result.persisted!)
         const decoded = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(schema))(
           restored.structuredOutput,
         ).pipe(Effect.provideService(Codec, 'codec'))
@@ -336,12 +654,18 @@ describe('independent tool result channels', () => {
     ),
   )
 
-  it.effect('byte media and all channels survive a committed checkpoint and JSONL reopen', () =>
+  it.effect('native media aliases survive JSONL checkpoint recovery', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'structured-tool-result-' })
         const filePath = `${directory}/history.jsonl`
+        const diagnostics: ReadonlyArray<ToolResult.Diagnostic> = [
+          { severity: 'warning', message: 'Rows truncated; rerun with page=2' },
+        ]
+        const rendered = Prompt.textPart({
+          text: '<harness>\n[warning] Rows truncated; rerun with page=2\n</harness>',
+        })
         const png = new Uint8Array([1, 2, 3])
         const visible = [
           ...text('public media'),
@@ -354,7 +678,15 @@ describe('independent tool result channels', () => {
             },
           }),
           Prompt.filePart({ mediaType: 'application/pdf', data: new Uint8Array([65, 66]) }),
+          Prompt.filePart({
+            mediaType: 'image/png',
+            data: new URL('https://example.com/aliased.png'),
+          }),
         ]
+        const aliasedDetails = yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.Envelope))({
+          _tag: '@effect-harness/ToolContent',
+          content: visible,
+        })
         const entered = yield* Deferred.make<void>()
         const firstScope = yield* Scope.make()
         yield* Effect.addFinalizer(() => Scope.close(firstScope, Exit.void))
@@ -380,7 +712,8 @@ describe('independent tool result channels', () => {
               return {
                 content: text('before hook'),
                 structuredOutput: { count: 3 },
-                details: { panel: 'secret' },
+                details: aliasedDetails,
+                diagnostics,
               }
             }),
         })
@@ -427,7 +760,10 @@ describe('independent tool result channels', () => {
             }),
         })
         const secondStorage = yield* Layer.build(Storage.layerJsonl({ filePath }))
-        const second = yield* HarnessRuntime.make({ tools: toolkit, hooks: [recoveredHook] }).pipe(
+        const second = yield* HarnessRuntime.make({
+          tools: toolkit,
+          hooks: [recoveredHook],
+        }).pipe(
           Effect.provide(handlers),
           Effect.provideService(LanguageModel.LanguageModel, recoveredModel),
           Effect.provideContext(secondStorage),
@@ -439,21 +775,37 @@ describe('independent tool result channels', () => {
           Stream.runCollect,
         )
         const saved = entries.find((entry) => entry.kind === 'tool.result')
-        const restored = yield* Schema.decodeUnknownEffect(encodedResult)(saved?.data)
+        const restored = yield* ToolResultRecord.read(saved!)
         assert.deepEqual(recoveredResults, [restored])
         assert.deepEqual(restored.content, visible)
         assert.deepEqual(restored.structuredOutput, { count: 3 })
-        assert.deepEqual(restored.details, { panel: 'secret' })
+        assert.deepEqual(restored.details, aliasedDetails)
+        assert.isFalse(Object.hasOwn(restored, 'detailsFromContent'))
+        assert.strictEqual(JSON.stringify(saved!.data).split('aliased.png').length - 1, 1)
         const envelope = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(ToolResult.Envelope))(
           observed,
         )
-        assert.deepEqual(envelope.content, visible)
-        assert.notInclude(JSON.stringify(observed), 'secret')
+        assert.deepEqual(envelope.content, [...visible, rendered])
+        assert.deepEqual(restored.diagnostics, diagnostics)
+        assert.isUndefined(saved!.model)
+        assert.strictEqual(
+          JSON.stringify(saved!.data).split('Rows truncated; rerun with page=2').length - 1,
+          1,
+        )
+        for (let index = 0; index < 3; index++) {
+          const messages = yield* ContextProjection.messages(saved!)
+          const part = messages
+            .flatMap((message) => (message.role === 'tool' ? message.content : []))
+            .find((part) => part.type === 'tool-result')
+          assert.deepEqual(part?.result, observed)
+        }
         assert.notInclude(JSON.stringify(observed), 'count')
         const openai = yield* OpenAiResult.content(envelope.content)
         assert.include(JSON.stringify(openai), 'AQID')
+        assert.include(JSON.stringify(openai), 'https://example.com/aliased.png')
         const anthropic = yield* AnthropicResult.content(envelope.content)
         assert.include(JSON.stringify(anthropic), 'AQID')
+        assert.include(JSON.stringify(anthropic), 'https://example.com/aliased.png')
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   )

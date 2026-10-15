@@ -10,7 +10,6 @@ import * as AiError from 'effect/ai/AiError'
 import * as LiveState from '../LiveState.js'
 import * as ModelStream from './ModelStream.js'
 /** Executes one durable submission; scheduling and client admission live in HarnessRuntime. */
-import type * as Document from '../Document.js'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Equal from 'effect/Equal'
@@ -40,10 +39,8 @@ import * as Plan from './ContextPlan.js'
 import * as Inventory from '../ToolInventory.js'
 import * as Settings from '../Settings.js'
 import * as Identity from '../Identity.js'
-import * as Session from '../Session.js'
+import type * as Session from '../Session.js'
 import * as Tool from '../Tool.js'
-import { ToolExecution } from '../ToolExecution.js'
-import * as ToolResult from '../ToolResult.js'
 import * as Transaction from '../Transaction.js'
 import * as Run from './RunState.js'
 import * as DeferredExecution from './DeferredExecution.js'
@@ -52,12 +49,12 @@ import * as Compaction from '../Compaction.js'
 import * as CompactionTask from '../CompactionTask.js'
 import * as CompactionRuntime from './CompactionRuntime.js'
 import { TaskExecution } from '../TaskExecution.js'
-import * as NestedInvocation from './NestedInvocation.js'
 import { NativeWriteFailure } from './NativeWriteFailure.js'
 import { StreamPublicationFailure } from './StreamPublicationFailure.js'
 import { document as agentDocument, target as agentTarget } from './AgentState.js'
 import { protect, absent } from './HarnessFailure.js'
 import * as Round from './ToolRound.js'
+import * as RequestRecord from './RequestRecord.js'
 import * as ToolTask from './ToolTask.js'
 import * as ToolControl from '../ToolControl.js'
 import * as OutputRetention from '../OutputRetention.js'
@@ -132,7 +129,6 @@ export interface Services {
   ) => Effect.Effect<void, import('../TaskError.js').Failure>
   readonly invocationActive: () => boolean
 }
-const jsonCodec = <S extends Schema.Constraint>(schema: S) => Schema.toCodecJson(schema)
 
 export const run = Effect.fn('RunLoop.run')(function* (services: Services, initial: Record.Task) {
   const {
@@ -182,9 +178,9 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
         },
       ),
     )
-  let { allTools, toolExtensions, sections, runHooks, lease } = services
+  let { sections, runHooks, lease } = services
   let task = initial
-  let state = yield* Run.decode(task.state.checkpoint)
+  let state = yield* Run.get(session, task.state.checkpoint)
   yield* Effect.annotateCurrentSpan({
     'task.id': initial.id,
     'conversation.id': initial.conversationId,
@@ -252,7 +248,7 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
             const current = yield* Round.read(tx, task.conversationId, waiting.roundKey)
             if (
               !Schema.toEquivalence(Run.RunStateSchema)(
-                yield* Run.decode(currentTask.state.checkpoint),
+                yield* Run.read(tx, currentTask.state.checkpoint),
                 waiting,
               ) ||
               !Schema.toEquivalence(Round.RoundSchema)(current, round)
@@ -317,6 +313,10 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
                   'The abandoned child has no matching interrupted accounting',
                 )
             }
+            yield* Round.write(tx, task.conversationId, waiting.roundKey, {
+              ...current,
+              applied: true,
+            })
             yield* clearLive(tx)
             yield* Inbox.settle(tx, task.conversationId, task.id, waiting.submissionId, {
               reason: 'aborted',
@@ -346,7 +346,7 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
               index: nextIndex,
               call: saved.call,
               replay: saved.replay,
-              preparation: current.preparation,
+              preparation: RequestRecord.reference(task.id, current.preparation),
               retention: saved.retention,
               progress: saved.progress,
             })
@@ -463,7 +463,6 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
             submissionId: waiting.submissionId,
             agent: waiting.agent,
             ...(waiting.ordinal === undefined ? {} : { ordinal: waiting.ordinal }),
-            prompt: (yield* Inbox.project(tx, task.conversationId)).prompt,
           }
           yield* saveState(tx, currentTask, next)
           return next
@@ -502,9 +501,6 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
         _tag: 'request',
         phase: 'request',
         compacted: waiting.child,
-        prompt: yield* write((tx) =>
-          Inbox.project(tx, task.conversationId).pipe(Effect.map((view) => view.prompt)),
-        ),
       }
       yield* write((tx, current) => saveState(tx, current, state))
       continue
@@ -591,7 +587,7 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
       state = yield* write((tx, current) =>
         Effect.gen(function* () {
           yield* services.requireSubmissionFormat
-          const prompt = yield* Inbox.placeRun(tx, current, queued)
+          yield* Inbox.placeRun(tx, current, queued)
           const configured = yield* Transaction.snapshot(
             tx,
             agentDocument,
@@ -605,7 +601,6 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
               ...defaultAgent,
               ...(Option.isSome(configured) ? configured.value.value : {}),
             },
-            prompt,
           }
           yield* saveState(tx, current, next)
           return next
@@ -624,7 +619,7 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
       })
       if (requesting.preparation === undefined) {
         const refreshed = yield* services.refresh
-        ;({ allTools, toolExtensions, sections, runHooks, lease } = refreshed)
+        ;({ sections, runHooks, lease } = refreshed)
         const settingsService = yield* Effect.serviceOption(Settings.Settings).pipe(
           Effect.provideContext(context),
         )
@@ -657,7 +652,7 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
             return { agent, view: yield* Inbox.project(tx, task.conversationId) }
           }),
         )
-        requesting = { ...requesting, agent: current.agent, prompt: current.view.prompt, ordinal }
+        requesting = { ...requesting, agent: current.agent, ordinal }
         selected =
           requesting.agent.model === undefined
             ? models[0]
@@ -735,7 +730,7 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
         if (selected !== undefined)
           yield* Schema.decodeEffect(Model.DefinitionSchema)(selected.definition)
         const configuration = yield* configurationCodec.encode(configured)
-        let prompt = requesting.prompt
+        let prompt = current.view.prompt
         const desiredSections: Array<import('../ContextProjection.js').Section> = []
         if (requesting.agent.instructions !== undefined)
           desiredSections.push({
@@ -1475,7 +1470,6 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
           operation: 'model.response',
           message: 'Duplicate tool call identities',
         })
-      const nextPrompt = Prompt.concat(requesting.prompt, responsePrompt)
       if (calls.length === 0) {
         const decision = yield* runHooks(
           task.conversationId,
@@ -1496,7 +1490,6 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
             ...unprepared,
             _tag: 'request',
             phase: 'request',
-            prompt: Prompt.concat(nextPrompt, Prompt.make([decision.input])),
           }
           yield* write((tx, current) =>
             Effect.gen(function* () {
@@ -1573,7 +1566,7 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
               index,
               call: slot.call,
               replay: slot.replay,
-              preparation,
+              preparation: RequestRecord.reference(task.id, preparation),
               retention: slot.retention,
               progress: slot.progress,
             })
@@ -1600,7 +1593,6 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
             agent: requesting.agent,
             ordinal: preparation.ordinal,
             preparation,
-            prompt: nextPrompt,
             roundKey,
             assistant: assistant.id,
             children,
@@ -1610,333 +1602,5 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
       observed = undefined
       return
     }
-    const toolState = state
-    const pending = toolState.calls[toolState.index]
-    if (pending === undefined) {
-      const next: Run.RunState = {
-        _tag: 'request',
-        phase: 'request',
-        submissionId: toolState.submissionId,
-        agent: toolState.agent,
-        ...(toolState.ordinal === undefined ? {} : { ordinal: toolState.ordinal }),
-        prompt: toolState.prompt,
-      }
-      yield* runHooks(
-        task.conversationId,
-        toolState.agent,
-        { _tag: 'afterTools', results: toolState.results },
-        task.id,
-      )
-      const selected = yield* write((tx, current) =>
-        Effect.gen(function* () {
-          const selected = yield* Inbox.boundary(tx, task.conversationId, {
-            boundary: 'postTools',
-            taskId: task.id,
-          }).pipe(Effect.provideContext(context))
-          const prompt = (yield* Inbox.project(tx, task.conversationId)).prompt
-          if (selected.boundary === 'final') {
-            const reset = selected.placed.findLast((item) => item._tag === 'WriteDone')
-            if (reset === undefined || reset._tag !== 'WriteDone')
-              return yield* absent('run.reset', 'Reset placement is missing')
-            yield* services.complete(tx, { status: 'completed', result: reset.entry })
-          } else {
-            yield* saveState(tx, current, {
-              ...next,
-              prompt,
-            })
-          }
-          return { selected, prompt }
-        }),
-      )
-      if (selected.selected.boundary === 'final') {
-        yield* notify
-        return
-      }
-      state = { ...next, prompt: selected.prompt }
-      continue
-    }
-    let call = pending.call
-    let result: import('../ToolResult.js').Result | undefined
-    let explicitEnvelope = false
-    if (toolState.preparation !== undefined)
-      yield* Preparation.compatible(
-        toolState.preparation,
-        lease.snapshot,
-        models,
-        services.nativeModel,
-        Option.isSome(nativeDefault),
-      )
-    const binding = toolState.preparation?.tools.find(
-      (tool) => tool.declaration.name === call.name,
-    )?.binding
-    const definition =
-      binding === undefined
-        ? allTools.find((tool) => tool.name === call.name)
-        : lease.snapshot.bindings.find(
-            (item) =>
-              item.owner.id === binding.id &&
-              item.owner.version === binding.version &&
-              item.declaration.name === call.name,
-          )?.declaration
-    const extension = toolExtensions.get(call.name)
-    const currentlyAllowed =
-      definition !== undefined &&
-      (toolState.agent.tools === undefined || toolState.agent.tools.includes(call.name)) &&
-      (extension === undefined ||
-        toolState.agent.extensions === undefined ||
-        toolState.agent.extensions.includes(extension))
-    if (!currentlyAllowed)
-      result = {
-        content: [Prompt.textPart({ text: `Tool ${call.name} is unavailable` })],
-        isError: true,
-        diagnostics: [],
-      }
-    if (
-      pending.started &&
-      (pending.replay !== 'safe' ||
-        definition === undefined ||
-        Tool.policy(definition).replay !== 'safe')
-    )
-      result = {
-        content: [
-          Prompt.textPart({
-            text: 'Tool execution was interrupted. It was not repeated because replay is unsafe; its external outcome is unknown.',
-          }),
-        ],
-        isError: true,
-        diagnostics: [],
-      }
-    if (!pending.started && result === undefined) {
-      const decision = yield* runHooks(
-        task.conversationId,
-        toolState.agent,
-        { _tag: 'beforeTool', call },
-        task.id,
-      )
-      if (decision !== undefined && '_tag' in decision && decision._tag === 'block')
-        result = {
-          content: [Prompt.textPart({ text: decision.message })],
-          isError: true,
-          diagnostics: [],
-        }
-      if (decision !== undefined && '_tag' in decision && decision._tag === 'replaceArguments')
-        call = { ...call, arguments: decision.arguments }
-    }
-    if (result === undefined) {
-      const started: Run.RunState = {
-        ...toolState,
-        calls: toolState.calls.map((saved, index) =>
-          index === toolState.index ? { ...saved, call, started: true } : saved,
-        ),
-      }
-      yield* write((tx, current) => saveState(tx, current, started))
-      let toolActive = true
-      const guard = Effect.suspend(() =>
-        toolActive && invocationActive()
-          ? Effect.void
-          : Effect.fail(
-              new ExecutionError({
-                reason: 'revoked',
-                operation: 'tool',
-                message: 'Tool invocation has ended',
-              }),
-            ),
-      )
-      const report = (kind: string, data: Schema.Json) =>
-        guard.pipe(
-          Effect.andThen(
-            writeCallback((tx) =>
-              guard.pipe(
-                Effect.andThen(Transaction.appendEntry(tx, task.conversationId, { kind, data })),
-              ),
-            ),
-          ),
-          Effect.asVoid,
-          Effect.mapError((error) =>
-            Schema.is(TaskError)(error)
-              ? new ExecutionError({
-                  reason: error.reason === 'revoked' ? 'revoked' : 'invalid',
-                  operation: 'tool.report',
-                  message: error.message,
-                  cause: error,
-                })
-              : error,
-          ),
-        )
-      const selected = toolState.preparation?.model
-      const modelDefinition = selected?._tag === 'descriptor' ? selected.definition : undefined
-      const imageReadPolicy: import('../coding/ImageReadPolicy.js').Policy =
-        modelDefinition?.capabilities.images === true && modelDefinition.imageLimits !== undefined
-          ? { vision: true, limits: modelDefinition.imageLimits }
-          : { vision: false }
-      const nativeExecution = yield* TaskExecution
-      const toolAccess = {
-        invocation: NestedInvocation.borrow(nativeExecution.invocation, guard),
-        ...access(task.conversationId),
-        ...(toolState.preparation === undefined ? {} : { imageReadPolicy }),
-        snapshot: <S extends Document.Codec>(
-          document: Document.Document<S>,
-          target: Document.Target,
-        ) => guard.pipe(Effect.andThen(Session.snapshot(session, document, target))),
-        watch: <S extends Document.Codec>(
-          document: Document.Document<S>,
-          target: Document.Target,
-        ) =>
-          Stream.unwrap(guard.pipe(Effect.as(Session.watch(session, document, target)))).pipe(
-            Stream.mapEffect((value) => guard.pipe(Effect.as(value))),
-          ),
-        taskId: task.id,
-        callId: call.id,
-        commit: <A, E, R>(change: (tx: Transaction.Transaction) => Effect.Effect<A, E, R>) =>
-          guard.pipe(
-            Effect.andThen(
-              writeCallback((tx) =>
-                Effect.gen(function* () {
-                  yield* guard
-                  const value = yield* change(tx)
-                  yield* guard
-                  return value
-                }),
-              ).pipe(
-                Effect.mapError((error) =>
-                  Schema.is(TaskError)(error)
-                    ? new ExecutionError({
-                        reason: error.reason === 'revoked' ? 'revoked' : 'invalid',
-                        operation: 'tool.commit',
-                        message: error.message,
-                        cause: error,
-                      })
-                    : error,
-                ),
-              ),
-            ),
-          ),
-        output: (chunk: string) => report('tool.output', { callId: call.id, chunk }),
-        details: (value: Schema.Json) => report('tool.details', { callId: call.id, value }),
-        diagnostic: (value: import('../ToolResult.js').Diagnostic) =>
-          report('tool.diagnostic', { callId: call.id, value }),
-      }
-      result = yield* (
-        toolState.preparation === undefined
-          ? lease.invokeTool(call)
-          : Inventory.invoke(lease, call, 'model', {
-              agent: {
-                ...toolState.agent,
-                toolkits: {
-                  inherit: false,
-                  registrations: toolState.preparation.requiredBindings.map((item) => item.id),
-                  bindings: Object.fromEntries(
-                    toolState.preparation.allTools.map((item) => [
-                      item.declaration.name,
-                      { binding: item.binding.id, version: item.binding.version },
-                    ]),
-                  ),
-                },
-              },
-            })
-      ).pipe(
-        Effect.provideService(ToolExecution, toolAccess),
-        Effect.ensuring(
-          Effect.sync(() => {
-            toolActive = false
-          }),
-        ),
-      )
-      yield* NestedInvocation.close(toolAccess.invocation, true).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ExecutionError({
-              reason: 'invalid',
-              operation: 'tool.children',
-              message: 'Nested tool cleanup failed',
-              cause,
-            }),
-        ),
-      )
-      // A handler may already return the canonical media envelope. Expose its native
-      // content to result hooks before the final model-visible projection is encoded.
-      const envelope =
-        definition !== undefined && Tool.hasResultChannels(definition)
-          ? Option.none()
-          : Schema.decodeUnknownOption(jsonCodec(ToolResult.Envelope))(result.details)
-      if (Option.isSome(envelope)) {
-        result = { ...result, content: envelope.value.content }
-        explicitEnvelope = true
-      }
-    }
-    const after = yield* runHooks(
-      task.conversationId,
-      toolState.agent,
-      { _tag: 'afterTool', call, result },
-      task.id,
-    )
-    if (after !== undefined && 'isError' in after) result = after
-    if (definition !== undefined && Tool.hasResultChannels(definition)) {
-      // Hook results contain encoded programmatic JSON, while media parts retain native bytes.
-      // Decode against the declared channel schema to validate replacements before committing.
-      const schema = (result.isError
-        ? definition.failureSchema
-        : definition.successSchema) as unknown as Schema.ConstraintCodec<
-        unknown,
-        unknown,
-        never,
-        never
-      >
-      const encoded = yield* Schema.encodeEffect(jsonCodec(ToolResult.ResultSchema))(result)
-      yield* lease.withTool(
-        call.name,
-        (item) =>
-          Schema.decodeEffect(jsonCodec(schema))(encoded).pipe(Effect.provideContext(item.context)),
-        binding === undefined ? undefined : { binding: binding.id, version: binding.version },
-      )
-    }
-    const plainText = result.content.flatMap((part) =>
-      part.type === 'text' && Object.keys(part.options).length === 0 ? [part.text] : [],
-    )
-    const modelResult =
-      !explicitEnvelope && plainText.length === result.content.length
-        ? plainText.join('\n')
-        : yield* Schema.encodeEffect(jsonCodec(ToolResult.Envelope))({
-            _tag: '@effect-harness/ToolContent',
-            content: result.content,
-          })
-    const output = Prompt.toolMessage({
-      content: [
-        Prompt.toolResultPart({
-          id: call.id,
-          name: call.name,
-          providerExecuted: false,
-          isFailure: result.isError,
-          result: modelResult,
-        }),
-      ],
-    })
-    const next: Run.RunState = {
-      ...toolState,
-      calls: toolState.calls.map((saved, index) =>
-        index === toolState.index ? { ...saved, call, started: true } : saved,
-      ),
-      index: toolState.index + 1,
-      results: [...toolState.results, result],
-      prompt: Prompt.concat(toolState.prompt, Prompt.make([output])),
-    }
-    yield* write((tx, current) =>
-      Effect.gen(function* () {
-        yield* Transaction.appendEntry(tx, task.conversationId, {
-          kind: 'tool.result',
-          usage: {
-            _tag: 'tool',
-            name: call.name,
-            ...(result.spend === undefined ? {} : { cost: result.spend }),
-          },
-          model: yield* Schema.encodeEffect(Run.Messages)([output]),
-          data: yield* Schema.encodeEffect(jsonCodec(ToolResult.ResultSchema))(result),
-        })
-        yield* saveState(tx, current, next)
-      }),
-    )
-    state = next
-    const refreshed = yield* Session.task(session, task.id)
-    if (Option.isSome(refreshed)) task = refreshed.value
   }
 })

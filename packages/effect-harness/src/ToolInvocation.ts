@@ -154,8 +154,8 @@ type Common = Omit<WireReceipt, 'status' | 'result' | 'legacyValue'> & {
 }
 /**
  * Declared schemas decode structured values under the consumer's services. Content fallback
- * exposes the persisted native Prompt representation: URL data roundtrips as its href string,
- * while byte data uses the existing tagged byte codec. This does not retain live object identity.
+ * restores native Prompt content: URL data roundtrips as URL instances and byte data as
+ * Uint8Array values through tagged codecs. This does not retain live object identity.
  */
 export type DecodedReceipt<T extends Tool.Any> = Common &
   (

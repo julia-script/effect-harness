@@ -1,12 +1,15 @@
 /** Schema-backed durable checkpoints. A started tool intent is persisted before its handler runs. */
+import * as PromptWire from '../PromptWire.js'
 import * as Schema from 'effect/Schema'
-import * as Prompt from 'effect/ai/Prompt'
+import * as Struct from 'effect/Struct'
 import * as Record from '../Record.js'
 import * as Agent from '../Agent.js'
 import * as Submission from '../Submission.js'
-import * as Tool from '../Tool.js'
-import * as ToolResult from '../ToolResult.js'
 import * as PreparedRequest from '../PreparedRequest.js'
+import * as Request from './RequestRecord.js'
+import * as Effect from 'effect/Effect'
+import type * as Transaction from '../Transaction.js'
+import type * as Session from '../Session.js'
 import * as Usage from '../Usage.js'
 import * as LiveState from '../LiveState.js'
 import * as AiError from 'effect/ai/AiError'
@@ -15,7 +18,6 @@ import * as Redacted from 'effect/Redacted'
 const shared = { submissionId: Record.SubmissionId }
 const running = {
   ...shared,
-  prompt: Prompt.Prompt,
   agent: Agent.StateSchema,
   ordinal: Schema.optionalKey(Schema.Natural),
   compacted: Schema.optionalKey(Record.TaskId),
@@ -74,15 +76,6 @@ export const RunStateSchema = Schema.Union([
     phase: Schema.tag('retry'),
     ...prepared,
     until: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
-  }),
-  Schema.TaggedStruct('tools', {
-    phase: Schema.tag('tools'),
-    ...running,
-    calls: Schema.Array(
-      Schema.Struct({ call: Tool.CallSchema, replay: Tool.ReplaySchema, started: Schema.Boolean }),
-    ),
-    index: Schema.Natural,
-    results: Schema.Array(ToolResult.ResultSchema),
   }),
   Schema.TaggedStruct('toolRound', {
     phase: Schema.tag('toolRound'),
@@ -188,7 +181,7 @@ export const encode = (state: RunState) =>
       : state,
   )
 export const decode = Schema.decodeUnknownEffect(Schema.toCodecJson(RunStateSchema))
-export const Messages = Schema.Array(Schema.toCodecJson(Prompt.Message))
+export const Messages = Schema.Array(Schema.toCodecJson(PromptWire.Message))
 
 /** Validate committed prefixes without repairing, discarding or replaying stored work. */
 export const validPrefix = (state: RunState): boolean => {
@@ -210,11 +203,68 @@ export const validPrefix = (state: RunState): boolean => {
       state.children.length > 0 &&
       new Set(state.children).size === state.children.length
     )
-  if (state._tag !== 'tools') return true
-  return (
-    state.index <= state.calls.length &&
-    state.results.length === state.index &&
-    new Set(state.calls.map((item) => item.call.id)).size === state.calls.length &&
-    state.calls.slice(0, state.index).every((item) => item.started)
-  )
+  return true
 }
+
+/** Persistent checkpoints carry only a request identity; transcript context is projected from entries. */
+export const StoredSchema = Schema.Union(
+  RunStateSchema.members.map((member) =>
+    member.mapFields((fields) =>
+      'preparation' in fields
+        ? { ...fields, preparation: Schema.optionalKey(Request.ReferenceSchema) }
+        : fields,
+    ),
+  ),
+)
+export type Stored = typeof StoredSchema.Type
+export const decodeStored = Schema.decodeUnknownEffect(Schema.toCodecJson(StoredSchema))
+export const persist = Effect.fnUntraced(function* (
+  tx: Transaction.Transaction,
+  task: Record.Task,
+  state: RunState,
+) {
+  const old =
+    task.state.checkpoint === undefined ? undefined : yield* decodeStored(task.state.checkpoint)
+  const preparation =
+    state._tag === 'queued' || state.preparation === undefined
+      ? undefined
+      : yield* Request.save(tx, task.id, state.preparation)
+  if (
+    old !== undefined &&
+    old._tag !== 'queued' &&
+    old.preparation !== undefined &&
+    old.preparation.requestId !== preparation?.requestId
+  )
+    yield* Request.retire(tx, old.preparation)
+  const safe =
+    state._tag === 'queued'
+      ? state
+      : {
+          ...Struct.omit(state, ['preparation']),
+          ...(state.overflow === undefined ? {} : { overflow: safeOverflow(state.overflow) }),
+        }
+  return yield* Schema.decodeUnknownEffect(StoredSchema)({
+    ...safe,
+    ...(preparation === undefined ? {} : { preparation }),
+  })
+})
+export const hydrate = Effect.fnUntraced(function* <E>(
+  state: Stored,
+  resolve: (ref: Request.Reference) => Effect.Effect<PreparedRequest.Snapshot, E>,
+) {
+  if (state._tag === 'queued') return state
+  const preparation =
+    state.preparation === undefined ? undefined : yield* resolve(state.preparation)
+  return yield* Schema.decodeUnknownEffect(RunStateSchema)({
+    ...state,
+    ...(preparation === undefined ? {} : { preparation }),
+  })
+})
+export const read = (tx: Transaction.Transaction, value: unknown) =>
+  decodeStored(value).pipe(
+    Effect.flatMap((state) => hydrate(state, (ref) => Request.read(tx, ref))),
+  )
+export const get = (session: Session.Session, value: unknown) =>
+  decodeStored(value).pipe(
+    Effect.flatMap((state) => hydrate(state, (ref) => Request.get(session, ref))),
+  )

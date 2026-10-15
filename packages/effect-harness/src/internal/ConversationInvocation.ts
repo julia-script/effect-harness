@@ -1,4 +1,5 @@
 /** Fixed native actions under one reservation. This module never exports a public Session. */
+import * as PromptWire from '../PromptWire.js'
 import * as Deferred from 'effect/Deferred'
 import * as Cause from 'effect/Cause'
 import * as Exit from 'effect/Exit'
@@ -574,7 +575,7 @@ export const make = Effect.fnUntraced(function* (
           Effect.gen(function* () {
             yield* control.gate(tx)
             yield* active
-            const owned = yield* Value.copy(Subagent.RequestSchema, request)
+            const owned = yield* Value.copy(Schema.toCodecJson(Subagent.RequestSchema), request)
             const key = reservedKey ?? owned.options?.key ?? String(++sequence)
             if (
               owned.options?.key !== undefined &&
@@ -923,13 +924,13 @@ export const make = Effect.fnUntraced(function* (
           'conversation.reset',
           mutateTarget(id, (tx) =>
             Effect.gen(function* () {
-              const owned = yield* Value.copy(ResetOptionsSchema, options)
+              const owned = yield* Value.copy(Schema.toCodecJson(ResetOptionsSchema), options)
               const model =
                 owned.handoff === undefined
                   ? undefined
-                  : yield* Schema.encodeEffect(Schema.Array(Schema.toCodecJson(Prompt.Message)))([
-                      Prompt.userMessage({ content: [Prompt.textPart({ text: owned.handoff })] }),
-                    ])
+                  : yield* Schema.encodeEffect(
+                      Schema.Array(Schema.toCodecJson(PromptWire.Message)),
+                    )([Prompt.userMessage({ content: [Prompt.textPart({ text: owned.handoff })] })])
               return yield* operations.submit(tx, id, {
                 type: 'write',
                 entry: { kind: 'reset', head: 'self', ...(model === undefined ? {} : { model }) },

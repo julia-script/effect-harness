@@ -19,7 +19,7 @@ import * as ToolTask from './ToolTask.js'
 export const contract = {
   kind: 'harness.tool.nested',
   version: 1,
-  input: Nested.InputSchema,
+  input: Nested.ReferenceSchema,
   checkpoint: Round.CheckpointSchema,
   success: Nested.CompletionSchema,
   failure: Schema.Json,
@@ -177,11 +177,12 @@ export const make = (
     }
   }
   const execute = Effect.fnUntraced(function* ({
-    input,
+    input: reference,
     checkpoint,
-  }: Task.PhaseInput<typeof Nested.InputSchema, typeof Round.CheckpointSchema, 'execute'>) {
-    const execution = yield* TaskExecution
+  }: Task.PhaseInput<typeof Nested.ReferenceSchema, typeof Round.CheckpointSchema, 'execute'>) {
     yield* Nested.protection(inspectFormat)
+    const execution = yield* TaskExecution
+    const input = yield* execution.commit((tx) => Nested.readInput(tx, reference))
     const current = yield* execution.agent
     const binding = input.contract.tool.binding
     const currentOptions = {
@@ -205,13 +206,15 @@ export const make = (
     )
   })
   const abort = Effect.fnUntraced(function* ({
-    input,
+    input: reference,
     checkpoint,
   }: {
-    readonly input: Nested.Input
+    readonly input: Nested.Reference
     readonly checkpoint: Round.Checkpoint
   }) {
+    yield* Nested.protection(inspectFormat)
     const execution = yield* TaskExecution
+    const input = yield* execution.commit((tx) => Nested.readInput(tx, reference))
     return yield* runner.abort(normalize(input), checkpoint, sink(execution, input))
   })
   const definition = Task.make({

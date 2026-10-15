@@ -36,7 +36,7 @@ import type * as Submission from '../Submission.js'
 import type * as Tool from '../Tool.js'
 import * as Registry from '../Registry.js'
 import type * as RegistryScope from '../RegistryScope.js'
-import * as TaskScheduler from '../TaskScheduler.js'
+import * as TaskSchedulerImpl from './TaskScheduler.js'
 import * as RunTask from './RunTask.js'
 import * as ToolTask from './ToolTask.js'
 import * as NestedInvocation from './NestedInvocation.js'
@@ -80,7 +80,24 @@ export const make = Effect.fnUntraced(function* <
     'runtime.make',
     Effect.gen(function* () {
       const storage = yield* Storage
+      const marker = yield* StorageFormat.inspect
+      if (marker.minimumReaderVersion < 12) {
+        const existing = yield* storage.scanConversations().pipe(Stream.runHead)
+        const documents = yield* storage
+          .scanDocuments({ scope: { _tag: 'session' } })
+          .pipe(Stream.runHead)
+        if (Option.isSome(existing) || Option.isSome(documents))
+          return yield* new StorageFormat.StorageFormatError({
+            reason: 'unsupported',
+            message:
+              'Nonempty storage requires runtime format 12; older prompt formats cannot be resumed',
+          })
+        yield* StorageFormat.requireSupportedFormat({ formatVersion: 12, minimumReaderVersion: 12 })
+      }
       const session = yield* Session.make({
+        ...(options.documentRetentionMs === undefined
+          ? {}
+          : { documentRetentionMs: options.documentRetentionMs }),
         initializers: [
           ConversationInitializer.make({
             execute: (tx, record) =>
@@ -151,8 +168,8 @@ export const make = Effect.fnUntraced(function* <
         return Effect.void
       })
       const requireSubmissionFormat = StorageFormat.requireSupportedFormat({
-        formatVersion: 4,
-        minimumReaderVersion: 4,
+        formatVersion: 12,
+        minimumReaderVersion: 12,
       }).pipe(Effect.provideContext(context))
       const drainIdle = Effect.fnUntraced(function* () {
         yield* Session.commit(session, (tx) =>
@@ -187,7 +204,7 @@ export const make = Effect.fnUntraced(function* <
         )
       })
       const activate = Effect.suspend(() =>
-        protect('runtime.resume', drainIdle().pipe(Effect.andThen(scheduler.resume))),
+        protect('runtime.resume', drainIdle().pipe(Effect.andThen(scheduler.activate))),
       )
       const wake = activate
       const requireConversation = Effect.fnUntraced(function* (
@@ -331,8 +348,8 @@ export const make = Effect.fnUntraced(function* <
           }),
         )
       const nestedFormat = StorageFormat.requireSupportedFormat({
-        formatVersion: 10,
-        minimumReaderVersion: 10,
+        formatVersion: 12,
+        minimumReaderVersion: 12,
       }).pipe(Effect.provideContext(context))
       const inspectNestedFormat = StorageFormat.inspect.pipe(Effect.provideContext(context))
       const nestedDefinition = NestedToolTask.make(registry, inspectNestedFormat)
@@ -355,7 +372,7 @@ export const make = Effect.fnUntraced(function* <
         registry.uninstall('native-runtime-nested').pipe(Effect.ignore),
       )
       yield* Effect.addFinalizer(() => Effect.sync(() => NestedToolTask.clear(nestedDefinition)))
-      const toolDefinition = ToolTask.make(registry)
+      const toolDefinition = ToolTask.make(registry, requireSubmissionFormat)
       yield* registry.install(
         Registry.withTask(
           {
@@ -379,23 +396,23 @@ export const make = Effect.fnUntraced(function* <
         (lease) => ({
           toolTask: toolDefinition,
           requireToolRoundFormat: StorageFormat.requireSupportedFormat({
-            formatVersion: 9,
-            minimumReaderVersion: 9,
+            formatVersion: 12,
+            minimumReaderVersion: 12,
           }).pipe(Effect.provideContext(context)),
           session,
           cancellationCleanup,
           requireSubmissionFormat,
           requireDeferredFormat: StorageFormat.requireSupportedFormat({
-            formatVersion: 7,
-            minimumReaderVersion: 7,
+            formatVersion: 12,
+            minimumReaderVersion: 12,
           }).pipe(Effect.provideContext(context)),
           requireStreamFormat: StorageFormat.requireSupportedFormat({
-            formatVersion: 6,
-            minimumReaderVersion: 6,
+            formatVersion: 12,
+            minimumReaderVersion: 12,
           }).pipe(Effect.provideContext(context)),
           requireRequestFormat: StorageFormat.requireSupportedFormat({
-            formatVersion: 5,
-            minimumReaderVersion: 5,
+            formatVersion: 12,
+            minimumReaderVersion: 12,
           }).pipe(Effect.provideContext(context)),
           nativeModel: options.nativeModel ?? { id: 'effect/ai/LanguageModel', version: 1 },
           context,
@@ -443,6 +460,7 @@ export const make = Effect.fnUntraced(function* <
         }),
         registry,
         {
+          session,
           models,
           nativeDefault,
           nativeModel: options.nativeModel ?? { id: 'effect/ai/LanguageModel', version: 1 },
@@ -645,7 +663,7 @@ export const make = Effect.fnUntraced(function* <
         )
         for (const task of tasks) {
           if (task.state.status === 'terminal') continue
-          const state = yield* Run.decode(task.state.checkpoint)
+          const state = yield* Run.decodeStored(task.state.checkpoint)
           if (state.submissionId === id)
             yield* Transaction.putTask(tx, {
               ...task,
@@ -691,7 +709,7 @@ export const make = Effect.fnUntraced(function* <
             ),
           )
         })
-      const scheduler: TaskScheduler.Service = yield* TaskScheduler.make(session, {
+      const scheduler: TaskSchedulerImpl.Service = yield* TaskSchedulerImpl.make(session, {
         invocation: {
           open: (access, lease, mode) =>
             NestedInvocation.make(
@@ -919,7 +937,7 @@ export const make = Effect.fnUntraced(function* <
             Effect.gen(function* () {
               const record = yield* backend.compactionTask!(handle)
               yield* activate
-              const terminal = yield* scheduler.waitForTask(record.id)
+              const terminal = yield* scheduler.automatic.waitForTask(record.id)
               if (terminal.state.status !== 'terminal')
                 return yield* absent('compaction.wait', 'Task is not terminal')
               return yield* Task.decode(CompactionTask.OutcomeSchema, terminal.state.outcome)
@@ -930,7 +948,7 @@ export const make = Effect.fnUntraced(function* <
             'compaction.abort',
             Effect.gen(function* () {
               const record = yield* backend.compactionTask!(handle)
-              yield* scheduler.abort(record.id)
+              yield* scheduler.automatic.abort(record.id)
             }),
           ),
         usage: (id) =>
@@ -1000,7 +1018,7 @@ export const make = Effect.fnUntraced(function* <
             'conversation.abort',
             Effect.gen(function* () {
               yield* checkOpen
-              yield* scheduler.abortConversation(
+              yield* scheduler.automatic.abortConversation(
                 id,
                 yield* Schema.decodeEffect(AbortOptionsSchema)(options ?? {}),
               )

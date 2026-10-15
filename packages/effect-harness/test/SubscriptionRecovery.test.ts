@@ -1,3 +1,4 @@
+import * as RuntimeRecords from './fixtures/RuntimeRecords.js'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Context from 'effect/Context'
@@ -7,7 +8,6 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Redacted from 'effect/Redacted'
-import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as HttpClient from 'effect/http/HttpClient'
@@ -117,9 +117,10 @@ it.live(
         const tasks = yield* Context.get(storage, Storage.Storage)
           .scanTasks({ conversationId: root, kind: 'harness.run' })
           .pipe(Stream.runCollect)
-        const checkpoint = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ preparation: Schema.toCodecJson(Prepared.SnapshotSchema) }),
-        )(tasks[0]!.state.checkpoint)
+        const checkpoint = yield* RuntimeRecords.preparation(
+          Context.get(storage, Storage.Storage),
+          tasks[0]!.state.checkpoint,
+        )
         assert.notInclude(JSON.stringify(checkpoint), 'SECRET')
         assert.strictEqual(generations, 0)
         assert.strictEqual(refreshes, 0)
@@ -141,7 +142,7 @@ it.live(
         assert.strictEqual((yield* second.backend.wait(job.id)).status, 'done')
         assert.strictEqual(refreshes, 1)
         assert.strictEqual(generations, 1)
-        assert.deepEqual(prepared, checkpoint.preparation)
+        assert.deepEqual(prepared, checkpoint)
         const entries = yield* Session.scanEntries(second.session, { conversationId: root }).pipe(
           Stream.runCollect,
         )

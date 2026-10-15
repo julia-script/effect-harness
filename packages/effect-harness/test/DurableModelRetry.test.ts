@@ -1,3 +1,5 @@
+import * as NativePrompt from './fixtures/NativePrompt.js'
+import * as RequestRecord from '../src/internal/RequestRecord.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import { SqliteClient } from '@effect/sql-sqlite-node'
@@ -232,7 +234,7 @@ const checkpoint = Schema.Struct({
   until: Schema.Finite,
   attempt: Usage.AttemptId,
   retries: Schema.Finite,
-  preparation: Schema.toCodecJson(Prepared.SnapshotSchema),
+  preparation: RequestRecord.ReferenceSchema,
 })
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
@@ -264,7 +266,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
               let calls = 0
               const model = yield* LanguageModel.make({
                 generateText: () => Effect.die('nonstreaming'),
-                streamText: () =>
+                streamText: ({ prompt }) =>
                   Stream.unwrap(
                     Effect.gen(function* () {
                       yield* Deferred.succeed(entered, undefined)
@@ -272,6 +274,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
                         Option.getOrThrow(yield* Effect.serviceOption(Prepared.PreparedRequest))
                           .current,
                       )
+                      NativePrompt.assertFiles(prompt)
                       calls++
                       return calls === 1 ? Stream.fail(rate) : Stream.fromIterable(answer)
                     }),
@@ -291,7 +294,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
               const admittedAt = yield* Clock.currentTimeMillis
               const job = yield* first.backend.submit({
                 conversationId: root,
-                draft: { type: 'input', content: 'go' },
+                draft: { type: 'input', content: NativePrompt.content() },
               })
               yield* Deferred.await(entered)
               yield* retry(first)
@@ -302,7 +305,10 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
               assert.strictEqual(saved.until, admittedAt + 200)
               assert.strictEqual(saved.attempt, 1)
               assert.strictEqual(saved.retries, 1)
-              assert.deepEqual(saved.preparation, requests[0])
+              assert.deepEqual(
+                yield* RequestRecord.get(first.session, saved.preparation),
+                requests[0],
+              )
               assert.strictEqual(
                 (yield* Session.usage(first.session, root)).models[0]?.tokens.input,
                 3,

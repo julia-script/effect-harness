@@ -1,8 +1,8 @@
 /** Client handle for a durable input or passive write admission and its committed outcome. */
+import * as PromptWire from './PromptWire.js'
 import type * as Effect from 'effect/Effect'
 import type * as Pipeable from 'effect/Pipeable'
 import * as Schema from 'effect/Schema'
-import * as Prompt from 'effect/ai/Prompt'
 import * as DurableRecord from './Record.js'
 import * as Transaction from './Transaction.js'
 import { dual } from 'effect/Function'
@@ -12,7 +12,7 @@ import { Backend, SubmissionTypeId } from './internal/ClientHandle.js'
 
 export const TypeId = SubmissionTypeId
 
-export const InputSchema = Schema.Union([Schema.String, Schema.Array(Prompt.UserMessagePart)])
+export const InputSchema = Schema.Union([Schema.String, Schema.Array(PromptWire.UserMessagePart)])
 export type Input = typeof InputSchema.Type
 
 /** Admission validates and brands the request identity; callers can supply a normal string. */

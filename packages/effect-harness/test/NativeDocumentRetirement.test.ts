@@ -10,6 +10,7 @@ import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Struct from 'effect/Struct'
+import * as Stream from 'effect/Stream'
 import * as Document from 'effect-harness/Document'
 import * as Retirement from 'effect-harness/DocumentRetirement'
 import * as Session from 'effect-harness/Session'
@@ -49,8 +50,114 @@ const RawRow = Schema.Union([
 ])
 const RowJson = Schema.fromJsonString(RawRow)
 const FrameJson = Schema.fromJsonString(
-  Schema.Struct({ metadata: Metadata.Metadata, rows: Schema.Array(RawRow) }),
+  Schema.Struct({
+    metadata: Metadata.Metadata,
+    rows: Schema.Array(
+      Schema.Struct({
+        id: Schema.Finite,
+        seq: Schema.Finite,
+        firstRevision: Schema.NullOr(Schema.Finite),
+        revisions: Schema.Array(Schema.Finite),
+      }),
+    ),
+  }),
 )
+const testError = (cause: unknown) =>
+  new Storage.StorageError({
+    reason: 'io',
+    operation: 'test',
+    message: 'Native fixture access failed',
+    cause,
+  })
+const readSql = (id: number) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    const rows = yield* sql`SELECT payload FROM effect_harness_records WHERE id=${id}`
+    const row = yield* Schema.decodeUnknownEffect(RowJson)(rows[0]?.payload)
+    if (row._tag !== 'document') return row
+    const revisions =
+      yield* sql`SELECT CAST(seq AS TEXT) AS seq, content FROM effect_harness_revisions
+    WHERE document_id=${id} ORDER BY seq`
+    return {
+      ...row,
+      value: {
+        ...row.value,
+        revisions: yield* Effect.forEach(revisions, (revision) =>
+          Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(revision.content).pipe(
+            Effect.map((content) => ({ seq: damagedSeq(Number(revision.seq)), content })),
+          ),
+        ),
+      },
+    }
+  }).pipe(Effect.mapError(testError))
+const writeSql = (row: Row.Stored) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    const header =
+      row._tag === 'document' ? { ...row, value: { ...row.value, revisions: [] } } : row
+    const payload = yield* Schema.encodeEffect(RowJson)(header)
+    yield* sql`UPDATE effect_harness_records SET payload=${payload} WHERE id=${Row.idOf(row)}`
+    if (row._tag === 'document') {
+      yield* sql`DELETE FROM effect_harness_revisions WHERE document_id=${row.value.record.id}`
+      for (const revision of row.value.revisions) {
+        const content = JSON.stringify(revision.content)
+        yield* sql`INSERT INTO effect_harness_revisions (document_id,seq,content)
+        VALUES (${row.value.record.id},${revision.seq},${content})`
+      }
+    }
+  }).pipe(Effect.mapError(testError))
+const jsonlReference = (filePath: string, id: number) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const text = yield* fs.readFileString(filePath)
+    const frames = yield* Effect.forEach(text.trimEnd().split('\n'), (line) =>
+      Schema.decodeEffect(FrameJson)(line),
+    )
+    const references = frames.flatMap((frame) => frame.rows).filter((ref) => ref.id === id)
+    let revisions: ReadonlyArray<number> = []
+    for (const ref of references)
+      revisions = [
+        ...revisions.filter((seq) => ref.firstRevision !== null && seq >= ref.firstRevision),
+        ...ref.revisions,
+      ]
+    return { ...references.at(-1)!, revisions }
+  })
+const readJsonl = (filePath: string, id: number) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const ref = yield* jsonlReference(filePath, id)
+    const row = yield* fs
+      .readFileString(`${filePath}.parts/${id}-${ref.seq}.row`)
+      .pipe(Effect.flatMap(Schema.decodeEffect(RowJson)))
+    if (row._tag !== 'document') return row
+    const revisions = yield* Effect.forEach(ref.revisions, (seq) =>
+      fs
+        .readFileString(`${filePath}.parts/${id}-${seq}.revision`)
+        .pipe(
+          Effect.flatMap(
+            Schema.decodeEffect(
+              Schema.fromJsonString(RawRow.members[4].fields.value.fields.revisions.value),
+            ),
+          ),
+        ),
+    )
+    return { ...row, value: { ...row.value, revisions } }
+  }).pipe(Effect.mapError(testError))
+const writeJsonl = (filePath: string, row: Row.Stored) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const id = Row.idOf(row)
+    const ref = yield* jsonlReference(filePath, id)
+    const header =
+      row._tag === 'document' ? { ...row, value: { ...row.value, revisions: [] } } : row
+    yield* fs.writeFileString(`${filePath}.parts/${id}-${ref.seq}.row`, JSON.stringify(header))
+    if (row._tag === 'document')
+      for (const [index, seq] of ref.revisions.entries())
+        yield* fs.writeFileString(
+          `${filePath}.parts/${id}-${seq}.revision`,
+          JSON.stringify(row.value.revisions[index]),
+        )
+  }).pipe(Effect.mapError(testError))
 const modes = [
   'missing-body',
   'malformed-body',
@@ -80,6 +187,10 @@ const modes = [
   'unallocated-retirement',
 ] as const
 type Mode = (typeof modes)[number]
+// These corruptions cannot be represented by the SQL primary key, CHECK and ORDER BY.
+const representable = (backend: string, mode: Mode) =>
+  backend !== 'sqlite' ||
+  !['duplicate-sequence', 'descending-sequence', 'zero-sequence'].includes(mode)
 const successful = (mode: Mode) =>
   ['missing-body', 'malformed-body', 'malformed-delta', 'valid'].includes(mode)
 // Deliberately bypass sequence validation only when damaging a native test fixture.
@@ -147,11 +258,12 @@ const seed = Effect.scoped(
     return Retirement.target(snapshot)
   }),
 )
-const verify = (
+const verify = <R>(
   selected: Retirement.Target,
   mode: Mode,
-  read: Effect.Effect<Row.Stored, Storage.StorageError>,
-  unchanged: Effect.Effect<void, Storage.StorageError>,
+  read: Effect.Effect<Row.Stored, Storage.StorageError, R>,
+  unchanged: Effect.Effect<void, Storage.StorageError, R>,
+  ordinary = false,
 ) =>
   Effect.gen(function* () {
     const storage = yield* Storage.Storage
@@ -174,7 +286,9 @@ const verify = (
     }
     const session = yield* Session.make() // A fresh cache, never the healthy seed snapshot.
     const retired = yield* Session.commit(session, (tx) =>
-      Transaction.retireDocumentMetadata(tx, policy, selected),
+      ordinary
+        ? Transaction.retireDocument(tx, definition, { scope: { _tag: 'session' } })
+        : Transaction.retireDocumentMetadata(tx, policy, selected),
     ).pipe(Effect.result)
     if (!successful(mode)) {
       assert.strictEqual(retired._tag, 'Failure')
@@ -187,13 +301,13 @@ const verify = (
     assert.strictEqual(after._tag, 'document')
     if (after._tag !== 'document' || before._tag !== 'document') return
     assert.isDefined(after.value.record.retiredAt)
-    assert.deepEqual(after.value.revisions, before.value.revisions)
+    assert.deepEqual(after.value.revisions, [])
     assert.deepEqual(Struct.omit(after.value.record, ['retiredAt']), before.value.record)
     assert.isTrue(Option.isNone(yield* storage.findDocument(selected.address)))
     if (mode !== 'valid')
       assert.strictEqual(
         (yield* storage.document(selected.id, Sequence.make(1)).pipe(Effect.flip)).reason,
-        'corrupt',
+        'invalid',
       )
     else assert.isTrue(Option.isNone(yield* storage.document(selected.id)))
   })
@@ -224,7 +338,7 @@ const verifyCommit = <E, R>(
     if (successful(mode)) {
       if (after._tag !== 'document' || changed._tag !== 'document') return
       assert.isDefined(after.value.record.retiredAt)
-      assert.deepEqual(after.value.revisions, changed.value.revisions)
+      assert.deepEqual(after.value.revisions, [])
       assert.isTrue(Option.isSome(yield* storage.conversation(Storage.ROOT_CONVERSATION_ID)))
     } else {
       assert.deepEqual(after, changed)
@@ -234,7 +348,9 @@ const verifyCommit = <E, R>(
   }).pipe(Effect.provideService(Storage.Storage, storage))
 
 for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
-  for (const mode of modes.filter((mode) => successful(mode) || modes.indexOf(mode) >= 9)) {
+  for (const mode of modes.filter(
+    (mode) => representable(backend, mode) && (successful(mode) || modes.indexOf(mode) >= 9),
+  )) {
     it.effect(
       `native ${backend} revalidates ${mode} after staging and rolls back mixed writes`,
       () =>
@@ -260,18 +376,9 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                 yield* verifyCommit(
                   storage,
                   mode,
-                  (id) =>
-                    Effect.gen(function* () {
-                      const rows =
-                        yield* sql`SELECT payload FROM effect_harness_records WHERE id=${id}`
-                      return yield* Schema.decodeUnknownEffect(RowJson)(rows[0]?.payload)
-                    }),
-                  (row) =>
-                    Effect.gen(function* () {
-                      const payload = yield* Schema.encodeEffect(RowJson)(row)
-                      yield* sql`UPDATE effect_harness_records SET payload=${payload} WHERE id=${Row.idOf(row)}`
-                    }),
-                  sql`SELECT * FROM effect_harness_metadata`,
+                  readSql,
+                  writeSql,
+                  sql`SELECT * FROM effect_harness_metadata`.pipe(Effect.mapError(testError)),
                 )
               }).pipe(
                 Effect.provide(
@@ -316,19 +423,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                 // Seed through the original writer so the staging reader sees the history.
                 const staging = { ...storage, commit: original.commit }
                 const selected = yield* seed.pipe(Effect.provideService(Storage.Storage, staging))
-                const read = Effect.gen(function* () {
-                  const text = yield* fs.readFileString(filePath)
-                  const frames = yield* Effect.forEach(text.trimEnd().split('\n'), (line) =>
-                    Schema.decodeEffect(FrameJson)(line),
-                  )
-                  return Option.getOrThrow(
-                    Option.fromUndefinedOr(
-                      frames
-                        .flatMap((frame) => frame.rows)
-                        .findLast((row) => Row.idOf(row) === selected.id),
-                    ),
-                  )
-                })
+                const read = readJsonl(filePath, selected.id)
                 const changed = yield* corrupt(yield* read, mode)
                 const session = yield* Session.make().pipe(
                   Effect.provideService(Storage.Storage, storage),
@@ -338,28 +433,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                   Effect.gen(function* () {
                     yield* Transaction.ensureRoot(tx)
                     yield* Transaction.retireDocumentMetadata(tx, policy, selected)
-                    const text = yield* fs.readFileString(filePath)
-                    const frames = yield* Effect.forEach(text.trimEnd().split('\n'), (line) =>
-                      Schema.decodeEffect(FrameJson)(line),
-                    )
-                    const index = frames.findLastIndex((frame) =>
-                      frame.rows.some((row) => Row.idOf(row) === selected.id),
-                    )
-                    const replaced = frames.map((frame, i) =>
-                      i === index
-                        ? {
-                            ...frame,
-                            rows: frame.rows.map((row) =>
-                              Row.idOf(row) === selected.id ? changed : row,
-                            ),
-                          }
-                        : frame,
-                    )
-                    damaged =
-                      (yield* Effect.forEach(replaced, (frame) =>
-                        Schema.encodeEffect(FrameJson)(frame),
-                      )).join('\n') + '\n'
-                    yield* fs.writeFileString(filePath, damaged)
+                    yield* writeJsonl(filePath, changed)
+                    damaged = yield* fs.readFileString(filePath)
                   }),
                 ).pipe(Effect.result)
                 assert.strictEqual(result._tag, successful(mode) ? 'Success' : 'Failure')
@@ -367,7 +442,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                   const after = yield* read
                   if (after._tag !== 'document' || changed._tag !== 'document') return
                   assert.isDefined(after.value.record.retiredAt)
-                  assert.deepEqual(after.value.revisions, changed.value.revisions)
+                  assert.deepEqual(after.value.revisions, [])
                   assert.isTrue((yield* fs.readFileString(filePath)).startsWith(damaged))
                   assert.isTrue(
                     Option.isSome(yield* storage.conversation(Storage.ROOT_CONVERSATION_ID)),
@@ -384,165 +459,108 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
   }
 }
 
-for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
-  for (const mode of modes) {
-    it.effect(
-      `native ${backend} ${mode} validates fresh headers and persists only retirement`,
-      () =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const fs = yield* FileSystem.FileSystem
-            const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'native-retirement-' })
-            if (backend === 'memory') {
-              const access = yield* Memory.makeAccess
-              const storage = yield* Kernel.make(access)
-              const selected = yield* seed.pipe(Effect.provideService(Storage.Storage, storage))
-              const changed = yield* corrupt(
-                Option.getOrThrow(yield* access.get(selected.id)),
-                mode,
-              )
-              const counters = yield* access.metadata
-              yield* access.save([changed], counters)
-              const read = access.get(selected.id).pipe(Effect.map(Option.getOrThrow))
-              const unchanged = Effect.gen(function* () {
-                assert.deepEqual(yield* access.metadata, counters)
-                assert.deepEqual(yield* read, changed)
-              })
-              yield* verify(selected, mode, read, unchanged).pipe(
-                Effect.provideService(Storage.Storage, storage),
-              )
-            } else if (backend === 'sqlite') {
-              yield* Effect.gen(function* () {
-                const sql = yield* SqlClient.SqlClient
-                const selected = yield* seed
-                const raw =
-                  yield* sql`SELECT payload FROM effect_harness_records WHERE id=${selected.id}`
-                const original = yield* Schema.decodeUnknownEffect(Schema.String)(raw[0]?.payload)
-                const changed = yield* corrupt(yield* Schema.decodeEffect(RowJson)(original), mode)
-                const bytes = yield* Schema.encodeEffect(RowJson)(changed)
-                yield* sql`UPDATE effect_harness_records SET payload=${bytes} WHERE id=${selected.id}`
-                const counters = yield* sql`SELECT * FROM effect_harness_metadata`
-                const read = Effect.gen(function* () {
-                  const rows =
-                    yield* sql`SELECT payload FROM effect_harness_records WHERE id=${selected.id}`
-                  return yield* Schema.decodeUnknownEffect(RowJson)(rows[0]?.payload)
-                }).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new Storage.StorageError({
-                        reason: 'io',
-                        operation: 'test',
-                        message: 'read',
-                        cause,
-                      }),
-                  ),
+for (const ordinary of [false, true]) {
+  for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
+    for (const mode of modes.filter(
+      (mode) =>
+        representable(backend, mode) &&
+        (!ordinary ||
+          ![
+            'wrong-kind',
+            'retirement-before-creation',
+            'retirement-before-revision',
+            'unallocated-retirement',
+          ].includes(mode)),
+    )) {
+      it.effect(
+        `native ${backend} ${ordinary ? 'ordinary' : 'metadata'} ${mode} validates fresh headers and persists only retirement`,
+        () =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const fs = yield* FileSystem.FileSystem
+              const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'native-retirement-' })
+              if (backend === 'memory') {
+                const access = yield* Memory.makeAccess
+                const storage = yield* Kernel.make(access)
+                const selected = yield* seed.pipe(Effect.provideService(Storage.Storage, storage))
+                const changed = yield* corrupt(
+                  Option.getOrThrow(yield* access.get(selected.id)),
+                  mode,
                 )
+                const counters = yield* access.metadata
+                yield* access.save([changed], counters)
+                const read = access.get(selected.id).pipe(Effect.map(Option.getOrThrow))
                 const unchanged = Effect.gen(function* () {
-                  assert.deepEqual(yield* sql`SELECT * FROM effect_harness_metadata`, counters)
-                  assert.deepEqual(
-                    yield* sql`SELECT payload FROM effect_harness_records WHERE id=${selected.id}`,
-                    [{ payload: bytes }],
-                  )
-                }).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new Storage.StorageError({
-                        reason: 'io',
-                        operation: 'test',
-                        message: 'read',
-                        cause,
-                      }),
-                  ),
+                  assert.deepEqual(yield* access.metadata, counters)
+                  assert.deepEqual(yield* read, changed)
+                })
+                yield* verify(selected, mode, read, unchanged, ordinary).pipe(
+                  Effect.provideService(Storage.Storage, storage),
                 )
-                yield* verify(selected, mode, read, unchanged)
-              }).pipe(
-                Effect.provide(
-                  Storage.layerSql.pipe(
-                    Layer.provideMerge(
-                      SqliteClient.layer({ filename: `${directory}/store.sqlite` }),
-                    ),
-                  ),
-                ),
-              )
-            } else {
-              const filePath = `${directory}/store.jsonl`
-              const layer = Storage.layerJsonl({ filePath })
-              const selected = yield* seed.pipe(Effect.provide(layer))
-              const original = yield* fs.readFileString(filePath)
-              const frames = yield* Effect.forEach(original.trimEnd().split('\n'), (line) =>
-                Schema.decodeEffect(FrameJson)(line),
-              )
-              const changedFrames = yield* Effect.forEach(
-                frames,
-                Effect.fnUntraced(function* (frame) {
-                  return {
-                    ...frame,
-                    rows: yield* Effect.forEach(frame.rows, (row) =>
-                      Row.idOf(row) === selected.id ? corrupt(row, mode) : Effect.succeed(row),
-                    ),
-                  }
-                }),
-              )
-              const bytes =
-                (yield* Effect.forEach(changedFrames, (frame) =>
-                  Schema.encodeEffect(FrameJson)(frame),
-                )).join('\n') + '\n'
-              yield* fs.writeFileString(filePath, bytes)
-              const read = Effect.gen(function* () {
-                const text = yield* fs.readFileString(filePath)
-                const all = yield* Effect.forEach(text.trimEnd().split('\n'), (line) =>
-                  Schema.decodeEffect(FrameJson)(line),
-                )
-                const row = all
-                  .flatMap((frame) => frame.rows)
-                  .findLast((row) => Row.idOf(row) === selected.id)
-                return yield* Schema.decodeUnknownEffect(RawRow)(row)
-              }).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new Storage.StorageError({
-                      reason: 'io',
-                      operation: 'test',
-                      message: 'read',
-                      cause,
-                    }),
-                ),
-              )
-              const unchanged = fs.readFileString(filePath).pipe(
-                Effect.tap((text) => Effect.sync(() => assert.strictEqual(text, bytes))),
-                Effect.asVoid,
-                Effect.mapError(
-                  (cause) =>
-                    new Storage.StorageError({
-                      reason: 'io',
-                      operation: 'test',
-                      message: 'read',
-                      cause,
-                    }),
-                ),
-              )
-              const outcome = yield* verify(selected, mode, read, unchanged).pipe(
-                Effect.provide(layer),
-                Effect.result,
-              )
-              if (outcome._tag === 'Failure') {
-                assert.isTrue(
-                  ['zero-sequence', 'fraction-sequence', 'unsafe-sequence'].includes(mode),
-                )
-                assert.instanceOf(outcome.failure, Storage.StorageError)
-                assert.strictEqual(outcome.failure.reason, 'corrupt')
-                yield* unchanged
-              }
-              assert.isTrue((yield* fs.readFileString(filePath)).startsWith(bytes)) // Existing journal bytes are immutable.
-              if (successful(mode))
+              } else if (backend === 'sqlite') {
                 yield* Effect.gen(function* () {
-                  const storage = yield* Storage.Storage
-                  assert.isTrue(Option.isNone(yield* storage.findDocument(selected.address)))
-                }).pipe(Effect.provide(layer))
-            }
-          }),
-        ).pipe(Effect.provide(NodeServices.layer)),
-    )
+                  const sql = yield* SqlClient.SqlClient
+                  const selected = yield* seed
+                  const changed = yield* corrupt(yield* readSql(selected.id), mode)
+                  yield* writeSql(changed)
+                  const counters = yield* sql`SELECT * FROM effect_harness_metadata`
+                  const read = readSql(selected.id)
+                  const unchanged = Effect.gen(function* () {
+                    assert.deepEqual(yield* sql`SELECT * FROM effect_harness_metadata`, counters)
+                    assert.deepEqual(yield* read, changed)
+                  }).pipe(Effect.mapError(testError))
+                  yield* verify(selected, mode, read, unchanged, ordinary)
+                }).pipe(
+                  Effect.provide(
+                    Storage.layerSql.pipe(
+                      Layer.provideMerge(
+                        SqliteClient.layer({ filename: `${directory}/store.sqlite` }),
+                      ),
+                    ),
+                  ),
+                )
+              } else {
+                const filePath = `${directory}/store.jsonl`
+                const layer = Storage.layerJsonl({ filePath })
+                const selected = yield* seed.pipe(Effect.provide(layer))
+                const read = readJsonl(filePath, selected.id)
+                const changed = yield* corrupt(yield* read, mode)
+                yield* writeJsonl(filePath, changed)
+                const bytes = yield* fs.readFileString(filePath)
+                const unchanged = Effect.gen(function* () {
+                  assert.strictEqual(yield* fs.readFileString(filePath), bytes)
+                  assert.deepEqual(yield* read, changed)
+                }).pipe(Effect.mapError(testError))
+                const outcome = yield* verify(selected, mode, read, unchanged, ordinary).pipe(
+                  Effect.provide(layer),
+                  Effect.result,
+                )
+                if (outcome._tag === 'Failure') {
+                  assert.isTrue(
+                    [
+                      'zero-sequence',
+                      'fraction-sequence',
+                      'unsafe-sequence',
+                      'duplicate-sequence',
+                      'descending-sequence',
+                      'future-sequence',
+                    ].includes(mode),
+                  )
+                  assert.instanceOf(outcome.failure, Storage.StorageError)
+                  assert.strictEqual(outcome.failure.reason, 'corrupt')
+                  yield* unchanged
+                }
+                assert.isTrue((yield* fs.readFileString(filePath)).startsWith(bytes)) // Existing journal bytes are immutable.
+                if (successful(mode))
+                  yield* Effect.gen(function* () {
+                    const storage = yield* Storage.Storage
+                    assert.isTrue(Option.isNone(yield* storage.findDocument(selected.address)))
+                  }).pipe(Effect.provide(layer))
+              }
+            }),
+          ).pipe(Effect.provide(NodeServices.layer)),
+      )
+    }
   }
 }
 
@@ -706,49 +724,284 @@ for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
   }
 }
 
+for (const ordinary of [false, true]) {
+  it.effect(
+    `native ${ordinary ? 'ordinary' : 'metadata'} malformed retirement and recreation share one atomic batch and reject stale targets`,
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const access = yield* Memory.makeAccess
+          const storage = yield* Kernel.make(access)
+          const selected = yield* seed.pipe(Effect.provideService(Storage.Storage, storage))
+          const changed = yield* corrupt(
+            Option.getOrThrow(yield* access.get(selected.id)),
+            'malformed-body',
+          )
+          yield* access.save([changed], yield* access.metadata)
+          const session = yield* Session.make().pipe(
+            Effect.provideService(Storage.Storage, storage),
+          )
+          const recreated = yield* Session.commit(session, (tx) =>
+            Effect.gen(function* () {
+              yield* Transaction.ensureRoot(tx)
+              const entry = yield* Transaction.appendEntry(tx, Storage.ROOT_CONVERSATION_ID, {
+                kind: 'native.prior',
+              })
+              if (ordinary) {
+                yield* Transaction.retireDocument(tx, definition, { scope: { _tag: 'session' } })
+                yield* Transaction.retireDocument(tx, definition, { scope: { _tag: 'session' } })
+              } else yield* Transaction.retireDocumentMetadata(tx, policy, selected)
+              const recreated = yield* Transaction.ensureDocument(tx, definition, {
+                scope: { _tag: 'session' },
+              })
+              assert.strictEqual(
+                Option.getOrThrow(yield* Transaction.entry(tx, entry.id)).kind,
+                'native.prior',
+              )
+              return recreated
+            }),
+          )
+          assert.notStrictEqual(recreated.record.id, selected.id)
+          const stale = yield* Session.commit(session, (tx) =>
+            Transaction.retireDocumentMetadata(tx, policy, selected),
+          ).pipe(Effect.flip)
+          assert.strictEqual(stale._tag, 'SessionError')
+          assert.strictEqual(
+            Option.getOrThrow(yield* storage.findDocument(selected.address)).id,
+            recreated.record.id,
+          )
+          const retired = Option.getOrThrow(yield* access.get(selected.id))
+          if (changed._tag === 'document' && retired._tag === 'document')
+            assert.deepEqual(retired.value.revisions, [])
+        }),
+      ),
+  )
+}
+
+for (const mode of ['malformed-body', 'malformed-delta', 'zero-version', 'earlier-tag'] as const) {
+  it.effect(`terminal settlement handles native ${mode} atomically with existing drafts`, () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const access = yield* Memory.makeAccess
+        const storage = yield* Kernel.make(access)
+        const taskDocument = Document.family({ ...definition.definition, scope: 'task' })
+        const seeded = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const session = yield* Session.make()
+            return yield* Session.commit(session, (tx) =>
+              Effect.gen(function* () {
+                yield* Transaction.ensureRoot(tx)
+                const task = yield* Transaction.createTask(tx, {
+                  conversationId: Storage.ROOT_CONVERSATION_ID,
+                  kind: 'native.cleanup',
+                  version: 1,
+                  input: null,
+                  background: false,
+                  abortRequested: false,
+                  state: { status: 'running', checkpoint: { phase: 'work' } },
+                })
+                const scope = { _tag: 'task', taskId: task.id } as const
+                const bad = yield* Transaction.ensureDocument(tx, taskDocument, {
+                  scope,
+                  key: 'bad',
+                })
+                const good = yield* Transaction.ensureDocument(tx, taskDocument, {
+                  scope,
+                  key: 'good',
+                })
+                return { task, scope, bad, good }
+              }),
+            )
+          }),
+        ).pipe(Effect.provideService(Storage.Storage, storage))
+        const damaged = yield* corrupt(
+          Option.getOrThrow(yield* access.get(seeded.bad.record.id)),
+          mode,
+        )
+        yield* access.save([damaged], yield* access.metadata)
+        assert.strictEqual(
+          (yield* storage.document(seeded.bad.record.id).pipe(Effect.flip)).reason,
+          'corrupt',
+        )
+        const session = yield* Session.make().pipe(Effect.provideService(Storage.Storage, storage))
+        yield* Session.commit(session, (tx) =>
+          Effect.gen(function* () {
+            yield* Transaction.setDocument(
+              tx,
+              taskDocument,
+              { scope: seeded.scope, key: 'good' },
+              { count: 9 },
+            )
+            yield* Transaction.ensureDocument(tx, taskDocument, { scope: seeded.scope, key: 'new' })
+            const result = yield* Transaction.putTask(tx, {
+              ...seeded.task,
+              state: { status: 'terminal', outcome: { status: 'completed', result: null } },
+            }).pipe(Effect.result)
+            if (successful(mode)) {
+              assert.strictEqual(result._tag, 'Success')
+              assert.deepEqual(
+                yield* Transaction.scanDocuments(tx, { scope: seeded.scope }).pipe(
+                  Stream.runCollect,
+                ),
+                [],
+              )
+            } else {
+              assert.strictEqual(result._tag, 'Failure')
+              if (result._tag === 'Failure') {
+                assert.strictEqual(result.failure._tag, 'StorageError')
+                if (result.failure._tag === 'StorageError')
+                  assert.strictEqual(result.failure.reason, 'corrupt')
+              }
+              assert.strictEqual(
+                Option.getOrThrow(yield* Transaction.task(tx, seeded.task.id)).state.status,
+                'running',
+              )
+              assert.strictEqual(
+                Option.getOrThrow(
+                  yield* Transaction.snapshot(tx, taskDocument, {
+                    scope: seeded.scope,
+                    key: 'good',
+                  }),
+                ).value.count,
+                9,
+              )
+            }
+          }),
+        )
+        const persisted = Option.getOrThrow(yield* storage.task(seeded.task.id))
+        assert.strictEqual(persisted.state.status, successful(mode) ? 'terminal' : 'running')
+        const after = Option.getOrThrow(yield* access.get(seeded.bad.record.id))
+        if (successful(mode)) {
+          assert.strictEqual(after._tag, 'document')
+          if (after._tag === 'document') {
+            assert.isDefined(after.value.record.retiredAt)
+            assert.deepEqual(after.value.revisions, [])
+          }
+          assert.deepEqual(
+            yield* Session.scanDocuments(session, { scope: seeded.scope }).pipe(Stream.runCollect),
+            [],
+          )
+          assert.isTrue(
+            Option.isNone(
+              yield* Session.snapshot(session, taskDocument, { scope: seeded.scope, key: 'good' }),
+            ),
+          )
+        } else {
+          assert.deepEqual(after, damaged)
+          assert.strictEqual(
+            Option.getOrThrow(
+              yield* Session.snapshot(session, taskDocument, { scope: seeded.scope, key: 'good' }),
+            ).value.count,
+            9,
+          )
+          assert.strictEqual(
+            (yield* Session.scanDocuments(session, { scope: seeded.scope }).pipe(Stream.runCollect))
+              .length,
+            3,
+          )
+        }
+      }),
+    ),
+  )
+}
+
 it.effect(
-  'native malformed retirement and recreation share one atomic batch and reject stale targets',
+  'ordinary retirement preserves rewindable revisions and rejects malformed historical content',
   () =>
     Effect.scoped(
       Effect.gen(function* () {
         const access = yield* Memory.makeAccess
         const storage = yield* Kernel.make(access)
-        const selected = yield* seed.pipe(Effect.provideService(Storage.Storage, storage))
-        const changed = yield* corrupt(
-          Option.getOrThrow(yield* access.get(selected.id)),
-          'malformed-body',
-        )
-        yield* access.save([changed], yield* access.metadata)
-        const session = yield* Session.make().pipe(Effect.provideService(Storage.Storage, storage))
-        const recreated = yield* Session.commit(session, (tx) =>
+        const document = Document.define({
+          ...definition.definition,
+          scope: 'conversation',
+          history: 'rewindable',
+          fork: 'asOf',
+        })
+        const target = {
+          scope: { _tag: 'conversation', conversationId: Storage.ROOT_CONVERSATION_ID },
+        } as const
+        const seeded = yield* Effect.scoped(
           Effect.gen(function* () {
-            yield* Transaction.ensureRoot(tx)
-            const entry = yield* Transaction.appendEntry(tx, Storage.ROOT_CONVERSATION_ID, {
-              kind: 'native.prior',
-            })
-            yield* Transaction.retireDocumentMetadata(tx, policy, selected)
-            const recreated = yield* Transaction.ensureDocument(tx, definition, {
-              scope: { _tag: 'session' },
-            })
-            assert.strictEqual(
-              Option.getOrThrow(yield* Transaction.entry(tx, entry.id)).kind,
-              'native.prior',
+            const session = yield* Session.make()
+            return yield* Session.commit(session, (tx) =>
+              Effect.gen(function* () {
+                yield* Transaction.ensureRoot(tx)
+                const snapshot = yield* Transaction.ensureDocument(tx, document, target)
+                const cutoff = yield* Transaction.appendEntry(tx, Storage.ROOT_CONVERSATION_ID, {
+                  kind: 'native.cutoff',
+                })
+                return { snapshot, cutoff }
+              }),
             )
-            return recreated
+          }),
+        ).pipe(Effect.provideService(Storage.Storage, storage))
+        yield* storage.commit([
+          {
+            _tag: 'document.change',
+            id: seeded.snapshot.record.id,
+            content: { _tag: 'delta', version: 1, ops: [['set', ['count'], 2]] },
+          },
+        ])
+        const raw = Option.getOrThrow(yield* access.get(seeded.snapshot.record.id))
+        assert.strictEqual(raw._tag, 'document')
+        if (raw._tag !== 'document') return
+        const damaged = {
+          ...raw,
+          value: {
+            ...raw.value,
+            revisions: raw.value.revisions.map((revision, index) =>
+              index === 0
+                ? revision
+                : {
+                    ...revision,
+                    content: { _tag: 'delta', version: 1, ops: 'opaque obsolete operations' },
+                  },
+            ),
+          },
+        }
+        yield* access.save([damaged], yield* access.metadata)
+        assert.strictEqual(
+          (yield* storage.document(seeded.snapshot.record.id).pipe(Effect.flip)).reason,
+          'corrupt',
+        )
+        const session = yield* Session.make().pipe(Effect.provideService(Storage.Storage, storage))
+        const replacement = yield* Session.commit(session, (tx) =>
+          Effect.gen(function* () {
+            const incompatible = Document.define({
+              ...document.definition,
+              scope: 'conversation',
+              history: 'latest',
+              fork: 'current',
+            })
+            const denied = yield* Transaction.retireDocument(tx, incompatible, target).pipe(
+              Effect.flip,
+            )
+            assert.strictEqual(denied._tag, 'SessionError')
+            if (denied._tag === 'SessionError') assert.strictEqual(denied.reason, 'conflict')
+            yield* Transaction.retireDocument(tx, document, target)
+            return yield* Transaction.ensureDocument(tx, document, target)
           }),
         )
-        assert.notStrictEqual(recreated.record.id, selected.id)
-        const stale = yield* Session.commit(session, (tx) =>
-          Transaction.retireDocumentMetadata(tx, policy, selected),
+        assert.notStrictEqual(replacement.record.id, seeded.snapshot.record.id)
+        const retired = Option.getOrThrow(yield* access.get(seeded.snapshot.record.id))
+        assert.strictEqual(retired._tag, 'document')
+        if (retired._tag === 'document') {
+          assert.isDefined(retired.value.record.retiredAt)
+          assert.deepEqual(retired.value.revisions, damaged.value.revisions)
+        }
+        const historical = yield* Session.snapshotAsOf(
+          session,
+          document,
+          target,
+          seeded.cutoff.id,
         ).pipe(Effect.flip)
-        assert.strictEqual(stale._tag, 'SessionError')
+        assert.strictEqual(historical._tag, 'StorageError')
+        if (historical._tag === 'StorageError') assert.strictEqual(historical.reason, 'corrupt')
         assert.strictEqual(
-          Option.getOrThrow(yield* storage.findDocument(selected.address)).id,
-          recreated.record.id,
+          Option.getOrThrow(yield* Session.snapshot(session, document, target)).record.id,
+          replacement.record.id,
         )
-        const retired = Option.getOrThrow(yield* access.get(selected.id))
-        if (changed._tag === 'document' && retired._tag === 'document')
-          assert.deepEqual(retired.value.revisions, changed.value.revisions)
       }),
     ),
 )

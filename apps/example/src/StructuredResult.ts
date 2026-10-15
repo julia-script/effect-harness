@@ -9,7 +9,7 @@ import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Session from 'effect-harness/Session'
 import * as Storage from 'effect-harness/Storage'
 import * as Tool from 'effect-harness/Tool'
-import * as ToolResult from 'effect-harness/ToolResult'
+import * as ToolResultRecord from 'effect-harness/ToolResultRecord'
 import * as Toolkit from 'effect-harness/Toolkit'
 import * as DemoModel from './DemoModel.js'
 
@@ -44,9 +44,8 @@ export const program = Effect.scoped(
       Stream.runCollect,
     )
     const saved = entries.find((entry) => entry.kind === 'tool.result')
-    const receipt = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(ToolResult.ResultSchema))(
-      saved?.data,
-    )
+    if (saved === undefined) return yield* Effect.die('The completed tool result is absent')
+    const receipt = yield* ToolResultRecord.read(saved)
     const value = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(structured))(
       receipt.structuredOutput,
     )
