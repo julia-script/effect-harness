@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
@@ -55,7 +56,8 @@ const fixture = Effect.fnUntraced(function* (
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
   const layer =
     backend === 'sqlite'
-      ? Storage.layerSql.pipe(
+      ? Storage.layerJournal().pipe(
+          Layer.provide(SqlEventJournal.layer()),
           Layer.provide(SqliteClient.layer({ filename: `${directory}/restore.db` })),
         )
       : Storage.layerJsonl({ filePath: `${directory}/restore.jsonl` })

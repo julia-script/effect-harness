@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { NodeServices } from '@effect/platform-node'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
@@ -138,7 +139,8 @@ describe('native supervised conversations', () => {
                 if (backend === 'memory') return Storage.layerMemory
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/proof.jsonl` })
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sqlite({ filename: `${directory}/proof.sqlite` })),
                 )
               })()
@@ -370,7 +372,8 @@ describe('native supervised conversations', () => {
                     if (backend === 'memory') return Storage.layerMemory
                     if (backend === 'jsonl')
                       return Storage.layerJsonl({ filePath: `${directory}/fault.jsonl` })
-                    return Storage.layerSql.pipe(
+                    return Storage.layerJournal().pipe(
+                      Layer.provide(SqlEventJournal.layer()),
                       Layer.provide(sqlite({ filename: `${directory}/fault.sqlite` })),
                     )
                   })()
@@ -665,7 +668,8 @@ describe('native supervised conversations', () => {
                 if (backend === 'memory') return Storage.layerMemory
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/selection.jsonl` })
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sqlite({ filename: `${directory}/selection.sqlite` })),
                 )
               })()
@@ -908,7 +912,8 @@ describe('native supervised conversations', () => {
               if (backend === 'memory') return Storage.layerMemory
               if (backend === 'jsonl')
                 return Storage.layerJsonl({ filePath: `${directory}/cold.jsonl` })
-              return Storage.layerSql.pipe(
+              return Storage.layerJournal().pipe(
+                Layer.provide(SqlEventJournal.layer()),
                 Layer.provide(sqlite({ filename: `${directory}/cold.sqlite` })),
               )
             })()
@@ -1058,7 +1063,8 @@ describe('native supervised conversations', () => {
                 if (backend === 'memory') return Storage.layerMemory
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/content.jsonl` })
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sqlite({ filename: `${directory}/content.sqlite` })),
                 )
               })()
@@ -1240,7 +1246,8 @@ describe('native supervised conversations', () => {
                 if (backend === 'memory') return Storage.layerMemory
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/joins.jsonl` })
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sqlite({ filename: `${directory}/joins.sqlite` })),
                 )
               })()
@@ -1427,7 +1434,8 @@ describe('native supervised conversations', () => {
               if (backend === 'memory') return Storage.layerMemory
               if (backend === 'jsonl')
                 return Storage.layerJsonl({ filePath: `${directory}/parents.jsonl` })
-              return Storage.layerSql.pipe(
+              return Storage.layerJournal().pipe(
+                Layer.provide(SqlEventJournal.layer()),
                 Layer.provide(sqlite({ filename: `${directory}/parents.sqlite` })),
               )
             })()

@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
@@ -329,7 +330,8 @@ describe('Document materialization', () => {
             const layer =
               backend === 'JSONL'
                 ? Storage.layerJsonl({ filePath: `${dir}/storage.jsonl` })
-                : Storage.layerSql.pipe(
+                : Storage.layerJournal().pipe(
+                    Layer.provide(SqlEventJournal.layer()),
                     Layer.provide(SqliteClient.layer({ filename: `${dir}/storage.sqlite` })),
                   )
             const cutoff = yield* Effect.scoped(

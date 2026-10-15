@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
@@ -398,7 +399,8 @@ for (const backend of ['sqlite', 'jsonl'] as const) {
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'task-migration-' })
         const layer =
           backend === 'sqlite'
-            ? Storage.layerSql.pipe(
+            ? Storage.layerJournal().pipe(
+                Layer.provide(SqlEventJournal.layer()),
                 Layer.provide(SqliteClient.layer({ filename: `${directory}/store.sqlite` })),
               )
             : Storage.layerJsonl({ filePath: `${directory}/store.jsonl` })

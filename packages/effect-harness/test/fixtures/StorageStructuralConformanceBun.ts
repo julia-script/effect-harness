@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 import * as BunPath from '@effect/platform-bun/BunPath'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
@@ -35,7 +36,10 @@ const make = (backend: 'memory' | 'sqlite' | 'jsonl') =>
     const filename = path.join(directory, 'storage')
     const layer =
       backend === 'sqlite'
-        ? Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename })))
+        ? Storage.layerJournal().pipe(
+            Layer.provide(SqlEventJournal.layer()),
+            Layer.provide(SqliteClient.layer({ filename })),
+          )
         : Storage.layerJsonl({ filePath: filename }).pipe(
             Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
           )

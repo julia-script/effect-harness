@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Cause from 'effect/Cause'
@@ -201,7 +202,8 @@ describe('subagent native ownership', () => {
                   if (backend === 'memory') return Storage.layerMemory
                   if (backend === 'jsonl')
                     return Storage.layerJsonl({ filePath: `${directory}/decode.jsonl` })
-                  return Storage.layerSql.pipe(
+                  return Storage.layerJournal().pipe(
+                    Layer.provide(SqlEventJournal.layer()),
                     Layer.provide(sqlite({ filename: `${directory}/decode.sqlite` })),
                   )
                 })()
@@ -382,7 +384,8 @@ describe('subagent native ownership', () => {
               if (backend === 'memory') return Storage.layerMemory
               if (backend === 'jsonl')
                 return Storage.layerJsonl({ filePath: `${directory}/controls.jsonl` })
-              return Storage.layerSql.pipe(
+              return Storage.layerJournal().pipe(
+                Layer.provide(SqlEventJournal.layer()),
                 Layer.provide(sqlite({ filename: `${directory}/controls.sqlite` })),
               )
             })()
@@ -501,7 +504,8 @@ describe('subagent native ownership', () => {
             if (backend === 'memory') return Storage.layerMemory
             if (backend === 'jsonl')
               return Storage.layerJsonl({ filePath: `${directory}/content.jsonl` })
-            return Storage.layerSql.pipe(
+            return Storage.layerJournal().pipe(
+              Layer.provide(SqlEventJournal.layer()),
               Layer.provide(sqlite({ filename: `${directory}/content.sqlite` })),
             )
           })()
@@ -609,7 +613,8 @@ describe('subagent native ownership', () => {
                 if (backend === 'memory') return Storage.layerMemory
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/compact.jsonl` })
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sqlite({ filename: `${directory}/compact.sqlite` })),
                 )
               })()
@@ -824,7 +829,8 @@ describe('subagent native ownership', () => {
                 if (backend === 'memory') return Storage.layerMemory
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/content.jsonl` })
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sqlite({ filename: `${directory}/content.sqlite` })),
                 )
               })()

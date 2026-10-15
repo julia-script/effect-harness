@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import * as SchemaGetter from 'effect/SchemaGetter'
 import * as Tool from 'effect-harness/Tool'
 import * as Toolkit from 'effect-harness/Toolkit'
@@ -167,7 +168,8 @@ const saved = Effect.fnUntraced(function* (
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
   const memory = yield* Layer.build(Storage.layerMemory)
-  const sqlite = Storage.layerSql.pipe(
+  const sqlite = Storage.layerJournal().pipe(
+    Layer.provide(SqlEventJournal.layer()),
     Layer.provide(SqliteClient.layer({ filename: `${directory}/deferred.sqlite` })),
   )
   const jsonl = Storage.layerJsonl({ filePath: `${directory}/deferred.jsonl` })

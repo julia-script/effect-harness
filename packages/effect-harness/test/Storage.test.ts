@@ -1,62 +1,18 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
-import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Path from 'effect/Path'
 import type * as Scope from 'effect/Scope'
-import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
-import * as SqlClient from 'effect/sql/SqlClient'
 import * as Domain from 'effect-harness/Record'
 import * as Identity from 'effect-harness/Identity'
 import * as Storage from 'effect-harness/Storage'
 import * as Sequence from 'effect-harness/Sequence'
-import * as SqlStorage from '../src/internal/Sql.js'
-
-it.effect('SQL schemas decode driver integer representations and encode column names', () =>
-  Effect.gen(function* () {
-    for (const value of [42, '42', 42n])
-      assert.strictEqual(yield* Schema.decodeEffect(SqlStorage.SqlCounter)(value), 42)
-    for (const value of [
-      0,
-      -1,
-      1.5,
-      Infinity,
-      '',
-      '1.5',
-      '1e2',
-      'not an integer',
-      '9007199254740993',
-      9007199254740993n,
-    ])
-      yield* Schema.decodeEffect(SqlStorage.SqlCounter)(value).pipe(Effect.flip)
-    // One past the largest usable ID represents an exhausted allocation counter.
-    assert.strictEqual(
-      yield* Schema.decodeEffect(SqlStorage.SqlCounter)('9007199254740992'),
-      Number.MAX_SAFE_INTEGER + 1,
-    )
-    const metadata = yield* Schema.decodeEffect(SqlStorage.SqlMetadata)({
-      format: '1',
-      next_id: 42n,
-      next_seq: '3',
-    })
-    assert.deepEqual(metadata, { format: 1, nextId: 42, nextSeq: 3 })
-    assert.deepEqual(yield* Schema.encodeEffect(SqlStorage.SqlMetadata)(metadata), {
-      format: 1,
-      next_id: 42,
-      next_seq: 3,
-    })
-    yield* Schema.decodeEffect(SqlStorage.SqlMetadata)({
-      format: 1,
-      next_id: 1,
-      next_seq: 1,
-    }).pipe(Effect.flip)
-  }),
-)
 
 const root = Domain.ConversationId.make(1)
 const entryId = (id: number) => Domain.EntryId.make(id)
@@ -94,7 +50,10 @@ const layerFor = (backend: Backend, filename: string) => {
     case 'memory':
       return Storage.layerMemory
     case 'sqlite':
-      return Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename })))
+      return Storage.layerJournal().pipe(
+        Layer.provide(SqlEventJournal.layer()),
+        Layer.provide(SqliteClient.layer({ filename })),
+      )
     case 'jsonl':
       return Storage.layerJsonl({ filePath: filename })
   }
@@ -567,40 +526,6 @@ it.live(
     ).pipe(Effect.provide(NodeServices.layer)),
 )
 
-it.live('serializes two SQL storage instances sharing an application-owned SqlClient', () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { filename } = yield* fixture
-      return yield* Effect.gen(function* () {
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const first = Context.get(yield* Layer.build(Storage.layerSql), Storage.Storage)
-            const second = Context.get(yield* Layer.build(Storage.layerSql), Storage.Storage)
-            const ids = yield* Effect.all(
-              [first.mintId<Domain.TaskId>(), second.mintId<Domain.TaskId>()],
-              { concurrency: 'unbounded' },
-            )
-            assert.deepEqual(
-              [...ids].sort((a, b) => a - b),
-              [2, 3],
-            )
-            yield* first.commit([{ _tag: 'conversation', value: { id: root } }])
-            assert.isTrue(Option.isSome(yield* second.conversation(root)))
-            yield* second.commit([{ _tag: 'task', value: task(2) }])
-            assert.isTrue(Option.isSome(yield* first.task(taskId(2))))
-          }),
-        )
-        // Closing storage leaves the client usable until its owning application scope closes.
-        const sql = yield* SqlClient.SqlClient
-        assert.strictEqual(
-          (yield* sql`SELECT COUNT(*) AS count FROM effect_harness_records`)[0]?.count,
-          2,
-        )
-      }).pipe(Effect.provide(SqliteClient.layer({ filename })))
-    }),
-  ).pipe(Effect.provide(NodeServices.layer)),
-)
-
 it.live('poisons a JSONL writer after a partial append and recovers on reopen', () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -640,59 +565,6 @@ it.live('poisons a JSONL writer after a partial append and recovers on reopen', 
         assert.isTrue(Option.isNone(yield* storage.entry(entryId(2))))
         assert.strictEqual(yield* storage.commit([{ _tag: 'entry', value: entry(2) }]), 2)
       }).pipe(Effect.provide(Storage.layerJsonl({ filePath: filename })))
-    }),
-  ).pipe(Effect.provide(NodeServices.layer)),
-)
-
-it.live('rolls back SQL writes on driver failure and rejects corrupted records on read', () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { filename } = yield* fixture
-      yield* Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const storage = Context.get(yield* Layer.build(Storage.layerSql), Storage.Storage)
-            yield* storage.commit([{ _tag: 'conversation', value: { id: root } }])
-            yield* sql`CREATE TRIGGER reject_entry BEFORE INSERT ON effect_harness_records
-            WHEN NEW.id = 3 BEGIN SELECT RAISE(ABORT, 'injected write failure'); END`
-            const failure = yield* storage
-              .commit([
-                { _tag: 'entry', value: entry(2) },
-                { _tag: 'entry', value: entry(3) },
-              ])
-              .pipe(Effect.flip)
-            assert.strictEqual(failure.reason, 'uncertain')
-            assert.strictEqual(
-              (yield* sql`SELECT COUNT(*) AS count FROM effect_harness_records`)[0]?.count,
-              1,
-            )
-          }),
-        )
-        yield* sql`DROP TRIGGER reject_entry`
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const storage = Context.get(yield* Layer.build(Storage.layerSql), Storage.Storage)
-            assert.strictEqual(yield* storage.commit([{ _tag: 'entry', value: entry(2) }]), 2)
-            yield* sql`UPDATE effect_harness_records SET payload = 'not json' WHERE id = 2`
-            assert.strictEqual(
-              (yield* storage.entry(entryId(2)).pipe(Effect.flip)).reason,
-              'corrupt',
-            )
-            yield* sql`UPDATE effect_harness_records SET payload = ${JSON.stringify({ _tag: 'conversation', value: { id: 9 } })} WHERE id = 2`
-            assert.strictEqual(
-              (yield* storage.entry(entryId(2)).pipe(Effect.flip)).reason,
-              'corrupt',
-            )
-          }),
-        )
-        yield* sql`DELETE FROM effect_harness_metadata`
-        const missingMetadata = yield* Effect.service(Storage.Storage).pipe(
-          Effect.provide(Storage.layerSql),
-          Effect.flip,
-        )
-        assert.strictEqual(missingMetadata.reason, 'corrupt')
-      }).pipe(Effect.provide(SqliteClient.layer({ filename })))
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 )

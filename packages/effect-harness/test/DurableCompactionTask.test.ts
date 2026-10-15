@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Cause from 'effect/Cause'
 import { ModelError, ModelUnsupportedError } from 'effect-harness/ModelError'
@@ -63,7 +64,8 @@ const answer = (text: string): Response.PartEncoded[] => [
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
   const memory = yield* Layer.build(Storage.layerMemory)
-  const sql = Storage.layerSql.pipe(
+  const sql = Storage.layerJournal().pipe(
+    Layer.provide(SqlEventJournal.layer()),
     Layer.provide(SqliteClient.layer({ filename: `${directory}/compaction.sqlite` })),
   )
   const jsonl = Storage.layerJsonl({ filePath: `${directory}/compaction.jsonl` })

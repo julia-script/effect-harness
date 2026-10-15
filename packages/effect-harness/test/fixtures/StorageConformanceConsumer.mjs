@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Context from 'effect/Context'
@@ -25,7 +26,10 @@ const program = Effect.gen(function* () {
         directories.push(directory)
         const filename = path.join(directory, 'storage')
         return backend === 'sqlite'
-          ? Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename })))
+          ? Storage.layerJournal().pipe(
+              Layer.provide(SqlEventJournal.layer()),
+              Layer.provide(SqliteClient.layer({ filename })),
+            )
           : Storage.layerJsonl({ filePath: filename }).pipe(
               Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
             )

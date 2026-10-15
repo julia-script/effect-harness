@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
@@ -106,7 +107,8 @@ const entries = (runtime: HarnessRuntime.HarnessRuntimeService) =>
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
   const memory = yield* Layer.build(Storage.layerMemory)
-  const sqlite = Storage.layerSql.pipe(
+  const sqlite = Storage.layerJournal().pipe(
+    Layer.provide(SqlEventJournal.layer()),
     Layer.provide(SqliteClient.layer({ filename: `${directory}/prepared.sqlite` })),
   )
   const jsonl = Storage.layerJsonl({ filePath: `${directory}/prepared.jsonl` })

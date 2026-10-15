@@ -4,15 +4,25 @@
 
 ```ts
 Storage.layerMemory
-Storage.layerSql
+Storage.layerJournal({ storeId: 'agent' })
 Storage.layerJsonl({ filePath: './agent.jsonl' })
 ```
 
-Memory requires no services. SQL requires Effect's `SqlClient`; JSONL requires `FileSystem`. The library does not select a SQL implementation or host runtime. Initialization and cleanup follow the supplying Layer's lifecycle. JSONL commits require a final newline; incomplete trailing bytes are discarded on reopening.
+Memory requires no services. Journal storage requires Effect's `EventJournal`; JSONL requires `FileSystem`. The library does not select a database implementation or host runtime. Initialization and cleanup follow the supplying Layer's lifecycle. JSONL commits require a final newline; incomplete trailing bytes are discarded on reopening.
 
-SQL initialization and mutations (`Storage.commit`, `Storage.mintId`, and Session commits that write) must run outside the supplying client's `SqlClient.withTransaction`. They fail with an `invalid` StorageError inside an ambient transaction: a savepoint cannot guarantee durability before its outer transaction settles. This rejection performs no storage write and does not poison Storage or Session; retry outside the application transaction.
+For SQLite, compose `Storage.layerJournal()` with `SqlEventJournal.layer()` from `effect/eventlog/SqlEventJournal`, then provide the application's SQLite client. Effect's memory journal can be supplied for ephemeral storage. `storeId` defaults to `default` and must remain stable across restarts. Different store IDs have independent records and allocation counters.
 
-SQL transaction-control failures (including COMMIT and ROLLBACK failures) report an `uncertain` StorageError. Stop using that Storage instance and reopen it to reconcile the durable state before retrying; the failed write may have committed. Session also seals itself on an uncertain commit.
+One runtime owns each journal store, including across processes and browser tabs. Duplicate owners of the same injected journal service and store ID are rejected. Separate journal instances pointing at the same backing store require application-level ownership. External writes and event replication into an active store are unsupported; reopen to rebuild its projection.
+
+Every atomic batch, ID reservation and format upgrade is one journal event. Events carry an explicit revision and predecessor, so replay does not depend on timestamps or backend ordering. Reopening validates the chain, reader requirements and counters before serving state. Reads use the in-memory projection. Startup currently reads the full journal, with no checkpointing or compaction; memory use grows with retained records and document history.
+
+The supplied journal must acknowledge writes independently of application transactions. With `SqlEventJournal`, use a dedicated client and construct and invoke storage outside `SqlClient.withTransaction`. Storage cannot detect backend-specific ambient transactions through the generic journal interface.
+
+Effect 4.0.1's stock IndexedDB journal is unsuitable for durable storage here: it acknowledges the object-store request before the transaction completes, so a later abort can lose an acknowledged commit. An IndexedDB implementation must wait for transaction completion and report aborts before it can satisfy this adapter's contract.
+
+Append failures report an `uncertain` StorageError and seal that Storage instance. Close its scope and reopen it before retrying: the failed append may already be durable. Session also seals itself on an uncertain commit. Scope cleanup settles an admitted append before releasing ownership.
+
+This replaces `Storage.layerSql` and its custom tables. Existing SQL containers are not automatically imported. JSONL remains an independent format and adapter.
 
 `Session` is a scoped instance over Storage, shared by all conversations in that local runtime. It captures the storage service, caches decoded documents, serializes transactions, and publishes committed changes. A session can be used independently of an agent runtime:
 

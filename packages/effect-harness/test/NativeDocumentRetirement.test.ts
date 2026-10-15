@@ -1,7 +1,7 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
-import * as SqlClient from 'effect/sql/SqlClient'
 import * as Effect from 'effect/Effect'
 import * as Brand from 'effect/Brand'
 import * as Domain from '../src/Record.js'
@@ -47,7 +47,6 @@ const RawRow = Schema.Union([
     }),
   }),
 ])
-const RowJson = Schema.fromJsonString(RawRow)
 const FrameJson = Schema.fromJsonString(
   Schema.Struct({ metadata: Metadata.Metadata, rows: Schema.Array(RawRow) }),
 )
@@ -233,7 +232,7 @@ const verifyCommit = <E, R>(
     }
   }).pipe(Effect.provideService(Storage.Storage, storage))
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['memory', 'jsonl'] as const) {
   for (const mode of modes.filter((mode) => successful(mode) || modes.indexOf(mode) >= 9)) {
     it.effect(
       `native ${backend} revalidates ${mode} after staging and rolls back mixed writes`,
@@ -252,35 +251,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                 (row) =>
                   access.metadata.pipe(Effect.flatMap((metadata) => access.save([row], metadata))),
                 access.metadata,
-              )
-            } else if (backend === 'sqlite') {
-              yield* Effect.gen(function* () {
-                const sql = yield* SqlClient.SqlClient
-                const storage = yield* Storage.Storage
-                yield* verifyCommit(
-                  storage,
-                  mode,
-                  (id) =>
-                    Effect.gen(function* () {
-                      const rows =
-                        yield* sql`SELECT payload FROM effect_harness_records WHERE id=${id}`
-                      return yield* Schema.decodeUnknownEffect(RowJson)(rows[0]?.payload)
-                    }),
-                  (row) =>
-                    Effect.gen(function* () {
-                      const payload = yield* Schema.encodeEffect(RowJson)(row)
-                      yield* sql`UPDATE effect_harness_records SET payload=${payload} WHERE id=${Row.idOf(row)}`
-                    }),
-                  sql`SELECT * FROM effect_harness_metadata`,
-                )
-              }).pipe(
-                Effect.provide(
-                  Storage.layerSql.pipe(
-                    Layer.provideMerge(
-                      SqliteClient.layer({ filename: `${directory}/store.sqlite` }),
-                    ),
-                  ),
-                ),
               )
             } else {
               const filePath = `${directory}/store.jsonl`
@@ -384,7 +354,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
   }
 }
 
-for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
+for (const backend of ['memory', 'jsonl'] as const) {
   for (const mode of modes) {
     it.effect(
       `native ${backend} ${mode} validates fresh headers and persists only retirement`,
@@ -410,59 +380,6 @@ for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
               })
               yield* verify(selected, mode, read, unchanged).pipe(
                 Effect.provideService(Storage.Storage, storage),
-              )
-            } else if (backend === 'sqlite') {
-              yield* Effect.gen(function* () {
-                const sql = yield* SqlClient.SqlClient
-                const selected = yield* seed
-                const raw =
-                  yield* sql`SELECT payload FROM effect_harness_records WHERE id=${selected.id}`
-                const original = yield* Schema.decodeUnknownEffect(Schema.String)(raw[0]?.payload)
-                const changed = yield* corrupt(yield* Schema.decodeEffect(RowJson)(original), mode)
-                const bytes = yield* Schema.encodeEffect(RowJson)(changed)
-                yield* sql`UPDATE effect_harness_records SET payload=${bytes} WHERE id=${selected.id}`
-                const counters = yield* sql`SELECT * FROM effect_harness_metadata`
-                const read = Effect.gen(function* () {
-                  const rows =
-                    yield* sql`SELECT payload FROM effect_harness_records WHERE id=${selected.id}`
-                  return yield* Schema.decodeUnknownEffect(RowJson)(rows[0]?.payload)
-                }).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new Storage.StorageError({
-                        reason: 'io',
-                        operation: 'test',
-                        message: 'read',
-                        cause,
-                      }),
-                  ),
-                )
-                const unchanged = Effect.gen(function* () {
-                  assert.deepEqual(yield* sql`SELECT * FROM effect_harness_metadata`, counters)
-                  assert.deepEqual(
-                    yield* sql`SELECT payload FROM effect_harness_records WHERE id=${selected.id}`,
-                    [{ payload: bytes }],
-                  )
-                }).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new Storage.StorageError({
-                        reason: 'io',
-                        operation: 'test',
-                        message: 'read',
-                        cause,
-                      }),
-                  ),
-                )
-                yield* verify(selected, mode, read, unchanged)
-              }).pipe(
-                Effect.provide(
-                  Storage.layerSql.pipe(
-                    Layer.provideMerge(
-                      SqliteClient.layer({ filename: `${directory}/store.sqlite` }),
-                    ),
-                  ),
-                ),
               )
             } else {
               const filePath = `${directory}/store.jsonl`
@@ -691,7 +608,8 @@ for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
           else if (backend === 'sqlite')
             yield* run.pipe(
               Effect.provide(
-                Storage.layerSql.pipe(
+                Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provideMerge(SqliteClient.layer({ filename: `${directory}/store.sqlite` })),
                 ),
               ),

@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import { SqliteClient } from '@effect/sql-sqlite-node'
@@ -32,7 +33,8 @@ const root = Record.ROOT_CONVERSATION_ID
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
   const memory = yield* Layer.build(Storage.layerMemory)
-  const sql = Storage.layerSql.pipe(
+  const sql = Storage.layerJournal().pipe(
+    Layer.provide(SqlEventJournal.layer()),
     Layer.provide(SqliteClient.layer({ filename: `${directory}/origin.sqlite` })),
   )
   const jsonl = Storage.layerJsonl({ filePath: `${directory}/origin.jsonl` })

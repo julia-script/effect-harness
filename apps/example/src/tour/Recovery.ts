@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { NodeRuntime } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Effect from 'effect/Effect'
@@ -16,7 +17,10 @@ const job = {
 
 const HarnessLive = Application.layer.pipe(
   Layer.provide(
-    Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename: './agent.sqlite' }))),
+    Storage.layerJournal().pipe(
+      Layer.provide(SqlEventJournal.layer()),
+      Layer.provide(SqliteClient.layer({ filename: './agent.sqlite' })),
+    ),
   ),
 )
 

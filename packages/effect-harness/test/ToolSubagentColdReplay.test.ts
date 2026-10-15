@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Cause from 'effect/Cause'
@@ -83,7 +84,8 @@ const cold = (backend: Backend, scenario: Scenario) =>
       const layer = (() => {
         if (backend === 'memory') return Storage.layerMemory
         if (backend === 'jsonl') return Storage.layerJsonl({ filePath: `${directory}/cold.jsonl` })
-        return Storage.layerSql.pipe(
+        return Storage.layerJournal().pipe(
+          Layer.provide(SqlEventJournal.layer()),
           Layer.provide(sqlite({ filename: `${directory}/cold.sqlite` })),
         )
       })()
@@ -456,7 +458,8 @@ describe('native tool subagent cold disposition', () => {
                 if (backend === 'memory') return Storage.layerMemory
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/live.jsonl` })
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sqlite({ filename: `${directory}/live.sqlite` })),
                 )
               })()

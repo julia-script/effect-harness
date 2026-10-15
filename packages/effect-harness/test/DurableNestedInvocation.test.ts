@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { NodeServices } from '@effect/platform-node'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
@@ -10,6 +11,7 @@ import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
+import * as Schedule from 'effect/Schedule'
 import * as Stream from 'effect/Stream'
 import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Prompt from 'effect/ai/Prompt'
@@ -59,7 +61,8 @@ describe('native nested invocation', () => {
               : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
             const layer = (() => {
               if (backend === 'sqlite')
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sqlite({ filename: `${directory}/content.sqlite` })),
                 )
               if (backend === 'jsonl')
@@ -265,7 +268,8 @@ describe('native nested invocation', () => {
               : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
             const layer = (() => {
               if (backend === 'sqlite')
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sqlite({ filename: `${directory}/guard.sqlite` })),
                 )
               if (backend === 'jsonl')
@@ -414,7 +418,8 @@ describe('native nested invocation', () => {
               : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
             const layer = (() => {
               if (backend === 'sqlite')
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sqlite({ filename: `${directory}/nested.sqlite` })),
                 )
               if (backend === 'jsonl')
@@ -698,7 +703,8 @@ describe('native nested invocation', () => {
               : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
             const layer = (() => {
               if (backend === 'sqlite')
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sqlite({ filename: `${directory}/fault.sqlite` })),
                 )
               if (backend === 'jsonl')
@@ -838,7 +844,12 @@ describe('native nested invocation', () => {
               assert.strictEqual(doc.value.status, 'completed')
               assert.deepStrictEqual(doc.value.details, { local: 'accepted' })
             }
-            assert.isTrue(Option.isSome(yield* runtime.scheduler.failure))
+            // wait can observe Session's poisoned read before the invocation fiber
+            // publishes scheduler health. Await that independently observable state.
+            yield* runtime.scheduler.failure.pipe(
+              Effect.repeat({ until: Option.isSome, schedule: Schedule.spaced('1 millis') }),
+              Effect.timeout('5 seconds'),
+            )
             yield* Scope.close(firstScope, Exit.void)
             const reopenedScope = yield* Scope.make()
             yield* Effect.addFinalizer(() => Scope.close(reopenedScope, Exit.void))

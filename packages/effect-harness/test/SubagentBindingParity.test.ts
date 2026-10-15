@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Context from 'effect/Context'
@@ -105,7 +106,8 @@ describe('actual tool subagent binding', () => {
                   if (backend === 'memory') return Storage.layerMemory
                   if (backend === 'jsonl')
                     return Storage.layerJsonl({ filePath: `${directory}/cold.jsonl` })
-                  return Storage.layerSql.pipe(
+                  return Storage.layerJournal().pipe(
+                    Layer.provide(SqlEventJournal.layer()),
                     Layer.provide(sqlite({ filename: `${directory}/cold.sqlite` })),
                   )
                 })()
@@ -521,7 +523,8 @@ describe('actual tool subagent binding', () => {
                 if (backend === 'memory') return Storage.layerMemory
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/content.jsonl` })
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sqlite({ filename: `${directory}/content.sqlite` })),
                 )
               })()

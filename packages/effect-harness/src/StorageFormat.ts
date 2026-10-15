@@ -76,8 +76,8 @@ export const inspect: Effect.Effect<Format, Failure, Storage> = capability.pipe(
  * the monotone marker upgraded without publishing any child or result.
  *
  * This is a reopen barrier, not fencing of foreign writers that already opened the store.
- * Stop old processes before activation. JSONL requires one owning writer per file;
- * SQL coordinates current writers with its metadata row lock. Unknown outcomes require
+ * Stop old processes before activation. JSONL and EventJournal storage require one
+ * owning runtime per store. Unknown outcomes require
  * closing/reopening the backend; a failed guard never authorizes new-format work.
  */
 export const requireSupportedFormat = Effect.fn('StorageFormat.requireSupportedFormat')(function* (

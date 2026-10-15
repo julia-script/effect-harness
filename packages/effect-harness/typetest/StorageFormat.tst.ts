@@ -4,7 +4,7 @@ import type * as Effect from 'effect/Effect'
 import type * as Layer from 'effect/Layer'
 import type * as Option from 'effect/Option'
 import type * as FileSystem from 'effect/FileSystem'
-import type * as SqlClient from 'effect/sql/SqlClient'
+import type * as EventJournal from 'effect/eventlog/EventJournal'
 import * as Storage from 'effect-harness/Storage'
 import * as Format from 'effect-harness/StorageFormat'
 
@@ -16,8 +16,12 @@ test('the guard is a typed deliberate Storage operation; native Layers supply th
   expect(Storage.layerMemory).type.toBe<
     Layer.Layer<Storage.Storage | Format.StorageFormat, Storage.StorageError>
   >()
-  expect(Storage.layerSql).type.toBe<
-    Layer.Layer<Storage.Storage | Format.StorageFormat, Storage.StorageError, SqlClient.SqlClient>
+  expect(Storage.layerJournal()).type.toBe<
+    Layer.Layer<
+      Storage.Storage | Format.StorageFormat,
+      Storage.StorageError,
+      EventJournal.EventJournal
+    >
   >()
   expect(Storage.layerJsonl({ filePath: 'store' })).type.toBe<
     Layer.Layer<Storage.Storage | Format.StorageFormat, Storage.StorageError, FileSystem.FileSystem>

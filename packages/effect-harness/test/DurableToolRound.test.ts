@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { assert, describe, it } from '@effect/vitest'
@@ -66,7 +67,8 @@ describe('durable native tool rounds', () => {
               if (backend === 'memory') return yield* Layer.build(Storage.layerMemory)
               if (backend === 'sqlite')
                 return yield* Layer.build(
-                  Storage.layerSql.pipe(
+                  Storage.layerJournal().pipe(
+                    Layer.provide(SqlEventJournal.layer()),
                     Layer.provide(SqliteClient.layer({ filename: `${directory}/round.sqlite` })),
                   ),
                 )
@@ -587,7 +589,8 @@ describe('durable native tool rounds', () => {
                   if (backend === 'memory') return memory
                   if (backend === 'sqlite')
                     return yield* Layer.buildWithScope(
-                      Storage.layerSql.pipe(
+                      Storage.layerJournal().pipe(
+                        Layer.provide(SqlEventJournal.layer()),
                         Layer.provide(SqliteClient.layer({ filename: `${directory}/cold.sqlite` })),
                       ),
                       scope,
@@ -1078,7 +1081,8 @@ describe('durable native tool rounds', () => {
               if (backend === 'memory') return yield* Layer.build(Storage.layerMemory)
               if (backend === 'sqlite')
                 return yield* Layer.build(
-                  Storage.layerSql.pipe(
+                  Storage.layerJournal().pipe(
+                    Layer.provide(SqlEventJournal.layer()),
                     Layer.provide(SqliteClient.layer({ filename: `${directory}/cancel.sqlite` })),
                   ),
                 )
@@ -1322,7 +1326,8 @@ describe('durable native tool rounds', () => {
                   if (backend === 'memory') return yield* Layer.build(Storage.layerMemory)
                   if (backend === 'sqlite')
                     return yield* Layer.build(
-                      Storage.layerSql.pipe(
+                      Storage.layerJournal().pipe(
+                        Layer.provide(SqlEventJournal.layer()),
                         Layer.provide(
                           SqliteClient.layer({ filename: `${directory}/fault.sqlite` }),
                         ),
@@ -1501,7 +1506,8 @@ describe('durable native tool rounds', () => {
                   if (backend === 'memory') return yield* Layer.build(Storage.layerMemory)
                   if (backend === 'sqlite')
                     return yield* Layer.build(
-                      Storage.layerSql.pipe(
+                      Storage.layerJournal().pipe(
+                        Layer.provide(SqlEventJournal.layer()),
                         Layer.provide(
                           SqliteClient.layer({ filename: `${directory}/fatal.sqlite` }),
                         ),
@@ -1795,7 +1801,8 @@ describe('durable native tool rounds', () => {
                 if (backend === 'memory') return yield* Layer.build(Storage.layerMemory)
                 if (backend === 'sqlite')
                   return yield* Layer.build(
-                    Storage.layerSql.pipe(
+                    Storage.layerJournal().pipe(
+                      Layer.provide(SqlEventJournal.layer()),
                       Layer.provide(
                         SqliteClient.layer({ filename: `${directory}/compound.sqlite` }),
                       ),
@@ -1957,7 +1964,10 @@ describe('durable native tool rounds', () => {
               yield* Effect.sync(() => {
                 if (backend === 'memory') return Storage.layerMemory
                 if (backend === 'sqlite')
-                  return Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename })))
+                  return Storage.layerJournal().pipe(
+                    Layer.provide(SqlEventJournal.layer()),
+                    Layer.provide(SqliteClient.layer({ filename })),
+                  )
                 return Storage.layerJsonl({ filePath: filename })
               }),
             )
@@ -2215,7 +2225,10 @@ describe('durable native tool rounds', () => {
               const layer = yield* Effect.sync(() => {
                 if (backend === 'memory') return Storage.layerMemory
                 if (backend === 'sqlite')
-                  return Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename })))
+                  return Storage.layerJournal().pipe(
+                    Layer.provide(SqlEventJournal.layer()),
+                    Layer.provide(SqliteClient.layer({ filename })),
+                  )
                 return Storage.layerJsonl({ filePath: filename })
               })
               const context = yield* Layer.build(layer)
