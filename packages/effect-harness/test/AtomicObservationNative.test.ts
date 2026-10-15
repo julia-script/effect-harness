@@ -380,14 +380,19 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
           const first = yield* client.root
           const second = Option.getOrThrow(yield* client.conversation(root))
           const consumer = yield* Scope.make()
-          const pull = yield* Stream.toPull(View.watch(first)).pipe(
+          // Keep default-capacity overflow on memory; disk cases exercise the same lifecycle
+          // with smaller queues so repeated full snapshots require fewer durable writes.
+          const capacity = backend === 'memory' ? 64 : 2
+          const watchOptions = backend === 'memory' ? undefined : { capacity }
+          const burst = capacity + 4
+          const pull = yield* Stream.toPull(View.watch(first, watchOptions)).pipe(
             Effect.provideService(Scope.Scope, consumer),
           )
           const eventOptions = { capacity: 2 }
           const eventPull = yield* Stream.toPull(Events.watch(second, eventOptions)).pipe(
             Effect.provideService(Scope.Scope, consumer),
           )
-          const graphPull = yield* Stream.toPull(Graph.watch(client)).pipe(
+          const graphPull = yield* Stream.toPull(Graph.watch(client, watchOptions)).pipe(
             Effect.provideService(Scope.Scope, consumer),
           )
           const initial = (yield* pull)[0]
@@ -410,7 +415,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
             Stream.tap((frame) =>
               frame._tag === 'Snapshot' ? Deferred.succeed(healthyReady, undefined) : Effect.void,
             ),
-            Stream.take(151),
+            Stream.take(burst + 1),
             Stream.runCollect,
             Effect.forkChild,
           )
@@ -418,16 +423,19 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
           const firstHeld = yield* Deferred.make<void>()
           const releaseInitial = yield* Deferred.make<void>()
           yield* Effect.addFinalizer(() => Deferred.succeed(releaseInitial, undefined))
-          const stalled = yield* View.watchWith(second, (frame): Effect.Effect<View.Frame> =>
-            frame._tag === 'Snapshot'
-              ? Deferred.succeed(firstHeld, undefined).pipe(
-                  Effect.andThen(Deferred.await(releaseInitial)),
-                  Effect.as(frame),
-                )
-              : Effect.succeed(frame),
+          const stalled = yield* View.watchWith(
+            second,
+            (frame): Effect.Effect<View.Frame> =>
+              frame._tag === 'Snapshot'
+                ? Deferred.succeed(firstHeld, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseInitial)),
+                    Effect.as(frame),
+                  )
+                : Effect.succeed(frame),
+            watchOptions,
           ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild)
           yield* Deferred.await(firstHeld)
-          for (let i = 0; i < 150; i++)
+          for (let i = 0; i < burst; i++)
             yield* Session.commit(runtime.session, (tx) =>
               Effect.gen(function* () {
                 yield* Transaction.createConversation(tx, { ownership: { _tag: 'ownerless' } })
@@ -458,11 +466,11 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
           if (firstAfterOverflow._tag !== 'Snapshot')
             return yield* Effect.die('Initial remains first')
           assert.deepStrictEqual(yield* View.reduce(firstAfterOverflow, newestRebase), latest)
-          assert.strictEqual(latest.value.entries.length, 150)
-          assert.strictEqual(latest.revision.cursor, 150)
+          assert.strictEqual(latest.value.entries.length, burst)
+          assert.strictEqual(latest.revision.cursor, burst)
           let replica = initial
           const pending = yield* pull
-          assert.isAtMost(pending.length, 64)
+          assert.isAtMost(pending.length, capacity)
           assert.strictEqual(pending[0]._tag, 'Rebase')
           for (const frame of pending) replica = yield* View.reduce(replica, frame)
           assert.deepStrictEqual(replica, latest)
@@ -498,7 +506,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
           assert.deepStrictEqual((yield* View.snapshot(second)).value.entries[0]!.data, {
             index: 0,
           })
-          for (let i = 150; i < 290; i++)
+          for (let i = burst; i < burst * 2; i++)
             yield* Session.commit(runtime.session, (tx) =>
               Transaction.appendEntry(tx, root, { kind: 'observation.note', data: { index: i } }),
             )
@@ -517,7 +525,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
           for (const frame of rest) replica = yield* View.reduce(replica, frame)
           assert.strictEqual(
             replica.value.entries.length,
-            290,
+            burst * 2,
             'Normal close must drain the newest full final snapshot',
           )
           assert.isTrue(Exit.isSuccess(drained), 'Normal close must end the observer normally')

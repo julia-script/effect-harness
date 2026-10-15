@@ -527,10 +527,11 @@ describe('ready-made coding edit', () => {
           const directory = yield* root
           const bytes = new Uint8Array([0xff, 0xfe, 0x61])
           yield* fs.writeFile(`${directory}/file`, bytes)
+          yield* fs.writeFileString(`${directory}/valid`, 'a')
           yield* Effect.gen(function* () {
             for (const [path, edits, reason] of [
               ['file', [change('a', 'b')], 'encoding'],
-              ['file', [change('a', '\ud800')], 'encoding'],
+              ['valid', [change('a', '\ud800')], 'encoding'],
               ['.', [change('a', 'b')], 'notFile'],
               ['missing', [change('a', 'b')], 'filesystem'],
             ] as const) {
@@ -541,6 +542,7 @@ describe('ready-made coding edit', () => {
             }
           }).pipe(Effect.provide(handlers(directory)))
           assert.deepStrictEqual(yield* fs.readFile(`${directory}/file`), bytes)
+          assert.strictEqual(yield* fs.readFileString(`${directory}/valid`), 'a')
         }),
       ),
   )

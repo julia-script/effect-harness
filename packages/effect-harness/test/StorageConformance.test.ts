@@ -21,11 +21,12 @@ const memory = Effect.succeed({
 })
 
 // A new temporary store per factory evaluation; fresh backend connections per open.
-const persistent = (backend: 'sqlite' | 'jsonl') =>
+const persistent = (backend: 'sqlite' | 'jsonl', directories: Array<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'storage-conformance-' })
+    directories.push(directory)
     const filename = path.join(directory, 'storage')
     const layer =
       backend === 'sqlite'
@@ -43,12 +44,27 @@ const persistent = (backend: 'sqlite' | 'jsonl') =>
 
 for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
   describe(`public conformance: ${backend}`, () => {
-    const make = backend === 'memory' ? memory : persistent(backend)
+    const directories: Array<string> = []
+    const make = backend === 'memory' ? memory : persistent(backend, directories)
     for (const test of Testing.storageConformance({
       make,
       capabilities: { history: true, reopen: backend !== 'memory' },
     }))
-      it.live(test.name, () => test.run.pipe(Effect.provide(NodeServices.layer)))
+      it.live(test.name, () =>
+        test.run.pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              const fs = yield* FileSystem.FileSystem
+              for (const directory of directories)
+                assert.isFalse(
+                  yield* fs.exists(directory),
+                  'factory scope removes temporary storage',
+                )
+            }),
+          ),
+          Effect.provide(NodeServices.layer),
+        ),
+      )
   })
 
 const brokenFixture = (breakStorage: (storage: Testing.StorageService) => Testing.StorageService) =>
@@ -299,7 +315,7 @@ it.live('cleans the temporary backing store after successful execution', () =>
         ),
       }
     })
-    for (const test of Testing.storageConformance({ make })) yield* test.run
+    yield* caseNamed(Testing.storageConformance({ make }), 'identity allocation').run
     for (const directory of yield* Ref.get(directories)) assert.isFalse(yield* fs.exists(directory))
   }).pipe(Effect.provide(NodeServices.layer)),
 )

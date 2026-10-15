@@ -10,7 +10,7 @@ const consumer = fileURLToPath(
   new URL('./fixtures/StorageConformanceConsumer.mjs', import.meta.url),
 )
 
-it.live('runs memory, SQLite and JSONL cases from the built public Testing subpath', () =>
+it.live('executes scoped memory and reopen fixtures from the built public Testing subpath', () =>
   Effect.scoped(
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner
@@ -32,7 +32,10 @@ it.live('runs memory, SQLite and JSONL cases from the built public Testing subpa
         { concurrency: 'unbounded' },
       )
       assert.strictEqual(code, 0, stderr)
-      assert.include(stdout, 'public storage consumer: 53 cases passed; temporary stores removed')
+      assert.include(
+        stdout,
+        'public storage consumer: memory, sqlite, jsonl; temporary stores removed',
+      )
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 )

@@ -5,7 +5,6 @@ import * as Cause from 'effect/Cause'
 import * as Exit from 'effect/Exit'
 import * as SchemaGetter from 'effect/SchemaGetter'
 import * as SchemaTransformation from 'effect/SchemaTransformation'
-import * as Scope from 'effect/Scope'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as Task from '../src/Task.js'
@@ -398,40 +397,6 @@ describe('Task definition foundation', () => {
         assert.strictEqual(error._tag, 'TaskError')
         if (error._tag === 'TaskError') assert.strictEqual(error.reason, 'migrationFailed')
       }),
-  )
-  it.effect('fresh invocation Scope overrides captured registration Scope', () =>
-    Effect.gen(function* () {
-      let closed = 0
-      const self = Task.make({
-        ...options,
-        phases: {
-          first: () =>
-            Effect.addFinalizer(() =>
-              Effect.sync(() => {
-                closed++
-              }),
-            ),
-          second: () => Effect.void,
-        },
-      })
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          const captured = yield* self.context
-          const registration = yield* Scope.Scope
-          yield* Effect.scoped(
-            Effect.gen(function* () {
-              const invocation = yield* Scope.Scope
-              assert.notStrictEqual(invocation, registration)
-              const bound = Context.merge(captured, Context.make(Scope.Scope, invocation))
-              yield* self.phases.first().pipe(Effect.provideContext(bound))
-              assert.strictEqual(closed, 0)
-            }),
-          )
-          assert.strictEqual(closed, 1)
-        }),
-      )
-      assert.strictEqual(closed, 1)
-    }),
   )
   it.effect('preserves the existing Record checkpoint wire discriminator across codecs', () =>
     Effect.gen(function* () {

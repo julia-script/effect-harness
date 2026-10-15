@@ -613,8 +613,10 @@ describe('Session', () => {
           const exit = yield* pull.pipe(Effect.exit)
           if (Exit.isFailure(exit)) {
             const error = Cause.findErrorOption(exit.cause)
-            if (Option.isSome(error) && 'reason' in error.value)
-              assert.strictEqual(error.value.reason, 'overflow')
+            assert.isTrue(Option.isSome(error), 'overflow must be a typed failure')
+            const failure = Option.getOrThrow(error)
+            assert.strictEqual(failure._tag, 'SessionError')
+            if (failure._tag === 'SessionError') assert.strictEqual(failure.reason, 'overflow')
             overflow = true
             break
           }

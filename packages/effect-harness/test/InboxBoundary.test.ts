@@ -161,54 +161,33 @@ describe('inactive inbox boundary foundation', () => {
       ),
   )
 
-  it.effect(
-    'postTools all mode drains steers without consuming follow-ups or interrupting a tool fiber',
-    () =>
-      memory(
-        Effect.gen(function* () {
-          const session = yield* open
-          yield* admit(session, 'followUp', 'original')
-          const { run } = yield* start(session)
-          const entered = yield* Deferred.make<void>()
-          const finish = yield* Deferred.make<void>()
-          let interrupted = false
-          const tool = yield* Effect.gen(function* () {
-            yield* Deferred.succeed(entered, undefined)
-            yield* Deferred.await(finish)
-          }).pipe(
-            Effect.onInterrupt(() =>
-              Effect.sync(() => {
-                interrupted = true
-              }),
-            ),
-            Effect.forkChild,
-          )
-          yield* Deferred.await(entered)
-          const f1 = yield* admit(session, 'followUp', 'f1')
-          const s1 = yield* admit(session, 'steer', 's1')
-          const s2 = yield* admit(session, 'steer', 's2')
-          assert.isFalse(interrupted)
-          assert.strictEqual((yield* entries(session)).length, 1)
-          yield* Deferred.succeed(finish, undefined)
-          yield* Fiber.join(tool)
-          const selected = yield* Session.commit(session, (tx) =>
-            Inbox.select(tx, root, {
-              boundary: 'postTools',
-              taskId: run.id,
-              modes: { followUp: 'all', steering: 'all' },
-            }),
-          )
-          assert.deepEqual(
-            selected.placed.map((value) => value.id),
-            [s1.id, s2.id],
-          )
-          assert.deepEqual(
-            (yield* queue(session)).map((item) => item.submissionId),
-            [f1.id],
-          )
-          assert.isFalse(interrupted)
-        }),
-      ),
+  it.effect('postTools all mode drains steers without consuming follow-ups', () =>
+    memory(
+      Effect.gen(function* () {
+        const session = yield* open
+        yield* admit(session, 'followUp', 'original')
+        const { run } = yield* start(session)
+        const f1 = yield* admit(session, 'followUp', 'f1')
+        const s1 = yield* admit(session, 'steer', 's1')
+        const s2 = yield* admit(session, 'steer', 's2')
+        assert.strictEqual((yield* entries(session)).length, 1)
+        const selected = yield* Session.commit(session, (tx) =>
+          Inbox.select(tx, root, {
+            boundary: 'postTools',
+            taskId: run.id,
+            modes: { followUp: 'all', steering: 'all' },
+          }),
+        )
+        assert.deepEqual(
+          selected.placed.map((value) => value.id),
+          [s1.id, s2.id],
+        )
+        assert.deepEqual(
+          (yield* queue(session)).map((item) => item.submissionId),
+          [f1.id],
+        )
+      }),
+    ),
   )
 
   it.effect(

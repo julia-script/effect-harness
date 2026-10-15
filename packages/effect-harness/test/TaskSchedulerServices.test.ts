@@ -689,6 +689,8 @@ describe('scheduler captured services and supplied boundaries', () => {
       Effect.scoped(
         Effect.gen(function* () {
           const { registry, scheduler } = yield* open
+          const registrationScope = yield* Scope.Scope
+          let phaseFinalizers = 0
           let phaseScope: Scope.Scope | undefined
           let codecScope: Scope.Scope | undefined
           let finalizers = 0
@@ -716,6 +718,12 @@ describe('scheduler captured services and supplied boundaries', () => {
               one: () =>
                 Effect.gen(function* () {
                   phaseScope = yield* Scope.Scope
+                  assert.notStrictEqual(phaseScope, registrationScope)
+                  yield* Effect.addFinalizer(() =>
+                    Effect.sync(() => {
+                      phaseFinalizers++
+                    }),
+                  )
                   return yield* Effect.fail(4)
                 }),
               two: () => Effect.void,
@@ -732,6 +740,7 @@ describe('scheduler captured services and supplied boundaries', () => {
           yield* settle
           assert.strictEqual(codecScope, phaseScope)
           assert.strictEqual(finalizers, 1)
+          assert.strictEqual(phaseFinalizers, 1)
         }),
       ).pipe(Effect.provide(Storage.layerMemory)),
   )

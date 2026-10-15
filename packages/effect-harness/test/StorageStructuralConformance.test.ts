@@ -1,7 +1,5 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -27,208 +25,170 @@ const names = [
 const memory = Effect.succeed({
   open: Layer.build(Storage.layerMemory).pipe(Effect.map((c) => Context.get(c, Storage.Storage))),
 })
-const persistent = (backend: 'sqlite' | 'jsonl', directories: Array<string>) =>
+const persistent = () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'storage-structural-' })
-    directories.push(directory)
     const filename = path.join(directory, 'storage')
-    const layer =
-      backend === 'sqlite'
-        ? Storage.layerJournal().pipe(
-            Layer.provide(SqlEventJournal.layer()),
-            Layer.provide(SqliteClient.layer({ filename })),
-          )
-        : Storage.layerJsonl({ filePath: filename }).pipe(
-            Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
-          )
+    const layer = Storage.layerJsonl({ filePath: filename }).pipe(
+      Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
+    )
     return { open: Layer.build(layer).pipe(Effect.map((c) => Context.get(c, Storage.Storage))) }
   })
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
-  describe(`public structural storage: ${backend}`, () => {
-    const directories: Array<string> = []
-    const make = backend === 'memory' ? memory : persistent(backend, directories)
-    const cases = Testing.storageConformance({
-      make,
-      capabilities: { history: true, reopen: backend !== 'memory' },
-    }).filter((c) => names.includes(c.name))
-    it.effect('exposes every structural case exactly once', () =>
-      Effect.sync(() => {
-        assert.deepEqual(cases.map((c) => c.name).toSorted(), names.toSorted())
-      }),
-    )
-    for (const mode of ['reuse-current', 'reuse-current-row', 'fresh-copy'] as const)
-      it.live(`long-tail current reads: ${mode}`, () =>
-        Effect.gen(function* () {
-          let nativeRevision: unknown
-          let returnedRevision: unknown
-          let currentReads = 0
-          const selected = Testing.storageConformance({
-            make: make.pipe(
-              Effect.map((fixture) => ({
-                open: fixture.open.pipe(
-                  Effect.map((storage) => {
-                    let reused: Storage.StoredDocument | undefined
-                    return {
-                      ...storage,
-                      document: (id, at) =>
-                        storage.document(id, at).pipe(
-                          Effect.map((value) => {
-                            if (at !== undefined || Option.isNone(value)) return value
-                            currentReads++
-                            nativeRevision = value.value.value.revision
-                            reused ??= value.value
-                            const returned =
-                              mode === 'fresh-copy' ? structuredClone(value.value) : reused
-                            if (mode === 'reuse-current-row' && currentReads === 2) {
-                              Reflect.set(returned.value, 'revision', 124)
-                              const rows = returned.value.rows
-                              assert.isTrue(Array.isArray(rows))
-                              if (Array.isArray(rows)) {
-                                const row: unknown = rows[0]
-                                assert.isTrue(typeof row === 'object' && row !== null)
-                                if (typeof row === 'object' && row !== null)
-                                  Reflect.set(row, 'value', -9999)
-                              }
+// Backend behavior is covered by StorageConformance; these mutations test its assertions.
+describe('storage conformance assertions', () => {
+  const make = memory
+  for (const mode of ['reuse-current', 'reuse-current-row', 'fresh-copy'] as const)
+    it.live(`long-tail current reads: ${mode}`, () =>
+      Effect.gen(function* () {
+        let nativeRevision: unknown
+        let returnedRevision: unknown
+        let currentReads = 0
+        const selected = Testing.storageConformance({
+          make: make.pipe(
+            Effect.map((fixture) => ({
+              open: fixture.open.pipe(
+                Effect.map((storage) => {
+                  let reused: Storage.StoredDocument | undefined
+                  return {
+                    ...storage,
+                    document: (id, at) =>
+                      storage.document(id, at).pipe(
+                        Effect.map((value) => {
+                          if (at !== undefined || Option.isNone(value)) return value
+                          currentReads++
+                          nativeRevision = value.value.value.revision
+                          reused ??= value.value
+                          const returned =
+                            mode === 'fresh-copy' ? structuredClone(value.value) : reused
+                          if (mode === 'reuse-current-row' && currentReads === 2) {
+                            Reflect.set(returned.value, 'revision', 124)
+                            const rows = returned.value.rows
+                            assert.isTrue(Array.isArray(rows))
+                            if (Array.isArray(rows)) {
+                              const row: unknown = rows[0]
+                              assert.isTrue(typeof row === 'object' && row !== null)
+                              if (typeof row === 'object' && row !== null)
+                                Reflect.set(row, 'value', -9999)
                             }
-                            returnedRevision = returned.value.revision
-                            return Option.some(returned)
-                          }),
-                        ),
-                    }
-                  }),
-                ),
-              })),
-            ),
-            capabilities: { history: true },
-          }).find((c) => c.name === names[6])
-          assert.isDefined(selected)
-          const result = yield* Effect.result(selected!.run)
-          assert.strictEqual(currentReads, 2)
-          assert.strictEqual(nativeRevision, 124)
-          if (mode === 'fresh-copy') {
-            assert.isTrue(Result.isSuccess(result))
-            assert.strictEqual(returnedRevision, 124)
-          } else {
-            assert.strictEqual(returnedRevision, mode === 'reuse-current' ? -1 : 124)
-            assert.isTrue(Result.isFailure(result), 'must reject the mutated reused read')
-            if (Result.isFailure(result)) {
-              assert.instanceOf(result.failure, Testing.StorageConformanceError)
-              if (result.failure instanceof Testing.StorageConformanceError) {
-                assert.strictEqual(result.failure.caseName, names[6])
-                assert.strictEqual(
-                  result.failure.assertion,
-                  'long tail returned values remain detached',
-                )
-              }
-            }
-          }
-          const fs = yield* FileSystem.FileSystem
-          for (const directory of directories) assert.isFalse(yield* fs.exists(directory))
-        }).pipe(Effect.provide(NodeServices.layer)),
-      )
-    for (const mode of [
-      'input',
-      'state',
-      'memos',
-      'checkpoint',
-      'on',
-      'memo-nested',
-      'fresh-copy',
-    ] as const)
-      it.live(`waiting submitted aliases: ${mode}`, () =>
-        Effect.gen(function* () {
-          let nativePolicy: unknown
-          let nativeMemo: unknown
-          const selected = Testing.storageConformance({
-            make: make.pipe(
-              Effect.map((fixture) => ({
-                open: fixture.open.pipe(
-                  Effect.map((storage) => {
-                    let captured: Storage.Task | undefined
-                    return {
-                      ...storage,
-                      commit: (writes) => {
-                        const batch = [...writes]
-                        for (const write of batch)
-                          if (write._tag === 'task' && write.value.id === 3) captured = write.value
-                        return storage.commit(batch)
-                      },
-                      task: (id) =>
-                        storage.task(id).pipe(
-                          Effect.map((value) => {
-                            if (
-                              id !== 3 ||
-                              Option.isNone(value) ||
-                              value.value.state.status !== 'waiting'
-                            )
-                              return value
-                            assert.isDefined(captured)
-                            nativePolicy = value.value.state.policy
-                            nativeMemo = value.value.memos?.saved
-                            if (mode === 'fresh-copy')
-                              return Option.some(structuredClone(captured!))
-                            if (mode === 'input') return Option.some(captured!)
-                            if (mode === 'checkpoint' || mode === 'on')
-                              return Option.some({
-                                ...value.value,
-                                state: { ...value.value.state, [mode]: captured!.state[mode] },
-                              })
-                            if (mode === 'memo-nested')
-                              return Option.some({
-                                ...value.value,
-                                memos: {
-                                  ...value.value.memos,
-                                  ['__proto__']: captured!.memos!.__proto__!,
-                                },
-                              })
-                            return Option.some({ ...value.value, [mode]: captured![mode] })
-                          }),
-                        ),
-                    }
-                  }),
-                ),
-              })),
-            ),
-            capabilities: { history: true },
-          }).find((c) => c.name === names[4])!
-          const result = yield* Effect.result(selected.run)
-          assert.strictEqual(nativePolicy, 'allSettled')
-          assert.strictEqual(nativeMemo, 1)
-          if (mode === 'fresh-copy') assert.isTrue(Result.isSuccess(result))
-          else {
-            assert.isTrue(Result.isFailure(result), 'submitted aliases must be rejected')
-            if (Result.isFailure(result)) {
-              assert.instanceOf(result.failure, Testing.StorageConformanceError)
-              if (result.failure instanceof Testing.StorageConformanceError)
-                assert.strictEqual(
-                  result.failure.assertion,
-                  'waiting reads detach wait state and memo values',
-                )
-            }
-          }
-          const fs = yield* FileSystem.FileSystem
-          for (const directory of directories) assert.isFalse(yield* fs.exists(directory))
-        }).pipe(Effect.provide(NodeServices.layer)),
-      )
-    for (const c of cases)
-      it.live(c.name, () =>
-        c.run.pipe(
-          Effect.andThen(
-            Effect.gen(function* () {
-              const fs = yield* FileSystem.FileSystem
-              for (const directory of directories)
-                assert.isFalse(
-                  yield* fs.exists(directory),
-                  'factory scope removes temporary storage',
-                )
-            }),
+                          }
+                          returnedRevision = returned.value.revision
+                          return Option.some(returned)
+                        }),
+                      ),
+                  }
+                }),
+              ),
+            })),
           ),
-          Effect.provide(NodeServices.layer),
-        ),
-      )
-  })
+          capabilities: { history: true },
+        }).find((c) => c.name === names[6])
+        assert.isDefined(selected)
+        const result = yield* Effect.result(selected!.run)
+        assert.strictEqual(currentReads, 2)
+        assert.strictEqual(nativeRevision, 124)
+        if (mode === 'fresh-copy') {
+          assert.isTrue(Result.isSuccess(result))
+          assert.strictEqual(returnedRevision, 124)
+        } else {
+          assert.strictEqual(returnedRevision, mode === 'reuse-current' ? -1 : 124)
+          assert.isTrue(Result.isFailure(result), 'must reject the mutated reused read')
+          if (Result.isFailure(result)) {
+            assert.instanceOf(result.failure, Testing.StorageConformanceError)
+            if (result.failure instanceof Testing.StorageConformanceError) {
+              assert.strictEqual(result.failure.caseName, names[6])
+              assert.strictEqual(
+                result.failure.assertion,
+                'long tail returned values remain detached',
+              )
+            }
+          }
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
+    )
+  for (const mode of [
+    'input',
+    'state',
+    'memos',
+    'checkpoint',
+    'on',
+    'memo-nested',
+    'fresh-copy',
+  ] as const)
+    it.live(`waiting submitted aliases: ${mode}`, () =>
+      Effect.gen(function* () {
+        let nativePolicy: unknown
+        let nativeMemo: unknown
+        const selected = Testing.storageConformance({
+          make: make.pipe(
+            Effect.map((fixture) => ({
+              open: fixture.open.pipe(
+                Effect.map((storage) => {
+                  let captured: Storage.Task | undefined
+                  return {
+                    ...storage,
+                    commit: (writes) => {
+                      const batch = [...writes]
+                      for (const write of batch)
+                        if (write._tag === 'task' && write.value.id === 3) captured = write.value
+                      return storage.commit(batch)
+                    },
+                    task: (id) =>
+                      storage.task(id).pipe(
+                        Effect.map((value) => {
+                          if (
+                            id !== 3 ||
+                            Option.isNone(value) ||
+                            value.value.state.status !== 'waiting'
+                          )
+                            return value
+                          assert.isDefined(captured)
+                          nativePolicy = value.value.state.policy
+                          nativeMemo = value.value.memos?.saved
+                          if (mode === 'fresh-copy') return Option.some(structuredClone(captured!))
+                          if (mode === 'input') return Option.some(captured!)
+                          if (mode === 'checkpoint' || mode === 'on')
+                            return Option.some({
+                              ...value.value,
+                              state: { ...value.value.state, [mode]: captured!.state[mode] },
+                            })
+                          if (mode === 'memo-nested')
+                            return Option.some({
+                              ...value.value,
+                              memos: {
+                                ...value.value.memos,
+                                ['__proto__']: captured!.memos!.__proto__!,
+                              },
+                            })
+                          return Option.some({ ...value.value, [mode]: captured![mode] })
+                        }),
+                      ),
+                  }
+                }),
+              ),
+            })),
+          ),
+          capabilities: { history: true },
+        }).find((c) => c.name === names[4])!
+        const result = yield* Effect.result(selected.run)
+        assert.strictEqual(nativePolicy, 'allSettled')
+        assert.strictEqual(nativeMemo, 1)
+        if (mode === 'fresh-copy') assert.isTrue(Result.isSuccess(result))
+        else {
+          assert.isTrue(Result.isFailure(result), 'submitted aliases must be rejected')
+          if (Result.isFailure(result)) {
+            assert.instanceOf(result.failure, Testing.StorageConformanceError)
+            if (result.failure instanceof Testing.StorageConformanceError)
+              assert.strictEqual(
+                result.failure.assertion,
+                'waiting reads detach wait state and memo values',
+              )
+          }
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
+    )
+})
 
 const broken = (
   name: string,
@@ -570,7 +530,7 @@ it.live('reopen checks reject a cold surrogate index collapse', () =>
   Effect.gen(function* () {
     let opens = 0
     const cases = Testing.storageConformance({
-      make: persistent('jsonl', []).pipe(
+      make: persistent().pipe(
         Effect.map((fixture) => ({
           open: fixture.open.pipe(
             Effect.map((storage) => {
