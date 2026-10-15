@@ -85,6 +85,14 @@
       "types": "./dist/provider-auth/*.d.ts",
       "default": "./dist/provider-auth/*.js"
     },
+    "./provider-auth-bun": {
+      "types": "./dist/provider-auth-bun/index.d.ts",
+      "default": "./dist/provider-auth-bun/index.js"
+    },
+    "./provider-auth-bun/*": {
+      "types": "./dist/provider-auth-bun/*.d.ts",
+      "default": "./dist/provider-auth-bun/*.js"
+    },
     "./provider-auth-node": {
       "types": "./dist/provider-auth-node/index.d.ts",
       "default": "./dist/provider-auth-node/index.js"
