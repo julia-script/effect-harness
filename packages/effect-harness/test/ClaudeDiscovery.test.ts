@@ -91,6 +91,7 @@ for (const mode of ['adaptive', 'enabled'] as const) {
         for (const body of bodies)
           assert.deepEqual(body.thinking, {
             type: mode,
+            display: 'summarized',
             ...(mode === 'enabled' ? { budget_tokens: 1024 } : {}),
           })
         assert.include(JSON.stringify(bodies[1]?.messages), 'future-signature')
@@ -113,6 +114,7 @@ for (const mode of ['adaptive', 'enabled'] as const) {
           yield* protectedModel.languageModel.generateText({ prompt: 'hello' })
           assert.deepEqual(bodies[2]?.thinking, {
             type: 'adaptive',
+            display: 'summarized',
             block_binding: { prefix_mismatch_behavior: 'drop_block' },
           })
           assert.include(headers[2]!, 'thinking-binding-controls-2026-08-01')

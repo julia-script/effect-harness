@@ -63,6 +63,7 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
                 assert.deepStrictEqual(body.thinking, {
                   type: 'adaptive',
                   block_binding: { prefix_mismatch_behavior: 'drop_block' },
+                  display: 'summarized',
                 })
               }
               if (Option.isSome(yield* Effect.serviceOption(CompactionRequest))) {

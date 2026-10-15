@@ -133,9 +133,17 @@ const requestImpl = Effect.fnUntraced(function* (
     Arr.filter(String.split(self.params?.['anthropic-beta'] ?? '', ','), String.isNonEmpty),
   )
   const requestedBetas = documents ? Arr.union(betas, ['pdfs-2024-09-25']) : betas
+  const payload = {
+    ...self.payload,
+    messages,
+    // Newer models omit visible thinking unless its display is requested explicitly.
+    ...(self.payload.thinking == null || self.payload.thinking.type === 'disabled'
+      ? {}
+      : { thinking: { display: 'summarized', ...self.payload.thinking } }),
+  }
   return {
     ...self,
-    payload: { ...self.payload, messages },
+    payload,
     ...(documents
       ? { params: { ...self.params, 'anthropic-beta': requestedBetas.join(',') } }
       : {}),

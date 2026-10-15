@@ -85,6 +85,7 @@ it.effect(
       for (const [index, body] of bodies.entries()) {
         assert.deepEqual(body.thinking, {
           type: 'adaptive',
+          display: 'summarized',
           block_binding: { prefix_mismatch_behavior: 'drop_block' },
         })
         assert.include(headers[index]!, 'thinking-binding-controls-2026-08-01')

@@ -229,9 +229,9 @@ export const make = Effect.fnUntraced(function* (options: Options) {
               thinking: {
                 ...config.thinking,
                 ...thinkingBinding,
-                ...(config.thinkingDisplay === undefined
+                ...(config.thinking.type === 'disabled'
                   ? {}
-                  : { display: config.thinkingDisplay }),
+                  : { display: config.thinkingDisplay ?? 'summarized' }),
               },
             }),
         ...(config.effort === undefined ? {} : { output_config: { effort: config.effort } }),
