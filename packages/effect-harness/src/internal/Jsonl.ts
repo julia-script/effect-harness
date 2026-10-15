@@ -32,6 +32,10 @@ const Envelope = Schema.Struct({
   rows: Schema.Array(Schema.Unknown),
 })
 const Revision = Row.StoredDocument.fields.revisions.value
+const RevisionHeader = Schema.Struct({
+  _tag: Schema.Literals(['base', 'delta']),
+  version: Domain.Content.members[0].fields.version,
+})
 const rowName = (ref: Reference) => `${ref.id}-${ref.seq}.row`
 const revisionName = (id: number, seq: number) => `${id}-${seq}.revision`
 const filesOf = (ref: Reference) => [
@@ -133,6 +137,19 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
       Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(schema))),
       Effect.mapError(Errors.corrupt('recover')),
     )
+  const names = (yield* io('recover', fs.exists(directory)))
+    ? yield* io('recover', fs.readDirectory(directory))
+    : []
+  if (names.some((name) => !/^\d+-\d+\.(row|revision)$/.test(name)))
+    return yield* Errors.make('corrupt', 'recover', 'Unexpected file in JSONL sidecar directory')
+  const pruning = new Set<number>()
+  for (const name of names) {
+    const match = /^(\d+)-(\d+)\.revision$/.exec(name)
+    if (match === null) continue
+    const id = Number(match[1])
+    const first = references.get(id)?.firstRevision
+    if (first !== undefined && first !== null && Number(match[2]) < first) pruning.add(id)
+  }
   const rows: Array<Row.Stored> = []
   for (const ref of references.values()) {
     let row = yield* read(rowName(ref), Row.Stored)
@@ -150,7 +167,7 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
       if (
         (!Domain.isCurrentOnly(row.value.record) &&
           ref.firstRevision !== row.value.record.createdAt) ||
-        (ref.firstRevision === null && row.value.record.retiredAt === undefined)
+        (ref.firstRevision === null && row.value.record.retiredAt !== ref.seq)
       )
         return yield* Errors.make('corrupt', 'recover', 'JSONL document has lost required history')
       if (row.value.revisions.length !== 0)
@@ -166,16 +183,27 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
           )
         revisions.push(revision)
       }
+      // Replacing a current-only base may prune earlier revisions, but a delta
+      // cannot authorize that deletion. Retired bodies remain entirely opaque.
+      if (pruning.has(ref.id)) {
+        let version: number | undefined
+        for (const [index, revision] of revisions.entries()) {
+          const header = yield* Schema.decodeUnknownEffect(RevisionHeader)(revision.content).pipe(
+            Effect.mapError(Errors.corrupt('recover')),
+          )
+          if (
+            (index === 0 && header._tag !== 'base') ||
+            (index > 0 && (header._tag !== 'delta' || header.version !== version))
+          )
+            return yield* Errors.make('corrupt', 'recover', 'JSONL prune has no continuous base')
+          version = header.version
+        }
+      }
       row = { ...row, value: { ...row.value, revisions } }
     }
     rows.push(row)
   }
   yield* memory.save(rows, previous)
-  const names = (yield* io('recover', fs.exists(directory)))
-    ? yield* io('recover', fs.readDirectory(directory))
-    : []
-  if (names.some((name) => !/^\d+-\d+\.(row|revision)$/.test(name)))
-    return yield* Errors.make('corrupt', 'recover', 'Unexpected file in JSONL sidecar directory')
   yield* io('initialize', fs.makeDirectory(directory, { recursive: true }))
   const syncDirectory = (path: string) =>
     Effect.scoped(fs.open(path, { flag: 'r' }).pipe(Effect.flatMap((directory) => directory.sync)))

@@ -553,6 +553,108 @@ it.live('a corrupt JSONL prune marker cannot erase rewindable history during rec
   ).pipe(Effect.provide(NodeServices.layer)),
 )
 
+for (const scope of ['session', 'latest'] as const)
+  for (const boundary of ['delta', 'false-retirement', 'retired-opaque', 'live-opaque'] as const)
+    it.live(`JSONL ${scope} ${boundary} validates pruning before deleting prior evidence`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { fs, filename } = yield* fixture
+          const layer = Storage.layerJsonl({ filePath: filename })
+          yield* Effect.gen(function* () {
+            const storage = yield* Storage.Storage
+            yield* storage.commit([
+              { _tag: 'conversation', value: { id: root } },
+              {
+                _tag: 'document.create',
+                record: {
+                  id: historyId,
+                  kind: 'prune',
+                  ...(scope === 'session'
+                    ? { scope: { _tag: 'session' as const } }
+                    : {
+                        scope: { _tag: 'conversation' as const, conversationId: root },
+                        history: 'latest' as const,
+                        fork: 'current' as const,
+                      }),
+                },
+                content: { _tag: 'base', version: 1, value: { count: 0 } },
+              },
+            ])
+            yield* storage.commit([
+              {
+                _tag: 'document.change',
+                id: historyId,
+                content: { _tag: 'delta', version: 1, ops: [['set', ['count'], 1]] },
+              },
+            ])
+            if (boundary === 'live-opaque')
+              yield* storage.commit([
+                {
+                  _tag: 'document.change',
+                  id: historyId,
+                  content: { _tag: 'base', version: 2, value: { count: 2 } },
+                },
+              ])
+            if (boundary === 'retired-opaque')
+              yield* storage.commit([{ _tag: 'document.retire', id: historyId }])
+          }).pipe(Effect.provide(layer))
+          if (boundary === 'live-opaque') {
+            yield* fs.writeFileString(
+              `${filename}.parts/2-3.revision`,
+              JSON.stringify({
+                seq: 3,
+                content: { _tag: 'base', version: 2, value: 'obsolete codec payload' },
+              }),
+            )
+            yield* Effect.gen(function* () {
+              const storage = yield* Storage.Storage
+              yield* storage.commit([{ _tag: 'document.retire', id: historyId }])
+            }).pipe(Effect.provide(layer))
+            assert.isFalse(yield* fs.exists(`${filename}.parts/2-3.revision`))
+            return
+          }
+          if (boundary === 'retired-opaque') {
+            // Interrupted cleanup may leave obsolete bodies that cannot be decoded.
+            yield* fs.writeFileString(`${filename}.parts/2-1.revision`, '{malformed obsolete body')
+            yield* Effect.gen(function* () {
+              const storage = yield* Storage.Storage
+              assert.isTrue(Option.isNone(yield* storage.document(historyId)))
+            }).pipe(Effect.provide(layer))
+            assert.isFalse(yield* fs.exists(`${filename}.parts/2-1.revision`))
+            return
+          }
+          const lines = (yield* fs.readFileString(filename)).trimEnd().split('\n')
+          const frame = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.JsonObject))(
+            lines[1]!,
+          )
+          yield* fs.writeFileString(
+            filename,
+            `${lines[0]}\n${JSON.stringify({
+              ...frame,
+              rows: [
+                {
+                  id: 2,
+                  kind: 'document',
+                  seq: 2,
+                  firstRevision: boundary === 'delta' ? 2 : null,
+                  revisions: boundary === 'delta' ? [2] : [],
+                },
+              ],
+            })}\n`,
+          )
+          const before = yield* fs.readFile(filename)
+          const base = yield* fs.readFile(`${filename}.parts/2-1.revision`)
+          assert.strictEqual(
+            (yield* Effect.service(Storage.Storage).pipe(Effect.provide(layer), Effect.flip))
+              .reason,
+            'corrupt',
+          )
+          assert.deepEqual(yield* fs.readFile(filename), before)
+          assert.deepEqual(yield* fs.readFile(`${filename}.parts/2-1.revision`), base)
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    )
+
 it.live('JSONL does not recreate a lost journal or erase its surviving sidecars', () =>
   Effect.scoped(
     Effect.gen(function* () {
