@@ -284,7 +284,9 @@ export const make = Effect.fnUntraced(function* (options: Options) {
   })
   return yield* Native.make({
     model: options.model,
-    config: { store: false, useItemReferences: false },
+    // Ordinary Effect schemas retain optional keys and open objects. Strict OpenAI
+    // schemas require different semantics; tools can explicitly opt in via annotations.
+    config: { store: false, useItemReferences: false, strictJsonSchema: false },
   }).pipe(Effect.provideService(OpenAiClient.OpenAiClient, client))
 })
 

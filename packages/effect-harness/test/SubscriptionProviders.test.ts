@@ -115,3 +115,58 @@ describe('Claude OAuth public LanguageModel protocol', () => {
     }),
   )
 })
+
+it.effect('Claude preserves prepared dynamic tool schemas without enabling strict validation', () =>
+  Effect.gen(function* () {
+    const store = yield* credentials('anthropic')
+    const requests: HttpClientRequest.HttpClientRequest[] = []
+    const parameters = {
+      type: 'object',
+      properties: {
+        command: { type: 'string' },
+        env: { type: 'object', additionalProperties: { type: 'string' } },
+      },
+      required: ['command'],
+      additionalProperties: true,
+    }
+    const model = yield* Claude.make({
+      model: 'claude-sonnet-4-6',
+      binding: { ...binding, provider: 'anthropic' },
+    }).pipe(
+      Effect.provideService(Store.CredentialStore, store),
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.sync(() => {
+            requests.push(request)
+            return HttpClientResponse.fromWeb(request, new Response(sse(claudeEvents)))
+          }),
+        ),
+      ),
+    )
+    const parts = yield* model
+      .streamText({
+        prompt: 'hello',
+        toolkit: Toolkit.make(Tool.dynamic('bash', { parameters })),
+        disableToolCallResolution: true,
+      })
+      .pipe(Stream.runCollect)
+    const tools = yield* Schema.decodeUnknownEffect(
+      Schema.Array(
+        Schema.Struct({
+          strict: Schema.Boolean,
+          input_schema: Schema.JsonObject,
+        }),
+      ),
+    )(payload(requests[0]!).tools)
+    assert.strictEqual(tools[0]?.strict, false)
+    assert.deepEqual(tools[0]?.input_schema, parameters)
+    assert.strictEqual(
+      parts
+        .filter((p) => p.type === 'text-delta')
+        .map((p) => p.delta)
+        .join(''),
+      'Olá 🌍',
+    )
+  }),
+)

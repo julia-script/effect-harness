@@ -91,7 +91,11 @@ export const providerFailure = (
     reason = new AiError.AuthenticationError({ kind: 'Unknown' })
   else if (code === 'rate_limit_error' || code === 'rate_limit_exceeded')
     reason = new AiError.RateLimitError({})
-  else if (code === 'invalid_request_error' || code === 'permission_error')
+  else if (
+    code === 'invalid_request_error' ||
+    code === 'invalid_function_parameters' ||
+    code === 'permission_error'
+  )
     reason = new AiError.InvalidRequestError({ description: 'Provider rejected the request' })
   else
     reason = new AiError.InternalProviderError({
