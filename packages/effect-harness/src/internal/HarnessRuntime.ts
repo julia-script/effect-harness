@@ -36,7 +36,7 @@ import type * as Submission from '../Submission.js'
 import type * as Tool from '../Tool.js'
 import * as Registry from '../Registry.js'
 import type * as RegistryScope from '../RegistryScope.js'
-import * as TaskScheduler from '../TaskScheduler.js'
+import * as TaskSchedulerImpl from './TaskScheduler.js'
 import * as RunTask from './RunTask.js'
 import * as ToolTask from './ToolTask.js'
 import * as NestedInvocation from './NestedInvocation.js'
@@ -187,7 +187,7 @@ export const make = Effect.fnUntraced(function* <
         )
       })
       const activate = Effect.suspend(() =>
-        protect('runtime.resume', drainIdle().pipe(Effect.andThen(scheduler.resume))),
+        protect('runtime.resume', drainIdle().pipe(Effect.andThen(scheduler.activate))),
       )
       const wake = activate
       const requireConversation = Effect.fnUntraced(function* (
@@ -691,7 +691,7 @@ export const make = Effect.fnUntraced(function* <
             ),
           )
         })
-      const scheduler: TaskScheduler.Service = yield* TaskScheduler.make(session, {
+      const scheduler: TaskSchedulerImpl.Service = yield* TaskSchedulerImpl.make(session, {
         invocation: {
           open: (access, lease, mode) =>
             NestedInvocation.make(

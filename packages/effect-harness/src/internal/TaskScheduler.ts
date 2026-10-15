@@ -115,10 +115,15 @@ const sameJson = Schema.toEquivalence(Schema.Json)
 
 const { ownedLive, hold } = Supervision
 
+export interface Service extends Scheduler.Service {
+  /** Internal automatic wake: initializes recovery once and never clears scheduler health. */
+  readonly activate: Effect.Effect<void, Scheduler.Failure>
+}
+
 export const make = Effect.fnUntraced(function* <R = never>(
   session: Session.Session,
   options: Scheduler.Options<R> = {},
-): Effect.fn.Return<Scheduler.Service, Scheduler.Failure, Registry | Scope.Scope | R> {
+): Effect.fn.Return<Service, Scheduler.Failure, Registry | Scope.Scope | R> {
   const registry = yield* Registry
   const nativeRun = options.nativeRun
   if (nativeRun !== undefined) {
@@ -334,33 +339,43 @@ export const make = Effect.fnUntraced(function* <R = never>(
     return Option.some(wire)
   })
   const guard = check.pipe(Effect.andThen(state.requireSchedulerFormat), Effect.asVoid)
-  const resumeInvocation = Effect.fn('TaskScheduler.resume')(() =>
+  const healthy = Effect.suspend(() => (failed === undefined ? Effect.void : Effect.fail(failed)))
+  const resumeInvocation = Effect.fn('TaskScheduler.resume')((automatic = false) =>
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         yield* Effect.annotateCurrentSpan('scheduler.recovery', !recovered)
         yield* restore(guard)
-        yield* restore(
-          Session.commit(session, (tx) =>
-            Effect.gen(function* () {
-              const records = yield* Transaction.scanTasks(tx).pipe(Stream.runCollect)
-              for (const record of records) {
-                if (
-                  (record.kind === 'harness.run' && nativeRun === undefined) ||
-                  record.state.status === 'terminal' ||
-                  invocations.has(record.id)
-                )
-                  continue
-                let next = record
-                if (!recovered && reopened.has(record.id)) next = TaskPolicy.recover(record)
-                else if (record.state.status === 'running')
-                  next = { ...record, state: { ...record.state, status: 'pending' } }
-                if (next !== record) yield* Transaction.putTask(tx, next)
-              }
-            }),
-          ),
-        )
+        if (automatic) yield* healthy
+        if (!automatic || !recovered)
+          yield* restore(
+            Session.commit(session, (tx) =>
+              Effect.gen(function* () {
+                if (automatic) {
+                  yield* healthy
+                  if (recovered) return
+                }
+                const records = yield* Transaction.scanTasks(tx).pipe(Stream.runCollect)
+                if (automatic) yield* healthy
+                for (const record of records) {
+                  if (
+                    (record.kind === 'harness.run' && nativeRun === undefined) ||
+                    record.state.status === 'terminal' ||
+                    invocations.has(record.id)
+                  )
+                    continue
+                  let next = record
+                  if (!recovered && reopened.has(record.id)) next = TaskPolicy.recover(record)
+                  else if (record.state.status === 'running')
+                    next = { ...record, state: { ...record.state, status: 'pending' } }
+                  if (automatic) yield* healthy
+                  if (next !== record) yield* Transaction.putTask(tx, next)
+                }
+              }),
+            ),
+          )
+        if (automatic) yield* healthy
         recovered = true
-        failed = undefined
+        if (!automatic) failed = undefined
         enabled = true
         yield* wake
       }),
@@ -1478,6 +1493,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
   )
 
   return {
+    activate: resumeInvocation(true),
     resume,
     waitForTask,
     outcomes,
