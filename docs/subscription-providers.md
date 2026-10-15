@@ -35,7 +35,7 @@ The host supplies `HttpClient` and `CredentialStore`. Model names and capability
 
 The reusable service contract is documented in [provider credentials](provider-auth.md).
 
-`provider-auth/CredentialStore.layerMemory` is explicitly temporary. `provider-auth-node/CredentialStore.layer({ path })` is an optional Node/Bun store that writes a caller-selected file. Portable provider imports neither load Node modules nor inspect a home directory. Hosts can implement `CredentialStore.Service` with their own database or keychain.
+`provider-auth/MemoryCredentialStore.layer` is explicitly temporary. `provider-auth-node/FileSystemCredentialStore.layer({ path })` is an optional Node/Bun store that writes a caller-selected file. Portable provider imports neither load Node modules nor inspect a home directory. Hosts can implement `CredentialStore.Service` with their own database or keychain.
 
 OAuth credentials hold `Redacted` access and refresh tokens, an expiry in **Unix milliseconds**, and a binding `{ provider, profile, identity }`. Each login creates a new random identity. Codex extracts and validates its account routing identifier from token claims; decoding those claims does not independently verify the token's signature. `store.list` exposes only binding, credential type, and expiry.
 

@@ -5,10 +5,10 @@
 ```ts
 import * as Effect from 'effect/Effect'
 import { CredentialStore } from 'effect-harness/provider-auth'
-import { CredentialStore as FileStore } from 'effect-harness/provider-auth-node'
+import { FileSystemCredentialStore } from 'effect-harness/provider-auth-node'
 
 const status = Effect.gen(function* () {
-  const store = yield* FileStore.make({ path: './private/credentials.json' })
+  const store = yield* FileSystemCredentialStore.make({ path: './private/credentials.json' })
   return yield* store.list // provider/profile/identity/type/expiry, never tokens
 })
 
@@ -16,7 +16,7 @@ const logout = CredentialStore.logout({ provider: 'openai-codex', profile: 'pers
 // Provide the selected CredentialStore to logout and provider constructors.
 ```
 
-Use `CredentialStore.layerMemory` for temporary storage. The file store uses an explicit path, 0600 files, synchronized atomic replacement, and a cross-process lock. The store opens its directory for synchronization before publication. `StoreFailure` means publication did not occur; `StoreCommitUncertain` means the replacement was published but subsequent durability or lock cleanup failed. Reread the credential before retrying an uncertain commit, and never assume remote token rotation was rolled back. Its contents are plaintext secrets; use a private local directory or implement the service with a keychain. It never reads a home-directory credential file. Stale locks are not stolen: after a process crash, establish that the owner has stopped before removing its `.lock` file.
+Use `MemoryCredentialStore.layer` from `effect-harness/provider-auth` for temporary storage. The file store uses an explicit path, 0600 files, synchronized atomic replacement, and a cross-process lock. The store opens its directory for synchronization before publication. `StoreFailure` means publication did not occur; `StoreCommitUncertain` means the replacement was published but subsequent durability or lock cleanup failed. Reread the credential before retrying an uncertain commit, and never assume remote token rotation was rolled back. Its contents are plaintext secrets; use a private local directory or implement the service with a keychain. It never reads a home-directory credential file. Stale locks are not stolen: after a process crash, establish that the owner has stopped before removing its `.lock` file.
 
 OAuth tokens are `Redacted` values. `expiresAt` is Unix milliseconds. Bindings identify `{ provider, profile, identity }`; each login or account replacement must assign a new identity, while refresh preserves it. `save` imports a credential, `list` returns metadata, and `logout` removes the selected profile locally. This does not remotely revoke tokens or retract accepted inference requests.
 

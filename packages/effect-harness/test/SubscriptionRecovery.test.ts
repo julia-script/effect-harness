@@ -20,7 +20,7 @@ import * as Storage from '../src/Storage.js'
 import * as Session from '../src/Session.js'
 import * as Record from '../src/Record.js'
 import * as Store from '../src/provider-auth/CredentialStore.js'
-import * as FileStore from '../src/provider-auth-node/CredentialStore.js'
+import * as FileSystemCredentialStore from '../src/provider-auth-node/FileSystemCredentialStore.js'
 import * as Codex from '../src/provider-openai-codex/Model.js'
 import * as Claude from '../src/provider-anthropic/OAuthModel.js'
 import * as ClaudeLanguageModel from '../src/provider-anthropic/OAuthLanguageModel.js'
@@ -35,7 +35,7 @@ it.live(
       Effect.gen(function* () {
         const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
         const authPath = `${directory}/auth.json`
-        const credentials = yield* FileStore.make({ path: authPath })
+        const credentials = yield* FileSystemCredentialStore.make({ path: authPath })
         const accessToken = `header.${btoa(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'account-1' } }))}.SECRET-token`
         yield* Store.save({
           type: 'oauth',
@@ -124,7 +124,7 @@ it.live(
         assert.strictEqual(generations, 0)
         assert.strictEqual(refreshes, 0)
         yield* Scope.close(firstScope, Exit.void)
-        const reopenedStore = yield* FileStore.make({ path: authPath })
+        const reopenedStore = yield* FileSystemCredentialStore.make({ path: authPath })
         const restoredModel = yield* Codex.make({
           model: 'gpt-5.4',
           binding,

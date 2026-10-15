@@ -3,12 +3,12 @@ import * as Effect from 'effect/Effect'
 import * as Redacted from 'effect/Redacted'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
-import { CredentialStore } from 'effect-harness/provider-auth'
+import { CredentialStore, MemoryCredentialStore } from 'effect-harness/provider-auth'
 import { CodexLanguageModel } from 'effect-harness/provider-openai-codex'
 import { OAuthLanguageModel } from 'effect-harness/provider-anthropic'
 
 const program = Effect.gen(function* () {
-  const store = yield* CredentialStore.makeMemory
+  const store = yield* MemoryCredentialStore.make
   const binding = { provider: 'openai-codex', profile: 'consumer', identity: 'login' }
   const token = `header.${btoa(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'consumer-account' } }))}.signature`
   yield* CredentialStore.save({

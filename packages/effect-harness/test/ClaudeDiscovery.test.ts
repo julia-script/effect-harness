@@ -10,6 +10,7 @@ import * as Provider from '../src/Provider.js'
 import * as Claude from '../src/provider-anthropic/Provider.js'
 import * as Catalog from '../src/provider-anthropic/Catalog.js'
 import * as Store from '../src/provider-auth/CredentialStore.js'
+import * as MemoryCredentialStore from '../src/provider-auth/MemoryCredentialStore.js'
 import { binding, credentials, claudeResponse, payload } from './fixtures/SubscriptionProtocol.js'
 
 for (const mode of ['adaptive', 'enabled'] as const) {
@@ -124,7 +125,7 @@ it.effect(
   'OAuth discovery refreshes credentials, pages lazily, and never falls back after HTTP failure',
   () =>
     Effect.gen(function* () {
-      const store = yield* Store.makeMemory
+      const store = yield* MemoryCredentialStore.make
       const account = { ...binding, provider: 'anthropic' } as const
       yield* Store.save({
         type: 'oauth',

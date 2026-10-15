@@ -4,6 +4,7 @@ import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
 import type * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as Store from '../../src/provider-auth/CredentialStore.js'
+import * as MemoryCredentialStore from '../../src/provider-auth/MemoryCredentialStore.js'
 export const codexToken = `header.${btoa(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'account-1' } }))}.SECRET-token`
 export const binding = { provider: 'openai-codex', profile: 'fixture', identity: 'login' } as const
 export const textItem = {
@@ -94,7 +95,7 @@ export const payload = (request: HttpClientRequest.HttpClientRequest) => {
 }
 export const credentials = (provider: 'openai-codex' | 'anthropic') =>
   Effect.gen(function* () {
-    const store = yield* Store.makeMemory
+    const store = yield* MemoryCredentialStore.make
     yield* Store.save({
       type: 'oauth',
       binding: { ...binding, provider },
