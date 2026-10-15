@@ -225,7 +225,7 @@ describe('independent tool result channels', () => {
               return {
                 _tag: 'Deferred' as const,
                 handle: 'result-request',
-                nextPollAt: (yield* Clock.currentTimeMillis) + 1,
+                nextPollAt: (yield* Clock.currentTimeMillis) + 1000,
               }
             }),
           poll: (handle, _previous, request) =>
