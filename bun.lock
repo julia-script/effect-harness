@@ -56,6 +56,7 @@
       "dependencies": {
         "@effect/ai-anthropic": "4.0.1",
         "@effect/ai-openai": "4.0.1",
+        "@effect/ai-openai-compat": "4.0.1",
       },
       "devDependencies": {
         "@effect/platform-node": "4.0.1",
@@ -193,6 +194,8 @@
     "@effect/ai-anthropic": ["@effect/ai-anthropic@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-hJ3Es38q8C43CLiRInv0QLyjqayHIlrtOx7wCcT1x8LjYC1Ev/An6EhkUFstQfvWkI7ydo1tUe6oMWSS7NNW2g=="],
 
     "@effect/ai-openai": ["@effect/ai-openai@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-NiiwUX+wXhYJf+dwRFqMpF1q2Vc/RjXKk8HXv9+8NwglV7k2NQMiIrShBO8pO8guT+w7afA12xX4ieSL5GPDfg=="],
+
+    "@effect/ai-openai-compat": ["@effect/ai-openai-compat@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-PuFYB/Gd+2YB3zJAlivFUrvEHOg9p6DP93/c1kPH+IGqtBp8oVBS6qNWPWfEkD7+JX8qOWOlwwk5Mqe7X1jvQg=="],
 
     "@effect/platform-browser": ["@effect/platform-browser@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-RsnobWEnffdkRH/wZ3ARIAgMxtGLyfrD0R3iVS+dwQCdYrSbotlJHEoVHEgzcOn5RzMsHG6FHkfdgRMwvcM7kg=="],
 

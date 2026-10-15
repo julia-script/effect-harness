@@ -121,7 +121,7 @@ it.live(
           Effect.gen(function* () {
             const descriptor = yield* Claude.make({
               model: modelId,
-              binding: { ...binding, provider: 'anthropic' },
+              binding: binding,
               definition,
               thinkingModes: ['adaptive'],
               config: { thinking: { type: 'adaptive' } },
@@ -252,7 +252,7 @@ it.effect(
       const make = (model: string, modes: ReadonlyArray<'enabled' | 'adaptive'> = ['enabled']) =>
         Claude.make({
           model,
-          binding: { ...binding, provider: 'anthropic' },
+          binding: binding,
           definition: { ...definition, ref: { provider: 'anthropic', modelId: model } },
           thinkingModes: modes,
           config: { thinking: { type: 'enabled', budget_tokens: 1024 }, maxTokens: 4096 },

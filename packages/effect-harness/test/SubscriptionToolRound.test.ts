@@ -133,7 +133,7 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
               ? Codex.make({ model: 'gpt-5.4', binding })
               : Claude.make({
                   model: 'claude-sonnet-4-6',
-                  binding: { ...binding, provider },
+                  binding: binding,
                 })
           ).pipe(
             Effect.provideService(Store.CredentialStore, store),

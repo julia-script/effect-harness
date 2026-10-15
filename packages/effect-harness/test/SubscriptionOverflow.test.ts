@@ -41,7 +41,7 @@ for (const provider of ['openai-codex', 'anthropic'] as const) {
         )
         const native = yield* (
           provider === 'anthropic'
-            ? Claude.make({ model: 'claude-sonnet-4-6', binding: { ...binding, provider } })
+            ? Claude.make({ model: 'claude-sonnet-4-6', binding: binding })
             : Codex.make({ model: 'gpt-5.4', binding })
         ).pipe(
           Effect.provideService(Store.CredentialStore, store),
@@ -82,7 +82,7 @@ for (const provider of ['openai-codex', 'anthropic'] as const) {
         )
         const native = yield* (
           provider === 'anthropic'
-            ? Claude.make({ model: 'claude-sonnet-4-6', binding: { ...binding, provider } })
+            ? Claude.make({ model: 'claude-sonnet-4-6', binding: binding })
             : Codex.make({ model: 'gpt-5.4', binding })
         ).pipe(
           Effect.provideService(Store.CredentialStore, store),

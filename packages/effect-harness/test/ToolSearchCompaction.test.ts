@@ -199,7 +199,7 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
                 )
               : yield* Claude.make({
                   model: modelId,
-                  binding: { ...binding, provider },
+                  binding: binding,
                   definition,
                   thinkingModes: ['adaptive'],
                   config: { thinking: { type: 'adaptive' } },
@@ -329,7 +329,7 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
           )
           for (const preparation of preparations) {
             const configuration = preparation.configuration as Schema.JsonObject
-            assert.deepStrictEqual(configuration.binding, { ...binding, provider })
+            assert.deepStrictEqual(configuration.binding, binding)
           }
           const entries = yield* Session.scanEntries(second.session, { conversationId: root }).pipe(
             Stream.runCollect,

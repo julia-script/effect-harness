@@ -1,33 +1,65 @@
-/** Concrete Claude OAuth catalogs backed by the existing durable Messages adapter. */
+/** Claude protocol definition; each user instance supplies configuration and a credential reference. */
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Provider from '../Provider.js'
+import type * as ModelCatalog from '../ModelCatalog.js'
 import * as ModelInfo from '../ModelInfo.js'
 import { ModelCatalogError } from '../ModelCatalogError.js'
 import * as Catalog from './Catalog.js'
 import * as Native from './OAuthLanguageModel.js'
 import * as Model from './OAuthModel.js'
+import * as Credential from '../provider-auth/Credential.js'
+import { AuthError } from '../provider-auth/AuthError.js'
 import * as ThinkingPolicy from './ThinkingPolicy.js'
 
-export interface Options<Id extends string> extends Omit<
-  Native.Options,
-  'model' | 'thinkingModes' | 'efforts' | 'thinkingPolicy'
-> {
-  readonly id: Id
-  /** Per-model replay compatibility; defaults cover known binding-control models. */
-  readonly thinkingPolicy?: (info: ModelInfo.ModelInfo) => ThinkingPolicy.Policy
+export const Config = Schema.Struct({
+  apiVersion: Schema.optionalKey(Schema.NonEmptyString),
+  authorizeUrl: Schema.optionalKey(Schema.NonEmptyString),
+  tokenUrl: Schema.optionalKey(Schema.NonEmptyString),
+  apiUrl: Schema.optionalKey(Schema.NonEmptyString),
+  minimumValidityMs: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  refreshTimeoutMs: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
+  automaticRefresh: Schema.optionalKey(Schema.Boolean),
+  config: Schema.optionalKey(Native.Settings),
+})
+export type Config = typeof Config.Type
+export type Context = Provider.Context<Config, Credential.OAuth>
+const optionsFor = Effect.fnUntraced(function* (context: Context) {
+  yield* context.check
+  if (context.credential === undefined) return yield* new AuthError({ reason: 'MissingCredential' })
+  return { ...context.config, binding: context.credential }
+})
+const live = {
+  list: Effect.fnUntraced(function* (context: Context, input: ModelCatalog.ListOptions) {
+    return yield* Catalog.oauth(yield* optionsFor(context)).list(input)
+  }),
+  get: Effect.fnUntraced(function* (context: Context, modelId: string) {
+    return yield* Catalog.oauth(yield* optionsFor(context)).get(modelId)
+  }),
 }
 
-/** Preserve custom discovery requirements while fixing protocol construction and option translation. */
-export const makeWithSource = <const Id extends string, LE, LR, GE, GR>(
-  options: Options<Id>,
-  models: Provider.ModelSource<LE, LR, GE, GR>,
+/** Override metadata lookup without reimplementing the inference protocol. */
+export const define = <LE, LR, GE, GR>(
+  models: {
+    readonly list: (
+      context: Context,
+      input: ModelCatalog.ListOptions,
+    ) => Effect.Effect<ModelCatalog.Page, LE, LR>
+    readonly get: (context: Context, modelId: string) => Effect.Effect<ModelInfo.ModelInfo, GE, GR>
+  },
+  policy: { readonly thinkingPolicy?: (info: ModelInfo.ModelInfo) => ThinkingPolicy.Policy } = {},
 ) =>
-  Provider.make({
-    id: options.id,
+  Provider.define({
+    version: 1,
+    config: Config,
+    secrets: Credential.OAuth,
     models,
-    create: Effect.fnUntraced(function* ({ info, options: selected }: Provider.Resolved) {
-      const thinkingPolicy = options.thinkingPolicy?.(info) ?? ThinkingPolicy.forModel(info.id)
+    createModel: Effect.fnUntraced(function* (context: Context, resolved: Provider.Resolved) {
+      const selectedPolicy = policy.thinkingPolicy
+      const options = yield* optionsFor(context)
+
+      const { info, options: selected } = resolved
+      const thinkingPolicy = selectedPolicy?.(info) ?? ThinkingPolicy.forModel(info.id)
       const effort =
         selected.reasoning?.effort ?? options.config?.effort ?? info.reasoning?.effort?.default
       const modes: ReadonlyArray<'disabled' | 'enabled' | 'adaptive'> =
@@ -92,10 +124,10 @@ export const makeWithSource = <const Id extends string, LE, LR, GE, GR>(
         config,
         thinkingModes: modes,
         efforts,
+        supportsTemperature: info.capabilities?.temperature === true,
+        supportsLongCache: info.capabilities?.longCache === true,
       })
     }),
   })
 
-/** Live OAuth discovery; requests run only when the selected operation is executed. */
-export const make = <const Id extends string>(options: Options<Id>) =>
-  makeWithSource(options, Catalog.oauth(options))
+export const definition = define(live)

@@ -43,7 +43,7 @@ it.effect(
       const make = (thinkingModes: ReadonlyArray<'adaptive' | 'enabled'>) =>
         Claude.make({
           model,
-          binding: { ...binding, provider: 'anthropic' },
+          binding: binding,
           thinkingModes,
           config: { thinking: { type: 'adaptive' } },
           definition: {

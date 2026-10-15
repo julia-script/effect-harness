@@ -1,3 +1,4 @@
+import { encodeCredential, decodeOAuth } from './fixtures/Credentials.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Clock from 'effect/Clock'
 import * as Deferred from 'effect/Deferred'
@@ -5,14 +6,13 @@ import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Redacted from 'effect/Redacted'
 import * as TestClock from 'effect/testing/TestClock'
-import * as Credential from '../src/provider-auth/Credential.js'
 import * as Store from '../src/provider-auth/CredentialStore.js'
 import * as MemoryCredentialStore from '../src/provider-auth/MemoryCredentialStore.js'
 import * as Resolver from '../src/provider-auth/Resolver.js'
 import { AuthError } from '../src/provider-auth/AuthError.js'
 
-const binding = { provider: 'openai-codex', profile: 'test', identity: 'login-1' } as const
-const credential = (expiresAt: number): Credential.OAuth => ({
+const binding = { credentialId: 'test', identity: 'login-1' } as const
+const credential = (expiresAt: number): import('./fixtures/Credentials.js').OAuthFixture => ({
   type: 'oauth',
   binding,
   accessToken: Redacted.make('SECRET-access'),
@@ -28,7 +28,9 @@ describe('provider credential lifecycle', () => {
       Effect.gen(function* () {
         for (const operation of ['logout', 'replace'] as const) {
           const store = yield* MemoryCredentialStore.make
-          yield* Store.save(credential(1)).pipe(Effect.provideService(Store.CredentialStore, store))
+          yield* Store.save(encodeCredential(credential(1))).pipe(
+            Effect.provideService(Store.CredentialStore, store),
+          )
           const started = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
           const { resolve } = yield* Resolver.make({
@@ -44,11 +46,13 @@ describe('provider credential lifecycle', () => {
           yield* Deferred.await(started)
           const modification =
             operation === 'logout'
-              ? Store.logout(binding)
-              : Store.save({
-                  ...credential(600_000),
-                  binding: { ...binding, identity: 'replacement' },
-                })
+              ? Store.remove(binding)
+              : Store.save(
+                  encodeCredential({
+                    ...credential(600_000),
+                    binding: { ...binding, identity: 'replacement' },
+                  }),
+                )
           const writer = yield* modification.pipe(
             Effect.provideService(Store.CredentialStore, store),
             Effect.forkChild,
@@ -57,7 +61,7 @@ describe('provider credential lifecycle', () => {
           yield* Deferred.succeed(release, undefined)
           yield* Fiber.join(request)
           yield* Fiber.join(writer)
-          const saved = yield* store.read(Credential.key(binding))
+          const saved = decodeOAuth(yield* store.read(binding.credentialId))
           assert.strictEqual(
             saved?.binding.identity,
             operation === 'logout' ? undefined : 'replacement',
@@ -73,7 +77,9 @@ describe('provider credential lifecycle', () => {
   it.effect('a failed persistence boundary does not publish the rotated credential', () =>
     Effect.gen(function* () {
       const memory = yield* MemoryCredentialStore.make
-      yield* Store.save(credential(1)).pipe(Effect.provideService(Store.CredentialStore, memory))
+      yield* Store.save(encodeCredential(credential(1))).pipe(
+        Effect.provideService(Store.CredentialStore, memory),
+      )
       const store = Store.CredentialStore.of({
         ...memory,
         modify: (key, f) =>
@@ -87,7 +93,7 @@ describe('provider credential lifecycle', () => {
           Effect.succeed({ ...old, expiresAt: 600_000, refreshToken: Redacted.make('SECRET-new') }),
       }).pipe(Effect.provideService(Store.CredentialStore, store))
       assert.strictEqual((yield* Effect.flip(resolve)).reason, 'StoreFailure')
-      const saved = yield* memory.read(Credential.key(binding))
+      const saved = decodeOAuth(yield* memory.read(binding.credentialId))
       assert.strictEqual(
         saved?.type === 'oauth' && Redacted.value(saved.refreshToken),
         'SECRET-refresh',
@@ -98,7 +104,7 @@ describe('provider credential lifecycle', () => {
     Effect.gen(function* () {
       const store = yield* MemoryCredentialStore.make
       const now = yield* Clock.currentTimeMillis
-      yield* Store.save(credential(now + 1)).pipe(
+      yield* Store.save(encodeCredential(credential(now + 1))).pipe(
         Effect.provideService(Store.CredentialStore, store),
       )
       let rotations = 0
@@ -122,7 +128,7 @@ describe('provider credential lifecycle', () => {
       assert.isTrue(
         results.every((result) => Redacted.value(result.refreshToken) === 'SECRET-rotated'),
       )
-      assert.strictEqual((yield* store.read(Credential.key(binding)))?.type, 'oauth')
+      assert.strictEqual(decodeOAuth(yield* store.read(binding.credentialId))?.type, 'oauth')
       assert.notInclude(JSON.stringify(yield* store.list), 'SECRET')
       assert.notInclude(JSON.stringify(results), 'SECRET')
     }),
@@ -134,7 +140,7 @@ describe('provider credential lifecycle', () => {
       Effect.gen(function* () {
         const store = yield* MemoryCredentialStore.make
         const now = yield* Clock.currentTimeMillis
-        yield* Store.save(credential(now + 1)).pipe(
+        yield* Store.save(encodeCredential(credential(now + 1))).pipe(
           Effect.provideService(Store.CredentialStore, store),
         )
         const rotated = yield* Deferred.make<void>()
@@ -157,15 +163,15 @@ describe('provider credential lifecycle', () => {
         yield* Effect.forkChild(Fiber.interrupt(first))
         yield* Deferred.succeed(finish, undefined)
         yield* Fiber.await(first)
-        const persisted = yield* store.read(Credential.key(binding))
+        const persisted = decodeOAuth(yield* store.read(binding.credentialId))
         assert.strictEqual(
           persisted?.type === 'oauth' && Redacted.value(persisted.refreshToken),
           'SECRET-rotated',
         )
-        yield* Store.logout(binding).pipe(Effect.provideService(Store.CredentialStore, store))
+        yield* Store.remove(binding).pipe(Effect.provideService(Store.CredentialStore, store))
         const error = yield* Effect.flip(resolve)
         assert.strictEqual(error.reason, 'MissingCredential')
-        assert.isUndefined(yield* store.read(Credential.key(binding)))
+        assert.isUndefined(yield* store.read(binding.credentialId))
       }),
   )
 
@@ -173,7 +179,7 @@ describe('provider credential lifecycle', () => {
     Effect.gen(function* () {
       const store = yield* MemoryCredentialStore.make
       const now = yield* Clock.currentTimeMillis
-      yield* Store.save(credential(now + 1)).pipe(
+      yield* Store.save(encodeCredential(credential(now + 1))).pipe(
         Effect.provideService(Store.CredentialStore, store),
       )
       const started = yield* Deferred.make<void>()
@@ -186,22 +192,24 @@ describe('provider credential lifecycle', () => {
       yield* Deferred.await(started)
       yield* TestClock.adjust(100)
       assert.strictEqual((yield* Fiber.join(request)).reason, 'Timeout')
-      yield* Store.logout(binding).pipe(Effect.provideService(Store.CredentialStore, store))
+      yield* Store.remove(binding).pipe(Effect.provideService(Store.CredentialStore, store))
     }),
   )
 
   it.effect('refuses replacement bindings and expired external-refresh credentials', () =>
     Effect.gen(function* () {
       const store = yield* MemoryCredentialStore.make
-      yield* Store.save(credential(1)).pipe(Effect.provideService(Store.CredentialStore, store))
+      yield* Store.save(encodeCredential(credential(1))).pipe(
+        Effect.provideService(Store.CredentialStore, store),
+      )
       const { resolve } = yield* Resolver.make({ binding }).pipe(
         Effect.provideService(Store.CredentialStore, store),
       )
       yield* TestClock.adjust(2)
       assert.strictEqual((yield* Effect.flip(resolve)).reason, 'ExpiredCredential')
-      yield* Store.save({ ...credential(1), binding: { ...binding, identity: 'login-2' } }).pipe(
-        Effect.provideService(Store.CredentialStore, store),
-      )
+      yield* Store.save(
+        encodeCredential({ ...credential(1), binding: { ...binding, identity: 'login-2' } }),
+      ).pipe(Effect.provideService(Store.CredentialStore, store))
       assert.strictEqual((yield* Effect.flip(resolve)).reason, 'AccountMismatch')
     }),
   )

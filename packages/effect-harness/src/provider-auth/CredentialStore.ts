@@ -2,11 +2,13 @@
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Credential from './Credential.js'
-import type { AuthError } from './AuthError.js'
+import * as Schema from 'effect/Schema'
+import * as Redacted from 'effect/Redacted'
+import { AuthError } from './AuthError.js'
 
 export interface Service {
-  readonly read: (key: string) => Effect.Effect<Credential.Credential | undefined, AuthError>
-  readonly list: Effect.Effect<ReadonlyArray<Credential.Metadata>, AuthError>
+  readonly read: (key: string) => Effect.Effect<Credential.Stored | undefined, AuthError>
+  readonly list: Effect.Effect<ReadonlyArray<Credential.Binding>, AuthError>
   /**
    * Lock, reread, run the effect, persist its replacement, then unlock. Failed callbacks do not write.
    * StoreCommitUncertain means publication occurred but durability was not confirmed: reread before
@@ -18,24 +20,68 @@ export interface Service {
   readonly modify: <A, E, R>(
     key: string,
     f: (
-      current: Credential.Credential | undefined,
-    ) => Effect.Effect<readonly [A, Credential.Credential | undefined], E, R>,
+      current: Credential.Stored | undefined,
+    ) => Effect.Effect<readonly [A, Credential.Stored | undefined], E, R>,
   ) => Effect.Effect<A, E | AuthError, R>
 }
 export class CredentialStore extends Context.Service<CredentialStore, Service>()(
   'effect-harness/provider-auth/CredentialStore',
 ) {}
 
-/** Explicit login/import operation; callers must assign a fresh binding identity on replacement. */
-export const save = (credential: Credential.Credential) =>
+/** Import a fully encoded credential. Use create for newly allocated references. */
+export const save = (credential: Credential.Stored) =>
   Effect.flatMap(CredentialStore, (store) =>
-    store.modify(Credential.key(credential.binding), () =>
+    store.modify(credential.binding.credentialId, () =>
       Effect.succeed([Credential.metadata(credential), credential] as const),
     ),
   )
 
-/** Local logout fences refresh; it cannot retract a request already accepted by the provider. */
-export const logout = (binding: Pick<Credential.Binding, 'provider' | 'profile'>) =>
+/** Allocate an independent credential reference; never derive keys from user labels. */
+export const create = Effect.fnUntraced(function* <S extends Schema.Constraint>(
+  schema: S,
+  secrets: S['Type'],
+) {
+  const binding = { credentialId: crypto.randomUUID(), identity: crypto.randomUUID() }
+  const value = yield* encode(schema, secrets)
+  return yield* save({ binding, value })
+})
+
+/** Encode without exposing schema issues containing secret values. */
+export const encode = <S extends Schema.Constraint>(schema: S, secrets: S['Type']) =>
+  Schema.encodeEffect(Schema.toCodecJson(schema), { onExcessProperty: 'error' })(secrets).pipe(
+    Effect.map(Redacted.make),
+    Effect.mapError(() => new AuthError({ reason: 'InvalidConfiguration' })),
+  )
+
+export const decode = <S extends Schema.Constraint>(
+  schema: S,
+  value: Redacted.Redacted<Schema.Json>,
+) =>
+  Schema.decodeEffect(Schema.toCodecJson(schema), { onExcessProperty: 'error' })(
+    Redacted.value(value),
+  ).pipe(Effect.mapError(() => new AuthError({ reason: 'InvalidConfiguration' })))
+
+export const read = Effect.fnUntraced(function* <S extends Schema.Constraint>(
+  binding: Credential.Binding,
+  schema: S,
+) {
+  const store = yield* CredentialStore
+  const stored = yield* store.read(binding.credentialId)
+  if (stored === undefined) return yield* new AuthError({ reason: 'MissingCredential' })
+  if (
+    stored.binding.identity !== binding.identity ||
+    stored.binding.credentialId !== binding.credentialId
+  )
+    return yield* new AuthError({ reason: 'AccountMismatch' })
+  return yield* decode(schema, stored.value)
+})
+
+/** Removal uses the same transaction boundary as refresh. */
+export const remove = (binding: Credential.Binding) =>
   Effect.flatMap(CredentialStore, (store) =>
-    store.modify(Credential.key(binding), () => Effect.succeed([undefined, undefined] as const)),
+    store.modify(binding.credentialId, (current) => {
+      if (current !== undefined && current.binding.identity !== binding.identity)
+        return Effect.fail(new AuthError({ reason: 'AccountMismatch' }))
+      return Effect.succeed([undefined, undefined] as const)
+    }),
   )

@@ -100,3 +100,8 @@ export * as ToolSearch from './ToolSearch.js'
 export * as ToolSearchRanking from './ToolSearchRanking.js'
 
 export * as PromptWire from './PromptWire.js'
+
+export * as Providers from './Providers.js'
+export * as ProviderInstance from './ProviderInstance.js'
+export * as ProviderStore from './ProviderStore.js'
+export * as ProviderError from './ProviderError.js'

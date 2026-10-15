@@ -47,8 +47,7 @@ export const make = <A extends object, I>(input: {
           !Schema.toEquivalence(Schema.Json)(snapshot.capabilities, input.capabilities) ||
           snapshot.protocol !== input.protocol ||
           snapshot.binding.identity !== input.binding.identity ||
-          snapshot.binding.provider !== input.binding.provider ||
-          snapshot.binding.profile !== input.binding.profile ||
+          snapshot.binding.credentialId !== input.binding.credentialId ||
           snapshot.model.provider !== input.definition.ref.provider ||
           snapshot.model.modelId !== input.definition.ref.modelId
         )
@@ -86,7 +85,7 @@ export const make = <A extends object, I>(input: {
           input.defaults,
           input.capabilities,
         ]),
-        overheadTokens: input.binding.provider === 'anthropic' ? 64 : 32,
+        overheadTokens: input.definition.ref.provider === 'anthropic' ? 64 : 32,
       },
       definition: input.definition,
       languageModel: input.languageModel,

@@ -6,6 +6,9 @@ These are direct model transports. They do not run either vendor's CLI, agent ru
 
 ## Choose an integration boundary
 
+For dynamically configured accounts, start with the [provider manager](providers.md),
+then call `providers.models.resolve` to obtain an instance-bound descriptor.
+
 Use `CodexLanguageModel.layer` or `AnthropicLanguageModel.layerOAuth` for a native Effect AI service. Use `provider-openai-codex/Model.make` or `provider-anthropic/OAuthModel.make` for durable harness execution: these constructors also install the configuration codec that freezes accepted settings and pins the account binding. Pass the returned descriptor to `HarnessRuntime.make({ models: [model] })` or the corresponding harness Layer.
 
 ```ts
@@ -15,7 +18,7 @@ const model =
   yield *
   Codex.make({
     model: 'gpt-5.4',
-    binding: selectedCredentialMetadata.binding,
+    binding: selectedCredentialBinding,
     config: { verbosity: 'low' },
     definition: {
       ref: { provider: 'openai-codex', modelId: 'gpt-5.4' },
@@ -37,7 +40,7 @@ The reusable service contract is documented in [provider credentials](provider-a
 
 `provider-auth/MemoryCredentialStore.layer` is explicitly temporary. `provider-auth-node/FileSystemCredentialStore.layer({ path })` is an optional Node/Bun store that writes a caller-selected file. Portable provider imports neither load Node modules nor inspect a home directory. Hosts can implement `CredentialStore.Service` with their own database or keychain.
 
-OAuth credentials hold `Redacted` access and refresh tokens, an expiry in **Unix milliseconds**, and a binding `{ provider, profile, identity }`. Each login creates a new random identity. Codex extracts and validates its account routing identifier from token claims; decoding those claims does not independently verify the token's signature. `store.list` exposes only binding, credential type, and expiry.
+OAuth secrets hold `Redacted` access and refresh tokens and an expiry in **Unix milliseconds**. The manager stores these separately and retains an opaque `{ credentialId, identity }` reference. Each credential replacement creates a new identity. Codex extracts and validates its account routing identifier from token claims; decoding those claims does not independently verify the token's signature. `store.list` exposes only credential references and identities.
 
 The file store uses mode 0600, atomic replacement with file/directory synchronization, and an exclusive lock file shared across processes. Use an application-owned private directory on a local filesystem. This store is plaintext, not a keychain. A process crash can leave a `.lock` file; lock acquisition times out rather than stealing a possibly live lock. Remove a stale lock only after establishing that its owner has stopped. Filesystem I/O requires a functioning local filesystem; a filesystem that indefinitely stalls system calls cannot provide bounded shutdown.
 
@@ -47,11 +50,11 @@ Explicit operations:
 
 - Codex: `OAuth.loginBrowser` or `OAuth.loginDevice`.
 - Claude: `OAuth.loginBrowser` or `OAuth.loginCopyCode`.
-- Status: `CredentialStore.list` on the acquired service.
-- Local logout: `CredentialStore.logout({ provider, profile })`.
-- Import: `CredentialStore.save(credential)`, with a fresh identity for each replacement.
+- Instance status: `providers.list` or `providers.get(instance.id)`.
+- Local logout: `providers.update(instance.id, { secrets: null })`.
+- Authenticate or import: `providers.update(instance.id, { secrets })`.
 
-Each login takes `profile` and an application-owned `interaction`. The host displays/opens the authorization URL, supplies a completion Effect, and displays device instructions. A URL or `code#state` must match the attempt's state. Bare codes are rejected unless `allowBareCode: true`; bare-code mode relies on the single live PKCE transaction rather than independent state validation. There is no state-check bypass for completions that carry state. Login has a ten-minute default deadline; device login defaults to fifteen minutes and additionally respects the returned expiry and polling cadence. Pending, slow-down, denied, expired, and malformed responses have distinct outcomes.
+Each login takes an application-owned `interaction` and returns secrets without persisting them. Pass the result to the manager to authenticate the selected instance. The host displays/opens the authorization URL, supplies a completion Effect, and displays device instructions. A URL or `code#state` must match the attempt's state. Bare codes are rejected unless `allowBareCode: true`; bare-code mode relies on the single live PKCE transaction rather than independent state validation. There is no state-check bypass for completions that carry state. Login has a ten-minute default deadline; device login defaults to fifteen minutes and additionally respects the returned expiry and polling cadence. Pending, slow-down, denied, expired, and malformed responses have distinct outcomes.
 
 Providing `provider-auth-node/CallbackServer.layer` enables scoped loopback callbacks. Codex uses port 1455 and falls back to manual completion if it is unavailable. Claude prefers 53692, then an available port, then manual completion. Callback and manual completion race; the losing branch is interrupted and the listener closes on success, failure, timeout, or cancellation. Copy-code and device login require no listener. Generation never prompts or opens a browser.
 
@@ -63,11 +66,11 @@ Resolution checks an injected Clock, acquires the store lock when refresh is nee
 
 `automaticRefresh: false` selects external-refresh mode. Unexpired credentials work; expired credentials fail. This does not make expired tokens valid. Auth failures are sanitized and mapped to native `AiError`: missing, expired, invalid-grant, account mismatch, and unsupported modes are terminal; transport/refresh-timeout failures retain retryable classification. There is no reactive 401 replay and no retry inside inference adapters. The harness owns inference retry scheduling. A stream that already emitted output is never invisibly restarted by auth middleware.
 
-Logout fences future resolution but cannot retract a remotely accepted request. Cancel the active harness operation separately if needed. Every login/replacement invalidates old prepared account bindings, even when the profile name is reused. Recovery requires the original binding or explicit reauthorization and repreparation. Refresh preserves identity and affinity.
+Logout fences future resolution but cannot retract a remotely accepted request. Cancel the active harness operation separately if needed. Every login/replacement invalidates old prepared account bindings, even when the label is reused. Recovery requires the original binding or explicit reauthorization and repreparation. Refresh preserves identity and affinity.
 
 ## Configuration
 
-Conversation options and the provider's own `Config` service accept only schema-backed generation fields. Claude freezes the normalized `apiVersion` in its durable protocol binding. Changing that version requires explicit repreparation. Snapshots record and validate the selected protocol, model, account identity, and accepted settings. Native provider configuration overrides are rejected by the OAuth adapters; use their own Config tags. API-key native options remain unchanged. Endpoint overrides and live clients belong to host construction, never serializable request options. HTTP deadlines, proxy routing, redirect policy, and diagnostic middleware belong to the injected HttpClient. No diagnostic payload hooks or implicit retries are installed.
+Conversation options and the provider's own `Config` service accept only schema-backed generation fields. Claude freezes the normalized `apiVersion` in its durable protocol binding. Changing that version requires explicit repreparation. Snapshots record and validate the selected protocol, model, account identity, and accepted settings. Managed providers obtain temperature and long-cache opt-ins from `ModelInfo.capabilities.temperature` and `ModelInfo.capabilities.longCache`; custom metadata callbacks can supply these per model when live discovery does not advertise them. Direct model constructors use the `supportsTemperature` and `supportsLongCache` options described below. Native provider configuration overrides are rejected by the OAuth adapters; use their own Config tags. API-key native options remain unchanged. Endpoint overrides and live clients belong to host construction, never serializable request options. HTTP deadlines, proxy routing, redirect policy, and diagnostic middleware belong to the injected HttpClient. No diagnostic payload hooks or implicit retries are installed.
 
 Codex settings:
 
@@ -94,19 +97,26 @@ The OAuth adapter adds its protocol preamble before application system blocks, p
 
 ## Runnable examples
 
-[SubscriptionProviders.ts](../apps/example/src/SubscriptionProviders.ts) is typechecked and uses an application-owned file store and a harmless `countCharacters` tool. Provide an explicit credential path and model:
+[SubscriptionProviders.ts](../apps/example/src/SubscriptionProviders.ts) uses separate
+public-instance and credential files and a harmless `countCharacters` tool. Build
+the library, then add an instance (use the compatibility version selected by your application):
 
 ```sh
-bun apps/example/src/SubscriptionProviders.ts login-codex-browser ./private/auth.json
-bun apps/example/src/SubscriptionProviders.ts login-codex-device ./private/auth.json
-bun apps/example/src/SubscriptionProviders.ts login-claude-browser ./private/auth.json
-bun apps/example/src/SubscriptionProviders.ts login-claude-copy ./private/auth.json
-MODEL=gpt-5.4 bun apps/example/src/SubscriptionProviders.ts run-codex ./private/auth.json
-MODEL=claude-sonnet-4-6 bun apps/example/src/SubscriptionProviders.ts run-claude ./private/auth.json
-MODEL=claude-sonnet-4-6 bun apps/example/src/SubscriptionProviders.ts claude-api-key ./private/auth.json
+CODEX_CLIENT_VERSION="$CODEX_CLIENT_VERSION" bun apps/example/src/SubscriptionProviders.ts add-codex ./private/providers.json Personal
+bun apps/example/src/SubscriptionProviders.ts add-claude ./private/providers.json Work
+bun apps/example/src/SubscriptionProviders.ts status ./private/providers.json
+bun apps/example/src/SubscriptionProviders.ts authenticate-browser ./private/providers.json "$INSTANCE_ID"
+bun apps/example/src/SubscriptionProviders.ts list-models ./private/providers.json "$INSTANCE_ID"
+MODEL="$MODEL" bun apps/example/src/SubscriptionProviders.ts run ./private/providers.json "$INSTANCE_ID"
+MODEL="$MODEL" bun apps/example/src/SubscriptionProviders.ts recover ./private/providers.json "$INSTANCE_ID" "$SUBMISSION_ID"
+bun apps/example/src/SubscriptionProviders.ts logout ./private/providers.json "$INSTANCE_ID"
 ```
 
-The API-key command reads `ANTHROPIC_API_KEY`. The example displays URLs and supports manual completion rather than launching a browser itself. It prints the submission ID before waiting. After process loss, reopen the same files and model using `recover-codex` or `recover-claude` with that ID as the fourth argument. An expired stored credential refreshes on the recovered network attempt. For a deterministic offline proof of restart before I/O, run:
+Use an instance ID printed by `add` or `status`. `authenticate-device` is also
+available for Codex. The example displays URLs and supports manual completion.
+It prints the submission ID before waiting; recovery reopens the same files,
+instance, model and submission. An expired credential refreshes on the recovered
+network attempt. For a deterministic offline proof of restart before I/O, run:
 
 ```sh
 bunx vitest run packages/effect-harness/test/SubscriptionRecovery.test.ts

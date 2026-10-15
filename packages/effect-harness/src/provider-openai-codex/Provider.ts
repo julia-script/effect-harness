@@ -1,29 +1,58 @@
-/** Concrete Codex discovery and durable model construction. */
+/** Codex protocol definition; each user instance supplies configuration and a credential reference. */
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Provider from '../Provider.js'
+import type * as ModelCatalog from '../ModelCatalog.js'
 import * as ModelInfo from '../ModelInfo.js'
 import { ModelCatalogError } from '../ModelCatalogError.js'
 import * as Catalog from './Catalog.js'
 import * as Native from './CodexLanguageModel.js'
 import * as Model from './Model.js'
+import * as Credential from '../provider-auth/Credential.js'
+import { AuthError } from '../provider-auth/AuthError.js'
 
-export interface Options<Id extends string> extends Omit<
-  Native.Options,
-  'model' | 'reasoningEfforts'
-> {
-  readonly id: Id
+export const Config = Schema.Struct({
+  clientVersion: Schema.NonEmptyString,
+  catalogUrl: Schema.optionalKey(Schema.NonEmptyString),
+  authBaseUrl: Schema.optionalKey(Schema.NonEmptyString),
+  apiUrl: Schema.optionalKey(Schema.NonEmptyString),
+  minimumValidityMs: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  refreshTimeoutMs: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
+  automaticRefresh: Schema.optionalKey(Schema.Boolean),
+  config: Schema.optionalKey(Native.Settings),
+})
+export type Config = typeof Config.Type
+export type Context = Provider.Context<Config, Credential.OAuth>
+const optionsFor = Effect.fnUntraced(function* (context: Context) {
+  yield* context.check
+  if (context.credential === undefined) return yield* new AuthError({ reason: 'MissingCredential' })
+  return { ...context.config, binding: context.credential }
+})
+const live = {
+  list: Effect.fnUntraced(function* (context: Context, input: ModelCatalog.ListOptions) {
+    return yield* Catalog.make(yield* optionsFor(context)).list(input)
+  }),
+  get: Effect.fnUntraced(function* (context: Context, modelId: string) {
+    return yield* Catalog.make(yield* optionsFor(context)).get(modelId)
+  }),
 }
 
-/** Use an application-owned discovery source while retaining its exact errors and services. */
-export const makeWithSource = <const Id extends string, LE, LR, GE, GR>(
-  options: Options<Id>,
-  models: Provider.ModelSource<LE, LR, GE, GR>,
-) =>
-  Provider.make({
-    id: options.id,
+/** Override metadata lookup without reimplementing the inference protocol. */
+export const define = <LE, LR, GE, GR>(models: {
+  readonly list: (
+    context: Context,
+    input: ModelCatalog.ListOptions,
+  ) => Effect.Effect<ModelCatalog.Page, LE, LR>
+  readonly get: (context: Context, modelId: string) => Effect.Effect<ModelInfo.ModelInfo, GE, GR>
+}) =>
+  Provider.define({
+    version: 1,
+    config: Config,
+    secrets: Credential.OAuth,
     models,
-    create: Effect.fnUntraced(function* (resolved: Provider.Resolved) {
+    createModel: Effect.fnUntraced(function* (context: Context, resolved: Provider.Resolved) {
+      const options = yield* optionsFor(context)
+
       const effort =
         resolved.options.reasoning?.effort ??
         options.config?.reasoningEffort ??
@@ -60,11 +89,9 @@ export const makeWithSource = <const Id extends string, LE, LR, GE, GR>(
         definition: yield* ModelInfo.toDefinition(resolved.info, 'openai-codex'),
         config,
         reasoningEfforts,
+        supportsTemperature: resolved.info.capabilities?.temperature === true,
       })
     }),
   })
 
-/** Discover the authenticated account's models and construct only the selected model. */
-export const make = <const Id extends string>(
-  options: Options<Id> & Pick<Catalog.Options, 'clientVersion' | 'catalogUrl'>,
-) => makeWithSource(options, Catalog.make(options))
+export const definition = define(live)

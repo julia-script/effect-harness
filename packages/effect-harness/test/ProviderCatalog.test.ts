@@ -1,14 +1,14 @@
+import { managed } from './fixtures/ManagedProvider.js'
 import { assert, it } from '@effect/vitest'
 import * as TestClock from 'effect/testing/TestClock'
 import * as CodexCatalog from '../src/provider-openai-codex/Catalog.js'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 import * as Redacted from 'effect/Redacted'
 import type * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
-import * as Catalog from '../src/ModelCatalog.js'
-import * as Provider from '../src/Provider.js'
 import * as ModelInfo from '../src/ModelInfo.js'
 import * as Codex from '../src/provider-openai-codex/Provider.js'
 import * as Claude from '../src/provider-anthropic/Provider.js'
@@ -85,22 +85,19 @@ it.effect(
       const context = Context.make(Store.CredentialStore, store).pipe(
         Context.add(HttpClient.HttpClient, client),
       )
-      const provider = Codex.make({ id: 'codex-personal', binding, clientVersion: '0.99.0' })
-      const catalog = Catalog.make({ providers: [provider] })
-      const resolve = Catalog.resolve(catalog, {
-        provider: 'codex-personal',
+      const provider = yield* managed(Codex.definition, { clientVersion: '0.99.0' }, binding).pipe(
+        Effect.provideService(Store.CredentialStore, store),
+      )
+      const resolve = provider.resolve({
         modelId: 'gpt-5.4',
         options: { reasoning: { effort: 'high' } },
       })
       assert.deepEqual(gets, [])
-      assert.deepEqual(
-        (yield* Catalog.list(catalog, { provider: 'codex-personal' }).pipe(
-          Effect.provideContext(context),
-        )).items,
-        [{ id: 'gpt-5.4', name: 'GPT 5.4' }],
-      )
+      assert.deepEqual((yield* provider.list().pipe(Effect.provideContext(context))).items, [
+        { id: 'gpt-5.4', name: 'GPT 5.4' },
+      ])
       assert.equal(bodies.length, 0)
-      const info = yield* Provider.get(provider, 'gpt-5.4').pipe(Effect.provideContext(context))
+      const info = yield* provider.get('gpt-5.4').pipe(Effect.provideContext(context))
       assert.deepEqual(info.reasoning?.effort, { values: ['low', 'high'], default: 'low' })
       const original = yield* resolve.pipe(Effect.provideContext(context))
       const codec = original.configuration
@@ -108,10 +105,12 @@ it.effect(
       if (codec === undefined) return yield* Effect.die('Missing subscription configuration')
       const pinned = yield* codec.encode(Context.empty())
       yield* original.languageModel.generateText({ prompt: 'hello' })
-      const reopened = yield* Provider.resolve(provider, {
-        modelId: 'gpt-5.4',
-        options: { reasoning: { effort: 'low' } },
-      }).pipe(Effect.provideContext(context))
+      const reopened = yield* provider
+        .resolve({
+          modelId: 'gpt-5.4',
+          options: { reasoning: { effort: 'low' } },
+        })
+        .pipe(Effect.provideContext(context))
       const restored = yield* (
         reopened.configuration?.restore(pinned) ?? Effect.die('Missing configuration')
       )
@@ -128,10 +127,12 @@ it.effect(
       const before = bodies.length
       assert.equal(
         (yield* Effect.flip(
-          Provider.resolve(provider, {
-            modelId: 'gpt-5.4',
-            options: { reasoning: { effort: 'future-effort' } },
-          }).pipe(Effect.provideContext(context)),
+          provider
+            .resolve({
+              modelId: 'gpt-5.4',
+              options: { reasoning: { effort: 'future-effort' } },
+            })
+            .pipe(Effect.provideContext(context)),
         ))._tag,
         'ModelCatalogError',
       )
@@ -143,13 +144,12 @@ it.effect(
   'Claude OAuth discovers lazily with bearer auth and creates durable adaptive effort settings',
   () =>
     Effect.gen(function* () {
-      const provider = Claude.make({
-        id: 'claude-personal',
-        binding: { ...binding, provider: 'anthropic' },
-      })
       const paths: string[] = []
       const bodies: Schema.JsonObject[] = []
       const store = yield* credentials('anthropic')
+      const provider = yield* managed(Claude.definition, {}, binding).pipe(
+        Effect.provideService(Store.CredentialStore, store),
+      )
       const client = HttpClient.make((request) =>
         Effect.sync(() => {
           if (request.method === 'GET') {
@@ -169,33 +169,33 @@ it.effect(
       const context = Context.make(Store.CredentialStore, store).pipe(
         Context.add(HttpClient.HttpClient, client),
       )
-      const listing = Provider.list(provider, { limit: 1 })
+      const listing = provider.list({ limit: 1 })
       assert.deepEqual(paths, [])
       const page = yield* listing.pipe(Effect.provideContext(context))
       assert.deepEqual(page, {
         items: [{ id: claudeEntry.id, name: claudeEntry.display_name }],
         nextCursor: claudeEntry.id,
       })
-      const info = yield* Provider.get(provider, claudeEntry.id).pipe(
-        Effect.provideContext(context),
-      )
+      const info = yield* provider.get(claudeEntry.id).pipe(Effect.provideContext(context))
       assert.deepEqual(info.reasoning?.effort?.values, ['low', 'high', 'max'])
       assert.equal(info.capabilities?.structuredOutput, false)
       assert.deepEqual(paths, [
         'https://api.anthropic.com/v1/models',
         'https://api.anthropic.com/v1/models/claude-opus-5-5',
       ])
-      const original = yield* Provider.resolve(provider, {
-        modelId: 'claude-opus-5-5',
-        options: { reasoning: { effort: 'high' } },
-      }).pipe(Effect.provideContext(context))
+      const original = yield* provider
+        .resolve({
+          modelId: 'claude-opus-5-5',
+          options: { reasoning: { effort: 'high' } },
+        })
+        .pipe(Effect.provideContext(context))
       const pinned = yield* (
         original.configuration?.encode(Context.empty()) ?? Effect.die('Missing configuration')
       )
       yield* original.languageModel.generateText({ prompt: 'hello' })
-      const reopened = yield* Provider.resolve(provider, { modelId: 'claude-opus-5-5' }).pipe(
-        Effect.provideContext(context),
-      )
+      const reopened = yield* provider
+        .resolve({ modelId: 'claude-opus-5-5' })
+        .pipe(Effect.provideContext(context))
       const restored = yield* (
         reopened.configuration?.restore(pinned) ?? Effect.die('Missing configuration')
       )
@@ -214,10 +214,12 @@ it.effect(
         })
       assert.equal(
         (yield* Effect.flip(
-          Provider.resolve(provider, {
-            modelId: 'claude-opus-5-5',
-            options: { reasoning: { thinking: { mode: 'disabled' } } },
-          }).pipe(Effect.provideContext(context)),
+          provider
+            .resolve({
+              modelId: 'claude-opus-5-5',
+              options: { reasoning: { thinking: { mode: 'disabled' } } },
+            })
+            .pipe(Effect.provideContext(context)),
         ))._tag,
         'ModelCatalogError',
       )
@@ -298,7 +300,9 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const store = yield* credentials('openai-codex')
-      const provider = Codex.make({ id: 'codex', binding, clientVersion: '0.99.0' })
+      const provider = yield* managed(Codex.definition, { clientVersion: '0.99.0' }, binding).pipe(
+        Effect.provideService(Store.CredentialStore, store),
+      )
       for (const status of [401, 500]) {
         const http = HttpClient.make((request) =>
           Effect.succeed(
@@ -306,10 +310,12 @@ it.effect(
           ),
         )
         const error = yield* Effect.flip(
-          Provider.list(provider).pipe(
-            Effect.provideService(HttpClient.HttpClient, http),
-            Effect.provideService(Store.CredentialStore, store),
-          ),
+          provider
+            .list()
+            .pipe(
+              Effect.provideService(HttpClient.HttpClient, http),
+              Effect.provideService(Store.CredentialStore, store),
+            ),
         )
         assert.equal(error._tag, 'AiError')
         assert.notInclude(JSON.stringify(error), 'SECRET')
@@ -365,3 +371,75 @@ it.effect(
       assert.equal(requests, 4)
     }),
 )
+
+for (const provider of ['codex', 'claude'] as const) {
+  for (const capability of ['temperature', 'longCache'] as const) {
+    if (provider === 'codex' && capability === 'longCache') continue
+    it.effect(`${provider} uses per-model ${capability} support and pins it for recovery`, () => {
+      const bodies: Schema.JsonObject[] = []
+      const client = HttpClient.make((request) =>
+        Effect.sync(() => {
+          bodies.push(payload(request))
+          return HttpClientResponse.fromWeb(
+            request,
+            new Response(provider === 'codex' ? sse(codexEvents) : JSON.stringify(claudeResponse)),
+          )
+        }),
+      )
+      return Effect.gen(function* () {
+        let supported = true
+        const models = {
+          list: () => Effect.succeed({ items: [] }),
+          get: () =>
+            Effect.succeed({
+              id: 'custom-model',
+              name: 'Custom model',
+              capabilities: {
+                tools: true,
+                images: false,
+                reasoning: false,
+                structuredOutput: false,
+                temperature: capability === 'temperature' && supported,
+                longCache: capability === 'longCache' && supported,
+              },
+            }),
+        }
+        const configured =
+          capability === 'temperature' ? { temperature: 0.5 } : { cache: 'long' as const }
+        const selection =
+          provider === 'codex'
+            ? yield* managed(
+                Codex.define(models),
+                { clientVersion: '1.0', config: { temperature: 0.5 } },
+                binding,
+              )
+            : yield* managed(Claude.define(models), { config: configured }, binding)
+        const model = yield* selection.resolve({ modelId: 'custom-model' })
+        const prompt = [{ role: 'user' as const, content: 'hello' }]
+        yield* model.languageModel.generateText({ prompt })
+        if (capability === 'temperature') assert.equal(bodies[0]!.temperature, 0.5)
+        else assert.include(JSON.stringify(bodies[0]), '"ttl":"1h"')
+        const snapshot = yield* model.configuration!.encode(Context.empty())
+        supported = false
+        const unsupported = yield* selection.resolve({ modelId: 'custom-model' })
+        assert.equal(
+          (yield* Effect.flip(unsupported.configuration!.restore(snapshot))).reason._tag,
+          'ModelUnsupportedError',
+        )
+        assert.equal(
+          (yield* Effect.flip(unsupported.languageModel.generateText({ prompt }))).reason._tag,
+          'InvalidRequestError',
+        )
+        assert.equal(bodies.length, 1)
+      }).pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.provide(
+          Layer.effect(
+            Store.CredentialStore,
+            credentials(provider === 'codex' ? 'openai-codex' : 'anthropic'),
+          ),
+        ),
+      )
+    })
+  }
+}

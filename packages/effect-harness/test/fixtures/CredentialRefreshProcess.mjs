@@ -5,7 +5,7 @@ import { FileSystemCredentialStore } from 'effect-harness/provider-auth-node'
 
 const [path, id] = process.argv.slice(2)
 const other = id === 'a' ? 'b' : 'a'
-const binding = { provider: 'anthropic', profile: 'test', identity: 'login' }
+const binding = { credentialId: 'test', identity: 'login' }
 await Fs.writeFile(`${path}.ready-${id}`, '')
 await Effect.runPromise(
   Effect.gen(function* () {

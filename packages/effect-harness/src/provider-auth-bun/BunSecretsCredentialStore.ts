@@ -12,7 +12,7 @@ import { CredentialStore } from '../provider-auth/CredentialStore.js'
 const storeError = () => new AuthError({ reason: 'StoreFailure' })
 const io = <A>(run: () => Promise<A>) => Effect.tryPromise({ try: run, catch: storeError })
 const codec = Schema.fromJsonString(
-  Schema.Record(Schema.String, Schema.toCodecJson(Credential.Credential)),
+  Schema.Record(Schema.String, Schema.toCodecJson(Credential.Stored)),
 )
 
 export interface Options {

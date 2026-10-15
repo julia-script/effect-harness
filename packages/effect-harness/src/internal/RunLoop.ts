@@ -658,6 +658,7 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
             ? models[0]
             : models.find(
                 (model) =>
+                  model.definition.ref.instanceId === requesting.agent.model?.ref.instanceId &&
                   model.definition.ref.provider === requesting.agent.model?.ref.provider &&
                   model.definition.ref.modelId === requesting.agent.model?.ref.modelId,
               )
@@ -934,7 +935,7 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
                   definition: selected.definition,
                   binding: {
                     id: JSON.stringify([
-                      selected.definition.ref.provider,
+                      selected.definition.ref.instanceId ?? selected.definition.ref.provider,
                       selected.definition.ref.modelId,
                     ]),
                     version: selected.version ?? 1,
@@ -1362,6 +1363,7 @@ export const run = Effect.fn('RunLoop.run')(function* (services: Services, initi
             preparedModel._tag === 'descriptor'
               ? services.compaction.models.find(
                   (model) =>
+                    model.definition.ref.instanceId === preparedModel.definition.ref.instanceId &&
                     model.definition.ref.provider === preparedModel.definition.ref.provider &&
                     model.definition.ref.modelId === preparedModel.definition.ref.modelId,
                 )

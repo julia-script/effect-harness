@@ -7,7 +7,7 @@ import type { CredentialStore } from 'effect-harness/provider-auth'
 import { CodexLanguageModel } from 'effect-harness/provider-openai-codex'
 import { AnthropicLanguageModel } from 'effect-harness/provider-anthropic'
 
-const binding = { provider: 'openai-codex', profile: 'personal', identity: 'login' } as const
+const binding = { credentialId: 'personal', identity: 'login' } as const
 test('subscription layers require live HTTP and credential services, and expose only LanguageModel', () => {
   expect(CodexLanguageModel.layer({ model: 'gpt-5.4', binding })).type.toBe<
     Layer.Layer<
@@ -19,7 +19,7 @@ test('subscription layers require live HTTP and credential services, and expose 
   expect(
     AnthropicLanguageModel.layerOAuth({
       model: 'claude-sonnet-4-6',
-      binding: { ...binding, provider: 'anthropic' },
+      binding: binding,
     }),
   ).type.toBe<
     Layer.Layer<
@@ -43,7 +43,7 @@ test('unsupported transports and ordinary OpenAI generation settings are exclude
   expect(CodexLanguageModel.layer).type.not.toBeCallableWith({ model: 'gpt-5.4' })
   expect(AnthropicLanguageModel.layerOAuth).type.not.toBeCallableWith({
     model: 'claude-sonnet-4-6',
-    binding: { ...binding, provider: 'anthropic' },
+    binding: binding,
     transport: 'websocket',
   })
 })

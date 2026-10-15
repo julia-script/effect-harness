@@ -1,3 +1,4 @@
+import { encodeCredential } from './Credentials.js'
 import { assert } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Redacted from 'effect/Redacted'
@@ -6,7 +7,7 @@ import type * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as Store from '../../src/provider-auth/CredentialStore.js'
 import * as MemoryCredentialStore from '../../src/provider-auth/MemoryCredentialStore.js'
 export const codexToken = `header.${btoa(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'account-1' } }))}.SECRET-token`
-export const binding = { provider: 'openai-codex', profile: 'fixture', identity: 'login' } as const
+export const binding = { credentialId: 'fixture', identity: 'login' } as const
 export const textItem = {
   type: 'message',
   id: 'message-1',
@@ -96,13 +97,15 @@ export const payload = (request: HttpClientRequest.HttpClientRequest) => {
 export const credentials = (provider: 'openai-codex' | 'anthropic') =>
   Effect.gen(function* () {
     const store = yield* MemoryCredentialStore.make
-    yield* Store.save({
-      type: 'oauth',
-      binding: { ...binding, provider },
-      accessToken: Redacted.make(provider === 'openai-codex' ? codexToken : 'SECRET-access'),
-      refreshToken: Redacted.make('SECRET-refresh'),
-      expiresAt: 9_000_000_000_000,
-      ...(provider === 'openai-codex' ? { accountId: 'account-1' } : {}),
-    }).pipe(Effect.provideService(Store.CredentialStore, store))
+    yield* Store.save(
+      encodeCredential({
+        type: 'oauth',
+        binding: binding,
+        accessToken: Redacted.make(provider === 'openai-codex' ? codexToken : 'SECRET-access'),
+        refreshToken: Redacted.make('SECRET-refresh'),
+        expiresAt: 9_000_000_000_000,
+        ...(provider === 'openai-codex' ? { accountId: 'account-1' } : {}),
+      }),
+    ).pipe(Effect.provideService(Store.CredentialStore, store))
     return store
   })

@@ -108,6 +108,14 @@
     "./provider-openai-codex/*": {
       "types": "./dist/provider-openai-codex/*.d.ts",
       "default": "./dist/provider-openai-codex/*.js"
+    },
+    "./provider-openai-compatible": {
+      "types": "./dist/provider-openai-compatible/index.d.ts",
+      "default": "./dist/provider-openai-compatible/index.js"
+    },
+    "./provider-openai-compatible/*": {
+      "types": "./dist/provider-openai-compatible/*.d.ts",
+      "default": "./dist/provider-openai-compatible/*.js"
     }
   },
   "publishConfig": {
@@ -124,7 +132,8 @@
   },
   "dependencies": {
     "@effect/ai-anthropic": "4.0.1",
-    "@effect/ai-openai": "4.0.1"
+    "@effect/ai-openai": "4.0.1",
+    "@effect/ai-openai-compat": "4.0.1"
   },
   "devDependencies": {
     "@effect/platform-node": "4.0.1",

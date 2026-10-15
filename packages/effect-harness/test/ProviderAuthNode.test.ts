@@ -1,3 +1,4 @@
+import { encodeCredential, decodeOAuth } from './fixtures/Credentials.js'
 import * as Fs from 'node:fs/promises'
 import { promises as FsMutable } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
@@ -10,7 +11,7 @@ import { vi } from 'vitest'
 import * as Net from 'node:net'
 import * as Effect from 'effect/Effect'
 import * as Redacted from 'effect/Redacted'
-import * as Credential from '../src/provider-auth/Credential.js'
+import type * as Credential from '../src/provider-auth/Credential.js'
 import * as Store from '../src/provider-auth/CredentialStore.js'
 import * as FileSystemCredentialStore from '../src/provider-auth-node/FileSystemCredentialStore.js'
 import * as Resolver from '../src/provider-auth/Resolver.js'
@@ -26,13 +27,15 @@ it.live('two OS processes sharing a durable store rotate an expiring credential 
       )
       const path = Path.join(directory, 'credentials.json')
       const store = yield* FileSystemCredentialStore.make({ path })
-      yield* Store.save({
-        type: 'oauth',
-        binding: { provider: 'anthropic', profile: 'test', identity: 'login' },
-        accessToken: Redacted.make('SECRET-access'),
-        refreshToken: Redacted.make('SECRET-refresh'),
-        expiresAt: 1,
-      }).pipe(Effect.provideService(Store.CredentialStore, store))
+      yield* Store.save(
+        encodeCredential({
+          type: 'oauth',
+          binding: { credentialId: 'test', identity: 'login' },
+          accessToken: Redacted.make('SECRET-access'),
+          refreshToken: Redacted.make('SECRET-refresh'),
+          expiresAt: 1,
+        }),
+      ).pipe(Effect.provideService(Store.CredentialStore, store))
       const fixture = fileURLToPath(
         new URL('./fixtures/CredentialRefreshProcess.mjs', import.meta.url),
       )
@@ -66,14 +69,16 @@ it.live(
         const path = Path.join(directory, 'credentials.json')
         const first = yield* FileSystemCredentialStore.make({ path })
         const second = yield* FileSystemCredentialStore.make({ path })
-        const binding = { provider: 'anthropic', profile: 'test', identity: 'login' } as const
-        yield* Store.save({
-          type: 'oauth',
-          binding,
-          accessToken: Redacted.make('SECRET-access'),
-          refreshToken: Redacted.make('SECRET-refresh'),
-          expiresAt: 1,
-        }).pipe(Effect.provideService(Store.CredentialStore, first))
+        const binding = { credentialId: 'test', identity: 'login' } as const
+        yield* Store.save(
+          encodeCredential({
+            type: 'oauth',
+            binding,
+            accessToken: Redacted.make('SECRET-access'),
+            refreshToken: Redacted.make('SECRET-refresh'),
+            expiresAt: 1,
+          }),
+        ).pipe(Effect.provideService(Store.CredentialStore, first))
         let refreshes = 0
         const refresh = (old: Credential.OAuth) =>
           Effect.gen(function* () {
@@ -94,15 +99,15 @@ it.live(
         yield* Effect.all([a.resolve, b.resolve], { concurrency: 'unbounded' })
         assert.strictEqual(refreshes, 1)
         const reopened = yield* FileSystemCredentialStore.make({ path })
-        const stored = yield* reopened.read(Credential.key(binding))
+        const stored = decodeOAuth(yield* reopened.read(binding.credentialId))
         assert.strictEqual(
           stored?.type === 'oauth' && Redacted.value(stored.accessToken),
           'SECRET-new',
         )
         assert.notInclude(JSON.stringify(yield* reopened.list), 'SECRET')
         assert.strictEqual((yield* Effect.promise(() => Fs.stat(path))).mode & 0o777, 0o600)
-        yield* Store.logout(binding).pipe(Effect.provideService(Store.CredentialStore, second))
-        assert.isUndefined(yield* first.read(Credential.key(binding)))
+        yield* Store.remove(binding).pipe(Effect.provideService(Store.CredentialStore, second))
+        assert.isUndefined(yield* first.read(binding.credentialId))
       }),
     ),
 )
@@ -188,15 +193,17 @@ for (const phase of ['open-directory', 'sync-directory', 'unlock'] as const)
         )
         const path = Path.join(directory, 'credentials.json')
         const store = yield* FileSystemCredentialStore.make({ path })
-        const binding = { provider: 'anthropic', profile: 'test', identity: 'before' } as const
-        const credential: Credential.OAuth = {
+        const binding = { credentialId: 'test', identity: 'before' } as const
+        const credential: import('./fixtures/Credentials.js').OAuthFixture = {
           type: 'oauth',
           binding,
           accessToken: Redacted.make('SECRET-access'),
           refreshToken: Redacted.make('SECRET-refresh'),
           expiresAt: 1,
         }
-        yield* Store.save(credential).pipe(Effect.provideService(Store.CredentialStore, store))
+        yield* Store.save(encodeCredential(credential)).pipe(
+          Effect.provideService(Store.CredentialStore, store),
+        )
         const originalOpen = Fs.open
         const open = vi.spyOn(FsMutable, 'open').mockImplementation(async (...args) => {
           if (args[0] === directory && phase === 'open-directory')
@@ -221,16 +228,16 @@ for (const phase of ['open-directory', 'sync-directory', 'unlock'] as const)
           }),
         )
         const error = yield* Effect.flip(
-          Store.save({ ...credential, binding: { ...binding, identity: 'after' } }).pipe(
-            Effect.provideService(Store.CredentialStore, store),
-          ),
+          Store.save(
+            encodeCredential({ ...credential, binding: { ...binding, identity: 'after' } }),
+          ).pipe(Effect.provideService(Store.CredentialStore, store)),
         )
         assert.strictEqual(
           error.reason,
           phase === 'open-directory' ? 'StoreFailure' : 'StoreCommitUncertain',
         )
         assert.notInclude(JSON.stringify(error), 'SECRET')
-        const stored = yield* store.read(Credential.key(binding))
+        const stored = decodeOAuth(yield* store.read(binding.credentialId))
         assert.strictEqual(
           stored?.binding.identity,
           phase === 'open-directory' ? 'before' : 'after',

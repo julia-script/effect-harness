@@ -16,6 +16,9 @@
       "effect-harness/provider-auth-node": [
         "./packages/effect-harness/src/provider-auth-node/index.ts"
       ],
+      "effect-harness/provider-openai-compatible": [
+        "./packages/effect-harness/src/provider-openai-compatible/index.ts"
+      ],
       "effect-harness/provider-openai-codex": [
         "./packages/effect-harness/src/provider-openai-codex/index.ts"
       ]

@@ -1,3 +1,4 @@
+import { encodeCredential, decodeOAuth } from './fixtures/Credentials.js'
 import { assert, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -39,7 +40,7 @@ const model = Effect.fnUntraced(function* (provider: Provider, contextWindow?: n
   if (provider === 'anthropic')
     return yield* Claude.make({
       model: 'claude-sonnet-4-6',
-      binding: { ...binding, provider },
+      binding: binding,
       definition: definition(provider, contextWindow),
       config: { cache: 'short', maxTokens: 4096 },
     })
@@ -457,10 +458,12 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
           const handle = yield* first.backend.compact!(root)
           yield* Deferred.await(entered).pipe(Effect.timeout('5 seconds'))
           yield* Scope.close(firstScope, Exit.void)
-          yield* store.modify(Credential.key({ ...binding, provider }), (current) =>
+          yield* store.modify(binding.credentialId, (current) =>
             Effect.succeed([
               undefined,
-              current?.type === 'oauth' ? { ...current, expiresAt: 1 } : current,
+              current === undefined
+                ? undefined
+                : encodeCredential({ ...decodeOAuth(current)!, expiresAt: 1 }),
             ] as const),
           )
           yield* settings.update({ compaction: { reserveTokens: 200, keepRecentTokens: 90 } })
@@ -503,7 +506,6 @@ import * as Exit from 'effect/Exit'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Scope from 'effect/Scope'
-import * as Credential from '../src/provider-auth/Credential.js'
 import * as Prepared from '../src/PreparedRequest.js'
 import { CompactionRequest } from '../src/CompactionRequest.js'
 import { codexToken } from './fixtures/SubscriptionProtocol.js'

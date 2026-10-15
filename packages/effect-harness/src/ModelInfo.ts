@@ -21,6 +21,10 @@ export const ModelInfoSchema = Schema.Struct({
       reasoning: Schema.optionalKey(Schema.Boolean),
       images: Schema.optionalKey(Schema.Boolean),
       structuredOutput: Schema.optionalKey(Schema.Boolean),
+      /** Explicit per-model compatibility; omission does not enable temperature. */
+      temperature: Schema.optionalKey(Schema.Boolean),
+      /** Whether this model accepts the provider's extended prompt-cache retention. */
+      longCache: Schema.optionalKey(Schema.Boolean),
     }),
   ),
   contextWindow: Model.DefinitionSchema.fields.contextWindow,

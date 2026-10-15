@@ -5,7 +5,7 @@ import * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
 import * as ModelInfo from '../ModelInfo.js'
-import type * as Provider from '../Provider.js'
+import type * as ModelCatalog from '../ModelCatalog.js'
 import { ModelCatalogError } from '../ModelCatalogError.js'
 import * as Http from '../internal/SubscriptionHttp.js'
 import * as Native from './OAuthLanguageModel.js'
@@ -64,7 +64,7 @@ const request = Effect.fnUntraced(function* (
   options: Pick<ApiKeyOptions, 'apiUrl' | 'apiVersion'>,
   headers: Readonly<Record<string, string>>,
   path: string,
-  input?: Provider.ListOptions,
+  input?: ModelCatalog.ListOptions,
 ) {
   if (input?.limit !== undefined && input.limit > 1000)
     return yield* new ModelCatalogError({
@@ -149,7 +149,7 @@ const source = <E, R>(
   auth: Effect.Effect<Readonly<Record<string, string>>, E, R>,
   oauth: boolean,
 ) => ({
-  list: Effect.fnUntraced(function* (input: Provider.ListOptions) {
+  list: Effect.fnUntraced(function* (input: ModelCatalog.ListOptions) {
     const page = yield* request(options, yield* auth, '/models', input).pipe(
       Effect.flatMap((value) =>
         Schema.decodeUnknownEffect(Page)(value).pipe(Effect.mapError(() => Http.malformed())),
@@ -202,8 +202,6 @@ export const oauth = (options: OAuthOptions) =>
   source(
     options,
     Effect.gen(function* () {
-      if (options.binding.provider !== 'anthropic')
-        return yield* Http.invalid('Claude discovery requires an anthropic binding')
       const refresh = yield* OAuth.makeRefresh(options)
       const auth = yield* Resolver.make({
         binding: options.binding,
