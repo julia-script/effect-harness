@@ -28,7 +28,7 @@ export const make = Effect.fnUntraced(function* (
     definition: options.definition,
     languageModel,
     capabilities: {
-      thinkingPolicy: ThinkingPolicy.forModel(options.model),
+      thinkingPolicy: options.thinkingPolicy ?? ThinkingPolicy.forModel(options.model),
       thinkingModes: [...(options.thinkingModes ?? [])],
       efforts: [...(options.efforts ?? [])],
       supportsLongCache: options.supportsLongCache ?? false,

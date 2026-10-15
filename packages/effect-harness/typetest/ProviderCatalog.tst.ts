@@ -40,8 +40,8 @@ test('concrete discovery retains only the selected provider services', () => {
   const codexResolve = Catalog.resolve(catalog, { provider: 'codex', modelId: 'model' })
   expect<Effect.Services<typeof codexList>>().type.toBe<HttpClient.HttpClient | CredentialStore>()
   expect<Effect.Services<typeof codexGet>>().type.toBe<HttpClient.HttpClient | CredentialStore>()
-  expect<Effect.Services<typeof claudeList>>().type.toBe<never>()
-  expect<Effect.Services<typeof claudeGet>>().type.toBe<never>()
+  expect<Effect.Services<typeof claudeList>>().type.toBe<HttpClient.HttpClient | CredentialStore>()
+  expect<Effect.Services<typeof claudeGet>>().type.toBe<HttpClient.HttpClient | CredentialStore>()
   expect<Effect.Services<typeof claudeResolve>>().type.toBe<
     HttpClient.HttpClient | CredentialStore
   >()

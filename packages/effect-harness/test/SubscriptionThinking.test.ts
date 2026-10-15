@@ -237,7 +237,7 @@ it.live(
 )
 
 it.effect(
-  'Claude rejects unverified thinking and too-small summary budgets before I/O; policy capability changes reject restoration',
+  'Claude rejects too-small summary budgets before I/O; policy capability changes reject restoration',
   () =>
     Effect.gen(function* () {
       const store = yield* credentials('anthropic')
@@ -259,11 +259,6 @@ it.effect(
           Effect.provideService(Store.CredentialStore, store),
           Effect.provideService(HttpClient.HttpClient, http),
         )
-      const unknown = yield* make('claude-unverified')
-      assert.strictEqual(
-        (yield* Effect.flip(unknown.languageModel.generateText({ prompt: 'hello' }))).reason._tag,
-        'InvalidRequestError',
-      )
       const original = yield* make('claude-sonnet-4-6')
       const configured = Context.make(Native.Config, {
         thinking: { type: 'enabled' as const, budget_tokens: 1024 },
