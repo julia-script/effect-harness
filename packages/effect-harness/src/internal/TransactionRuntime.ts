@@ -549,6 +549,11 @@ const load = Effect.fnUntraced(function* (state: State, address: Record.Document
     Runtime.touchDocument(state.runtime, key)
     return previous.retired ? Option.none<Draft>() : Option.some(previous)
   }
+  // Metadata retirement can replace a malformed body without materializing it.
+  if (state.retirements.size > 0) {
+    const record = yield* state.runtime.storage.findDocument(address)
+    if (Option.isSome(record) && state.retirements.has(record.value.id)) return Option.none<Draft>()
+  }
   const stored = yield* Runtime.load(state.runtime, address)
   if (Option.isNone(stored) || state.retirements.has(stored.value.record.id))
     return Option.none<Draft>()
