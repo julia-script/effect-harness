@@ -1,3 +1,5 @@
+import * as PackedBody from './fixtures/PackedBody.js'
+import * as Media from '../src/StorageMedia.js'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -48,16 +50,12 @@ const RawRow = Schema.Union([
     }),
   }),
 ])
-const PackedContent = Schema.Struct({
-  version: Schema.Literal(1),
-  body: Schema.Json,
-  media: Schema.Array(Schema.Json),
-}).pipe(
+const PackedContent = Media.PackedBodySchema.pipe(
   Schema.decodeTo(
     Schema.Json,
     SchemaTransformation.transform({
       decode: (packed) => packed.body,
-      encode: (body) => ({ version: 1 as const, body, media: [] }),
+      encode: PackedBody.empty,
     }),
   ),
 )
@@ -128,7 +126,7 @@ const writeSql = (row: Row.Stored) =>
     if (row._tag === 'document') {
       yield* sql`DELETE FROM effect_harness_revisions WHERE document_id=${row.value.record.id}`
       for (const revision of row.value.revisions) {
-        const content = JSON.stringify({ version: 1, body: revision.content, media: [] })
+        const content = JSON.stringify(PackedBody.empty(revision.content))
         yield* sql`INSERT INTO effect_harness_revisions (document_id,seq,content)
         VALUES (${row.value.record.id},${revision.seq},${content})`
       }
@@ -191,7 +189,7 @@ const writeJsonl = (filePath: string, row: Row.Stored) =>
           `${filePath}.parts/${id}-${seq}.revision`,
           JSON.stringify({
             seq: row.value.revisions[index]!.seq,
-            content: { version: 1, body: row.value.revisions[index]!.content, media: [] },
+            content: PackedBody.empty(row.value.revisions[index]!.content),
           }),
         )
   }).pipe(Effect.mapError(testError))
@@ -225,16 +223,14 @@ const writeMemory = (
     const rows = new Map(state.rows)
     rows.set(Row.idOf(row), {
       category: row._tag,
-      value: {
-        version: 1,
-        body: row._tag === 'document' ? { record: row.value.record, revisions: [] } : row.value,
-        media: [],
-      },
+      value: PackedBody.empty(
+        row._tag === 'document' ? { record: row.value.record, revisions: [] } : row.value,
+      ),
       revisions:
         row._tag === 'document'
           ? row.value.revisions.map((revision) => ({
               seq: revision.seq,
-              content: { version: 1, body: revision.content, media: [] },
+              content: PackedBody.empty(revision.content),
             }))
           : [],
     })

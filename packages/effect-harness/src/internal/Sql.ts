@@ -20,7 +20,7 @@ const recordsName = 'effect_harness_records'
 const revisionsName = 'effect_harness_revisions'
 const objectsName = 'effect_harness_media'
 const ownersName = 'effect_harness_media_owners'
-const persistenceVersion = 3
+const persistenceVersion = 4
 // Drivers return BIGINT columns as numbers, decimal strings, or bigints.
 const SqlBigIntCounter = Schema.BigInt.check(
   Schema.isBetweenBigInt({ minimum: 1n, maximum: BigInt(Number.MAX_SAFE_INTEGER) + 1n }),
@@ -254,12 +254,12 @@ export const make = Effect.gen(function* () {
     'initialize',
     sql.onDialectOrElse({
       mysql:
-        () => sql`INSERT INTO ${metadataTable} (singleton, format, minimum_reader, persistence_version, next_id, next_seq) VALUES (1, 12, 12, 3, 2, 1)
+        () => sql`INSERT INTO ${metadataTable} (singleton, format, minimum_reader, persistence_version, next_id, next_seq) VALUES (1, 12, 12, ${persistenceVersion}, 2, 1)
       ON DUPLICATE KEY UPDATE singleton = singleton`,
       mssql: () => sql`IF NOT EXISTS (SELECT 1 FROM ${metadataTable} WHERE singleton = 1)
-      INSERT INTO ${metadataTable} (singleton, format, minimum_reader, persistence_version, next_id, next_seq) VALUES (1, 12, 12, 3, 2, 1)`,
+      INSERT INTO ${metadataTable} (singleton, format, minimum_reader, persistence_version, next_id, next_seq) VALUES (1, 12, 12, ${persistenceVersion}, 2, 1)`,
       orElse:
-        () => sql`INSERT INTO ${metadataTable} (singleton, format, minimum_reader, persistence_version, next_id, next_seq) VALUES (1, 12, 12, 3, 2, 1)
+        () => sql`INSERT INTO ${metadataTable} (singleton, format, minimum_reader, persistence_version, next_id, next_seq) VALUES (1, 12, 12, ${persistenceVersion}, 2, 1)
       ON CONFLICT (singleton) DO NOTHING`,
     }),
   )

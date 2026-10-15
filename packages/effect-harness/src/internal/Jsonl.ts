@@ -26,7 +26,7 @@ const Reference = Schema.Struct({
 })
 type Reference = typeof Reference.Type
 const Frame = Schema.Struct({
-  persistence: Schema.Literal('sidecars-v3'),
+  persistence: Schema.Literal('sidecars-v4'),
   metadata: Metadata.Metadata,
   rows: Schema.Array(Reference),
 })
@@ -111,7 +111,7 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
       (envelope.metadata.minimumReader ?? 1) < (previous.minimumReader ?? 1)
     )
       return yield* Errors.make('corrupt', 'recover', 'JSONL format marker decreased')
-    if (envelope.persistence !== 'sidecars-v3')
+    if (envelope.persistence !== 'sidecars-v4')
       return yield* Errors.make(
         'unsupportedFormat',
         'recover',
@@ -352,7 +352,7 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
         // A durable marker may only reference durable files and directory entries.
         if (rows.length > 0) yield* syncDirectory(directory)
         const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(Frame))({
-          persistence: 'sidecars-v3',
+          persistence: 'sidecars-v4',
           rows: changes,
           metadata,
         })

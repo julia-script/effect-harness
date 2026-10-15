@@ -1,3 +1,4 @@
+import * as PackedBody from './fixtures/PackedBody.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -249,19 +250,19 @@ it.effect('document metadata reads stored version without materializing invalid 
             id,
             {
               category: 'document',
-              value: { version: 1, body: { record, revisions: [] }, media: [] },
+              value: PackedBody.empty({ record, revisions: [] }),
               revisions: [
                 {
                   seq: Record.Seq.make(1),
-                  content: { version: 1, body: { _tag: 'base', version: 1, value: {} }, media: [] },
+                  content: PackedBody.empty({ _tag: 'base', version: 1, value: {} }),
                 },
                 {
                   seq: Record.Seq.make(2),
-                  content: {
-                    version: 1,
-                    body: { _tag: 'delta', version: 2, ops: [['set', ['missing', 'value'], 3]] },
-                    media: [],
-                  },
+                  content: PackedBody.empty({
+                    _tag: 'delta',
+                    version: 2,
+                    ops: [['set', ['missing', 'value'], 3]],
+                  }),
                 },
               ],
             },

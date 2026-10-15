@@ -31,7 +31,8 @@ export const ReferenceSchema = Schema.Struct({
 export type Reference = typeof ReferenceSchema.Type
 /** This envelope is a physical record, never an application JSON marker. */
 export const PackedBodySchema = Schema.Struct({
-  version: Schema.Literal(1),
+  version: Schema.Literal(2),
+  coverage: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
   body: Schema.Json,
   media: Schema.Array(ReferenceSchema),
 })
@@ -103,6 +104,24 @@ const digest = (bytes: Uint8Array, literal: boolean) =>
     },
     catch: (cause) => Errors.make('io', 'media.hash', 'Cannot hash media bytes', cause),
   })
+// Independent physical coverage includes every occurrence, not only unique digests.
+// Stable tuples avoid dependence on object-key serialization order. This is a
+// corruption check, not authentication against coordinated metadata rewrites.
+const coverage = (media: ReadonlyArray<Reference>) => {
+  if (media.length === 0)
+    return Effect.succeed('4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945')
+  const encoded = JSON.stringify(
+    media.map((ref) => [
+      ref.path,
+      ref.digest,
+      ref.byteLength,
+      ref.presentation._tag,
+      ref.presentation._tag === 'data-url' ? ref.presentation.prefix : null,
+    ]),
+  )
+  return digest(new TextEncoder().encode(encoded), false).pipe(Effect.map((hash) => hash.slice(2)))
+}
+
 /** Verify every persisted object, including hash hits, before using its bytes. */
 export const verify = Effect.fnUntraced(function* (
   reference: Pick<Reference, 'digest' | 'byteLength'>,
@@ -149,29 +168,37 @@ export const pack = Effect.fnUntraced(function* (value: Schema.Json, context: Co
     objects.set(key, { digest: key, bytes: data.bytes })
     if (!Paths.set(body, path, null)) return yield* integrity('Invalid image slot')
   }
-  return { packed: { version: 1 as const, body, media }, objects: [...objects.values()] }
+  return {
+    packed: { version: 2 as const, coverage: yield* coverage(media), body, media },
+    objects: [...objects.values()],
+  }
 })
 
 /**
  * Validate listed references without decoding the document body.
- * This structural check cannot detect omitted references. Before reclamation,
- * adapters must also verify completeness against independently committed ownership.
+ * The physical coverage checksum detects omitted or altered occurrences independently
+ * of application envelope eligibility. Adapters still need atomic durable ownership
+ * for reclamation; the checksum does not authenticate coordinated metadata edits.
  */
 export const manifest = (value: unknown) =>
   Schema.decodeUnknownEffect(PackedBodySchema)(value).pipe(
-    Effect.flatMap((packed) => {
-      const paths: Array<Paths.Path> = []
-      for (const ref of packed.media) {
-        if (
-          (ref.presentation._tag === 'literal') !== ref.digest.startsWith('l-') ||
-          paths.some((path) => starts(path, ref.path) || starts(ref.path, path)) ||
-          Paths.at(packed.body, ref.path) !== null
-        )
-          return Effect.fail(integrity('Invalid, overlapping or missing media slot'))
-        paths.push(ref.path)
-      }
-      return Effect.succeed(packed)
-    }),
+    Effect.flatMap(
+      Effect.fnUntraced(function* (packed) {
+        if ((yield* coverage(packed.media)) !== packed.coverage)
+          return yield* integrity('Media manifest does not match its physical coverage')
+        const paths: Array<Paths.Path> = []
+        for (const ref of packed.media) {
+          if (
+            (ref.presentation._tag === 'literal') !== ref.digest.startsWith('l-') ||
+            paths.some((path) => starts(path, ref.path) || starts(ref.path, path)) ||
+            Paths.at(packed.body, ref.path) !== null
+          )
+            return yield* integrity('Invalid, overlapping or missing media slot')
+          paths.push(ref.path)
+        }
+        return packed
+      }),
+    ),
     Effect.mapError(Errors.corrupt('media.manifest')),
   )
 

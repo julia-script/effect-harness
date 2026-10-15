@@ -62,6 +62,11 @@ const entry = (value: unknown, path: Path, visit: Visit) => {
     )
 }
 
+const draft = (value: unknown, path: Path, visit: Visit) => {
+  if (field(value, 'type') === 'input')
+    content(field(value, 'content'), [...path, 'content'], visit)
+  if (field(value, 'type') === 'write') entry(field(value, 'entry'), [...path, 'entry'], visit)
+}
 const fingerprint = (value: unknown, path: Path, visit: Visit) => {
   entry(field(value, 'head'), [...path, 'head'], visit)
   for (const key of ['selected', 'retained'])
@@ -87,13 +92,8 @@ export const record = (category: string, value: Schema.Json): ReadonlyArray<Path
   if (category === 'task') {
     const kind = field(value, 'kind')
     const checkpoint = field(field(value, 'state'), 'checkpoint')
-    if (kind === 'harness.subagent') {
-      const draft = field(field(value, 'input'), 'draft')
-      if (field(draft, 'type') === 'input')
-        content(field(draft, 'content'), ['input', 'draft', 'content'], visit)
-      if (field(draft, 'type') === 'write')
-        entry(field(draft, 'entry'), ['input', 'draft', 'entry'], visit)
-    }
+    if (kind === 'harness.subagent')
+      draft(field(field(value, 'input'), 'draft'), ['input', 'draft'], visit)
     if (kind === 'harness.compaction') {
       fingerprint(field(checkpoint, 'fingerprint'), ['state', 'checkpoint', 'fingerprint'], visit)
       const saved = field(checkpoint, 'envelope')
@@ -140,11 +140,15 @@ export const ownsDocumentMedia = (kind: string): boolean =>
     'harness.tool.nested.result',
     'harness.model.live',
     'harness.promptUsage',
+    'harness.subagent.slots',
   ].includes(kind)
 
 export const document = (kind: string, value: Schema.Json): ReadonlyArray<Path> => {
   const paths: Array<Path> = []
   const visit: Visit = (path) => paths.push(path)
+  if (kind === 'harness.subagent.slots')
+    for (const [key, slot] of Object.entries(object(field(value, 'slots'))))
+      draft(field(field(slot, 'request'), 'draft'), ['slots', key, 'request', 'draft'], visit)
   if (kind === 'harness.request')
     messages(
       field(field(field(value, 'request'), 'prompt'), 'content'),

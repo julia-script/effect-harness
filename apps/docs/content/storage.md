@@ -40,7 +40,7 @@ All built-in adapters store each unique image payload once per storage namespace
 
 Objects stay alive while any retained physical row or document revision references them. Context omission, head changes, compaction and task completion alone do not delete historical images. Pruning current-only revisions or retiring their final owner can reclaim images; rewindable `asOf` history still owns its images after retirement. There is no conversation purge operation.
 
-Native stores require runtime container/minimum-reader **12/12**. SQL uses persistence schema **3**, JSONL uses **sidecars-v3**, and physical packed bodies use version **1**. Earlier containers are rejected before replay or mutation; there is no migration or old prompt-wire fallback.
+Native stores require runtime container/minimum-reader **12/12**. SQL uses persistence schema **4**, JSONL uses **sidecars-v4**, and physical packed bodies use version **2**. Earlier containers are rejected before replay or mutation; there is no migration or old prompt-wire fallback.
 
 ## Custom adapters
 
@@ -48,7 +48,7 @@ Existing adapters may continue storing hydrated records inline. They must implem
 
 `StorageMedia.pack(value, context)` returns a versioned `packed` body and distinct `{ digest, bytes }` objects. The context identifies a record category, or a document kind with its preceding materialization for delta updates. `StorageMedia.hydrate(packed, context, read)` verifies and restores the JSON body. `PackedBodySchema`, `ReferenceSchema`, `manifest`, `verify` and `sameObject` support durable validation and exact-byte collision checks. Failures use `StorageError` operations such as `media.read` and `media.integrity`.
 
-An adapter must atomically publish records, object bytes and distinct owner/digest relationships, and coordinate reads with reclamation. Every retained revision is an owner, including historical revisions. Manifest completeness needs an independent durable record (JSONL binds each retained owner manifest to a SHA-256 checksum in its commit marker; SQL cross-checks owner rows). Structural `manifest` validation alone cannot prove that no references were omitted. Manifests are the recoverable authority; reference counts may accelerate reclamation. Validate ownership without requiring malformed temporary document bodies to decode. A generic wrapper cannot provide this atomicity around an arbitrary Storage implementation.
+An adapter must atomically publish records, object bytes and distinct owner/digest relationships, and coordinate reads with reclamation. Every retained revision is an owner, including historical revisions. Each packed body carries a SHA-256 checksum over the complete occurrence list, including paths, lengths and presentation. `manifest` verifies it before hydration or reclamation, so omitted repeated references fail even when a unique-digest owner remains. JSONL additionally binds retained ownership to its commit marker; SQL cross-checks owner rows. These are corruption checks, not authentication against coordinated metadata edits. Manifests are the recoverable authority; reference counts may accelerate reclamation. Validate ownership without requiring malformed temporary document bodies to decode. A generic wrapper cannot provide this atomicity around an arbitrary Storage implementation.
 
 ## JSONL backups and recovery
 

@@ -423,7 +423,7 @@ for (const corruption of ['missing', 'invalid', 'mismatch', 'old-layout'] as con
         if (corruption === 'missing') delete marker.rows[1]!.ownership
         else if (corruption === 'invalid') marker.rows[1]!.ownership = 'invalid'
         else if (corruption === 'mismatch') marker.rows[1]!.ownership = '0'.repeat(64)
-        else marker.persistence = 'sidecars-v2'
+        else marker.persistence = 'sidecars-v3'
         const damaged = JSON.stringify(marker) + '\n'
         yield* fs.writeFileString(filename, damaged)
         const files = (yield* fs.readDirectory(`${filename}.media`)).sort()

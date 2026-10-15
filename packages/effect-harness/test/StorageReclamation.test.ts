@@ -1,3 +1,4 @@
+import * as PackedBody from './fixtures/PackedBody.js'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -603,11 +604,11 @@ for (const scope of ['session', 'latest'] as const)
               `${filename}.parts/2-3.revision`,
               JSON.stringify({
                 seq: 3,
-                content: {
-                  version: 1,
-                  body: { _tag: 'base', version: 2, value: 'obsolete codec payload' },
-                  media: [],
-                },
+                content: PackedBody.empty({
+                  _tag: 'base',
+                  version: 2,
+                  value: 'obsolete codec payload',
+                }),
               }),
             )
             yield* Effect.gen(function* () {
