@@ -19,6 +19,9 @@
       "effect-harness/provider-openai-compatible": [
         "./packages/effect-harness/src/provider-openai-compatible/index.ts"
       ],
+      "effect-harness/provider-openrouter": [
+        "./packages/effect-harness/src/provider-openrouter/index.ts"
+      ],
       "effect-harness/provider-openai-codex": [
         "./packages/effect-harness/src/provider-openai-codex/index.ts"
       ]

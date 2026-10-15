@@ -116,6 +116,14 @@
     "./provider-openai-compatible/*": {
       "types": "./dist/provider-openai-compatible/*.d.ts",
       "default": "./dist/provider-openai-compatible/*.js"
+    },
+    "./provider-openrouter": {
+      "types": "./dist/provider-openrouter/index.d.ts",
+      "default": "./dist/provider-openrouter/index.js"
+    },
+    "./provider-openrouter/*": {
+      "types": "./dist/provider-openrouter/*.d.ts",
+      "default": "./dist/provider-openrouter/*.js"
     }
   },
   "publishConfig": {

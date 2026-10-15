@@ -6,6 +6,7 @@ import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import { Credential, CredentialStore, MemoryCredentialStore } from 'effect-harness/provider-auth'
 import { CodexLanguageModel } from 'effect-harness/provider-openai-codex'
 import { OAuthLanguageModel } from 'effect-harness/provider-anthropic'
+import { Catalog as OpenRouterCatalog } from 'effect-harness/provider-openrouter'
 
 const program = Effect.gen(function* () {
   const store = yield* MemoryCredentialStore.make
@@ -21,9 +22,11 @@ const program = Effect.gen(function* () {
     Effect.succeed(
       HttpClientResponse.fromWeb(
         request,
-        new Response(
-          `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'consumer', model: 'gpt-5.4', created_at: 0, output: [{ type: 'message', id: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'packaged consumer works', annotations: [], logprobs: [] }] }] } })}\n\n`,
-        ),
+        request.method === 'GET'
+          ? Response.json({ data: [{ id: 'vendor/model', name: 'Model' }] })
+          : new Response(
+              `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'consumer', model: 'gpt-5.4', created_at: 0, output: [{ type: 'message', id: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'packaged consumer works', annotations: [], logprobs: [] }] }] } })}\n\n`,
+            ),
       ),
     ),
   )
@@ -32,6 +35,10 @@ const program = Effect.gen(function* () {
     Effect.provideService(HttpClient.HttpClient, http),
   )
   const response = yield* model.generateText({ prompt: 'test' })
+  const page = yield* OpenRouterCatalog.list().pipe(
+    Effect.provideService(HttpClient.HttpClient, http),
+  )
+  if (page.items[0]?.id !== 'vendor/model') throw new Error('Published OpenRouter catalog failed')
   if (response.text !== 'packaged consumer works' || typeof OAuthLanguageModel.make !== 'function')
     throw new Error('Published provider consumer failed')
   return response.text
