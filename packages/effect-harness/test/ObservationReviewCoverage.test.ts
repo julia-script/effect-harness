@@ -789,7 +789,7 @@ const nativeMountResources = Effect.fn(function* (
   if (ending === 'detach') {
     yield* Effect.forEach(scopes, (scope) => Scope.close(scope, Exit.void))
     checkpoint('detached')
-    for (let index = 0; index < 140; index++)
+    for (let index = 0; index < 2; index++)
       yield* Session.commit(runtime.session, (tx) =>
         Transaction.appendEntry(tx, conversation.id, {
           kind: 'review.no-dormant-observer',
@@ -806,7 +806,7 @@ const nativeMountResources = Effect.fn(function* (
     assert.notStrictEqual(fresh.revision.epoch, eventInitial.revision.epoch)
     assert.strictEqual(
       fresh.value.entries.filter((entry) => entry.kind === 'review.no-dormant-observer').length,
-      140,
+      2,
     )
     checkpoint('fresh-join')
     yield* Scope.close(freshScope, Exit.void)

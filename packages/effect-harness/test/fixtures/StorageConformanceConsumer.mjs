@@ -17,7 +17,7 @@ const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const directories = []
-  let count = 0
+  const executed = []
   for (const backend of ['memory', 'sqlite', 'jsonl']) {
     const make = Effect.gen(function* () {
       const layer = yield* Effect.gen(function* () {
@@ -40,18 +40,24 @@ const program = Effect.gen(function* () {
         ),
       }
     })
-    for (const test of Testing.storageConformance({
+    // Source conformance owns the complete corpus. This process checks package exports,
+    // execution, and scoped factory/reopen wiring on the built public modules.
+    const name =
+      backend === 'memory'
+        ? 'storage: historical document revisions and copies'
+        : 'storage: reopened state and reserved identities'
+    const test = Testing.storageConformance({
       make,
       capabilities: { history: true, reopen: backend !== 'memory' },
-    })) {
-      yield* test.run
-      count++
-    }
+    }).find((test) => test.name === name)
+    if (test === undefined) return yield* Effect.fail(`Missing public case: ${name}`)
+    yield* test.run
+    executed.push(backend)
   }
   for (const directory of directories)
     if (yield* fs.exists(directory)) return yield* Effect.fail('Consumer fixture cleanup failed')
-  return count
+  return executed
 }).pipe(Effect.provide(NodeServices.layer))
 
-const count = await Effect.runPromise(program)
-console.log(`public storage consumer: ${count} cases passed; temporary stores removed`)
+const executed = await Effect.runPromise(program)
+console.log(`public storage consumer: ${executed.join(', ')}; temporary stores removed`)

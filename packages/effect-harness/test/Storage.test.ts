@@ -10,9 +10,7 @@ import * as Path from 'effect/Path'
 import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as Domain from 'effect-harness/Record'
-import * as Identity from 'effect-harness/Identity'
 import * as Storage from 'effect-harness/Storage'
-import * as Sequence from 'effect-harness/Sequence'
 
 const root = Domain.ConversationId.make(1)
 const entryId = (id: number) => Domain.EntryId.make(id)
@@ -108,32 +106,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
           }),
         ),
     )
-    it.live('allocates unique IDs concurrently and accepts an iterable batch', () =>
-      withBackend(
-        backend,
-        Effect.gen(function* () {
-          const storage = yield* Storage.Storage
-          const ids = yield* Effect.all(
-            Array.from({ length: 20 }, () => storage.mintId<Domain.EntryId>()),
-            { concurrency: 'unbounded' },
-          )
-          assert.strictEqual(new Set(ids).size, 20)
-          assert.deepEqual(
-            [...ids].sort((a, b) => a - b),
-            Array.from({ length: 20 }, (_, i) => i + 2),
-          )
-          const writes = new Set<Storage.StorageWrite>([
-            { _tag: 'conversation', value: { id: root } },
-            ...ids.map((id): Storage.StorageWrite => ({ _tag: 'entry', value: entry(id) })),
-          ])
-          yield* storage.commit(writes)
-          assert.lengthOf(
-            yield* storage.scanEntries({ conversationId: root }).pipe(Stream.runCollect),
-            20,
-          )
-        }),
-      ),
-    )
     it.live('reads fork-aware history and head markers in either order', () =>
       withBackend(
         backend,
@@ -220,119 +192,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
         }),
       ),
     )
-    it.live('deduplicates requests per conversation and rejects duplicates in a batch', () =>
-      withBackend(
-        backend,
-        Effect.gen(function* () {
-          const storage = yield* Storage.Storage
-          const requestId = Identity.RequestId.make('job-42')
-          const submission = (id: number): Domain.Submission => ({
-            _tag: 'InputQueued',
-            id: Domain.SubmissionId.make(id),
-            conversationId: root,
-            requestId,
-            type: 'input',
-            status: 'queued',
-          })
-          yield* storage.commit([{ _tag: 'conversation', value: { id: root } }])
-          const duplicateBatch = yield* storage
-            .commit([
-              { _tag: 'submission', value: submission(2) },
-              { _tag: 'submission', value: submission(3) },
-            ])
-            .pipe(Effect.flip)
-          assert.strictEqual(duplicateBatch.reason, 'conflict')
-          assert.isTrue(Option.isNone(yield* storage.submissionByRequest(root, requestId)))
-          yield* storage.commit([{ _tag: 'submission', value: submission(2) }])
-          const duplicate = yield* storage
-            .commit([{ _tag: 'submission', value: submission(3) }])
-            .pipe(Effect.flip)
-          assert.strictEqual(duplicate.reason, 'conflict')
-          assert.strictEqual(expectSome(yield* storage.submissionByRequest(root, requestId)).id, 2)
-          assert.strictEqual(
-            expectSome(yield* storage.submission(Domain.SubmissionId.make(2))).status,
-            'queued',
-          )
-          assert.lengthOf(
-            yield* storage.scanSubmissions({ status: 'queued' }).pipe(Stream.runCollect),
-            1,
-          )
-        }),
-      ),
-    )
-    it.live(
-      'materializes, copies and replaces documents while retaining historical incarnations',
-      () =>
-        withBackend(
-          backend,
-          Effect.gen(function* () {
-            const storage = yield* Storage.Storage
-            const first = yield* storage.commit([
-              { _tag: 'conversation', value: { id: root } },
-              {
-                _tag: 'document.create',
-                record: document(2),
-                content: { _tag: 'base', version: 1, value: { count: 0 } },
-              },
-            ])
-            yield* storage.commit([
-              {
-                _tag: 'document.change',
-                id: documentId(2),
-                content: { _tag: 'delta', version: 1, ops: [['set', ['count'], 3]] },
-              },
-            ])
-            assert.deepEqual(expectSome(yield* storage.document(documentId(2))).value, { count: 3 })
-            assert.strictEqual(
-              expectSome(yield* storage.document(documentId(2))).deltasSinceBase,
-              1,
-            )
-            assert.deepEqual(expectSome(yield* storage.document(documentId(2), first)).value, {
-              count: 0,
-            })
-            const child = Domain.ConversationId.make(3)
-            yield* storage.commit([
-              { _tag: 'conversation', value: { id: child } },
-              {
-                _tag: 'document.copy',
-                record: document(4, child),
-                source: { id: documentId(2), at: first },
-              },
-            ])
-            assert.deepEqual(expectSome(yield* storage.document(documentId(4))).value, { count: 0 })
-            const replacement = yield* storage.commit([
-              { _tag: 'document.retire', id: documentId(2) },
-              {
-                _tag: 'document.create',
-                record: document(5),
-                content: { _tag: 'base', version: 1, value: { count: 10 } },
-              },
-            ])
-            const address: Storage.DocumentAddress = {
-              kind: 'counter',
-              scope: { _tag: 'conversation', conversationId: root },
-            }
-            assert.strictEqual(expectSome(yield* storage.findDocument(address)).id, 5)
-            assert.strictEqual(expectSome(yield* storage.findDocument(address, first)).id, 2)
-            assert.isTrue(Option.isNone(yield* storage.document(documentId(2))))
-            assert.deepEqual(
-              expectSome(yield* storage.document(documentId(2), Sequence.make(replacement - 1)))
-                .value,
-              { count: 3 },
-            )
-            assert.lengthOf(
-              yield* storage.scanDocuments({ scope: address.scope }).pipe(Stream.runCollect),
-              1,
-            )
-            assert.lengthOf(
-              yield* storage
-                .scanDocuments({ scope: address.scope, at: first })
-                .pipe(Stream.runCollect),
-              1,
-            )
-          }),
-        ),
-    )
     it.live('rejects malformed document deltas atomically and detaches returned values', () =>
       withBackend(
         backend,
@@ -379,42 +238,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
         }),
       ),
     )
-    it.live('revokes escaped services when the layer scope closes', () =>
-      withBackend(backend, Effect.service(Storage.Storage)).pipe(
-        Effect.flatMap((storage) =>
-          Effect.gen(function* () {
-            const error = yield* storage.commit([]).pipe(Effect.flip)
-            assert.strictEqual(error.reason, 'closed')
-            const scanError = yield* storage.scanTasks().pipe(Stream.runCollect, Effect.flip)
-            assert.strictEqual(scanError.reason, 'closed')
-          }),
-        ),
-      ),
-    )
   })
-
-for (const backend of ['sqlite', 'jsonl'] as const)
-  it.live(`reopens ${backend} with committed records and reserved IDs`, () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { filename } = yield* fixture
-        yield* Effect.gen(function* () {
-          const storage = yield* Storage.Storage
-          yield* storage.commit([
-            { _tag: 'conversation', value: { id: root } },
-            { _tag: 'entry', value: entry(2) },
-          ])
-          assert.strictEqual(yield* storage.mintId<Domain.TaskId>(), 3)
-        }).pipe(Effect.provide(layerFor(backend, filename)))
-        yield* Effect.gen(function* () {
-          const storage = yield* Storage.Storage
-          assert.strictEqual(expectSome(yield* storage.entry(entryId(2))).commitSeq, 1)
-          assert.strictEqual(yield* storage.mintId<Domain.TaskId>(), 4)
-          assert.strictEqual(yield* storage.commit([]), 2)
-        }).pipe(Effect.provide(layerFor(backend, filename)))
-      }),
-    ).pipe(Effect.provide(NodeServices.layer)),
-  )
 
 it.live('recovers an interrupted JSONL tail and rejects malformed completed frames', () =>
   Effect.scoped(

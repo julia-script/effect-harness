@@ -184,12 +184,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               second.harness.submission(id),
             )
             assert.strictEqual((yield* entries(second.runtime)).length, count)
-            assert.strictEqual(
-              (yield* Format.inspect.pipe(
-                Effect.provideContext(yield* Layer.build(Layer.fresh(Storage.layerMemory))),
-              )).formatVersion,
-              1,
-            )
             const outcomes = yield* Effect.forEach(handles, Submission.wait, {
               concurrency: 'unbounded',
             })

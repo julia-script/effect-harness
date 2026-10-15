@@ -251,6 +251,12 @@ bun run test
 bun run build
 ```
 
+`StorageConformance.test.ts` owns the shared storage corpus on every backend.
+Assertion fault injections belong in `StorageStructuralConformance.test.ts` on memory;
+the built consumer checks package exports and scoped reopen wiring. Observation tests
+can exercise repeated overflow with small explicit queue capacities, while retaining
+a default-capacity overflow case on memory.
+
 The package root exposes concept namespaces; public leaf imports such as `effect-harness/Harness`, `effect-harness/Storage`, and `effect-harness/Toolkit` select individual modules. Provider adapters use `effect-harness/provider-openai/*` and `effect-harness/provider-anthropic/*`. Internal modules are private.
 
 Package changes use [Changesets](.changeset/README.md).

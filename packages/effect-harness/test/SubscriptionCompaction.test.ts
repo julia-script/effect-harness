@@ -245,6 +245,8 @@ for (const provider of ['openai-codex', 'anthropic'] as const) {
     'truncated',
     'oversized',
   ] as const) {
+    // Claude's provider-enforced max_tokens response is already the length case.
+    if (provider === 'anthropic' && failure === 'oversized') continue
     it.live(`${provider}: ${failure} summary never advances the context head`, () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -326,7 +328,7 @@ for (const provider of ['openai-codex', 'anthropic'] as const) {
                     stop_reason: 'tool_use',
                     content: [{ type: 'tool_use', id: 'call', name: 'rogue', input: {} }],
                   })
-                else if (failure === 'length' || failure === 'oversized')
+                else if (failure === 'length')
                   body = JSON.stringify({ ...response, stop_reason: 'max_tokens' })
                 else if (failure === 'failed')
                   body = JSON.stringify({
