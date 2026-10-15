@@ -22,10 +22,17 @@ import { ProviderAffinity } from '../ProviderAffinity.js'
 import * as Http from '../internal/SubscriptionHttp.js'
 import * as AuthProtocol from '../internal/ProviderOAuth.js'
 
+export const ReasoningEffort = Schema.Literals([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+])
 export const Settings = Schema.Struct({
-  reasoningEffort: Schema.optionalKey(
-    Schema.Literals(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']),
-  ),
+  reasoningEffort: Schema.optionalKey(ReasoningEffort),
   reasoningSummary: Schema.optionalKey(Schema.Literals(['auto', 'concise', 'detailed'])),
   verbosity: Schema.optionalKey(Schema.Literals(['low', 'medium', 'high'])),
   serviceTier: Schema.optionalKey(Schema.Literals(['auto', 'default', 'flex', 'priority'])),
