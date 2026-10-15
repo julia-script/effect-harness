@@ -350,7 +350,9 @@ export const make = Effect.fnUntraced(function* (options: Options) {
         return [Http.safeResponse(response), stream]
       }),
   })
-  return yield* Native.make({ model: options.model }).pipe(
+  // Prepared dynamic schemas preserve optional keys and records. Strict mode is
+  // opt-in per tool; imposing it here would reject those ordinary JSON schemas.
+  return yield* Native.make({ model: options.model, config: { strictJsonSchema: false } }).pipe(
     Effect.provideService(AnthropicClient.AnthropicClient, client),
   )
 })

@@ -1,5 +1,8 @@
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import * as Tool from 'effect/ai/Tool'
+import * as Toolkit from 'effect/ai/Toolkit'
 import * as Stream from 'effect/Stream'
 import * as Prompt from 'effect/ai/Prompt'
 import * as HttpClient from 'effect/http/HttpClient'
@@ -127,3 +130,89 @@ describe('Codex public LanguageModel protocol', () => {
       }),
     )
 })
+
+it.effect(
+  'Codex preserves prepared dynamic tool schemas without imposing strict OpenAI semantics',
+  () =>
+    Effect.gen(function* () {
+      const store = yield* credentials('openai-codex')
+      const captured: HttpClientRequest.HttpClientRequest[] = []
+      const model = yield* Codex.make({ model: 'gpt-6.1-sol', binding }).pipe(
+        Effect.provideService(Store.CredentialStore, store),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make((request) =>
+            Effect.sync(() => {
+              captured.push(request)
+              return HttpClientResponse.fromWeb(request, new Response(sse(codexEvents)))
+            }),
+          ),
+        ),
+      )
+      const result = yield* model.generateText({
+        prompt: 'hello',
+        toolkit: Toolkit.make(
+          Tool.dynamic('read', {
+            parameters: {
+              type: 'object',
+              properties: { path: { type: 'string' }, offset: { type: 'number' } },
+              required: ['path'],
+              additionalProperties: true,
+            },
+          }),
+        ),
+        disableToolCallResolution: true,
+      })
+      const body = payload(captured[0]!)
+      const tools = yield* Schema.decodeUnknownEffect(
+        Schema.Array(
+          Schema.Struct({
+            strict: Schema.Boolean,
+            parameters: Schema.Struct({
+              required: Schema.Array(Schema.String),
+              additionalProperties: Schema.Boolean,
+            }),
+          }),
+        ),
+      )(body.tools)
+      assert.strictEqual(
+        tools[0]?.strict,
+        false,
+        'OpenAI rejects these ordinary schemas in strict mode',
+      )
+      assert.deepEqual(tools[0]?.parameters.required, ['path'])
+      assert.strictEqual(tools[0]?.parameters.additionalProperties, true)
+      assert.strictEqual(result.text, 'Olá 🌍')
+    }),
+)
+
+it.effect('Codex classifies invalid function parameters as a non-retryable request error', () =>
+  Effect.gen(function* () {
+    const store = yield* credentials('openai-codex')
+    const model = yield* Codex.make({ model: 'gpt-6.1-sol', binding }).pipe(
+      Effect.provideService(Store.CredentialStore, store),
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response(
+                sse([
+                  {
+                    type: 'error',
+                    code: 'invalid_function_parameters',
+                    message: 'SECRET provider validation details',
+                  },
+                ]),
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+    const error = yield* model.generateText({ prompt: 'hello' }).pipe(Effect.flip)
+    assert.strictEqual(error.reason._tag, 'InvalidRequestError')
+    assert.notInclude(JSON.stringify(error), 'SECRET')
+  }),
+)
