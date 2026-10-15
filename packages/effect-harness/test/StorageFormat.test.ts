@@ -391,6 +391,7 @@ for (const failure of ['partial', 'synced-but-reported-failed'] as const)
         }).pipe(Effect.provide(Storage.layerJsonl({ filePath: filename })))
         const original = yield* fs.readFileString(filename)
         const fault = yield* fs.readFile(`${filename}.missing`).pipe(Effect.flip)
+        let armed = false
         const injected: FileSystem.FileSystem = {
           ...fs,
           open: (path, options) =>
@@ -401,16 +402,18 @@ for (const failure of ['partial', 'synced-but-reported-failed'] as const)
                   failure === 'partial'
                     ? file.writeAll(bytes.subarray(0, 12)).pipe(Effect.andThen(Effect.fail(fault)))
                     : file.writeAll(bytes),
-                sync:
-                  failure === 'synced-but-reported-failed' && path === filename
+                sync: Effect.suspend(() =>
+                  armed && failure === 'synced-but-reported-failed' && path === filename
                     ? file.sync.pipe(Effect.andThen(Effect.fail(fault)))
                     : file.sync,
+                ),
               })),
             ),
         }
         yield* Effect.gen(function* () {
           const storage = yield* Storage.Storage
           const format = yield* Format.StorageFormat
+          armed = true
           const failed = yield* format.requireSupportedFormat(current).pipe(Effect.flip)
           assert.instanceOf(failed, Storage.StorageError)
           if (failed instanceof Storage.StorageError) assert.strictEqual(failed.reason, 'uncertain')
@@ -442,6 +445,7 @@ it.live('interruption during JSONL sync cannot expose a partially activated in-m
       const { fs, filename } = yield* fixture
       const syncing = yield* Deferred.make<void>()
       const release = yield* Deferred.make<void>()
+      let armed = false
       const injected: FileSystem.FileSystem = {
         ...fs,
         open: (path, options) =>
@@ -449,18 +453,20 @@ it.live('interruption during JSONL sync cannot expose a partially activated in-m
             Effect.map((file) => ({
               ...file,
               writeAll: (bytes) => file.writeAll(bytes),
-              sync:
-                path !== filename
+              sync: Effect.suspend(() =>
+                !armed || path !== filename
                   ? file.sync
                   : Deferred.succeed(syncing, undefined).pipe(
                       Effect.andThen(Deferred.await(release)),
                       Effect.andThen(file.sync),
                     ),
+              ),
             })),
           ),
       }
       yield* Effect.gen(function* () {
         const format = yield* Format.StorageFormat
+        armed = true
         const fiber = yield* Effect.forkChild(format.requireSupportedFormat(current))
         yield* Deferred.await(syncing)
         const interrupt = yield* Effect.forkChild(Fiber.interrupt(fiber), {

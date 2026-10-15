@@ -181,10 +181,10 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
     Effect.scoped(fs.open(path, { flag: 'r' }).pipe(Effect.flatMap((directory) => directory.sync)))
   // Persist both directory entries (journal and sidecar directory) before admitting writes.
   yield* io('initialize', syncDirectory(`${directory}/..`))
-  if (end !== bytes.length) {
-    yield* io('truncate', file.truncate(end))
-    yield* io('sync', file.sync)
-  }
+  if (end !== bytes.length) yield* io('truncate', file.truncate(end))
+  // A complete marker can survive a failed sync. Make recovery's chosen prefix
+  // durable before deleting files needed by the previously durable prefix.
+  yield* io('sync', file.sync)
   const live = new Set(Array.from(references.values()).flatMap(filesOf))
   for (const name of names) {
     if (!live.has(name)) yield* io('recover', fs.remove(`${directory}/${name}`))

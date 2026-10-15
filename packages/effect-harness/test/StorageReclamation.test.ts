@@ -355,6 +355,74 @@ for (const point of [
       ).pipe(Effect.provide(NodeServices.layer)),
   )
 
+for (const recoveryFails of [false, true])
+  it.live(
+    `JSONL recovery ${recoveryFails ? 'sync failure preserves old sidecars' : 'syncs complete markers before reclamation'} through a second crash`,
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { fs, filename } = yield* fixture
+          const layer = Storage.layerJsonl({ filePath: filename })
+          yield* Effect.service(Storage.Storage).pipe(Effect.flatMap(seed), Effect.provide(layer))
+          let durable = yield* fs.readFile(filename)
+          const oldFiles = yield* fs.readDirectory(`${filename}.parts`)
+          const fault = yield* fs.readFile(`${filename}.missing`).pipe(Effect.flip)
+          let phase: 'opening' | 'commit' | 'recovery' = 'opening'
+          let recoverySynced = false
+          const injected: FileSystem.FileSystem = {
+            ...fs,
+            open: (path, options) =>
+              fs.open(path, options).pipe(
+                Effect.map((file) => ({
+                  ...file,
+                  writeAll: (bytes) => file.writeAll(bytes),
+                  truncate: file.truncate,
+                  sync: Effect.suspend(() => {
+                    if (path !== filename) return file.sync
+                    if (phase === 'commit' || (phase === 'recovery' && recoveryFails))
+                      return Effect.fail(fault)
+                    return file.sync.pipe(
+                      Effect.andThen(fs.readFile(filename)),
+                      Effect.map((bytes) => {
+                        durable = bytes
+                        if (phase === 'recovery') recoverySynced = true
+                      }),
+                    )
+                  }),
+                })),
+              ),
+          }
+          yield* Effect.gen(function* () {
+            const storage = yield* Storage.Storage
+            phase = 'commit'
+            assert.strictEqual((yield* replace(storage, 1).pipe(Effect.flip)).reason, 'uncertain')
+          }).pipe(Effect.provide(layer), Effect.provideService(FileSystem.FileSystem, injected))
+          assert.isAbove((yield* fs.readFile(filename)).length, durable.length)
+          phase = 'recovery'
+          const reopened = Effect.gen(function* () {
+            const storage = yield* Storage.Storage
+            assert.strictEqual(Option.getOrThrow(yield* storage.document(currentId)).value.count, 1)
+          }).pipe(Effect.provide(layer), Effect.provideService(FileSystem.FileSystem, injected))
+          if (recoveryFails) {
+            assert.strictEqual((yield* reopened.pipe(Effect.flip)).reason, 'io')
+            for (const name of oldFiles)
+              assert.isTrue(yield* fs.exists(`${filename}.parts/${name}`))
+          } else yield* reopened
+          // Discard all bytes after the last successful fsync, as a second power loss can.
+          yield* fs.writeFile(filename, durable)
+          yield* Effect.gen(function* () {
+            const storage = yield* Storage.Storage
+            assert.strictEqual(
+              Option.getOrThrow(yield* storage.document(currentId)).value.count,
+              recoveryFails ? 0 : 1,
+            )
+            assert.strictEqual(yield* replace(storage, 2), recoveryFails ? 2 : 3)
+          }).pipe(Effect.provide(layer))
+          assert.strictEqual(recoverySynced, !recoveryFails)
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+  )
+
 it.live(
   'JSONL missing committed sidecars fail closed without deleting evidence or truncating the tail',
   () =>
