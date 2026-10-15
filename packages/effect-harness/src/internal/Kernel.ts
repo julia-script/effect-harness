@@ -102,11 +102,20 @@ export const make = Effect.fnUntraced(function* (access: Access) {
   })
   const mutate = <A>(effect: Effect.Effect<A, Errors.StorageError>) =>
     open.pipe(
-      Effect.andThen(access.exclusive(Effect.uninterruptible(open.pipe(Effect.andThen(effect))))),
-      Effect.tapError((error) =>
-        Effect.sync(() => {
-          if (error.reason === 'uncertain') uncertain = true
-        }),
+      Effect.andThen(
+        access.exclusive(
+          Effect.uninterruptible(
+            open.pipe(
+              Effect.andThen(effect),
+              // Fence before restoring interruptibility or admitting another mutation.
+              Effect.tapError((error) =>
+                Effect.sync(() => {
+                  if (error.reason === 'uncertain') uncertain = true
+                }),
+              ),
+            ),
+          ),
+        ),
       ),
     )
   const get = Effect.fnUntraced(function* (id: number) {
@@ -585,7 +594,7 @@ export const make = Effect.fnUntraced(function* (access: Access) {
     requireSupportedFormat: Effect.fn('StorageFormat.upgrade')(function* (requested) {
       const valid = yield* StorageFormat.validate(requested)
       yield* open
-      // Reject a known future marker before acquiring a SQL write lock; recheck under the lock.
+      // Reject a known future marker before entering the backend's exclusive write boundary.
       yield* access.metadata.pipe(Effect.flatMap(Metadata.requireSupported))
       return yield* mutate(
         Effect.gen(function* () {

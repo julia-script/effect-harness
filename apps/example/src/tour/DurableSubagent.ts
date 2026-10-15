@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import * as Config from 'effect/Config'
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
@@ -144,7 +145,10 @@ const run = Effect.scoped(
     const storage = (() => {
       if (backend === 'memory') return Storage.layerMemory
       if (backend === 'jsonl') return Storage.layerJsonl({ filePath: file })
-      return Storage.layerSql.pipe(Layer.provide(sqlite({ filename: file })))
+      return Storage.layerJournal().pipe(
+        Layer.provide(SqlEventJournal.layer()),
+        Layer.provide(sqlite({ filename: file })),
+      )
     })()
     const context = yield* Layer.build(storage)
     const registry = yield* Registry.make

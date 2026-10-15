@@ -13,6 +13,7 @@ Your application supplies `tools`, `ToolsLive` (their handlers), and `ModelLive`
 ```ts
 import { Effect, Layer } from 'effect'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import * as Harness from 'effect-harness/Harness'
 import * as Conversation from 'effect-harness/Conversation'
 import * as Submission from 'effect-harness/Submission'
@@ -22,7 +23,10 @@ const HarnessLive = Harness.layerLocal({ tools }).pipe(
   Layer.provide(ToolsLive),
   Layer.provide(ModelLive),
   Layer.provide(
-    Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename: './agent.sqlite' }))),
+    Storage.layerJournal().pipe(
+      Layer.provide(SqlEventJournal.layer()),
+      Layer.provide(SqliteClient.layer({ filename: './agent.sqlite' })),
+    ),
   ),
 )
 
@@ -214,7 +218,7 @@ Import `Document` and `Transaction` from their `effect-harness/*` subpaths. This
 
 ## Runtime support
 
-The library uses standard JavaScript, Web APIs, and Effect services. `Storage.layerMemory` needs no platform services. `Storage.layerSql` requires `SqlClient`; the application chooses its implementation. `Storage.layerJsonl({ filePath })` requires `FileSystem`.
+The library uses standard JavaScript, Web APIs, and Effect services. `Storage.layerMemory` needs no platform services. `Storage.layerJournal({ storeId })` requires Effect’s `EventJournal`; the application chooses its backend. Own one runtime per journal store. Each write is a complete event, and reopening rebuilds the local projection. SQLite applications supply `SqlEventJournal.layer()` and a dedicated `SqlClient` at the application edge. `Storage.layerJsonl({ filePath })` requires `FileSystem`.
 
 Tool dependencies define their environment: a handler can use a local filesystem, an issue-tracker service, or a remote object store supplied through Layers. The library has no Bun or Node runtime imports. The example application chooses Node adapters; the portable example also runs in a browser bundle. Bun is the repository's development tool.
 

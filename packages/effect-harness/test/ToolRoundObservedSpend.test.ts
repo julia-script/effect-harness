@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { assert, describe, it } from '@effect/vitest'
@@ -63,7 +64,10 @@ describe('checkpoint observed spend during cold denial', () => {
               if (backend === 'memory') return Effect.succeed(memory)
               const layer =
                 backend === 'sqlite'
-                  ? Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename })))
+                  ? Storage.layerJournal().pipe(
+                      Layer.provide(SqlEventJournal.layer()),
+                      Layer.provide(SqliteClient.layer({ filename })),
+                    )
                   : Storage.layerJsonl({ filePath: filename })
               return Layer.buildWithScope(layer, scope)
             }

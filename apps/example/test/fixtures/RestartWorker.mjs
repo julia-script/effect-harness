@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import * as Console from 'effect/Console'
 import * as ScriptedStream from '../../dist/ScriptedStream.js'
 import * as Effect from 'effect/Effect'
@@ -51,7 +52,12 @@ const ToolsLive = tools.toLayer({
 const HarnessLive = Harness.layerLocal({ tools }).pipe(
   Layer.provide(ToolsLive),
   Layer.provide(ModelLive),
-  Layer.provide(Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename })))),
+  Layer.provide(
+    Storage.layerJournal().pipe(
+      Layer.provide(SqlEventJournal.layer()),
+      Layer.provide(SqliteClient.layer({ filename })),
+    ),
+  ),
 )
 const program = Effect.gen(function* () {
   const harness = yield* Harness.Harness

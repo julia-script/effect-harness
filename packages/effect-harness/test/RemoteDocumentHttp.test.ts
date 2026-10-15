@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import * as NodeHttpServer from '@effect/platform-node/NodeHttpServer'
 import * as Context from 'effect/Context'
@@ -701,7 +702,10 @@ describe('real HTTP materialized documents', () => {
             const storageLayer =
               kind === 'jsonl'
                 ? Storage.layerJsonl({ filePath })
-                : Storage.layerSql.pipe(Layer.provide(sql({ filename: filePath })))
+                : Storage.layerJournal().pipe(
+                    Layer.provide(SqlEventJournal.layer()),
+                    Layer.provide(sql({ filename: filePath })),
+                  )
             const model = yield* LanguageModel.make({
               generateText: () => Effect.die('No provider'),
               streamText: () => Stream.die('No provider'),

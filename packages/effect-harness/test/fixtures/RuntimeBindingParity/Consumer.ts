@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { strict as assert } from 'node:assert'
 import * as Context from 'effect/Context'
 import * as Clock from 'effect/Clock'
@@ -347,7 +348,10 @@ export const run = (backend: Backend, location: string, phase: Phase) =>
       const storage = (() => {
         if (backend === 'memory') return Storage.layerMemory
         if (backend === 'jsonl') return Storage.layerJsonl({ filePath: `${root}/store.jsonl` })
-        return Storage.layerSql.pipe(Layer.provide(sqlite({ filename: `${root}/store.sqlite` })))
+        return Storage.layerJournal().pipe(
+          Layer.provide(SqlEventJournal.layer()),
+          Layer.provide(sqlite({ filename: `${root}/store.sqlite` })),
+        )
       })()
       const storageContext = yield* Layer.build(storage)
       const runtime = yield* HarnessRuntime.make({
@@ -500,7 +504,10 @@ export const structural = (backend: Backend) =>
         directories.push(directory)
         const layer =
           backend === 'sqlite'
-            ? Storage.layerSql.pipe(Layer.provide(sqlite({ filename: `${directory}/storage` })))
+            ? Storage.layerJournal().pipe(
+                Layer.provide(SqlEventJournal.layer()),
+                Layer.provide(sqlite({ filename: `${directory}/storage` })),
+              )
             : Storage.layerJsonl({ filePath: `${directory}/storage` })
         return {
           open: Layer.build(Layer.fresh(layer)).pipe(

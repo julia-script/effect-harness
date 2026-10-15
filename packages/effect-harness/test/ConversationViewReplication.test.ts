@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Context from 'effect/Context'
@@ -47,7 +48,8 @@ describe('durable semantic replica', () => {
             const storageLayer = (() => {
               if (backend === 'memory') return Storage.layerMemory
               if (backend === 'sqlite')
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sql({ filename: `${directory}/native.sqlite` })),
                 )
               return Storage.layerJsonl({ filePath: `${directory}/native.jsonl` })

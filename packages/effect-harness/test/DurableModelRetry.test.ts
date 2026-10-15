@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import * as NativePrompt from './fixtures/NativePrompt.js'
 import * as RequestRecord from '../src/internal/RequestRecord.js'
 import { assert, describe, it } from '@effect/vitest'
@@ -239,7 +240,8 @@ const checkpoint = Schema.Struct({
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
   const memory = yield* Layer.build(Storage.layerMemory)
-  const sqlite = Storage.layerSql.pipe(
+  const sqlite = Storage.layerJournal().pipe(
+    Layer.provide(SqlEventJournal.layer()),
     Layer.provide(SqliteClient.layer({ filename: `${directory}/retry.sqlite` })),
   )
   const jsonl = Storage.layerJsonl({ filePath: `${directory}/retry.jsonl` })

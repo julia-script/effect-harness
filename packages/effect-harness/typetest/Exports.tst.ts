@@ -31,7 +31,7 @@ test('root namespaces and stable leaf imports expose the promoted API', () => {
   expect(HarnessPackage.HarnessRuntime.make).type.toBe<typeof HarnessRuntime.make>()
   expect(HarnessPackage.Conversation.submit).type.toBe<typeof Conversation.submit>()
   expect(HarnessPackage.Submission.wait).type.toBe<typeof Submission.wait>()
-  expect(HarnessPackage.Storage.layerSql).type.toBe<typeof Storage.layerSql>()
+  expect(HarnessPackage.Storage.layerJournal).type.toBe<typeof Storage.layerJournal>()
   expect(HarnessPackage.Session.commit).type.toBe<typeof Session.commit>()
   expect(HarnessPackage.Tool.make).type.toBe<typeof Tool.make>()
   expect(HarnessPackage.Toolkit.merge).type.toBe<typeof Toolkit.merge>()

@@ -38,4 +38,4 @@ bun apps/example/dist/PortableMain.js
 deno run --allow-read apps/example/dist/PortableMain.js
 ```
 
-The portability tests also bundle this entrypoint with `bun build --target=browser` and evaluate it without Node, Bun, or Deno globals. SQL and JSONL applications choose compatible SqlClient/FileSystem Layers at their application edge.
+The portability tests also bundle this entrypoint with `bun build --target=browser` and evaluate it without Node, Bun, or Deno globals. Journal and JSONL applications choose compatible EventJournal/FileSystem Layers at their application edge. SQLite examples compose Effect’s SqlEventJournal with a SQLite client.

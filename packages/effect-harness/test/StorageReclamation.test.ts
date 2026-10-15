@@ -1,13 +1,9 @@
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
-import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
-import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/sql/SqlClient'
 import * as Storage from 'effect-harness/Storage'
 import * as Record from 'effect-harness/Record'
 import * as Kernel from '../src/internal/Kernel.js'
@@ -100,7 +96,7 @@ it.effect(
     ),
 )
 
-for (const backend of ['jsonl', 'sqlite'] as const)
+for (const backend of ['jsonl'] as const)
   it.live(
     `${backend} writes each historical revision once and reclaims replaced image payloads during normal commits`,
     () =>
@@ -127,35 +123,12 @@ for (const backend of ['jsonl', 'sqlite'] as const)
                 })),
               ),
           }
-          const layer =
-            backend === 'jsonl'
-              ? Storage.layerJsonl({ filePath: filename }).pipe(
-                  Layer.provideMerge(SqliteClient.layer({ filename: ':memory:' })),
-                )
-              : Storage.layerSql.pipe(Layer.provideMerge(SqliteClient.layer({ filename })))
+          const layer = Storage.layerJsonl({ filePath: filename })
           const inspect = Effect.gen(function* () {
-            if (backend === 'jsonl')
-              return { written, retained: yield* retainedJsonl(fs, filename) }
-            const sql = yield* SqlClient.SqlClient
-            const writes = yield* sql`SELECT COALESCE(SUM(bytes), 0) AS bytes FROM measured_writes`
-            const retained = yield* sql`SELECT
-          (SELECT COALESCE(SUM(LENGTH(payload)),0) FROM effect_harness_records) +
-          (SELECT COALESCE(SUM(LENGTH(content)),0) FROM effect_harness_revisions) AS bytes`
-            return { written: Number(writes[0]?.bytes), retained: Number(retained[0]?.bytes) }
+            return { written, retained: yield* retainedJsonl(fs, filename) }
           })
           yield* Effect.gen(function* () {
             const storage = yield* Storage.Storage
-            if (backend === 'sqlite') {
-              const sql = yield* SqlClient.SqlClient
-              yield* sql`CREATE TABLE measured_writes(bytes INTEGER NOT NULL)`
-              for (const [table, column] of [
-                ['effect_harness_records', 'payload'],
-                ['effect_harness_revisions', 'content'],
-              ] as const)
-                for (const action of ['INSERT', 'UPDATE'] as const)
-                  yield* sql`CREATE TRIGGER ${sql(`${table}_${action}`)} AFTER ${sql.literal(action)} ON ${sql(table)}
-                BEGIN INSERT INTO measured_writes VALUES(LENGTH(NEW.${sql(column)})); END`
-            }
             const first = yield* seed(storage)
             const initial = yield* inspect
             for (let count = 1; count <= 24; count++)
@@ -459,57 +432,8 @@ it.live('rejects legacy physical layouts without migration or content changes', 
       assert.strictEqual(error.reason, 'unsupportedFormat')
       assert.strictEqual(yield* fs.readFileString(filename), legacy)
       assert.isFalse(yield* fs.exists(`${filename}.parts`))
-      yield* Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        yield* sql`CREATE TABLE effect_harness_metadata(singleton INTEGER PRIMARY KEY, format INTEGER, next_id INTEGER, next_seq INTEGER)`
-        yield* sql`INSERT INTO effect_harness_metadata VALUES(1,1,2,1)`
-        const before = yield* sql`SELECT * FROM effect_harness_metadata`
-        const failed = yield* Layer.build(Storage.layerSql).pipe(Effect.flip)
-        assert.strictEqual(failed.reason, 'unsupportedFormat')
-        assert.deepEqual(yield* sql`SELECT * FROM effect_harness_metadata`, before)
-        assert.lengthOf(
-          yield* sql`SELECT name FROM sqlite_master WHERE name='effect_harness_revisions'`,
-          0,
-        )
-      }).pipe(Effect.provide(SqliteClient.layer({ filename: ':memory:' })))
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
-)
-
-it.live(
-  'SQL revision keys and ownership reject impossible histories, and failed pruning rolls back atomically',
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        const storage = Context.get(yield* Layer.build(Storage.layerSql), Storage.Storage)
-        yield* sql`PRAGMA foreign_keys=ON`
-        yield* seed(storage)
-        for (const [id, seq] of [
-          [3, 1],
-          [3, 0],
-          [999, 1],
-        ])
-          yield* sql`INSERT INTO effect_harness_revisions VALUES(${id},${seq},'{}')`.pipe(
-            Effect.flip,
-          )
-        yield* sql`CREATE TRIGGER reject_revision BEFORE INSERT ON effect_harness_revisions
-      WHEN NEW.seq = 2 BEGIN SELECT RAISE(ABORT, 'injected failure after pruning'); END`
-        assert.strictEqual((yield* replace(storage, 1).pipe(Effect.flip)).reason, 'uncertain')
-        const reopened = Context.get(yield* Layer.build(Storage.layerSql), Storage.Storage)
-        assert.deepEqual(Option.getOrThrow(yield* reopened.document(currentId)).value, {
-          image,
-          count: 0,
-        })
-        assert.strictEqual(
-          (yield* sql`SELECT COUNT(*) AS n FROM effect_harness_revisions WHERE document_id=3`)[0]
-            ?.n,
-          1,
-        )
-        yield* sql`DROP TRIGGER reject_revision`
-        assert.strictEqual(yield* replace(reopened, 2), 2)
-      }),
-    ).pipe(Effect.provide(SqliteClient.layer({ filename: ':memory:' }))),
 )
 
 it.live('a corrupt JSONL prune marker cannot erase rewindable history during recovery', () =>

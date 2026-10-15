@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -10,9 +11,6 @@ import * as Layer from 'effect/Layer'
 import * as Path from 'effect/Path'
 import * as Ref from 'effect/Ref'
 import * as Sequence from 'effect-harness/Sequence'
-import * as Reactivity from 'effect/reactivity/Reactivity'
-import * as Statement from 'effect/sql/Statement'
-import * as SqlClient from 'effect/sql/SqlClient'
 import * as Storage from 'effect-harness/Storage'
 import * as Testing from 'effect-harness/Testing'
 
@@ -31,7 +29,10 @@ const persistent = (backend: 'sqlite' | 'jsonl') =>
     const filename = path.join(directory, 'storage')
     const layer =
       backend === 'sqlite'
-        ? Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename })))
+        ? Storage.layerJournal().pipe(
+            Layer.provide(SqlEventJournal.layer()),
+            Layer.provide(SqliteClient.layer({ filename })),
+          )
         : Storage.layerJsonl({ filePath: filename }).pipe(
             Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
           )
@@ -47,65 +48,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
       make,
       capabilities: { history: true, reopen: backend !== 'memory' },
     }))
-      it.live(test.name, () => test.run.pipe(Effect.provide(NodeServices.layer)))
-  })
-
-const sqlFixture = (control: 'COMMIT' | 'ROLLBACK' | 'ROLLBACK after conflict') =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem
-    const path = yield* Path.Path
-    const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'storage-conformance-sql-' })
-    const native = Context.get(
-      yield* Layer.build(SqliteClient.layer({ filename: path.join(directory, 'storage') })),
-      SqlClient.SqlClient,
-    )
-    const sql =
-      control === 'COMMIT'
-        ? native
-        : yield* SqlClient.make({
-            acquirer: Effect.succeed(yield* native.reserve),
-            compiler: Statement.makeCompilerSqlite(),
-            rollback: 'ROLLBACK BROKEN',
-            spanAttributes: [],
-          }).pipe(Effect.provide(Reactivity.layer))
-    const open = Layer.build(Storage.layerSql).pipe(
-      Effect.provideService(SqlClient.SqlClient, sql),
-      Effect.map((context) => Context.get(context, Storage.Storage)),
-    )
-    return {
-      open,
-      withAmbientTransaction: sql.withTransaction,
-      uncertainCommit: Effect.fn('fixture.uncertainCommit')(function* (
-        storage: Testing.StorageService,
-        writes: ReadonlyArray<Storage.StorageWrite>,
-      ) {
-        if (control === 'COMMIT') {
-          yield* sql`PRAGMA foreign_keys = ON`
-          yield* sql`CREATE TABLE parent(id INTEGER PRIMARY KEY)`
-          yield* sql`CREATE TABLE child(id INTEGER, FOREIGN KEY(id) REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED)`
-          yield* sql`CREATE TRIGGER fail_transaction AFTER INSERT ON effect_harness_records WHEN NEW.id = 2 BEGIN INSERT INTO child(id) VALUES(999); END`
-        } else if (control === 'ROLLBACK') {
-          yield* sql`CREATE TRIGGER fail_transaction AFTER INSERT ON effect_harness_records WHEN NEW.id = 2 BEGIN SELECT RAISE(ABORT, 'write fails before rollback'); END`
-        }
-        return yield* storage.commit(
-          control === 'ROLLBACK after conflict'
-            ? [{ _tag: 'conversation', value: { id: Storage.ROOT_CONVERSATION_ID } }]
-            : writes,
-        )
-      }),
-      recoverTransaction: Effect.gen(function* () {
-        if (control !== 'COMMIT') yield* sql`ROLLBACK`
-        if (control !== 'ROLLBACK after conflict') yield* sql`DROP TRIGGER fail_transaction`
-      }),
-    }
-  })
-
-for (const control of ['COMMIT', 'ROLLBACK', 'ROLLBACK after conflict'] as const)
-  describe(`public SQL guarantees: ${control}`, () => {
-    for (const test of Testing.storageConformance({
-      make: sqlFixture(control),
-      capabilities: { sqlAmbient: control === 'COMMIT', sqlUncertain: true },
-    }).filter((test) => test.name.includes('SQL')))
       it.live(test.name, () => test.run.pipe(Effect.provide(NodeServices.layer)))
   })
 

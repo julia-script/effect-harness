@@ -5,7 +5,7 @@ import type * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import type * as Option from 'effect/Option'
 import type * as Stream from 'effect/Stream'
-import type * as SqlClient from 'effect/sql/SqlClient'
+import type * as EventJournal from 'effect/eventlog/EventJournal'
 import type * as Record from './Record.js'
 import type * as Identity from './Identity.js'
 import type * as Sequence from './Sequence.js'
@@ -26,7 +26,7 @@ import type {
 } from './Record.js'
 import type { StorageError } from './StorageError.js'
 import * as Memory from './internal/Memory.js'
-import * as Sql from './internal/Sql.js'
+import * as Journal from './internal/Journal.js'
 import * as Jsonl from './internal/Jsonl.js'
 import { StorageFormat } from './StorageFormat.js'
 
@@ -107,16 +107,22 @@ export const layerMemory: Layer.Layer<Storage | StorageFormat, StorageError> = L
 )
 
 /**
- * Uses the supplied SQL client with an independent durable transaction per write.
- * Initialization, commit and ID allocation reject that client's ambient transactions
- * with an invalid StorageError; invoke them outside SqlClient.withTransaction.
- * Document headers and revisions use separate tables; commits append new revisions and
- * reclaim superseded current-only content in the same transaction. Schema version 2
- * rejects older physical layouts without migration. StorageFormat feature activation
- * remains independent and shares the metadata-row lock with domain writes.
+ * Replays complete commits from an application-supplied EventJournal into local state.
+ * Own one runtime per storeId, including across processes and journal instances.
+ * Each batch, ID reservation and format upgrade is one event. Reads use the local
+ * projection; close and reopen to reconcile an uncertain append. The journal must
+ * acknowledge durable writes independently of application transactions. Construct
+ * and use its backend outside ambient transactions, with a dedicated client.
+ * Effect 4.0.1's IndexedDB journal does not wait for transaction completion and
+ * cannot satisfy this contract; use an implementation that awaits commit or abort.
+ * Existing SQL-table and JSONL containers are not imported into this journal format.
  */
-export const layerSql: Layer.Layer<Storage | StorageFormat, StorageError, SqlClient.SqlClient> =
-  Layer.effectContext(Sql.make.pipe(Effect.map(services)))
+export const layerJournal = (
+  options: {
+    readonly storeId?: string
+  } = {},
+): Layer.Layer<Storage | StorageFormat, StorageError, EventJournal.EventJournal> =>
+  Layer.effectContext(Journal.make(options).pipe(Effect.map(services)))
 
 /**
  * Scoped single-writer journal. Own one writer per file, including across processes.

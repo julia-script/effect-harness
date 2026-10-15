@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as FileSystem from 'effect/FileSystem'
@@ -41,7 +42,8 @@ describe('authentic observation boundary', () => {
             const layer = (() => {
               if (backend === 'memory') return Storage.layerMemory
               if (backend === 'sqlite')
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(sql({ filename: `${directory}/native.sqlite` })),
                 )
               return Storage.layerJsonl({ filePath: `${directory}/native.jsonl` })

@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -93,7 +94,8 @@ describe('native progress settlement and recovery', () => {
             const memory = yield* Layer.build(Storage.layerMemory)
             const storage =
               backend === 'sqlite'
-                ? Storage.layerSql.pipe(
+                ? Storage.layerJournal().pipe(
+                    Layer.provide(SqlEventJournal.layer()),
                     Layer.provide(SqliteClient.layer({ filename: `${folder}/progress.sqlite` })),
                   )
                 : Storage.layerJsonl({ filePath: `${folder}/progress.jsonl` })

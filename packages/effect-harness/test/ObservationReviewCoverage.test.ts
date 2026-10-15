@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Context from 'effect/Context'
@@ -72,7 +73,10 @@ const nativeLayer = Effect.fn(function* (backend: Backend) {
   const sql = bun
     ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
     : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
-  return Storage.layerSql.pipe(Layer.provide(sql({ filename: `${directory}/store.sqlite` })))
+  return Storage.layerJournal().pipe(
+    Layer.provide(SqlEventJournal.layer()),
+    Layer.provide(sql({ filename: `${directory}/store.sqlite` })),
+  )
 })
 
 interface Replica {

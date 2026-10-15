@@ -33,6 +33,6 @@ Use one active local runtime per store. Shut down the old runtime before opening
 
 Declare a `Document` with a schema, initial value, and scope. Inside a tool handler, use `ToolExecution.commit` to stage changes with `Transaction.ensureDocument` and `Transaction.updateDocument`. The [complete document example](/examples/documents) updates a counter and appends an entry in one transaction.
 
-When using SQL, perform storage initialization and writes outside an application `SqlClient.withTransaction`. If a commit reports an uncertain storage error, stop using that instance and reopen the store before reconciling the outcome.
+The example supplies Effect’s `SqlEventJournal` to `Storage.layerJournal()`. With a SQL journal, use a dedicated client and perform storage initialization and writes outside an application `SqlClient.withTransaction`; the generic journal adapter cannot detect ambient transactions. If a commit reports an uncertain storage error, stop using that instance and reopen the store before reconciling the outcome.
 
 See [storage layers](/reference/storage) for adapter requirements and [recovery](/explanation/recovery) for the limits around external side effects.

@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { NodeServices } from '@effect/platform-node'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
@@ -1076,7 +1077,8 @@ describe('native nested recovery and ownership', () => {
                 ? Effect.succeed(memory)
                 : Layer.build(
                     backend === 'sqlite'
-                      ? Storage.layerSql.pipe(
+                      ? Storage.layerJournal().pipe(
+                          Layer.provide(SqlEventJournal.layer()),
                           Layer.provide(sqlite({ filename: `${directory}/cold.sqlite` })),
                         )
                       : Storage.layerJsonl({ filePath: `${directory}/cold.jsonl` }),

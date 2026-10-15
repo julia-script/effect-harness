@@ -1,7 +1,7 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
-import * as SqlClient from 'effect/sql/SqlClient'
 import * as Effect from 'effect/Effect'
 import * as Brand from 'effect/Brand'
 import * as Domain from '../src/Record.js'
@@ -69,43 +69,6 @@ const testError = (cause: unknown) =>
     message: 'Native fixture access failed',
     cause,
   })
-const readSql = (id: number) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
-    const rows = yield* sql`SELECT payload FROM effect_harness_records WHERE id=${id}`
-    const row = yield* Schema.decodeUnknownEffect(RowJson)(rows[0]?.payload)
-    if (row._tag !== 'document') return row
-    const revisions =
-      yield* sql`SELECT CAST(seq AS TEXT) AS seq, content FROM effect_harness_revisions
-    WHERE document_id=${id} ORDER BY seq`
-    return {
-      ...row,
-      value: {
-        ...row.value,
-        revisions: yield* Effect.forEach(revisions, (revision) =>
-          Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(revision.content).pipe(
-            Effect.map((content) => ({ seq: damagedSeq(Number(revision.seq)), content })),
-          ),
-        ),
-      },
-    }
-  }).pipe(Effect.mapError(testError))
-const writeSql = (row: Row.Stored) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
-    const header =
-      row._tag === 'document' ? { ...row, value: { ...row.value, revisions: [] } } : row
-    const payload = yield* Schema.encodeEffect(RowJson)(header)
-    yield* sql`UPDATE effect_harness_records SET payload=${payload} WHERE id=${Row.idOf(row)}`
-    if (row._tag === 'document') {
-      yield* sql`DELETE FROM effect_harness_revisions WHERE document_id=${row.value.record.id}`
-      for (const revision of row.value.revisions) {
-        const content = JSON.stringify(revision.content)
-        yield* sql`INSERT INTO effect_harness_revisions (document_id,seq,content)
-        VALUES (${row.value.record.id},${revision.seq},${content})`
-      }
-    }
-  }).pipe(Effect.mapError(testError))
 const jsonlReference = (filePath: string, id: number) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
@@ -187,10 +150,6 @@ const modes = [
   'unallocated-retirement',
 ] as const
 type Mode = (typeof modes)[number]
-// These corruptions cannot be represented by the SQL primary key, CHECK and ORDER BY.
-const representable = (backend: string, mode: Mode) =>
-  backend !== 'sqlite' ||
-  !['duplicate-sequence', 'descending-sequence', 'zero-sequence'].includes(mode)
 const successful = (mode: Mode) =>
   ['missing-body', 'malformed-body', 'malformed-delta', 'valid'].includes(mode)
 // Deliberately bypass sequence validation only when damaging a native test fixture.
@@ -347,10 +306,8 @@ const verifyCommit = <E, R>(
     }
   }).pipe(Effect.provideService(Storage.Storage, storage))
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
-  for (const mode of modes.filter(
-    (mode) => representable(backend, mode) && (successful(mode) || modes.indexOf(mode) >= 9),
-  )) {
+for (const backend of ['memory', 'jsonl'] as const) {
+  for (const mode of modes.filter((mode) => successful(mode) || modes.indexOf(mode) >= 9)) {
     it.effect(
       `native ${backend} revalidates ${mode} after staging and rolls back mixed writes`,
       () =>
@@ -368,26 +325,6 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                 (row) =>
                   access.metadata.pipe(Effect.flatMap((metadata) => access.save([row], metadata))),
                 access.metadata,
-              )
-            } else if (backend === 'sqlite') {
-              yield* Effect.gen(function* () {
-                const sql = yield* SqlClient.SqlClient
-                const storage = yield* Storage.Storage
-                yield* verifyCommit(
-                  storage,
-                  mode,
-                  readSql,
-                  writeSql,
-                  sql`SELECT * FROM effect_harness_metadata`.pipe(Effect.mapError(testError)),
-                )
-              }).pipe(
-                Effect.provide(
-                  Storage.layerSql.pipe(
-                    Layer.provideMerge(
-                      SqliteClient.layer({ filename: `${directory}/store.sqlite` }),
-                    ),
-                  ),
-                ),
               )
             } else {
               const filePath = `${directory}/store.jsonl`
@@ -460,17 +397,16 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
 }
 
 for (const ordinary of [false, true]) {
-  for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
+  for (const backend of ['memory', 'jsonl'] as const) {
     for (const mode of modes.filter(
       (mode) =>
-        representable(backend, mode) &&
-        (!ordinary ||
-          ![
-            'wrong-kind',
-            'retirement-before-creation',
-            'retirement-before-revision',
-            'unallocated-retirement',
-          ].includes(mode)),
+        !ordinary ||
+        ![
+          'wrong-kind',
+          'retirement-before-creation',
+          'retirement-before-revision',
+          'unallocated-retirement',
+        ].includes(mode),
     )) {
       it.effect(
         `native ${backend} ${ordinary ? 'ordinary' : 'metadata'} ${mode} validates fresh headers and persists only retirement`,
@@ -496,28 +432,6 @@ for (const ordinary of [false, true]) {
                 })
                 yield* verify(selected, mode, read, unchanged, ordinary).pipe(
                   Effect.provideService(Storage.Storage, storage),
-                )
-              } else if (backend === 'sqlite') {
-                yield* Effect.gen(function* () {
-                  const sql = yield* SqlClient.SqlClient
-                  const selected = yield* seed
-                  const changed = yield* corrupt(yield* readSql(selected.id), mode)
-                  yield* writeSql(changed)
-                  const counters = yield* sql`SELECT * FROM effect_harness_metadata`
-                  const read = readSql(selected.id)
-                  const unchanged = Effect.gen(function* () {
-                    assert.deepEqual(yield* sql`SELECT * FROM effect_harness_metadata`, counters)
-                    assert.deepEqual(yield* read, changed)
-                  }).pipe(Effect.mapError(testError))
-                  yield* verify(selected, mode, read, unchanged, ordinary)
-                }).pipe(
-                  Effect.provide(
-                    Storage.layerSql.pipe(
-                      Layer.provideMerge(
-                        SqliteClient.layer({ filename: `${directory}/store.sqlite` }),
-                      ),
-                    ),
-                  ),
                 )
               } else {
                 const filePath = `${directory}/store.jsonl`
@@ -709,7 +623,8 @@ for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
           else if (backend === 'sqlite')
             yield* run.pipe(
               Effect.provide(
-                Storage.layerSql.pipe(
+                Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provideMerge(SqliteClient.layer({ filename: `${directory}/store.sqlite` })),
                 ),
               ),

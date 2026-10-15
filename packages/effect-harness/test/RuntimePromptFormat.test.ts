@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import { SqliteClient } from '@effect/sql-sqlite-node'
@@ -22,7 +23,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
           const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
           const layer = (() => {
             if (backend === 'sqlite')
-              return Storage.layerSql.pipe(
+              return Storage.layerJournal().pipe(
+                Layer.provide(SqlEventJournal.layer()),
                 Layer.provide(SqliteClient.layer({ filename: `${directory}/old.sqlite` })),
               )
             if (backend === 'jsonl')

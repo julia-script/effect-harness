@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -119,7 +120,8 @@ describe('scheduler durable reopen and rejected persistence', () => {
             const memory = yield* Layer.build(Storage.layerMemory)
             const storage =
               backend === 'sqlite'
-                ? Storage.layerSql.pipe(
+                ? Storage.layerJournal().pipe(
+                    Layer.provide(SqlEventJournal.layer()),
                     Layer.provide(SqliteClient.layer({ filename: `${directory}/tasks.sqlite` })),
                   )
                 : Storage.layerJsonl({ filePath: `${directory}/tasks.jsonl` })

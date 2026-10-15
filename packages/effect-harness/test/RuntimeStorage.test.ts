@@ -1,3 +1,4 @@
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import * as Registry from 'effect-harness/Registry'
 import * as Task from 'effect-harness/Task'
 import { TaskExecution } from 'effect-harness/TaskExecution'
@@ -58,7 +59,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
             const layer = (() => {
               if (backend === 'sqlite')
-                return Storage.layerSql.pipe(
+                return Storage.layerJournal().pipe(
+                  Layer.provide(SqlEventJournal.layer()),
                   Layer.provide(SqliteClient.layer({ filename: `${directory}/store.db` })),
                 )
               if (backend === 'jsonl')
@@ -282,7 +284,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
               const layer = (() => {
                 if (backend === 'sqlite')
-                  return Storage.layerSql.pipe(
+                  return Storage.layerJournal().pipe(
+                    Layer.provide(SqlEventJournal.layer()),
                     Layer.provide(SqliteClient.layer({ filename: `${directory}/store.db` })),
                   )
                 if (backend === 'jsonl')

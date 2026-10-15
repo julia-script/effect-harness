@@ -1,3 +1,6 @@
+import * as JournalFixture from './fixtures/Journal.js'
+import * as EventJournal from 'effect/eventlog/EventJournal'
+import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
@@ -9,7 +12,6 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
 import * as Stream from 'effect/Stream'
-import * as SqlClient from 'effect/sql/SqlClient'
 import * as Document from 'effect-harness/Document'
 import * as Record from 'effect-harness/Record'
 import * as Session from 'effect-harness/Session'
@@ -53,7 +55,10 @@ const contentWrites = (writes: ReadonlyArray<Record.StorageWrite>) =>
 const backendLayer = (backend: 'memory' | 'sqlite' | 'jsonl', file: string) => {
   if (backend === 'memory') return Storage.layerMemory
   if (backend === 'sqlite')
-    return Storage.layerSql.pipe(Layer.provide(SqliteClient.layer({ filename: file })))
+    return Storage.layerJournal().pipe(
+      Layer.provide(SqlEventJournal.layer()),
+      Layer.provide(SqliteClient.layer({ filename: file })),
+    )
   return Storage.layerJsonl({ filePath: file })
 }
 const fixture = Effect.gen(function* () {
@@ -380,15 +385,17 @@ for (const backend of ['sqlite', 'jsonl'] as const) {
           )
         } else {
           yield* Effect.gen(function* () {
-            const sql = yield* SqlClient.SqlClient
-            const marker =
-              (yield* sql`SELECT format, minimum_reader AS minimumReader, next_id AS nextId, next_seq AS nextSeq FROM effect_harness_metadata`)[0]
+            const marker = (yield* JournalFixture.frames).at(-1)?.metadata
             const decoded = yield* Schema.decodeUnknownEffect(Reader2.Metadata)(marker)
             assert.strictEqual(
               (yield* Reader2.requireSupported(decoded).pipe(Effect.flip)).reason,
               'unsupportedFormat',
             )
-          }).pipe(Effect.provide(SqliteClient.layer({ filename: file })))
+          }).pipe(
+            Effect.provide(
+              SqlEventJournal.layer().pipe(Layer.provide(SqliteClient.layer({ filename: file }))),
+            ),
+          )
         }
         yield* StorageFormat.inspect.pipe(
           Effect.provide(backendLayer(backend, file)),
@@ -943,18 +950,29 @@ for (const backend of ['sqlite', 'jsonl'] as const) {
               assert.strictEqual(yield* fs.readFileString(file), bytes)
             } else {
               yield* Effect.gen(function* () {
-                const sql = yield* SqlClient.SqlClient
-                yield* Effect.scoped(Layer.build(Storage.layerSql))
-                yield* sql`UPDATE effect_harness_metadata SET format=${marker.format},minimum_reader=${marker.minimumReader}`
-                const before = yield* sql`SELECT * FROM effect_harness_metadata`
+                const journal = yield* EventJournal.EventJournal
+                yield* JournalFixture.append({
+                  version: 1,
+                  revision: 1,
+                  previous: null,
+                  metadata: { ...marker, nextId: 2, nextSeq: 1 },
+                  rows: [],
+                })
+                const before = yield* journal.entries
                 const failure = yield* StorageFormat.inspect.pipe(
-                  Effect.provide(Storage.layerSql),
+                  Effect.provide(Storage.layerJournal()),
                   Effect.flip,
                 )
                 assert.strictEqual(failure._tag, 'StorageError')
                 if (failure._tag === 'StorageError') assert.strictEqual(failure.reason, 'corrupt')
-                assert.deepEqual(yield* sql`SELECT * FROM effect_harness_metadata`, before)
-              }).pipe(Effect.provide(SqliteClient.layer({ filename: file })))
+                assert.deepEqual(yield* journal.entries, before)
+              }).pipe(
+                Effect.provide(
+                  SqlEventJournal.layer().pipe(
+                    Layer.provide(SqliteClient.layer({ filename: file })),
+                  ),
+                ),
+              )
             }
           }),
         ).pipe(Effect.provide(NodeServices.layer)),

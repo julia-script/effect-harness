@@ -16,7 +16,7 @@ export const Metadata = Schema.Struct({
 export type Metadata = typeof Metadata.Type
 export const initialMetadata: Metadata = { format: 1, nextId: 2, nextSeq: 1 }
 
-/** Validate before any record replay, including metadata supplied by another SQL writer. */
+/** Validate before any record replay, including journal format barriers. */
 export const requireSupported = Effect.fnUntraced(function* (metadata: Metadata) {
   if (metadata.format > 12 || (metadata.minimumReader ?? 1) > 12)
     return yield* Errors.make(
