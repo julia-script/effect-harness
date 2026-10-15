@@ -7,6 +7,7 @@ import * as Redacted from 'effect/Redacted'
 import * as TestClock from 'effect/testing/TestClock'
 import * as Credential from '../src/provider-auth/Credential.js'
 import * as Store from '../src/provider-auth/CredentialStore.js'
+import * as MemoryCredentialStore from '../src/provider-auth/MemoryCredentialStore.js'
 import * as Resolver from '../src/provider-auth/Resolver.js'
 import { AuthError } from '../src/provider-auth/AuthError.js'
 
@@ -26,7 +27,7 @@ describe('provider credential lifecycle', () => {
     () =>
       Effect.gen(function* () {
         for (const operation of ['logout', 'replace'] as const) {
-          const store = yield* Store.makeMemory
+          const store = yield* MemoryCredentialStore.make
           yield* Store.save(credential(1)).pipe(Effect.provideService(Store.CredentialStore, store))
           const started = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
@@ -71,7 +72,7 @@ describe('provider credential lifecycle', () => {
 
   it.effect('a failed persistence boundary does not publish the rotated credential', () =>
     Effect.gen(function* () {
-      const memory = yield* Store.makeMemory
+      const memory = yield* MemoryCredentialStore.make
       yield* Store.save(credential(1)).pipe(Effect.provideService(Store.CredentialStore, memory))
       const store = Store.CredentialStore.of({
         ...memory,
@@ -95,7 +96,7 @@ describe('provider credential lifecycle', () => {
   )
   it.effect('deduplicates concurrent refresh and publishes only persisted credentials', () =>
     Effect.gen(function* () {
-      const store = yield* Store.makeMemory
+      const store = yield* MemoryCredentialStore.make
       const now = yield* Clock.currentTimeMillis
       yield* Store.save(credential(now + 1)).pipe(
         Effect.provideService(Store.CredentialStore, store),
@@ -131,7 +132,7 @@ describe('provider credential lifecycle', () => {
     'persists a rotated token despite interruption, then orders logout after the refresh',
     () =>
       Effect.gen(function* () {
-        const store = yield* Store.makeMemory
+        const store = yield* MemoryCredentialStore.make
         const now = yield* Clock.currentTimeMillis
         yield* Store.save(credential(now + 1)).pipe(
           Effect.provideService(Store.CredentialStore, store),
@@ -170,7 +171,7 @@ describe('provider credential lifecycle', () => {
 
   it.effect('bounds a hung refresh even inside the masked store transaction', () =>
     Effect.gen(function* () {
-      const store = yield* Store.makeMemory
+      const store = yield* MemoryCredentialStore.make
       const now = yield* Clock.currentTimeMillis
       yield* Store.save(credential(now + 1)).pipe(
         Effect.provideService(Store.CredentialStore, store),
@@ -191,7 +192,7 @@ describe('provider credential lifecycle', () => {
 
   it.effect('refuses replacement bindings and expired external-refresh credentials', () =>
     Effect.gen(function* () {
-      const store = yield* Store.makeMemory
+      const store = yield* MemoryCredentialStore.make
       yield* Store.save(credential(1)).pipe(Effect.provideService(Store.CredentialStore, store))
       const { resolve } = yield* Resolver.make({ binding }).pipe(
         Effect.provideService(Store.CredentialStore, store),

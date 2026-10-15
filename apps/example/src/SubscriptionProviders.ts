@@ -20,7 +20,7 @@ import * as Record from 'effect-harness/Record'
 import * as Tool from 'effect-harness/Tool'
 import * as Toolkit from 'effect-harness/Toolkit'
 import { AuthError, CredentialStore } from 'effect-harness/provider-auth'
-import { CallbackServer, CredentialStore as FileStore } from 'effect-harness/provider-auth-node'
+import { CallbackServer, FileSystemCredentialStore } from 'effect-harness/provider-auth-node'
 import { Model as CodexModel, OAuth as CodexOAuth } from 'effect-harness/provider-openai-codex'
 import {
   AnthropicLanguageModel,
@@ -60,7 +60,7 @@ export const program = Effect.scoped(
     const path = process.argv[3]
     if (path === undefined)
       return yield* new AuthError.AuthError({ reason: 'InvalidConfiguration' })
-    const store = yield* FileStore.make({ path })
+    const store = yield* FileSystemCredentialStore.make({ path })
     const loginOptions = { profile: 'personal', interaction }
     const execute = Effect.gen(function* () {
       switch (command) {

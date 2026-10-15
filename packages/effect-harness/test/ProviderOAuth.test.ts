@@ -9,6 +9,7 @@ import * as TestClock from 'effect/testing/TestClock'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import * as Store from '../src/provider-auth/CredentialStore.js'
+import * as MemoryCredentialStore from '../src/provider-auth/MemoryCredentialStore.js'
 import * as Codex from '../src/provider-openai-codex/OAuth.js'
 import * as Claude from '../src/provider-anthropic/OAuth.js'
 
@@ -23,7 +24,7 @@ describe('provider OAuth protocol fixtures', () => {
         `${provider}: PKCE ${valid ? 'completion exchanges exact verifier and redirect' : 'state mismatch never exchanges or stores credentials'}`,
         () =>
           Effect.gen(function* () {
-            const store = yield* Store.makeMemory
+            const store = yield* MemoryCredentialStore.make
             let authorization: URL | undefined
             let calls = 0
             const http = HttpClient.make((request) =>
@@ -109,7 +110,7 @@ describe('provider OAuth protocol fixtures', () => {
     'Codex device polling observes pending cadence and exchanges the returned device verifier',
     () =>
       Effect.gen(function* () {
-        const store = yield* Store.makeMemory
+        const store = yield* MemoryCredentialStore.make
         const started = yield* Deferred.make<void>()
         const polled = yield* Deferred.make<void>()
         let polls = 0
@@ -187,7 +188,7 @@ describe('provider OAuth protocol fixtures', () => {
   it.effect('token failures discard remote bodies and malformed secrets', () =>
     Effect.gen(function* () {
       for (const status of [200, 400, 503]) {
-        const store = yield* Store.makeMemory
+        const store = yield* MemoryCredentialStore.make
         let state = ''
         const error = yield* Claude.loginCopyCode({
           profile: 'test',
@@ -227,7 +228,7 @@ describe('provider OAuth protocol fixtures', () => {
 it.effect('device expiry interrupts a pending interaction before any poll or token exchange', () =>
   Effect.gen(function* () {
     const started = yield* Deferred.make<void>()
-    const store = yield* Store.makeMemory
+    const store = yield* MemoryCredentialStore.make
     let requests = 0
     let interrupted = false
     const login = yield* Codex.loginDevice({

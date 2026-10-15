@@ -1,8 +1,6 @@
 /** Credential storage is independent of harness conversation storage. */
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
-import * as Semaphore from 'effect/Semaphore'
 import * as Credential from './Credential.js'
 import type { AuthError } from './AuthError.js'
 
@@ -27,28 +25,6 @@ export interface Service {
 export class CredentialStore extends Context.Service<CredentialStore, Service>()(
   'effect-harness/provider-auth/CredentialStore',
 ) {}
-
-/** Temporary, process-local storage. Share this service instance to coordinate refreshers. */
-export const makeMemory = Effect.gen(function* () {
-  const lock = yield* Semaphore.make(1)
-  const values = new Map<string, Credential.Credential>()
-  return CredentialStore.of({
-    read: (key) => Effect.sync(() => values.get(key)),
-    list: Effect.sync(() => [...values.values()].map(Credential.metadata)),
-    modify: (key, f) =>
-      lock.withPermits(1)(
-        Effect.uninterruptible(
-          Effect.gen(function* () {
-            const [result, next] = yield* f(values.get(key))
-            if (next === undefined) values.delete(key)
-            else values.set(key, next)
-            return result
-          }),
-        ),
-      ),
-  })
-})
-export const layerMemory = Layer.effect(CredentialStore, makeMemory)
 
 /** Explicit login/import operation; callers must assign a fresh binding identity on replacement. */
 export const save = (credential: Credential.Credential) =>

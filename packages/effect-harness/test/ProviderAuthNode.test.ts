@@ -12,7 +12,7 @@ import * as Effect from 'effect/Effect'
 import * as Redacted from 'effect/Redacted'
 import * as Credential from '../src/provider-auth/Credential.js'
 import * as Store from '../src/provider-auth/CredentialStore.js'
-import * as FileStore from '../src/provider-auth-node/CredentialStore.js'
+import * as FileSystemCredentialStore from '../src/provider-auth-node/FileSystemCredentialStore.js'
 import * as Resolver from '../src/provider-auth/Resolver.js'
 import * as Callback from '../src/provider-auth-node/CallbackServer.js'
 import * as Login from '../src/provider-auth/Login.js'
@@ -25,7 +25,7 @@ it.live('two OS processes sharing a durable store rotate an expiring credential 
         (path) => Effect.promise(() => Fs.rm(path, { recursive: true, force: true })),
       )
       const path = Path.join(directory, 'credentials.json')
-      const store = yield* FileStore.make({ path })
+      const store = yield* FileSystemCredentialStore.make({ path })
       yield* Store.save({
         type: 'oauth',
         binding: { provider: 'anthropic', profile: 'test', identity: 'login' },
@@ -64,8 +64,8 @@ it.live(
           (path) => Effect.promise(() => Fs.rm(path, { recursive: true, force: true })),
         )
         const path = Path.join(directory, 'credentials.json')
-        const first = yield* FileStore.make({ path })
-        const second = yield* FileStore.make({ path })
+        const first = yield* FileSystemCredentialStore.make({ path })
+        const second = yield* FileSystemCredentialStore.make({ path })
         const binding = { provider: 'anthropic', profile: 'test', identity: 'login' } as const
         yield* Store.save({
           type: 'oauth',
@@ -93,7 +93,7 @@ it.live(
         )
         yield* Effect.all([a.resolve, b.resolve], { concurrency: 'unbounded' })
         assert.strictEqual(refreshes, 1)
-        const reopened = yield* FileStore.make({ path })
+        const reopened = yield* FileSystemCredentialStore.make({ path })
         const stored = yield* reopened.read(Credential.key(binding))
         assert.strictEqual(
           stored?.type === 'oauth' && Redacted.value(stored.accessToken),
@@ -115,7 +115,7 @@ it.live('contended file locks time out without stealing ownership', () =>
         (path) => Effect.promise(() => Fs.rm(path, { recursive: true, force: true })),
       )
       const path = Path.join(directory, 'credentials.json')
-      const store = yield* FileStore.make({ path, lockTimeoutMs: 50 })
+      const store = yield* FileSystemCredentialStore.make({ path, lockTimeoutMs: 50 })
       yield* Effect.promise(() => Fs.writeFile(`${path}.lock`, 'held'))
       const error = yield* Effect.flip(
         store.modify('key', () => Effect.succeed([undefined, undefined] as const)),
@@ -187,7 +187,7 @@ for (const phase of ['open-directory', 'sync-directory', 'unlock'] as const)
           (path) => Effect.promise(() => Fs.rm(path, { recursive: true, force: true })),
         )
         const path = Path.join(directory, 'credentials.json')
-        const store = yield* FileStore.make({ path })
+        const store = yield* FileSystemCredentialStore.make({ path })
         const binding = { provider: 'anthropic', profile: 'test', identity: 'before' } as const
         const credential: Credential.OAuth = {
           type: 'oauth',
