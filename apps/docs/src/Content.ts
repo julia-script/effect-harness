@@ -15,6 +15,7 @@ import submissionReference from '../content/submissions.md?raw'
 import storageReference from '../content/storage.md?raw'
 import firstSource from './examples/FirstConversation.ts?raw'
 import toolsSource from './examples/Tools.ts?raw'
+import toolImagesSource from './examples/ToolImages.ts?raw'
 import observeSource from './examples/Observe.ts?raw'
 
 const embed = (body: string, name: string, source: string) =>
@@ -58,7 +59,7 @@ export const pages: ReadonlyArray<Page> = [
     title: 'Tools & dependencies',
     group: 'Guides',
     summary: 'Declare a contract. Supply its implementation through a Layer.',
-    body: embed(tools, 'tools', toolsSource),
+    body: embed(embed(tools, 'tools', toolsSource), 'tool-images', toolImagesSource),
     source: 'apps/docs/content/tools.md',
   },
   {
