@@ -1,3 +1,4 @@
+import * as RuntimeRecords from './fixtures/RuntimeRecords.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
@@ -85,9 +86,7 @@ const fixture = Effect.fnUntraced(function* (
       Effect.gen(function* () {
         counters.restore++
         const task = (yield* tasks).find((task) => task.state.checkpoint !== undefined)!
-        accepted ??= yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ preparation: Schema.toCodecJson(Prepared.SnapshotSchema) }),
-        )(task.state.checkpoint).pipe(Effect.map((wire) => wire.preparation))
+        accepted ??= yield* RuntimeRecords.preparation(storage, task.state.checkpoint)
         assert.strictEqual(
           (yield* entries).filter((entry) => entry.kind === 'context.change').length,
           1,
@@ -189,6 +188,7 @@ const fixture = Effect.fnUntraced(function* (
     tasks,
     entries,
     submission: storage.submission(job.id),
+    storage,
     counters,
     accepted: () => accepted!,
     received: () => received!,
@@ -216,10 +216,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             }
             const task = (yield* f.tasks)[0]!
             assert.strictEqual(task.state.status, 'running')
-            const wire = yield* Schema.decodeUnknownEffect(
-              Schema.Struct({ preparation: Schema.toCodecJson(Prepared.SnapshotSchema) }),
-            )(task.state.checkpoint)
-            assert.deepStrictEqual(wire.preparation, f.accepted())
+            const wire = yield* RuntimeRecords.preparation(f.storage, task.state.checkpoint)
+            assert.deepStrictEqual(wire, f.accepted())
             assert.notStrictEqual(Option.getOrThrow(yield* f.submission).status, 'unanswered')
             yield* Effect.sleep('50 millis')
             assert.deepStrictEqual(f.counters, {
@@ -231,7 +229,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             })
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(f.store))).formatVersion,
-              5,
+              11,
             )
             yield* Scope.close(f.scope, Exit.void)
             assert.isTrue(Exit.isFailure(yield* f.first.backend.wait(f.job.id).pipe(Effect.exit)))

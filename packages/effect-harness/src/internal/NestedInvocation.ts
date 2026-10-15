@@ -15,7 +15,7 @@ import * as Retention from '../OutputRetention.js'
 import * as Record from '../Record.js'
 import type * as RegistryScope from '../RegistryScope.js'
 import * as StorageFormat from '../StorageFormat.js'
-import type * as Task from '../Task.js'
+import * as Task from '../Task.js'
 import type * as TaskExecution from '../TaskExecution.js'
 import * as ToolProgress from '../ToolProgress.js'
 import * as Transaction from '../Transaction.js'
@@ -24,6 +24,7 @@ import { ExecutionError } from '../ExecutionError.js'
 import * as Round from './ToolRound.js'
 import * as Value from './DocumentValue.js'
 import * as Preparation from './RequestPreparation.js'
+import * as ResultRecord from './ResultRecord.js'
 
 export const ContractSchema = Schema.Struct({
   tool: Prepared.ToolSchema,
@@ -45,9 +46,43 @@ export const InputSchema = Schema.Struct({
   progressEnabled: Schema.Boolean,
 })
 export type Input = typeof InputSchema.Type
+/** Terminal children retain only identity; the caller owns invocation arguments and bindings. */
+export const ReferenceSchema = Schema.Struct({
+  parentTaskId: Record.TaskId,
+  key: Schema.NonEmptyString,
+  logicalCallId: Usage.NestedCallId,
+  call: Schema.Struct({ id: Schema.NonEmptyString, name: Schema.NonEmptyString }),
+})
+export type Reference = typeof ReferenceSchema.Type
+export const inputs = Document.family({
+  kind: 'harness.tool.nested.input',
+  version: 1,
+  scope: 'task',
+  schema: Schema.Struct({ input: Schema.optionalKey(Schema.toCodecJson(InputSchema)) }),
+  initial: () => ({}),
+})
+const inputTarget = (ref: Reference): Document.Target => ({
+  scope: { _tag: 'task', taskId: ref.parentTaskId },
+  key: ref.key,
+})
+export const readInput = Effect.fnUntraced(function* (tx: Transaction.Transaction, ref: Reference) {
+  const saved = yield* Transaction.snapshot(tx, inputs, inputTarget(ref))
+  if (Option.isNone(saved) || saved.value.value.input === undefined)
+    return yield* error('missingResult', 'The caller-owned invocation input is absent')
+  const input = saved.value.value.input
+  if (
+    input.parentTaskId !== ref.parentTaskId ||
+    input.key !== ref.key ||
+    input.logicalCallId !== ref.logicalCallId ||
+    input.call.id !== ref.call.id ||
+    input.call.name !== ref.call.name
+  )
+    return yield* error('conflict', 'The invocation input belongs to another call')
+  return input
+})
 export const CompletionSchema = Schema.Struct({ taskId: Record.TaskId, callId: Usage.NestedCallId })
 export type Definition = Task.Any & {
-  readonly input: typeof InputSchema
+  readonly input: typeof ReferenceSchema
   readonly checkpoint: typeof Round.CheckpointSchema
   readonly success: typeof CompletionSchema
   readonly failure: typeof Schema.Json
@@ -61,7 +96,6 @@ export const calls = Document.define({
       Schema.String,
       Schema.Struct({
         handle: Invocation.HandleSchema,
-        input: InputSchema,
       }),
     ),
   }),
@@ -72,7 +106,7 @@ export const results = Document.family({
   version: 1,
   scope: 'task',
   schema: Schema.Struct({
-    receipt: Schema.optionalKey(Schema.toCodecJson(Invocation.WireReceiptSchema)),
+    receipt: Schema.optionalKey(Schema.toCodecJson(ResultRecord.receipt)),
   }),
   initial: () => ({}),
 })
@@ -101,10 +135,10 @@ export const protection = (inspect: Effect.Effect<StorageFormat.Format, StorageF
   Effect.gen(function* () {
     const marker = yield* inspect
     yield* StorageFormat.validate(marker)
-    if (marker.minimumReaderVersion < 10)
+    if (marker.minimumReaderVersion < 11)
       return yield* new StorageFormat.StorageFormatError({
         reason: 'unsupported',
-        message: 'Nested execution requires container and minimum reader protection 10/10',
+        message: 'Nested execution requires container and minimum reader protection 11/11',
       })
   })
 
@@ -123,12 +157,15 @@ export const assert = Effect.fnUntraced(function* (
   if (
     saved === undefined ||
     saved.handle.taskId !== taskId ||
-    !sameInput(saved.input, input) ||
     Option.isNone(child) ||
     child.value.owner !== input.parentTaskId ||
     child.value.conversationId !== conversationId
   )
     return yield* error('conflict', 'The child does not own this parent invocation slot')
+  if (
+    !sameInput(yield* readInput(tx, yield* Task.decode(ReferenceSchema, child.value.input)), input)
+  )
+    return yield* error('conflict', 'The child invocation input changed')
   return saved.handle
 })
 
@@ -337,7 +374,7 @@ export const make = Effect.fnUntraced(function* (
       const old = Option.isSome(index) ? index.value.value.calls : {}
       const existing = Object.hasOwn(old, slot) ? old[slot] : undefined
       if (existing !== undefined) {
-        if (!sameInput(existing.input, input))
+        if (!sameInput(yield* readInput(tx, input), input))
           return yield* error(
             'conflict',
             'This key already names another invocation contract or arguments',
@@ -349,7 +386,14 @@ export const make = Effect.fnUntraced(function* (
       yield* requireFormat
       yield* protection(inspectFormat)
       yield* check
-      const child = yield* execution.createChild(tx, definition, input)
+      yield* Transaction.ensureDocument(tx, inputs, inputTarget(input))
+      yield* Transaction.setDocument(tx, inputs, inputTarget(input), { input })
+      const child = yield* execution.createChild(tx, definition, {
+        parentTaskId: input.parentTaskId,
+        key: input.key,
+        logicalCallId: input.logicalCallId,
+        call: { id: input.call.id, name: input.call.name },
+      })
       const handle: Invocation.Handle = {
         parentTaskId: execution.taskId,
         conversationId: execution.conversationId,
@@ -360,7 +404,7 @@ export const make = Effect.fnUntraced(function* (
       }
       yield* Transaction.ensureDocument(tx, calls, target(execution.taskId))
       yield* Transaction.setDocument(tx, calls, target(execution.taskId), {
-        calls: { ...old, [slot]: { handle, input } },
+        calls: { ...old, [slot]: { handle } },
       })
       yield* Transaction.ensureDocument(tx, results, target(execution.taskId, child.id))
       if (input.progressEnabled)

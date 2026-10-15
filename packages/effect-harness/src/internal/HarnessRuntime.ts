@@ -151,8 +151,8 @@ export const make = Effect.fnUntraced(function* <
         return Effect.void
       })
       const requireSubmissionFormat = StorageFormat.requireSupportedFormat({
-        formatVersion: 4,
-        minimumReaderVersion: 4,
+        formatVersion: 11,
+        minimumReaderVersion: 11,
       }).pipe(Effect.provideContext(context))
       const drainIdle = Effect.fnUntraced(function* () {
         yield* Session.commit(session, (tx) =>
@@ -331,8 +331,8 @@ export const make = Effect.fnUntraced(function* <
           }),
         )
       const nestedFormat = StorageFormat.requireSupportedFormat({
-        formatVersion: 10,
-        minimumReaderVersion: 10,
+        formatVersion: 11,
+        minimumReaderVersion: 11,
       }).pipe(Effect.provideContext(context))
       const inspectNestedFormat = StorageFormat.inspect.pipe(Effect.provideContext(context))
       const nestedDefinition = NestedToolTask.make(registry, inspectNestedFormat)
@@ -355,7 +355,7 @@ export const make = Effect.fnUntraced(function* <
         registry.uninstall('native-runtime-nested').pipe(Effect.ignore),
       )
       yield* Effect.addFinalizer(() => Effect.sync(() => NestedToolTask.clear(nestedDefinition)))
-      const toolDefinition = ToolTask.make(registry)
+      const toolDefinition = ToolTask.make(registry, requireSubmissionFormat)
       yield* registry.install(
         Registry.withTask(
           {
@@ -379,23 +379,23 @@ export const make = Effect.fnUntraced(function* <
         (lease) => ({
           toolTask: toolDefinition,
           requireToolRoundFormat: StorageFormat.requireSupportedFormat({
-            formatVersion: 9,
-            minimumReaderVersion: 9,
+            formatVersion: 11,
+            minimumReaderVersion: 11,
           }).pipe(Effect.provideContext(context)),
           session,
           cancellationCleanup,
           requireSubmissionFormat,
           requireDeferredFormat: StorageFormat.requireSupportedFormat({
-            formatVersion: 7,
-            minimumReaderVersion: 7,
+            formatVersion: 11,
+            minimumReaderVersion: 11,
           }).pipe(Effect.provideContext(context)),
           requireStreamFormat: StorageFormat.requireSupportedFormat({
-            formatVersion: 6,
-            minimumReaderVersion: 6,
+            formatVersion: 11,
+            minimumReaderVersion: 11,
           }).pipe(Effect.provideContext(context)),
           requireRequestFormat: StorageFormat.requireSupportedFormat({
-            formatVersion: 5,
-            minimumReaderVersion: 5,
+            formatVersion: 11,
+            minimumReaderVersion: 11,
           }).pipe(Effect.provideContext(context)),
           nativeModel: options.nativeModel ?? { id: 'effect/ai/LanguageModel', version: 1 },
           context,
@@ -443,6 +443,7 @@ export const make = Effect.fnUntraced(function* <
         }),
         registry,
         {
+          session,
           models,
           nativeDefault,
           nativeModel: options.nativeModel ?? { id: 'effect/ai/LanguageModel', version: 1 },
@@ -645,7 +646,7 @@ export const make = Effect.fnUntraced(function* <
         )
         for (const task of tasks) {
           if (task.state.status === 'terminal') continue
-          const state = yield* Run.decode(task.state.checkpoint)
+          const state = yield* Run.decodeStored(task.state.checkpoint)
           if (state.submissionId === id)
             yield* Transaction.putTask(tx, {
               ...task,

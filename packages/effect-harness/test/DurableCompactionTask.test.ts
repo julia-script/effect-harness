@@ -187,7 +187,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(storage)))
                 .minimumReaderVersion,
-              8,
+              11,
             )
             assert.strictEqual(calls, 1)
             assert.deepEqual(yield* runtime.backend.waitCompaction!(handle), result)
@@ -599,7 +599,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               assert.strictEqual(
                 (yield* StorageFormat.inspect.pipe(Effect.provideContext(storage)))
                   .minimumReaderVersion,
-                8,
+                11,
               )
             } else
               assert.deepEqual(
@@ -2002,7 +2002,10 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             }
             // Generation activates its existing reader, never the compaction barrier.
             const after = yield* StorageFormat.inspect.pipe(Effect.provideContext(storage))
-            assert.strictEqual(after.minimumReaderVersion, Math.max(format.minimumReaderVersion, 6))
+            assert.strictEqual(
+              after.minimumReaderVersion,
+              Math.max(format.minimumReaderVersion, 11),
+            )
             assert.strictEqual(
               (yield* entries(first)).filter(
                 (e) => e.kind.startsWith('assistant') || e.kind === 'compaction',
@@ -2656,7 +2659,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(storage)))
                 .minimumReaderVersion,
-              6,
+              11,
             )
             yield* Scope.close(owner, Exit.void)
             if (mode !== 'interrupt') {

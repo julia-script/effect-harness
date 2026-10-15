@@ -1,7 +1,8 @@
-/** Actual sink receipts outlive parent task documents; execution never reads this projection. */
+/** Sink status metadata outlives caller-owned payloads; execution never reads this projection. */
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
+import * as Struct from 'effect/Struct'
 import * as Document from '../Document.js'
 import * as Invocation from '../ToolInvocation.js'
 import type * as Record from '../Record.js'
@@ -11,6 +12,9 @@ import * as Nested from './NestedInvocation.js'
 import * as Round from './ToolRound.js'
 import * as Value from './DocumentValue.js'
 
+export const ReceiptSchema = Invocation.WireReceiptSchema.mapFields(
+  Struct.omit(['result', 'legacyValue']),
+)
 export const document = Document.family({
   kind: 'harness.tool.nested.receipt',
   version: 1,
@@ -18,11 +22,11 @@ export const document = Document.family({
   history: 'latest',
   fork: 'initial',
   schema: Schema.Struct({
-    receipt: Schema.optionalKey(Schema.toCodecJson(Invocation.WireReceiptSchema)),
+    receipt: Schema.optionalKey(Schema.toCodecJson(ReceiptSchema)),
   }),
   initial: () => ({}),
 })
-export const key = (receipt: Invocation.WireReceipt): string =>
+export const key = (receipt: typeof ReceiptSchema.Type): string =>
   JSON.stringify([
     receipt.parentTaskId,
     receipt.key,
@@ -55,7 +59,7 @@ export const retain = Effect.fnUntraced(function* (
     child.value.version !== 1
   )
     return yield* conflict()
-  const original = yield* Schema.decodeEffect(Schema.toCodecJson(Nested.InputSchema))(
+  const original = yield* Schema.decodeEffect(Schema.toCodecJson(Nested.ReferenceSchema))(
     child.value.input,
   )
   if (
@@ -77,10 +81,12 @@ export const retain = Effect.fnUntraced(function* (
   }
   const saved = yield* Transaction.snapshot(tx, document, target)
   if (Option.isSome(saved) && saved.value.value.receipt !== undefined) {
-    if (!Schema.toEquivalence(Invocation.WireReceiptSchema)(saved.value.value.receipt, receipt))
+    if (!Schema.toEquivalence(ReceiptSchema)(saved.value.value.receipt, receipt))
       return yield* conflict()
     return
   }
   yield* Transaction.ensureDocument(tx, document, target)
-  yield* Transaction.setDocument(tx, document, target, { receipt })
+  yield* Transaction.setDocument(tx, document, target, {
+    receipt: Struct.omit(receipt, ['result', 'legacyValue']),
+  })
 })

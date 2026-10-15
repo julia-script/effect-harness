@@ -1,3 +1,6 @@
+import * as ResultEntry from '../src/internal/ToolResultEntry.js'
+import * as Run from '../src/internal/RunState.js'
+import * as RuntimeRecords from './fixtures/RuntimeRecords.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import * as Hook from 'effect-harness/Hook'
 import * as Prompt from 'effect/ai/Prompt'
@@ -484,13 +487,13 @@ describe('provider accounting boundaries', () => {
             assert.strictEqual(tasks.length, 1)
             assert.strictEqual(tasks[0]?.state.status, 'running')
             const task = tasks[0]!
-            const checkpoint = yield* Schema.decodeUnknownEffect(
-              Schema.Struct({
-                phase: Schema.String,
-                preparation: Schema.toCodecJson(Prepared.SnapshotSchema),
-                attempt: Usage.AttemptId,
-              }),
-            )(task.state.checkpoint)
+            const saved = yield* Run.decodeStored(task.state.checkpoint)
+            if (saved._tag !== 'streaming')
+              return yield* Effect.die('Expected streaming checkpoint')
+            const checkpoint = {
+              ...saved,
+              preparation: yield* RuntimeRecords.preparation(real, task.state.checkpoint),
+            }
             assert.strictEqual(checkpoint.phase, 'streaming')
             assert.strictEqual(checkpoint.preparation.ordinal, 1)
             assert.deepEqual(checkpoint.preparation, observed)
@@ -565,7 +568,7 @@ describe('provider accounting boundaries', () => {
               { currency: 'EUR', model: 0, tool: 2 },
             ])
             const receipt = (yield* own(first)).find((entry) => entry.kind === 'tool.result')!
-            assert.notInclude(JSON.stringify(receipt.model), 'tool-invoice')
+            assert.notInclude(JSON.stringify(yield* ResultEntry.messages(receipt)), 'tool-invoice')
             yield* Scope.close(firstScope, Exit.void)
             block = false
             const second = yield* open
