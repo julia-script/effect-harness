@@ -89,12 +89,7 @@ describe('native nested invocation', () => {
                 }),
               ],
             }
-            const expected: Record<string, ToolResult.Content> = {
-              ...parts,
-              url: [
-                Prompt.filePart({ mediaType: 'image/png', data: 'https://example.test/cold.png' }),
-              ],
-            }
+            const expected = parts
             const nativeCodec = Schema.toCodecJson(ToolResult.ContentSchema)
             for (const mode of Object.keys(parts)) {
               const encoded = yield* Schema.encodeEffect(nativeCodec)(parts[mode]!)
@@ -621,7 +616,7 @@ describe('native nested invocation', () => {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(storage)))
                 .minimumReaderVersion,
-              11,
+              12,
             )
             const receipts = yield* Session.commit(runtime.session, (tx) =>
               Usage.receipts(tx, root),

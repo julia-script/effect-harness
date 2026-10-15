@@ -8,6 +8,8 @@ import type { Access } from './Kernel.js'
 import * as Kernel from './Kernel.js'
 import * as Metadata from './Metadata.js'
 import * as Row from './Row.js'
+import * as MediaRow from './MediaRow.js'
+import * as Media from '../StorageMedia.js'
 import * as Memory from './Memory.js'
 import * as Domain from '../Record.js'
 import * as Errors from '../StorageError.js'
@@ -22,7 +24,7 @@ const Reference = Schema.Struct({
 })
 type Reference = typeof Reference.Type
 const Frame = Schema.Struct({
-  persistence: Schema.Literal('sidecars-v1'),
+  persistence: Schema.Literal('sidecars-v2'),
   metadata: Metadata.Metadata,
   rows: Schema.Array(Reference),
 })
@@ -31,7 +33,7 @@ const Envelope = Schema.Struct({
   metadata: Metadata.Metadata,
   rows: Schema.Array(Schema.Unknown),
 })
-const Revision = Row.StoredDocument.fields.revisions.value
+const Revision = Schema.Struct({ seq: Domain.Seq, content: Media.PackedBodySchema })
 const RevisionHeader = Schema.Struct({
   _tag: Schema.Literals(['base', 'delta']),
   version: Domain.Content.members[0].fields.version,
@@ -53,9 +55,10 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
   )
   const fs = yield* FileSystem.FileSystem
   const directory = `${options.filePath}.parts`
+  const mediaDirectory = `${options.filePath}.media`
   if (
     !(yield* io('open', fs.exists(options.filePath))) &&
-    (yield* io('open', fs.exists(directory)))
+    ((yield* io('open', fs.exists(directory))) || (yield* io('open', fs.exists(mediaDirectory))))
   )
     return yield* Errors.make('corrupt', 'recover', 'JSONL sidecars exist without their journal')
   const file = yield* io('open', fs.open(options.filePath, { flag: 'a+' }))
@@ -80,7 +83,7 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
       (envelope.metadata.minimumReader ?? 1) < (previous.minimumReader ?? 1)
     )
       return yield* Errors.make('corrupt', 'recover', 'JSONL format marker decreased')
-    if (envelope.persistence !== 'sidecars-v1')
+    if (envelope.persistence !== 'sidecars-v2')
       return yield* Errors.make(
         'unsupportedFormat',
         'recover',
@@ -150,9 +153,12 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
     const first = references.get(id)?.firstRevision
     if (first !== undefined && first !== null && Number(match[2]) < first) pruning.add(id)
   }
-  const rows: Array<Row.Stored> = []
+  const rows = new Map<number, MediaRow.PackedRow>()
+  const objects = new Map<string, Uint8Array>()
   for (const ref of references.values()) {
-    let row = yield* read(rowName(ref), Row.Stored)
+    const packed = yield* MediaRow.validate(yield* read(rowName(ref), MediaRow.PackedRow))
+    let row = yield* MediaRow.skeleton(packed)
+    const packedRevisions: Array<MediaRow.PackedRow['revisions'][number]> = []
     if (
       Row.idOf(row) !== ref.id ||
       row._tag !== ref.kind ||
@@ -181,7 +187,9 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
             'recover',
             'JSONL revision identity does not match its marker',
           )
-        revisions.push(revision)
+        yield* Media.manifest(revision.content)
+        packedRevisions.push(revision)
+        revisions.push({ seq: revision.seq, content: revision.content.body })
       }
       // Replacing a current-only base may prune earlier revisions, but a delta
       // cannot authorize that deletion. Retired bodies remain entirely opaque.
@@ -201,10 +209,32 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
       }
       row = { ...row, value: { ...row.value, revisions } }
     }
-    rows.push(row)
+    const physical = { ...packed, revisions: packedRevisions }
+    for (const ref of MediaRow.references(physical)) {
+      let bytes = objects.get(ref.digest)
+      if (bytes === undefined) {
+        bytes = yield* fs
+          .readFile(`${mediaDirectory}/${ref.digest}`)
+          .pipe(
+            Effect.mapError((cause) =>
+              Errors.make('corrupt', 'media.read', 'Cannot read required media object', cause),
+            ),
+          )
+        objects.set(ref.digest, bytes)
+      }
+      yield* Media.verify(ref, bytes)
+    }
+    rows.set(ref.id, physical)
   }
-  yield* memory.save(rows, previous)
+  const mediaNames = (yield* io('recover', fs.exists(mediaDirectory)))
+    ? yield* io('recover', fs.readDirectory(mediaDirectory))
+    : []
+  for (const name of mediaNames)
+    if (!/^[bl]-[a-f0-9]{64}$/.test(name))
+      return yield* Errors.make('corrupt', 'media.manifest', 'Unexpected media object name')
+  yield* memory.publish({ rows, objects, metadata: previous })
   yield* io('initialize', fs.makeDirectory(directory, { recursive: true }))
+  yield* io('initialize', fs.makeDirectory(mediaDirectory, { recursive: true }))
   const syncDirectory = (path: string) =>
     Effect.scoped(fs.open(path, { flag: 'r' }).pipe(Effect.flatMap((directory) => directory.sync)))
   // Persist both directory entries (journal and sidecar directory) before admitting writes.
@@ -218,6 +248,10 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
     if (!live.has(name)) yield* io('recover', fs.remove(`${directory}/${name}`))
   }
   yield* io('recover', syncDirectory(directory))
+  for (const name of mediaNames) {
+    if (!objects.has(name)) yield* io('recover', fs.remove(`${mediaDirectory}/${name}`))
+  }
+  yield* io('recover', syncDirectory(mediaDirectory))
   const write = (name: string, value: unknown) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -229,10 +263,32 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
   const access: Access = {
     ...memory,
     save: Effect.fnUntraced(function* (rows, metadata) {
+      const current = yield* memory.snapshot
+      const prepared = yield* memory.prepare(rows, metadata)
       const changes: Array<Reference> = []
       const obsolete = new Set<string>()
       const next = new Map<number, Reference>()
       yield* Effect.gen(function* () {
+        let addedMedia = false
+        for (const [digest, bytes] of prepared.objects) {
+          if (current.objects.has(digest)) continue
+          addedMedia = true
+          const path = `${mediaDirectory}/${digest}`
+          if (yield* fs.exists(path)) {
+            const previous = yield* fs.readFile(path)
+            if (!Media.sameObject(previous, bytes))
+              return yield* Errors.make('corrupt', 'media.integrity', 'Media hash collision')
+          } else {
+            yield* Effect.scoped(
+              Effect.gen(function* () {
+                const object = yield* fs.open(path, { flag: 'wx' })
+                yield* object.writeAll(bytes)
+                yield* object.sync
+              }),
+            )
+          }
+        }
+        if (addedMedia) yield* syncDirectory(mediaDirectory)
         for (const row of rows) {
           const id = Row.idOf(row)
           const old = references.get(id)
@@ -251,18 +307,17 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
           const keep = new Set(filesOf(retained))
           for (const name of old === undefined ? [] : filesOf(old))
             if (!keep.has(name)) obsolete.add(name)
-          yield* write(
-            rowName(ref),
-            row._tag === 'document'
-              ? { ...row, value: { record: row.value.record, revisions: [] } }
-              : row,
-          )
-          for (const revision of added) yield* write(revisionName(id, revision.seq), revision)
+          const physical = prepared.rows.get(id)!
+          yield* write(rowName(ref), { ...physical, revisions: [] })
+          for (const revision of physical.revisions) {
+            if (revision.seq === metadata.nextSeq - 1)
+              yield* write(revisionName(id, revision.seq), revision)
+          }
         }
         // A durable marker may only reference durable files and directory entries.
         if (rows.length > 0) yield* syncDirectory(directory)
         const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(Frame))({
-          persistence: 'sidecars-v1',
+          persistence: 'sidecars-v2',
           rows: changes,
           metadata,
         })
@@ -271,13 +326,21 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
         // The old files remain valid through any failed/partial marker append.
         for (const name of obsolete) yield* fs.remove(`${directory}/${name}`)
         if (obsolete.size > 0) yield* syncDirectory(directory)
+        let removedMedia = false
+        for (const digest of current.objects.keys()) {
+          if (!prepared.objects.has(digest)) {
+            yield* fs.remove(`${mediaDirectory}/${digest}`)
+            removedMedia = true
+          }
+        }
+        if (removedMedia) yield* syncDirectory(mediaDirectory)
       }).pipe(
         Effect.mapError((cause) =>
           Errors.make('uncertain', 'commit', 'JSONL write outcome is uncertain', cause),
         ),
       )
       for (const [id, ref] of next) references.set(id, ref)
-      yield* memory.save(rows, metadata)
+      yield* memory.publish(prepared)
     }),
   }
   return yield* Kernel.make(access)

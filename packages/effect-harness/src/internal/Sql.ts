@@ -12,11 +12,15 @@ import type { Access } from './Kernel.js'
 import * as Kernel from './Kernel.js'
 import * as Metadata from './Metadata.js'
 import * as Row from './Row.js'
+import * as MediaRow from './MediaRow.js'
+import * as Media from '../StorageMedia.js'
 
 const metadataName = 'effect_harness_metadata'
 const recordsName = 'effect_harness_records'
 const revisionsName = 'effect_harness_revisions'
-const persistenceVersion = 2
+const objectsName = 'effect_harness_media'
+const ownersName = 'effect_harness_media_owners'
+const persistenceVersion = 3
 // Drivers return BIGINT columns as numbers, decimal strings, or bigints.
 const SqlBigIntCounter = Schema.BigInt.check(
   Schema.isBetweenBigInt({ minimum: 1n, maximum: BigInt(Number.MAX_SAFE_INTEGER) + 1n }),
@@ -46,16 +50,15 @@ const PayloadRows = Schema.Array(
   Schema.Struct({
     id: SqlCounter,
     category: Schema.String,
-    payload: Schema.fromJsonString(Row.Stored),
+    payload: Schema.fromJsonString(MediaRow.PackedRow),
     revision_seq: Schema.NullOr(SqlCounter),
-    revision_content: Schema.NullOr(Schema.fromJsonString(Schema.Json)),
-  }).check(
-    Schema.makeFilter(
-      (row) => Row.idOf(row.payload) === row.id && row.payload._tag === row.category,
-    ),
-  ),
+    revision_content: Schema.NullOr(Schema.fromJsonString(Media.PackedBodySchema)),
+    owner_seq: Schema.NullOr(Schema.Union([Schema.Finite, Schema.String, Schema.BigInt])),
+    digest: Schema.NullOr(Schema.String),
+    bytes: Schema.NullOr(Schema.Uint8Array),
+  }),
 )
-const RowJson = Schema.fromJsonString(Row.Stored)
+const RowJson = Schema.fromJsonString(MediaRow.PackedRow)
 const io = <A, E, R>(operation: string, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     Effect.mapError((cause) => Errors.make('io', operation, `SQL ${operation} failed`, cause)),
@@ -82,25 +85,29 @@ export const make = Effect.gen(function* () {
   const metadataTable = sql(metadataName)
   const recordsTable = sql(recordsName)
   const revisionsTable = sql(revisionsName)
+  const objectsTable = sql(objectsName)
+  const ownersTable = sql(ownersName)
   const text = sql.onDialectOrElse({
     mssql: () => sql.literal('NVARCHAR(MAX)'),
     orElse: () => sql.literal('TEXT'),
   })
-  const hasMetadata = yield* io(
-    'initialize',
-    sql.onDialectOrElse({
-      sqlite: () => sql`SELECT 1 FROM sqlite_master WHERE type='table' AND name=${metadataName}`,
-      mssql: () => sql`SELECT 1 FROM sys.tables WHERE name=${metadataName}`,
-      mysql: () =>
-        sql`SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=${metadataName}`,
-      orElse: () =>
-        sql`SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=${metadataName}`,
-    }),
-  )
+  const tableExists = (name: string) =>
+    io(
+      'initialize',
+      sql.onDialectOrElse({
+        sqlite: () => sql`SELECT 1 FROM sqlite_master WHERE type='table' AND name=${name}`,
+        mssql: () => sql`SELECT 1 FROM sys.tables WHERE name=${name}`,
+        mysql: () =>
+          sql`SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=${name}`,
+        orElse: () =>
+          sql`SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=${name}`,
+      }),
+    )
+  const hasMetadata = yield* tableExists(metadataName)
   if (hasMetadata.length > 0) {
     // Probe the schema before DDL: opening an incompatible container must not migrate it.
     const marker =
-      yield* sql`SELECT persistence_version, minimum_reader FROM ${metadataTable}`.pipe(
+      yield* sql`SELECT persistence_version, format, minimum_reader FROM ${metadataTable}`.pipe(
         Effect.mapError((cause) =>
           Errors.make(
             'unsupportedFormat',
@@ -110,12 +117,24 @@ export const make = Effect.gen(function* () {
           ),
         ),
       )
-    if (marker.some((row) => row.persistence_version !== persistenceVersion))
+    if (
+      marker.some(
+        (row) =>
+          row.persistence_version !== persistenceVersion ||
+          Number(row.format) !== 12 ||
+          Number(row.minimum_reader) !== 12,
+      )
+    )
       return yield* Errors.make(
         'unsupportedFormat',
         'initialize',
         'Unsupported SQL persistence schema',
       )
+  }
+  if (hasMetadata.length === 0 && (yield* tableExists(recordsName)).length > 0) {
+    const existing = yield* io('initialize', sql`SELECT COUNT(*) AS n FROM ${recordsTable}`)
+    if (Number(existing[0]?.n) > 0)
+      return yield* Errors.make('corrupt', 'initialize', 'SQL records have no allocation metadata')
   }
   const metadataDdl = sql`CREATE TABLE ${metadataTable} (
     singleton INTEGER PRIMARY KEY, format INTEGER NOT NULL, minimum_reader BIGINT,
@@ -157,6 +176,38 @@ export const make = Effect.gen(function* () {
         }),
     }),
   )
+  const binary = sql.onDialectOrElse({
+    pg: () => sql.literal('BYTEA'),
+    mysql: () => sql.literal('LONGBLOB'),
+    mssql: () => sql.literal('VARBINARY(MAX)'),
+    orElse: () => sql.literal('BLOB'),
+  })
+  const mediaTables = [
+    { name: objectsName, columns: sql`digest VARCHAR(66) PRIMARY KEY, bytes ${binary} NOT NULL` },
+    {
+      name: ownersName,
+      columns: sql`record_id BIGINT NOT NULL, revision_seq BIGINT NOT NULL,
+      digest VARCHAR(66) NOT NULL, PRIMARY KEY (record_id, revision_seq, digest),
+      FOREIGN KEY (record_id) REFERENCES ${recordsTable}(id),
+      FOREIGN KEY (digest) REFERENCES ${objectsTable}(digest)`,
+    },
+  ]
+  for (const table of mediaTables)
+    yield* io(
+      'initialize',
+      sql.onDialectOrElse({
+        mssql: () =>
+          Effect.gen(function* () {
+            if (
+              (yield* sql`SELECT 1 AS present FROM sys.tables WHERE name = ${table.name}`)
+                .length === 0
+            )
+              yield* sql`CREATE TABLE ${sql(table.name)} (${table.columns})`
+          }),
+        orElse: () =>
+          sql`CREATE TABLE IF NOT EXISTS ${sql(table.name)} (${table.columns})`.pipe(Effect.asVoid),
+      }),
+    )
   const existingMetadata = yield* io(
     'initialize',
     sql`SELECT singleton, persistence_version FROM ${metadataTable} WHERE singleton = 1`,
@@ -203,12 +254,12 @@ export const make = Effect.gen(function* () {
     'initialize',
     sql.onDialectOrElse({
       mysql:
-        () => sql`INSERT INTO ${metadataTable} (singleton, format, persistence_version, next_id, next_seq) VALUES (1, 1, 2, 2, 1)
+        () => sql`INSERT INTO ${metadataTable} (singleton, format, minimum_reader, persistence_version, next_id, next_seq) VALUES (1, 12, 12, 3, 2, 1)
       ON DUPLICATE KEY UPDATE singleton = singleton`,
       mssql: () => sql`IF NOT EXISTS (SELECT 1 FROM ${metadataTable} WHERE singleton = 1)
-      INSERT INTO ${metadataTable} (singleton, format, persistence_version, next_id, next_seq) VALUES (1, 1, 2, 2, 1)`,
+      INSERT INTO ${metadataTable} (singleton, format, minimum_reader, persistence_version, next_id, next_seq) VALUES (1, 12, 12, 3, 2, 1)`,
       orElse:
-        () => sql`INSERT INTO ${metadataTable} (singleton, format, persistence_version, next_id, next_seq) VALUES (1, 1, 2, 2, 1)
+        () => sql`INSERT INTO ${metadataTable} (singleton, format, minimum_reader, persistence_version, next_id, next_seq) VALUES (1, 12, 12, 3, 2, 1)
       ON CONFLICT (singleton) DO NOTHING`,
     }),
   )
@@ -280,65 +331,148 @@ export const make = Effect.gen(function* () {
     )
   })
   yield* metadata
-  const payloads = Effect.fnUntraced(function* (
+  const physical = Effect.fnUntraced(function* (
     query: Statement.Statement<unknown>,
     order: 'ascending' | 'descending' = 'ascending',
   ) {
-    // One statement gives headers and revisions the same snapshot, including during retirement.
+    // Headers, revisions, ownership and bytes come from one statement snapshot.
+    // UNION avoids multiplying image objects by the number of retained revisions.
     const direction = sql.literal(order === 'ascending' ? 'ASC' : 'DESC')
-    const revisionSequence = sql.onDialectOrElse({
+    const seq = sql.onDialectOrElse({
       sqlite: () => sql`CAST(v.seq AS TEXT)`,
       orElse: () => sql`v.seq`,
     })
+    const snapshot = sql`WITH selected AS (${query})
+      SELECT r.id, r.category, r.payload, ${seq} AS revision_seq, v.content AS revision_content,
+        NULL AS owner_seq, NULL AS digest, NULL AS bytes
+      FROM selected r LEFT JOIN ${revisionsTable} v ON v.document_id = r.id
+      UNION ALL
+      SELECT r.id, r.category, r.payload, NULL AS revision_seq, NULL AS revision_content,
+        o.revision_seq AS owner_seq, o.digest, m.bytes
+      FROM selected r JOIN ${ownersTable} o ON o.record_id = r.id
+      LEFT JOIN ${objectsTable} m ON m.digest = o.digest
+      ORDER BY id ${direction}, revision_seq ASC`
     const joined = yield* io(
       'read',
-      sql`SELECT r.id, r.category, r.payload,
-      ${revisionSequence} AS revision_seq, v.content AS revision_content FROM (${query}) r
-      LEFT JOIN ${revisionsTable} v ON v.document_id = r.id
-      ORDER BY r.id ${direction}, v.seq ASC`,
+      sql.onDialectOrElse({
+        // SQL Server's locking READ COMMITTED can release row locks within a statement.
+        // Retain the shared metadata lock until the entire object closure has been copied.
+        mssql: () =>
+          sql.withTransaction(
+            sql`SELECT singleton FROM ${metadataTable} WITH (HOLDLOCK) WHERE singleton = 1`.pipe(
+              Effect.andThen(snapshot),
+            ),
+          ),
+        orElse: () => snapshot,
+      }),
     )
     const rows = yield* Schema.decodeUnknownEffect(PayloadRows)(joined).pipe(
       Effect.mapError(Errors.corrupt('record')),
     )
-    const results = new Map<number, Row.Stored>()
-    const histories = new Map<
+    const results = new Map<
       number,
-      Array<typeof Row.StoredDocument.fields.revisions.value.Type>
+      { packed: MediaRow.PackedRow; objects: Map<string, Uint8Array>; owners: Set<string> }
     >()
-    for (const { id, payload, revision_seq: seq, revision_content: content } of rows) {
-      if (payload._tag !== 'document') {
-        if (seq !== null || content !== null)
-          return yield* Errors.make('corrupt', 'record', 'Non-document record owns revisions')
-        results.set(id, payload)
-        continue
+    for (const row of rows) {
+      let result = results.get(row.id)
+      if (result === undefined) {
+        yield* MediaRow.validate(row.payload)
+        const header = yield* MediaRow.skeleton(row.payload)
+        if (
+          Row.idOf(header) !== row.id ||
+          header._tag !== row.category ||
+          row.payload.revisions.length !== 0
+        )
+          return yield* Errors.make(
+            'corrupt',
+            'record',
+            'SQL record identity or inline revisions are invalid',
+          )
+        result = { packed: row.payload, objects: new Map(), owners: new Set() }
+        results.set(row.id, result)
       }
-      if (payload.value.revisions.length !== 0)
-        return yield* Errors.make('corrupt', 'record', 'Document row contains inline revisions')
-      let revisions = histories.get(id)
-      if (revisions === undefined) {
-        revisions = []
-        histories.set(id, revisions)
-        results.set(id, { ...payload, value: { ...payload.value, revisions } })
+      if (row.revision_seq !== null) {
+        if (row.category !== 'document' || row.revision_content === null)
+          return yield* Errors.make('corrupt', 'record', 'Invalid document revision')
+        yield* Media.manifest(row.revision_content)
+        result.packed = {
+          ...result.packed,
+          revisions: [
+            ...result.packed.revisions,
+            { seq: row.revision_seq as import('../Record.js').Seq, content: row.revision_content },
+          ],
+        }
       }
-      if (seq !== null) {
-        const revision = yield* Schema.decodeEffect(Row.StoredDocument.fields.revisions.value)({
-          seq,
-          content,
-        }).pipe(Effect.mapError(Errors.corrupt('record')))
-        revisions.push(revision)
+      if (row.digest !== null) {
+        if (row.bytes === null || row.owner_seq === null)
+          return yield* Errors.make('corrupt', 'media.read', 'Required media object is absent')
+        result.objects.set(row.digest, row.bytes)
+        result.owners.add(`${String(row.owner_seq)}:${row.digest}`)
+      }
+    }
+    for (const result of results.values()) {
+      result.packed = {
+        ...result.packed,
+        revisions: [...result.packed.revisions].sort((a, b) => a.seq - b.seq),
+      }
+      const expected = new Set([
+        ...result.packed.value.media.map((ref) => `0:${ref.digest}`),
+        ...result.packed.revisions.flatMap((revision) =>
+          revision.content.media.map((ref) => `${revision.seq}:${ref.digest}`),
+        ),
+      ])
+      if (
+        expected.size !== result.owners.size ||
+        [...expected].some((key) => !result.owners.has(key))
+      )
+        return yield* Errors.make(
+          'corrupt',
+          'media.manifest',
+          'SQL media owners disagree with retained manifests',
+        )
+      for (const ref of MediaRow.references(result.packed)) {
+        const bytes = result.objects.get(ref.digest)
+        if (bytes === undefined)
+          return yield* Errors.make('corrupt', 'media.read', 'Required media object is absent')
+        yield* Media.verify(ref, bytes)
       }
     }
     return [...results.values()]
   })
+  const payloads = (
+    query: Statement.Statement<unknown>,
+    order: 'ascending' | 'descending' = 'ascending',
+    metadataOnly = false,
+  ) =>
+    physical(query, order).pipe(
+      Effect.flatMap((rows) =>
+        Effect.forEach(rows, ({ packed, objects }) =>
+          MediaRow.hydrate(
+            packed,
+            (digest) => {
+              const bytes = objects.get(digest)
+              return bytes === undefined
+                ? Effect.fail(
+                    Errors.make('corrupt', 'media.read', 'Required media object is absent'),
+                  )
+                : Effect.succeed(bytes)
+            },
+            metadataOnly,
+          ),
+        ),
+      ),
+    )
   const access: Access = {
     metadata,
-    get: Effect.fnUntraced(function* (id) {
+    get: Effect.fnUntraced(function* (id, metadataOnly = false) {
       const rows = yield* payloads(
         sql`SELECT id, category, payload FROM ${recordsTable} WHERE id = ${id}`,
+        'ascending',
+        metadataOnly,
       )
       return Option.fromUndefinedOr(rows[0])
     }),
-    page: Effect.fnUntraced(function* (kind, after, limit, filter, order) {
+    page: Effect.fnUntraced(function* (kind, after, limit, filter, order, metadataOnly = false) {
       const results: Array<Row.Stored> = []
       let cursor = after
       while (results.length < limit) {
@@ -391,6 +525,7 @@ export const make = Effect.gen(function* () {
               sql`SELECT id, category, payload FROM ${recordsTable} WHERE ${sql.and(clauses)} ORDER BY id ${direction} LIMIT 64`,
           }),
           order,
+          metadataOnly,
         )
         // SQL collations can match extra strings; enforce the same exact comparison as memory.
         results.push(...rows.filter((row) => Row.matches(row, filter)))
@@ -405,14 +540,30 @@ export const make = Effect.gen(function* () {
         Effect.mapError(Errors.invalid('commit')),
       )
       for (const row of rows) {
-        const payload = yield* Schema.encodeEffect(RowJson)(
-          row._tag === 'document'
-            ? { ...row, value: { record: row.value.record, revisions: [] } }
-            : row,
-        ).pipe(
-          Effect.mapError((cause) =>
-            Errors.make('invalid', 'commit', 'Cannot encode SQL record', cause),
-          ),
+        const id = Row.idOf(row)
+        const old = (yield* physical(
+          sql`SELECT id, category, payload FROM ${recordsTable} WHERE id = ${id}`,
+        ))[0]
+        const packed = yield* MediaRow.pack(row, old?.packed)
+        for (const object of packed.objects) {
+          const found = yield* io(
+            'media.read',
+            sql`SELECT bytes FROM ${objectsTable} WHERE digest = ${object.digest}`,
+          )
+          if (found.length > 0) {
+            const bytes = yield* Schema.decodeUnknownEffect(Schema.Uint8Array)(
+              found[0]?.bytes,
+            ).pipe(Effect.mapError(Errors.corrupt('media.integrity')))
+            if (!Media.sameObject(bytes, object.bytes))
+              return yield* Errors.make('corrupt', 'media.integrity', 'Media hash collision')
+          } else
+            yield* io(
+              'media.write',
+              sql`INSERT INTO ${objectsTable} (digest, bytes) VALUES (${object.digest}, ${object.bytes})`,
+            )
+        }
+        const payload = yield* Schema.encodeEffect(RowJson)({ ...packed.row, revisions: [] }).pipe(
+          Effect.mapError(Errors.invalid('commit')),
         )
         const index = Row.indexOf(row)
         const values = {
@@ -431,13 +582,23 @@ export const make = Effect.gen(function* () {
           created_at: index.createdAt,
           retired_at: index.retiredAt,
         }
-        const id = Row.idOf(row)
         // The metadata lock serializes insert/update, revision pruning and allocation counters.
         const exists =
           (yield* io('read', sql`SELECT id FROM ${recordsTable} WHERE id = ${id}`)).length > 0
         if (exists)
           yield* io('write', sql`UPDATE ${recordsTable} SET ${sql.update(values)} WHERE id = ${id}`)
         else yield* io('write', sql`INSERT INTO ${recordsTable} ${sql.insert({ id, ...values })}`)
+        yield* io('media.owners', sql`DELETE FROM ${ownersTable} WHERE record_id = ${id}`)
+        for (const [seq, body] of [
+          [0, packed.row.value],
+          ...packed.row.revisions.map((revision) => [revision.seq, revision.content] as const),
+        ] as const) {
+          for (const digest of new Set(body.media.map((ref) => ref.digest)))
+            yield* io(
+              'media.owners',
+              sql`INSERT INTO ${ownersTable} (record_id, revision_seq, digest) VALUES (${id}, ${seq}, ${digest})`,
+            )
+        }
         if (row._tag === 'document') {
           const first = row.value.revisions[0]
           if (first === undefined)
@@ -447,11 +608,11 @@ export const make = Effect.gen(function* () {
               'write',
               sql`DELETE FROM ${revisionsTable} WHERE document_id = ${id} AND seq < ${first.seq}`,
             )
-          for (const revision of row.value.revisions) {
+          for (const revision of packed.row.revisions) {
             if (revision.seq !== next.nextSeq - 1) continue
-            const content = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Json))(
-              revision.content,
-            ).pipe(Effect.mapError(Errors.invalid('commit')))
+            const content = yield* Schema.encodeEffect(
+              Schema.fromJsonString(Media.PackedBodySchema),
+            )(revision.content).pipe(Effect.mapError(Errors.invalid('commit')))
             yield* io(
               'write',
               sql`INSERT INTO ${revisionsTable} (document_id, seq, content)
@@ -460,6 +621,10 @@ export const make = Effect.gen(function* () {
           }
         }
       }
+      yield* io(
+        'media.collect',
+        sql`DELETE FROM ${objectsTable} WHERE NOT EXISTS (SELECT 1 FROM ${ownersTable} WHERE ${ownersTable}.digest = ${objectsTable}.digest)`,
+      )
       yield* io(
         'write',
         sql`UPDATE ${metadataTable} SET format = ${counters.format}, minimum_reader = ${counters.minimum_reader ?? null}, next_id = ${counters.next_id}, next_seq = ${counters.next_seq} WHERE singleton = 1`,

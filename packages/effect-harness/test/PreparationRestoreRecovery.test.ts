@@ -303,7 +303,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             })
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(f.store))).formatVersion,
-              11,
+              12,
             )
             yield* Scope.close(f.scope, Exit.void)
             assert.isTrue(Exit.isFailure(yield* f.first.backend.wait(f.job.id).pipe(Effect.exit)))

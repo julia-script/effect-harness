@@ -195,7 +195,7 @@ describe('nested result and no-entry accounting', () => {
                       if (mode === 'empty') expected = ''
                       else if (mode === 'text') expected = 'single'
                       else if (mode === 'url')
-                        expected = Prompt.filePart({ mediaType: 'image/png', data: url.href })
+                        expected = Prompt.filePart({ mediaType: 'image/png', data: url })
                       else if (mode !== 'mixed') expected = shapes[mode][0]
                       assert.deepStrictEqual(
                         receipt.value,
@@ -208,7 +208,8 @@ describe('nested result and no-entry accounting', () => {
                             receipt.value !== null &&
                             !Array.isArray(receipt.value) &&
                             'data' in receipt.value &&
-                            receipt.value.data === url.href,
+                            receipt.value.data instanceof URL &&
+                            receipt.value.data.href === url.href,
                         )
                       }
                     }

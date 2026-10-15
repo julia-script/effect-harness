@@ -220,15 +220,15 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                 88,
               )
               assert.deepEqual(yield* StorageFormat.inspect, {
-                formatVersion: 3,
-                minimumReaderVersion: 3,
+                formatVersion: 12,
+                minimumReaderVersion: 12,
               })
               assert.deepEqual(
                 yield* StorageFormat.requireSupportedFormat({
                   formatVersion: 2,
                   minimumReaderVersion: 2,
                 }),
-                { formatVersion: 3, minimumReaderVersion: 3 },
+                { formatVersion: 12, minimumReaderVersion: 12 },
               )
               return { id, final, initial, first, last }
             })
@@ -311,8 +311,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                 1,
               )
               assert.deepEqual(yield* StorageFormat.inspect, {
-                formatVersion: 1,
-                minimumReaderVersion: 1,
+                formatVersion: 12,
+                minimumReaderVersion: 12,
               })
               const throwing = Document.define({
                 ...baseDefinition,
@@ -341,8 +341,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                 1000,
               )
               assert.deepEqual(yield* StorageFormat.inspect, {
-                formatVersion: 1,
-                minimumReaderVersion: 1,
+                formatVersion: 12,
+                minimumReaderVersion: 12,
               })
               yield* Session.commit(session, (tx) =>
                 Transaction.patchDocument(tx, document, target, [
@@ -392,77 +392,71 @@ for (const backend of ['sqlite', 'jsonl'] as const) {
         }
         yield* StorageFormat.inspect.pipe(
           Effect.provide(backendLayer(backend, file)),
-          Effect.map((format) => assert.strictEqual(format.formatVersion, 3)),
+          Effect.map((format) => assert.strictEqual(format.formatVersion, 12)),
         )
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   )
 }
 
-it.effect(
-  'raw native splice writes require explicit activation, legacy operations remain supported',
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const access = yield* Memory.makeAccess
-        const storage = yield* Kernel.make(access)
-        const id = Record.DocumentId.make(2)
-        yield* storage.commit([
-          {
-            _tag: 'document.create',
-            record: {
-              id,
-              ...target,
-              kind: baseDefinition.kind,
-              history: 'rewindable',
-              fork: 'asOf',
-            },
-            content: { _tag: 'base', version: 1, value: { items: [1, 2], n: 0 } },
+it.effect('new guarded stores accept compact splices and ordinary operations', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const access = yield* Memory.makeAccess
+      const storage = yield* Kernel.make(access)
+      const id = Record.DocumentId.make(2)
+      yield* storage.commit([
+        {
+          _tag: 'document.create',
+          record: {
+            id,
+            ...target,
+            kind: baseDefinition.kind,
+            history: 'rewindable',
+            fork: 'asOf',
           },
-        ])
-        const splice: Record.StorageWrite = {
+          content: { _tag: 'base', version: 1, value: { items: [1, 2], n: 0 } },
+        },
+      ])
+      const splice: Record.StorageWrite = {
+        _tag: 'document.change',
+        id,
+        content: { _tag: 'delta', version: 1, ops: [['splice', ['items'], 1, 0, [3]]] },
+      }
+      assert.strictEqual((yield* access.metadata).format, 12)
+      assert.deepEqual(some(yield* storage.document(id)).value, { items: [1, 2], n: 0 })
+      yield* storage.commit([
+        {
           _tag: 'document.change',
           id,
-          content: { _tag: 'delta', version: 1, ops: [['splice', ['items'], 1, 0, [3]]] },
-        }
-        assert.strictEqual(
-          (yield* storage.commit([splice]).pipe(Effect.flip)).reason,
-          'unsupportedFormat',
-        )
-        assert.strictEqual((yield* access.metadata).format, 1)
-        assert.deepEqual(some(yield* storage.document(id)).value, { items: [1, 2], n: 0 })
-        yield* storage.commit([
-          {
-            _tag: 'document.change',
-            id,
-            content: {
-              _tag: 'delta',
-              version: 1,
-              ops: [
-                ['set', ['n'], 1],
-                ['delete', ['items', 0]],
-              ],
-            },
+          content: {
+            _tag: 'delta',
+            version: 1,
+            ops: [
+              ['set', ['n'], 1],
+              ['delete', ['items', 0]],
+            ],
           },
-        ])
-        yield* storage.storageFormat.requireSupportedFormat({
-          formatVersion: 3,
-          minimumReaderVersion: 3,
-        })
-        yield* storage.commit([splice])
-        assert.deepEqual(some(yield* storage.document(id)).value, { items: [2, 3], n: 1 })
-        assert.strictEqual(some(yield* storage.document(id)).deltasSinceBase, 2)
-        assert.strictEqual(
-          (yield* Metadata.requireSupported({
-            format: 12,
-            minimumReader: 12,
-            nextId: 3,
-            nextSeq: 1,
-          }).pipe(Effect.flip)).reason,
-          'unsupportedFormat',
-        )
-      }),
-    ),
+        },
+      ])
+      yield* storage.storageFormat.requireSupportedFormat({
+        formatVersion: 12,
+        minimumReaderVersion: 12,
+      })
+      yield* storage.commit([splice])
+      assert.deepEqual(some(yield* storage.document(id)).value, { items: [2, 3], n: 1 })
+      assert.strictEqual(some(yield* storage.document(id)).deltasSinceBase, 2)
+      assert.strictEqual(
+        (yield* Metadata.requireSupported({
+          format: 13,
+          minimumReader: 13,
+          nextId: 3,
+          nextSeq: 1,
+        }).pipe(Effect.flip)).reason,
+        'unsupportedFormat',
+      )
+    }),
+  ),
 )
 
 class Decode extends Context.Service<Decode, string>()('test/DocumentPatch/Decode') {}
@@ -524,7 +518,7 @@ it.effect('runs the serviceful public patch/checkpoint example through source ma
       assert.strictEqual(first.deltasSinceBase, 1)
       assert.strictEqual(checkpoint.value.count, 3)
       assert.strictEqual(checkpoint.deltasSinceBase, 0)
-      assert.deepEqual(format, { formatVersion: 3, minimumReaderVersion: 3 })
+      assert.deepEqual(format, { formatVersion: 12, minimumReaderVersion: 12 })
     }),
   ),
 )
@@ -635,8 +629,8 @@ it.effect(
           'base',
         )
         assert.deepEqual(yield* StorageFormat.inspect, {
-          formatVersion: 1,
-          minimumReaderVersion: 1,
+          formatVersion: 12,
+          minimumReaderVersion: 12,
         })
         yield* Session.commit(session, (tx) =>
           Transaction.updateDocument(tx, document, target, (value) => value),
@@ -728,8 +722,8 @@ it.effect(
         assert.strictEqual(stored.value.items[5], 5)
         assert.strictEqual(stored.deltasSinceBase, 1)
         assert.deepEqual(yield* StorageFormat.inspect, {
-          formatVersion: 1,
-          minimumReaderVersion: 1,
+          formatVersion: 12,
+          minimumReaderVersion: 12,
         })
       }),
     ).pipe(Effect.provide(Storage.layerMemory)),
@@ -811,8 +805,8 @@ it.effect(
           1000,
         )
         assert.deepEqual(yield* StorageFormat.inspect, {
-          formatVersion: 1,
-          minimumReaderVersion: 1,
+          formatVersion: 12,
+          minimumReaderVersion: 12,
         })
         yield* Session.commit(session, (tx) =>
           Transaction.patchDocument(tx, document, target, [['set', ['label'], 'usable']]),
@@ -859,7 +853,10 @@ it.effect('uncertain format activation poisons the Session and closes its docume
       assert.instanceOf(observerFailure, SessionError)
       if (observerFailure instanceof SessionError)
         assert.strictEqual(observerFailure.reason, 'closed')
-      assert.deepEqual(yield* StorageFormat.inspect, { formatVersion: 1, minimumReaderVersion: 1 })
+      assert.deepEqual(yield* StorageFormat.inspect, {
+        formatVersion: 12,
+        minimumReaderVersion: 12,
+      })
     }),
   ).pipe(Effect.provide(Storage.layerMemory)),
 )
@@ -912,8 +909,8 @@ it.effect(
           'initial',
         )
         assert.deepEqual(yield* StorageFormat.inspect, {
-          formatVersion: 1,
-          minimumReaderVersion: 1,
+          formatVersion: 12,
+          minimumReaderVersion: 12,
         })
       }),
     ).pipe(Effect.provide(Storage.layerMemory)),
@@ -939,7 +936,8 @@ for (const backend of ['sqlite', 'jsonl'] as const) {
                 Effect.flip,
               )
               assert.strictEqual(failure._tag, 'StorageError')
-              if (failure._tag === 'StorageError') assert.strictEqual(failure.reason, 'corrupt')
+              if (failure._tag === 'StorageError')
+                assert.strictEqual(failure.reason, 'unsupportedFormat')
               assert.strictEqual(yield* fs.readFileString(file), bytes)
             } else {
               yield* Effect.gen(function* () {
@@ -952,7 +950,8 @@ for (const backend of ['sqlite', 'jsonl'] as const) {
                   Effect.flip,
                 )
                 assert.strictEqual(failure._tag, 'StorageError')
-                if (failure._tag === 'StorageError') assert.strictEqual(failure.reason, 'corrupt')
+                if (failure._tag === 'StorageError')
+                  assert.strictEqual(failure.reason, 'unsupportedFormat')
                 assert.deepEqual(yield* sql`SELECT * FROM effect_harness_metadata`, before)
               }).pipe(Effect.provide(SqliteClient.layer({ filename: file })))
             }

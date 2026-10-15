@@ -603,7 +603,11 @@ for (const scope of ['session', 'latest'] as const)
               `${filename}.parts/2-3.revision`,
               JSON.stringify({
                 seq: 3,
-                content: { _tag: 'base', version: 2, value: 'obsolete codec payload' },
+                content: {
+                  version: 1,
+                  body: { _tag: 'base', version: 2, value: 'obsolete codec payload' },
+                  media: [],
+                },
               }),
             )
             yield* Effect.gen(function* () {

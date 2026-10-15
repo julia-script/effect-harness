@@ -11,8 +11,8 @@ export interface Format {
   readonly minimumReaderVersion: number
 }
 
-/** This reader understands legacy containers and explicitly activated formats 2 through 11. */
-export const readerVersion = 11
+/** This reader accepts runtime container/minimum-reader 12/12 only. */
+export const readerVersion = 12
 
 export class StorageFormatError extends Schema.TaggedError<StorageFormatError>()(
   'StorageFormatError',
@@ -56,32 +56,11 @@ export const inspect: Effect.Effect<Format, Failure, Storage> = capability.pipe(
 )
 
 /**
- * Explicitly enables a supported format before emitting or executing work that requires it.
- * Built-ins preserve ID/sequence counters and never downgrade. v2 persists format=2, so
- * the previous format=1 reader schema rejects on reopen before replaying tasks.
- * v3 enables compact document splices and rejects format2 readers before replay.
- * v4 enables grouped submission membership and canonical context boundaries;
- * reader3 rejects its container before decoding or dropping grouped facts.
- * v5 enables immutable prepared requests; v6 enables streaming progress and finite retry
- * phases. Reader5 refuses format6 before replaying either phase.
- * v7 enables pinned deferred execution, create admission and recoverable provider handles.
- * Reader6 refuses format7 before interpreting a deferred request as ordinary streaming.
- * v8 fences queued compaction placement and durable generation compaction waits;
- * reader7 refuses before interpreting either incompatible existing fact.
- * v9 fences durable tool rounds, per-call child slots and tool-call accounting;
- * reader8 refuses before interpreting their recovery and once-only control barrier.
- * v10 fences nested child ownership, parent result receipts and no-entry settlement.
- * Reader9 refuses before interpreting these task-owned invocation facts.
- * v11 stores prepared request references and canonical tool result entries; completed
- * rounds and nested observations retain receipts without result bodies. Reader10 refuses
- * before interpreting these incompatible checkpoints, inputs, entries or documents.
- * Activation commits metadata before domain admission; a rejected domain batch may leave
- * the monotone marker upgraded without publishing any child or result.
- *
- * This is a reopen barrier, not fencing of foreign writers that already opened the store.
- * Stop old processes before activation. JSONL requires one owning writer per file;
- * SQL coordinates current writers with its metadata row lock. Unknown outcomes require
- * closing/reopening the backend; a failed guard never authorizes new-format work.
+ * Requires runtime wire format 12/12 before domain admission or task replay.
+ * Built-in stores start with this marker and reject older nonempty containers without migration.
+ * Custom adapters must establish the matching marker durably before publishing PromptWire data.
+ * An uncertain write revokes further use until cold reopen; this guard does not fence foreign
+ * writers already holding an open store. Stop old processes before replacing a namespace.
  */
 export const requireSupportedFormat = Effect.fn('StorageFormat.requireSupportedFormat')(function* (
   format: Format,
@@ -94,15 +73,16 @@ export const requireSupportedFormat = Effect.fn('StorageFormat.requireSupportedF
 export const validate = (format: Format): Effect.Effect<Format, StorageFormatError> =>
   Schema.decodeUnknownEffect(
     Schema.Struct({
-      formatVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
-      minimumReaderVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+      formatVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+      minimumReaderVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
     }).check(Schema.makeFilter((marker) => marker.formatVersion === marker.minimumReaderVersion)),
   )(format).pipe(
     Effect.mapError(
       () =>
         new StorageFormatError({
           reason: 'unsupported',
-          message: 'Only matching container/reader pairs 1 through 11 are supported',
+          message:
+            'Only matching requirements 1 through 12 are supported; built-in containers use 12/12',
         }),
     ),
     Effect.map(({ formatVersion, minimumReaderVersion }) => ({

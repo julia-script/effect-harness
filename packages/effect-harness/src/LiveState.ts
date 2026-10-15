@@ -1,12 +1,12 @@
+import * as PromptWire from './PromptWire.js'
 /** Last committed model progress; trailing uncommitted chunks can be lost on close. */
 import * as Schema from 'effect/Schema'
-import * as Prompt from 'effect/ai/Prompt'
 import * as Document from './Document.js'
 import * as Identity from './Identity.js'
 import * as Usage from './Usage.js'
 
 export const PartialSchema = Schema.Struct({
-  message: Schema.toCodecJson(Prompt.Prompt),
+  message: Schema.toCodecJson(PromptWire.Prompt),
   /** Parameter text is observation only, never an executable tool intent. */
   parameters: Schema.Array(
     Schema.Struct({ id: Schema.String, name: Schema.String, text: Schema.String }),

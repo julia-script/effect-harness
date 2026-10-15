@@ -28,6 +28,7 @@ import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as LanguageModel from 'effect/ai/LanguageModel'
+import * as Prompt from 'effect/ai/Prompt'
 import * as Response from 'effect/ai/Response'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Model from 'effect-harness/Model'
@@ -53,7 +54,7 @@ const complete: Model.Complete = {
     }),
   ]),
 }
-const model = (deferred: Model.Deferred) =>
+const model = (deferred: Model.Deferred, images = false) =>
   Effect.map(
     LanguageModel.make({
       generateText: () => Effect.die('must use deferred descriptor'),
@@ -63,7 +64,7 @@ const model = (deferred: Model.Deferred) =>
       Model.make({
         definition: {
           ref: { provider: 'custom', modelId: 'background' },
-          capabilities: { tools: true, reasoning: true, images: false, structuredOutput: false },
+          capabilities: { tools: true, reasoning: true, images, structuredOutput: false },
         },
         options: Schema.JsonObject,
         configure: () => Effect.succeed(Context.empty()),
@@ -123,7 +124,7 @@ it.effect('saves a handle and polls the same prepared attempt rather than stream
         Schema.Struct({ requestId: Schema.String, execution: Schema.Literal('deferred') }),
       )(checkpoint['preparation'])
       assert.strictEqual(preparation.requestId, ids[0]?.requestId)
-      assert.strictEqual((yield* StorageFormat.inspect).minimumReaderVersion, 11)
+      assert.strictEqual((yield* StorageFormat.inspect).minimumReaderVersion, 12)
       assert.strictEqual(yield* Clock.currentTimeMillis, 0)
       assert.strictEqual(starts, 1)
       assert.strictEqual(polls, 0)
@@ -193,6 +194,22 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
             const store = yield* fixture
             const policy = yield* Settings.make({ stream: { deferred: { window: '1h' } } })
             const identities: Model.DeferredIdentity[] = []
+            const expectedImage = Prompt.filePart({
+              mediaType: 'image/png',
+              fileName: 'deferred.png',
+              data: new Uint8Array(4096).fill(41),
+              options: { openai: { imageDetail: 'high' } },
+            })
+            const expectedUrl = Prompt.filePart({
+              mediaType: 'image/png',
+              data: new URL('https://example.invalid/deferred.png'),
+            })
+            const assertImages = (request: Model.DeferredRequest) =>
+              assert.deepEqual(
+                request.prompt.content.find((message) => message.role === 'user')?.content,
+                [expectedImage, expectedUrl],
+              )
+            const inputBytes = new Uint8Array(expectedImage.data as Uint8Array)
             let starts = 0
             let polls = 0
             let cancels = 0
@@ -200,6 +217,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
               handle: Schema.String,
               start: (request) =>
                 Effect.sync(() => {
+                  assertImages(request)
                   starts++
                   identities.push({ requestId: request.requestId, attempt: request.attempt })
                   return {
@@ -211,6 +229,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
                 }),
               poll: (handle, previous, request) =>
                 Effect.sync(() => {
+                  assertImages(request)
                   polls++
                   assert.strictEqual(handle, 'same')
                   identities.push({ requestId: request.requestId, attempt: request.attempt })
@@ -223,7 +242,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
             })
             let configurations = 0
             const descriptor = {
-              ...(yield* model(adapter)),
+              ...(yield* model(adapter, true)),
               configure: () =>
                 Effect.sync(() => {
                   configurations++
@@ -240,15 +259,31 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
             })
             const owner = yield* Scope.make()
             const first = yield* open.pipe(Effect.provideService(Scope.Scope, owner))
-            const job = yield* submit(first.runtime)
+            yield* first.runtime.backend.root
+            const job = yield* first.runtime.backend.submit({
+              conversationId: root,
+              draft: {
+                type: 'input',
+                content: [
+                  Prompt.filePart({
+                    mediaType: expectedImage.mediaType,
+                    fileName: expectedImage.fileName!,
+                    options: expectedImage.options,
+                    data: inputBytes,
+                  }),
+                  expectedUrl,
+                ],
+              },
+            })
             const checkpoint = (yield* saved(first.runtime, 'deferred')).checkpoint
             assert.strictEqual(checkpoint['pollAt'], 100)
             assert.strictEqual(checkpoint['expiresAt'], 500)
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(first.context)))
                 .minimumReaderVersion,
-              11,
+              12,
             )
+            inputBytes.fill(99)
             yield* policy.update({ stream: { deferred: false } })
             yield* Scope.close(owner, Exit.void)
             assert.strictEqual(cancels, 0)
@@ -692,7 +727,7 @@ for (const hint of [undefined, false, true, { window: '1h' as const }] as const)
             hint === undefined || hint === false ? 'done' : 'unanswered',
           )
           assert.strictEqual(streams, hint === undefined || hint === false ? 1 : 0)
-          assert.strictEqual((yield* StorageFormat.inspect).minimumReaderVersion, 11)
+          assert.strictEqual((yield* StorageFormat.inspect).minimumReaderVersion, 12)
         }),
       ).pipe(Effect.provide(Storage.layerMemory)),
   )

@@ -22,8 +22,8 @@ import * as Kernel from '../src/internal/Kernel.js'
 import * as Record from 'effect-harness/Record'
 import { program as storageFormatExample } from '../../../apps/example/src/tour/StorageFormat.js'
 
-const legacy = { formatVersion: 1, minimumReaderVersion: 1 }
-const current = { formatVersion: 2, minimumReaderVersion: 2 }
+const legacy = { formatVersion: 12, minimumReaderVersion: 12 }
+const current = { formatVersion: 12, minimumReaderVersion: 12 }
 const OldReaderMetadata = Schema.Struct({
   format: Schema.Literal(1),
   nextId: Metadata.Counter.check(Schema.isGreaterThanOrEqualTo(2)),
@@ -55,7 +55,7 @@ it.effect('runs the public example through temporary source mapping', () =>
 
 for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
   describe(`format guard: ${backend}`, () => {
-    it.live('opens legacy unchanged and serializes upgrades with IDs and domain commits', () =>
+    it.live('starts guarded and serializes format requirements with IDs and domain commits', () =>
       Effect.scoped(
         Effect.gen(function* () {
           const { filename } = yield* fixture
@@ -219,7 +219,7 @@ it.effect(
         assert.strictEqual(yield* second.mintId(), 3)
         assert.strictEqual((yield* first.commit([]).pipe(Effect.flip)).reason, 'closed')
         assert.deepEqual(yield* Format.inspect.pipe(Effect.provide(Storage.layerMemory)), legacy)
-        yield* access.save([], { format: 12, minimumReader: 12, nextId: 4, nextSeq: 1 })
+        yield* access.save([], { format: 13, minimumReader: 13, nextId: 4, nextSeq: 1 })
         assert.strictEqual(
           (yield* Kernel.make(access).pipe(Effect.flip)).reason,
           'unsupportedFormat',
@@ -241,24 +241,33 @@ it.effect('document metadata reads stored version without materializing invalid 
         fork: 'asOf',
         createdAt: Record.Seq.make(1),
       }
-      yield* access.save(
-        [
-          {
-            _tag: 'document',
-            value: {
-              record,
+      yield* access.publish({
+        metadata: { format: 12, minimumReader: 12, nextId: 3, nextSeq: 3 },
+        objects: new Map(),
+        rows: new Map([
+          [
+            id,
+            {
+              category: 'document',
+              value: { version: 1, body: { record, revisions: [] }, media: [] },
               revisions: [
-                { seq: Record.Seq.make(1), content: { _tag: 'base', version: 1, value: {} } },
+                {
+                  seq: Record.Seq.make(1),
+                  content: { version: 1, body: { _tag: 'base', version: 1, value: {} }, media: [] },
+                },
                 {
                   seq: Record.Seq.make(2),
-                  content: { _tag: 'delta', version: 2, ops: [['set', ['missing', 'value'], 3]] },
+                  content: {
+                    version: 1,
+                    body: { _tag: 'delta', version: 2, ops: [['set', ['missing', 'value'], 3]] },
+                    media: [],
+                  },
                 },
               ],
             },
-          },
-        ],
-        { format: 1, nextId: 3, nextSeq: 3 },
-      )
+          ],
+        ]),
+      })
       const storage = yield* Kernel.make(access)
       assert.strictEqual((yield* storage.document(id).pipe(Effect.flip)).reason, 'corrupt')
       const metadata = yield* storage.documentMetadata(id)
@@ -276,7 +285,7 @@ it.effect('document metadata reads stored version without materializing invalid 
 
 for (const backend of ['sqlite', 'jsonl'] as const)
   it.live(
-    `${backend} cold reopen preserves v2 and rejects the exact previous format=1 reader schema`,
+    `${backend} cold reopen preserves runtime 12 and rejects the exact previous format=1 reader schema`,
     () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -315,6 +324,7 @@ for (const backend of ['sqlite', 'jsonl'] as const)
   )
 
 for (const marker of [
+  { format: 11, minimumReader: 11 },
   { format: 7, minimumReader: 2 },
   { format: 2, minimumReader: 7 },
   { format: 12, minimumReader: 2 },
@@ -338,10 +348,7 @@ for (const marker of [
           )
           assert.instanceOf(error, Storage.StorageError)
           if (error instanceof Storage.StorageError)
-            assert.strictEqual(
-              error.reason,
-              marker.format > 11 || marker.minimumReader > 11 ? 'unsupportedFormat' : 'corrupt',
-            )
+            assert.strictEqual(error.reason, 'unsupportedFormat')
           assert.strictEqual(yield* fs.readFileString(filename), bytes)
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
@@ -365,7 +372,7 @@ it.live(
           ] as const) {
             yield* sql`UPDATE effect_harness_metadata SET format=${version},minimum_reader=${reader}`
             const before = yield* sql`SELECT * FROM effect_harness_metadata`
-            const reason = version > 11 || reader > 11 ? 'unsupportedFormat' : 'corrupt'
+            const reason = 'unsupportedFormat'
             const failed = yield* format.requireSupportedFormat(current).pipe(Effect.flip)
             assert.instanceOf(failed, Storage.StorageError)
             if (failed instanceof Storage.StorageError) assert.strictEqual(failed.reason, reason)
@@ -379,7 +386,7 @@ it.live(
 )
 
 for (const failure of ['partial', 'synced-but-reported-failed'] as const)
-  it.live(`JSONL ${failure} upgrade revokes the writer; cold reopen reconciles actual bytes`, () =>
+  it.live(`JSONL ${failure} commit revokes the writer; cold reopen reconciles actual bytes`, () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { fs, filename } = yield* fixture
@@ -414,7 +421,7 @@ for (const failure of ['partial', 'synced-but-reported-failed'] as const)
           const storage = yield* Storage.Storage
           const format = yield* Format.StorageFormat
           armed = true
-          const failed = yield* format.requireSupportedFormat(current).pipe(Effect.flip)
+          const failed = yield* storage.commit([]).pipe(Effect.flip)
           assert.instanceOf(failed, Storage.StorageError)
           if (failed instanceof Storage.StorageError) assert.strictEqual(failed.reason, 'uncertain')
           const length = (yield* fs.readFile(filename)).length
@@ -428,18 +435,18 @@ for (const failure of ['partial', 'synced-but-reported-failed'] as const)
         )
         yield* Effect.gen(function* () {
           const storage = yield* Storage.Storage
-          assert.deepEqual(yield* Format.inspect, failure === 'partial' ? legacy : current)
+          assert.deepEqual(yield* Format.inspect, current)
           if (failure === 'partial')
             assert.strictEqual(yield* fs.readFileString(filename), original)
           assert.isTrue(Option.isSome(yield* storage.conversation(Storage.ROOT_CONVERSATION_ID)))
           assert.strictEqual(yield* storage.mintId(), 2)
-          assert.strictEqual(yield* storage.commit([]), 2)
+          assert.strictEqual(yield* storage.commit([]), failure === 'partial' ? 2 : 3)
         }).pipe(Effect.provide(Storage.layerJsonl({ filePath: filename })))
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   )
 
-it.live('interruption during JSONL sync cannot expose a partially activated in-memory marker', () =>
+it.live('interruption during JSONL sync cannot expose an uncommitted state', () =>
   Effect.scoped(
     Effect.gen(function* () {
       const { fs, filename } = yield* fixture
@@ -467,7 +474,7 @@ it.live('interruption during JSONL sync cannot expose a partially activated in-m
       yield* Effect.gen(function* () {
         const format = yield* Format.StorageFormat
         armed = true
-        const fiber = yield* Effect.forkChild(format.requireSupportedFormat(current))
+        const fiber = yield* Effect.forkChild((yield* Storage.Storage).commit([]))
         yield* Deferred.await(syncing)
         const interrupt = yield* Effect.forkChild(Fiber.interrupt(fiber), {
           startImmediately: true,
@@ -490,86 +497,81 @@ it.live('interruption during JSONL sync cannot expose a partially activated in-m
 )
 
 for (const mode of ['statement', 'commit', 'committed-but-reported-failed', 'rollback'] as const)
-  it.live(
-    `SQL ${mode} failure never claims downgrade or permits activation; reopen reconciles the marker`,
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const { filename } = yield* fixture
-          yield* Effect.gen(function* () {
-            const native = yield* SqlClient.SqlClient
-            const sql =
-              mode === 'rollback' || mode === 'committed-but-reported-failed'
-                ? yield* SqlClient.make({
-                    acquirer: Effect.succeed(yield* native.reserve),
-                    compiler: Statement.makeCompilerSqlite(),
-                    spanAttributes: [],
-                    ...(mode === 'rollback'
-                      ? { rollback: 'ROLLBACK BROKEN' }
-                      : {
-                          commit: (connection: import('effect/sql/SqlConnection').Connection) =>
-                            connection.executeUnprepared('COMMIT', [], undefined).pipe(
-                              Effect.andThen(
-                                Effect.fail(
-                                  new SqlError.SqlError({
-                                    reason: new SqlError.ConnectionError({
-                                      cause: 'lost commit acknowledgment',
-                                    }),
+  it.live(`SQL ${mode} failure revokes access; reopen reconciles the guarded commit`, () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { filename } = yield* fixture
+        yield* Effect.gen(function* () {
+          const native = yield* SqlClient.SqlClient
+          const sql =
+            mode === 'rollback' || mode === 'committed-but-reported-failed'
+              ? yield* SqlClient.make({
+                  acquirer: Effect.succeed(yield* native.reserve),
+                  compiler: Statement.makeCompilerSqlite(),
+                  spanAttributes: [],
+                  ...(mode === 'rollback'
+                    ? { rollback: 'ROLLBACK BROKEN' }
+                    : {
+                        commit: (connection: import('effect/sql/SqlConnection').Connection) =>
+                          connection.executeUnprepared('COMMIT', [], undefined).pipe(
+                            Effect.andThen(
+                              Effect.fail(
+                                new SqlError.SqlError({
+                                  reason: new SqlError.ConnectionError({
+                                    cause: 'lost commit acknowledgment',
                                   }),
-                                ),
+                                }),
                               ),
                             ),
-                        }),
-                  }).pipe(Effect.provide(Reactivity.layer))
-                : native
-            yield* Effect.scoped(
-              Effect.gen(function* () {
-                const context = yield* Layer.build(Storage.layerSql).pipe(
-                  Effect.provideService(SqlClient.SqlClient, sql),
-                )
-                const storage = Context.get(context, Storage.Storage)
-                const format = Context.get(context, Format.StorageFormat)
-                // The injected commit client would fail even the initial domain commit.
-                if (mode !== 'committed-but-reported-failed')
-                  yield* storage.commit([
-                    { _tag: 'conversation', value: { id: Storage.ROOT_CONVERSATION_ID } },
-                  ])
-                if (mode === 'commit') {
-                  yield* sql`PRAGMA foreign_keys=ON`
-                  yield* sql`CREATE TABLE parent(id INTEGER PRIMARY KEY)`
-                  yield* sql`CREATE TABLE child(id INTEGER, FOREIGN KEY(id) REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED)`
-                  yield* sql`CREATE TRIGGER fail_format AFTER UPDATE OF format ON effect_harness_metadata WHEN NEW.format=2 BEGIN INSERT INTO child(id) VALUES(999); END`
-                } else if (mode === 'statement' || mode === 'rollback')
-                  yield* sql`CREATE TRIGGER fail_format BEFORE UPDATE OF format ON effect_harness_metadata WHEN NEW.format=2 BEGIN SELECT RAISE(ABORT,'format write fails'); END`
-                const failure = yield* format.requireSupportedFormat(current).pipe(Effect.flip)
-                assert.instanceOf(failure, Storage.StorageError)
-                if (failure instanceof Storage.StorageError)
-                  assert.strictEqual(failure.reason, 'uncertain')
-                const poison = yield* format.inspect.pipe(Effect.flip)
-                assert.instanceOf(poison, Storage.StorageError)
-                assert.strictEqual(
-                  (yield* storage.commit([]).pipe(Effect.flip)).reason,
-                  'uncertain',
-                )
-              }),
-            )
-            if (mode === 'rollback') yield* sql`ROLLBACK`
-            if (mode !== 'committed-but-reported-failed') yield* sql`DROP TRIGGER fail_format`
-          }).pipe(Effect.provide(SqliteClient.layer({ filename })))
-          yield* Effect.gen(function* () {
-            const storage = yield* Storage.Storage
-            assert.deepEqual(
-              yield* Format.inspect,
-              mode === 'committed-but-reported-failed' ? current : legacy,
-            )
-            assert.strictEqual(yield* storage.mintId(), 2)
-            assert.strictEqual(
-              yield* storage.commit([]),
-              mode === 'committed-but-reported-failed' ? 1 : 2,
-            )
-          }).pipe(Effect.provide(backendLayer('sqlite', filename)))
-        }),
-      ).pipe(Effect.provide(NodeServices.layer)),
+                          ),
+                      }),
+                }).pipe(Effect.provide(Reactivity.layer))
+              : native
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const context = yield* Layer.build(Storage.layerSql).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              )
+              const storage = Context.get(context, Storage.Storage)
+              const format = Context.get(context, Format.StorageFormat)
+              // The injected commit client would fail even the initial domain commit.
+              if (mode !== 'committed-but-reported-failed')
+                yield* storage.commit([
+                  { _tag: 'conversation', value: { id: Storage.ROOT_CONVERSATION_ID } },
+                ])
+              if (mode === 'commit') {
+                yield* sql`PRAGMA foreign_keys=ON`
+                yield* sql`CREATE TABLE parent(id INTEGER PRIMARY KEY)`
+                yield* sql`CREATE TABLE child(id INTEGER, FOREIGN KEY(id) REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED)`
+                yield* sql`CREATE TRIGGER fail_format AFTER UPDATE OF format ON effect_harness_metadata WHEN NEW.format=12 BEGIN INSERT INTO child(id) VALUES(999); END`
+              } else if (mode === 'statement' || mode === 'rollback')
+                yield* sql`CREATE TRIGGER fail_format BEFORE UPDATE OF format ON effect_harness_metadata WHEN NEW.format=12 BEGIN SELECT RAISE(ABORT,'format write fails'); END`
+              const failure = yield* storage.commit([]).pipe(Effect.flip)
+              assert.instanceOf(failure, Storage.StorageError)
+              if (failure instanceof Storage.StorageError)
+                assert.strictEqual(failure.reason, 'uncertain')
+              const poison = yield* format.inspect.pipe(Effect.flip)
+              assert.instanceOf(poison, Storage.StorageError)
+              assert.strictEqual((yield* storage.commit([]).pipe(Effect.flip)).reason, 'uncertain')
+            }),
+          )
+          if (mode === 'rollback') yield* sql`ROLLBACK`
+          if (mode !== 'committed-but-reported-failed') yield* sql`DROP TRIGGER fail_format`
+        }).pipe(Effect.provide(SqliteClient.layer({ filename })))
+        yield* Effect.gen(function* () {
+          const storage = yield* Storage.Storage
+          assert.deepEqual(
+            yield* Format.inspect,
+            mode === 'committed-but-reported-failed' ? current : legacy,
+          )
+          assert.strictEqual(yield* storage.mintId(), 2)
+          assert.strictEqual(
+            yield* storage.commit([]),
+            mode === 'committed-but-reported-failed' ? 2 : 2,
+          )
+        }).pipe(Effect.provide(backendLayer('sqlite', filename)))
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
   )
 
 it.live('JSONL reopen rejects downgrade bytes appended by an already-open foreign writer', () =>
@@ -593,14 +595,15 @@ it.live('JSONL reopen rejects downgrade bytes appended by an already-open foreig
         Effect.flip,
       )
       assert.instanceOf(failure, Storage.StorageError)
-      if (failure instanceof Storage.StorageError) assert.strictEqual(failure.reason, 'corrupt')
+      if (failure instanceof Storage.StorageError)
+        assert.strictEqual(failure.reason, 'unsupportedFormat')
       assert.deepEqual(yield* fs.readFile(filename), before)
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 )
 
 it.live(
-  'SQL leaves already-open foreign writers usable; their original counter writes preserve the v2 marker',
+  'SQL leaves already-open foreign writers usable; their original counter writes preserve the runtime-12 marker',
   () =>
     Effect.scoped(
       Effect.gen(function* () {

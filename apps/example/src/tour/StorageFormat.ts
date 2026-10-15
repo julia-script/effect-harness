@@ -2,20 +2,20 @@ import * as Effect from 'effect/Effect'
 import * as Storage from 'effect-harness/Storage'
 import * as StorageFormat from 'effect-harness/StorageFormat'
 
-/** The runtime that introduces v2 work must complete this guard before its first write. */
+/** Validate the runtime wire contract before the first domain write. */
 export const program = Effect.gen(function* () {
   const storage = yield* Storage.Storage
   const before = yield* StorageFormat.inspect
   const activated = yield* StorageFormat.requireSupportedFormat({
-    formatVersion: 2,
-    minimumReaderVersion: 2,
+    formatVersion: 12,
+    minimumReaderVersion: 12,
   })
   const sequence = yield* storage.commit([])
   if (
-    before.formatVersion !== 1 ||
-    before.minimumReaderVersion !== 1 ||
-    activated.formatVersion !== 2 ||
-    activated.minimumReaderVersion !== 2
+    before.formatVersion !== 12 ||
+    before.minimumReaderVersion !== 12 ||
+    activated.formatVersion !== 12 ||
+    activated.minimumReaderVersion !== 12
   )
     return yield* Effect.die('Storage format activation contract failed')
   return { before, activated, sequence }

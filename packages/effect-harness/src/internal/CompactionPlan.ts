@@ -1,3 +1,4 @@
+import * as PromptWire from '../PromptWire.js'
 /** Pure compaction preparation. A fingerprint is advisory until revalidated in the placement transaction. */
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -19,7 +20,7 @@ export interface CanonicalInput {
 }
 const ItemSchema = Schema.Struct({
   entry: Record.Entry,
-  contribution: Schema.Array(Prompt.Message),
+  contribution: Schema.Array(PromptWire.Message),
   fact: Schema.optionalKey(Projection.FactSchema),
 })
 export const FingerprintSchema = Schema.Struct({
@@ -51,7 +52,13 @@ export const TranscriptSchema = Schema.Struct({
 export type Transcript = typeof TranscriptSchema.Type
 
 const freeze = <A>(value: A): A => {
-  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    !ArrayBuffer.isView(value) &&
+    !(value instanceof URL) &&
+    !Object.isFrozen(value)
+  ) {
     for (const child of Object.values(value)) freeze(child)
     Object.freeze(value)
   }
@@ -133,7 +140,7 @@ const canonical = Effect.fnUntraced(function* (
   for (const messages of input.view.contributions) yield* checkMessages(messages, true)
   const protocol = freeze(yield* Value.copy(Protocol.ProtocolSchema, input.protocol))
   const entries = freeze(yield* Value.copy(Schema.Array(Record.Entry), input.entries))
-  const view = yield* Value.copy(Projection.ContextViewSchema, input.view)
+  const view = yield* Value.copy(Schema.toCodecJson(Projection.ContextViewSchema), input.view)
   const expected = yield* Protocol.project(view.bounds.conversationId, entries, protocol, {
     legacyMode: view.bounds.legacyInterpretation._tag,
   })
@@ -202,7 +209,7 @@ const fingerprint = Effect.fnUntraced(function* (
       entry.edits?.some((edit) => ids.has(edit.target)),
   )
   return freeze(
-    yield* Value.copy(FingerprintSchema, {
+    yield* Value.copy(Schema.toCodecJson(FingerprintSchema), {
       version: 1,
       conversationId: view.bounds.conversationId,
       protocol: input.protocol,
@@ -224,7 +231,7 @@ export const capture = Effect.fnUntraced(function* (
 ): Effect.fn.Return<Fingerprint, Failure> {
   yield* checkMessages(inputSelection.source.content, true)
   yield* checkMessages(inputSelection.retained.content, true)
-  const selection = yield* Value.copy(Compaction.SelectedSchema, inputSelection)
+  const selection = yield* Value.copy(Schema.toCodecJson(Compaction.SelectedSchema), inputSelection)
   const current = yield* canonical(input)
   const { view } = current
   const cut = view.activeEntries.findIndex((entry) => entry.id === selection.firstKept)
@@ -260,7 +267,7 @@ export const validate = Effect.fnUntraced(function* (
 ): Effect.fn.Return<Fingerprint, Failure> {
   for (const item of [...inputFingerprint.selected, ...inputFingerprint.retained])
     yield* checkMessages(item.contribution, true)
-  const pinned = freeze(yield* Value.copy(FingerprintSchema, inputFingerprint))
+  const pinned = freeze(yield* Value.copy(Schema.toCodecJson(FingerprintSchema), inputFingerprint))
   const current = yield* canonical(input)
   const observed = yield* fingerprint(current, pinned.firstKept, pinned.tail)
   if (!sameFingerprint(pinned, observed))

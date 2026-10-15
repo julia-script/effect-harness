@@ -213,7 +213,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(first.context)))
                 .minimumReaderVersion,
-              11,
+              12,
             )
             yield* first.runtime.backend.configure({
               conversationId: root,
@@ -477,7 +477,7 @@ it.effect(
         })
         assert.strictEqual((yield* runtime.backend.wait(job.id)).status, 'unanswered')
         assert.isFalse((yield* entries(runtime)).some((entry) => entry.kind === 'context.change'))
-        assert.strictEqual((yield* StorageFormat.inspect).formatVersion, 11)
+        assert.strictEqual((yield* StorageFormat.inspect).formatVersion, 12)
       }),
     ).pipe(Effect.provide(Storage.layerMemory)),
 )
@@ -746,7 +746,16 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
               ],
             },
           })
-          yield* Deferred.await(entered)
+          yield* Effect.raceFirst(
+            Deferred.await(entered),
+            runtime.backend
+              .wait(job.id)
+              .pipe(
+                Effect.flatMap((outcome) =>
+                  Effect.die(new Error('Provider was not reached: ' + JSON.stringify(outcome))),
+                ),
+              ),
+          )
           bytes.fill(9)
           temperature = 0.9
           const stored = yield* preparation(runtime, yield* saved(runtime))

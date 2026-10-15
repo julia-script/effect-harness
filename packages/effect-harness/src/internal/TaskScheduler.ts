@@ -200,7 +200,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
     readonly token: object
     readonly diagnostic: TaskError
     readonly session: typeof state
-    readonly operation: 'task.read' | 'task.scan' | 'task.conversationGuard'
+    readonly operation: 'task.read' | 'task.scan' | 'task.conversationGuard' | 'scheduler.guard'
     readonly cause: Cause.Cause<unknown>
   }
   let nativeDiagnostic:
@@ -786,7 +786,11 @@ export const make = Effect.fnUntraced(function* <R = never>(
                   )
                 }),
               { taskId: invocation.taskId, conversationId: invocation.conversationId },
-            ).pipe(Effect.onExit(observeCommit(provenance, 'task.commit'))),
+            ).pipe(
+              Effect.provideService(SessionRuntime.CommitFailure, (cause) =>
+                observeCommit(provenance, 'task.commit')(Exit.failCause(cause)),
+              ),
+            ),
           ),
         ),
       progress: <T extends Task.Contract>(
@@ -1020,7 +1024,9 @@ export const make = Effect.fnUntraced(function* <R = never>(
               )
             }),
           ).pipe(
-            Effect.onExit(observeCommit(provenance, 'task.conversationCommit')),
+            Effect.provideService(SessionRuntime.CommitFailure, (cause) =>
+              observeCommit(provenance, 'task.conversationCommit')(Exit.failCause(cause)),
+            ),
             Effect.onExit((exit) =>
               callbackEntered ? Effect.void : observeProjection('task.conversationGuard')(exit),
             ),
@@ -1462,8 +1468,10 @@ export const make = Effect.fnUntraced(function* <R = never>(
   const reconcile = Effect.gen(function* () {
     yield* notify
     if (!enabled || closed || failed !== undefined) return
-    yield* guard
-    yield* Session.commit(session, Supervision.reconcile)
+    yield* guard.pipe(Effect.onExit(observeProjection('scheduler.guard')))
+    yield* Session.commit(session, Supervision.reconcile).pipe(
+      Effect.onExit(observeProjection('scheduler.guard')),
+    )
     const records = yield* Session.scanTasks(session).pipe(
       Stream.runCollect,
       Effect.onExit(observeProjection('task.scan')),
@@ -1480,12 +1488,15 @@ export const make = Effect.fnUntraced(function* <R = never>(
         yield* reserve(record.id)
     }
   }).pipe(
-    Effect.catch((failure) => health(failure)),
-    Effect.catchCause((cause) =>
-      Cause.hasInterruptsOnly(cause)
+    Effect.catchCause((cause) => {
+      if (cause.reasons.length === 1 && Cause.isFailReason(cause.reasons[0]!)) {
+        const reason = cause.reasons[0]
+        return health(reason.error, occurrence(reason))
+      }
+      return Cause.hasInterruptsOnly(cause)
         ? Effect.void
-        : health(error('faulted', 'scheduler.reconcile', Cause.pretty(cause), cause)),
-    ),
+        : health(error('faulted', 'scheduler.reconcile', Cause.pretty(cause), cause))
+    }),
   )
   yield* registry.listen(() => wake)
   yield* Stream.fromQueue(signals).pipe(

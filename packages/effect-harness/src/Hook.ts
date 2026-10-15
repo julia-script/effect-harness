@@ -1,3 +1,4 @@
+import * as PromptWire from './PromptWire.js'
 /** Schema-backed lifecycle events and runtime-owned Effect callbacks. */
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -18,7 +19,7 @@ export const TypeId = '~effect-harness/Hook'
 
 export const EventSchema = Schema.Union([
   Schema.TaggedStruct('conversationCreated', { conversationId: Record.ConversationId }),
-  Schema.TaggedStruct('beforeRequest', { prompt: Prompt.Prompt }),
+  Schema.TaggedStruct('beforeRequest', { prompt: PromptWire.Prompt }),
   Schema.TaggedStruct('afterResponse', { message: Prompt.AssistantMessage }),
   Schema.TaggedStruct('beforeTool', { call: Tool.CallSchema }),
   Schema.TaggedStruct('afterTool', { call: Tool.CallSchema, result: ToolResult.ResultSchema }),
@@ -27,7 +28,7 @@ export const EventSchema = Schema.Union([
   Schema.TaggedStruct('beforeCompact', {
     reason: Schema.Literals(['manual', 'threshold', 'overflow']),
     entries: Schema.Array(Record.Entry),
-    prompt: Prompt.Prompt,
+    prompt: PromptWire.Prompt,
     firstKept: Record.EntryId,
     instructions: Schema.optionalKey(Schema.String),
   }),
