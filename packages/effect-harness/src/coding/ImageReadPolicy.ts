@@ -11,7 +11,7 @@ export type Policy =
   | { readonly vision: true; readonly limits: ImagePreparation.Limits }
 
 /**
- * Evaluated once per read invocation, after the handler receives ToolExecution.
+ * Evaluated per image preparation invocation, after the handler receives ToolExecution.
  * The resolver may use that call's execution access to select current model policy.
  * Binding this service does not install runtime model selection: the request owner
  * must supply that resolver. No implicit vision support or default image limits.
@@ -21,7 +21,7 @@ export class ImageReadPolicy extends Context.Service<
   { readonly current: Effect.Effect<Policy, never, ToolExecution> }
 >()('effect-harness/coding/ImageReadPolicy') {}
 
-/** A fixed policy for applications with a fixed model; read at invocation time. */
+/** A fixed fallback policy for direct toolkit calls; read at invocation time. */
 export const layer = (policy: Policy): Layer.Layer<ImageReadPolicy> =>
   Layer.succeed(ImageReadPolicy, { current: Effect.succeed(policy) })
 
