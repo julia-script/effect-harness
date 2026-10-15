@@ -475,7 +475,7 @@ describe('task retirement failures and legacy state', () => {
     )
   }
 
-  for (const mode of ['scan', 'content', 'invalid'] as const) {
+  for (const mode of ['scan', 'metadata', 'invalid'] as const) {
     it.effect(`caught ${mode} settlement error stages neither task nor partial retirement`, () =>
       withMemory(
         Effect.gen(function* () {
@@ -493,12 +493,12 @@ describe('task retirement failures and legacy state', () => {
               fail && mode === 'scan'
                 ? Stream.concat(storage.scanDocuments(query), Stream.fail(failure))
                 : storage.scanDocuments(query),
-            document: (id, at) =>
+            documentMetadata: (id) =>
               Effect.suspend(() => {
                 reads++
-                return fail && mode === 'content' && reads === 2
+                return fail && mode === 'metadata' && reads === 2
                   ? Effect.fail(failure)
-                  : storage.document(id, at)
+                  : storage.documentMetadata!(id)
               }),
           }
           const session = yield* Session.make().pipe(

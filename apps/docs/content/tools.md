@@ -26,6 +26,30 @@ After `Submission.wait` returns `InputDone`, read the final answer from its entr
 
 For atomic application state changes, use the [document example](/examples/documents). For interruption behavior, read [restart and recovery](/explanation/recovery).
 
+## Read structured tool results
+
+`Tool.makeResult` separates model content, programmatic `structuredOutput`, and
+UI `details`. Read a committed `tool.result` entry with
+`ToolResultRecord.read(entry)` from `effect-harness/ToolResultRecord`. It returns
+`Effect<ToolResult.Result, Schema.SchemaError>` without services and reconstructs
+storage aliases and native media. A different entry kind or malformed canonical
+record fails with `SchemaError`. Do not decode `entry.data` with `ResultSchema` or
+unwrap its private storage fields.
+
+The reader returns retained handler/hook content and structured diagnostics.
+`ContextProjection.messages(entry)` produces model messages: it appends one
+`<harness>` text block containing each diagnostic as `[severity] message`.
+Diagnostics render after content retention, including warnings about truncation.
+Projection leaves canonical content unchanged, so replay does not append another
+copy. Structured output, UI details, spend, and controls are not rendered.
+
+Decode `result.structuredOutput` separately using your tool's success or failure
+schema when you need transformed application values. That decoding can require
+the schema's services; the canonical reader itself does not. This complete offline
+example prints programmatic data, model content, and UI details after settlement:
+
+<!-- example:structured-result -->
+
 ## Return an image from a custom tool
 
 Call `ToolImage.prepare(bytes, mimeType)` inside your handler. It uses your bound

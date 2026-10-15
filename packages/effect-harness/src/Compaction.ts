@@ -1,4 +1,5 @@
 /** Bounded compaction policy foundations; these APIs perform no model or storage writes. */
+import * as PromptWire from './PromptWire.js'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
@@ -29,7 +30,7 @@ export const InputSchema = Schema.Struct({
   reason: ReasonSchema,
   contextWindow: Schema.optionalKey(Count.check(Schema.isGreaterThan(0))),
   /** Final planned prompt; sections can occur at the front or in the middle. */
-  prompt: Schema.optionalKey(Prompt.Prompt),
+  prompt: Schema.optionalKey(PromptWire.Prompt),
   tools: Schema.optionalKey(Schema.Array(Projection.ToolDeclarationSchema)),
   overheadTokens: Schema.optionalKey(Count),
   baseline: Schema.optionalKey(PromptUsage.Baseline),
@@ -53,8 +54,8 @@ export const SelectedSchema = Schema.TaggedStruct('Selected', {
   policy: PolicySchema,
   instructions: Schema.optionalKey(Schema.String),
   /** Canonically repaired prefix and suffix; native Prompt carries no custom provider fields. */
-  source: Prompt.Prompt,
-  retained: Prompt.Prompt,
+  source: PromptWire.Prompt,
+  retained: PromptWire.Prompt,
   measurement: MeasurementSchema,
 })
 export type Selected = typeof SelectedSchema.Type
@@ -84,7 +85,12 @@ export type SummaryRequest = typeof SummaryRequestSchema.Type
 export const SummarySchema = Schema.NonEmptyString
 
 const freeze = <A>(value: A): A => {
-  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    !ArrayBuffer.isView(value) &&
+    !Object.isFrozen(value)
+  ) {
     for (const child of Object.values(value)) freeze(child)
     Object.freeze(value)
   }
@@ -109,9 +115,9 @@ export const select = Effect.fnUntraced(function* (
   inputPolicy: Policy,
   input: Input,
 ): Effect.fn.Return<Result, Failure> {
-  const view = yield* Value.copy(Projection.ContextViewSchema, inputView)
+  const view = yield* Value.copy(Schema.toCodecJson(Projection.ContextViewSchema), inputView)
   const policy = yield* Value.copy(PolicySchema, inputPolicy)
-  const options = yield* Value.copy(InputSchema, input)
+  const options = yield* Value.copy(Schema.toCodecJson(InputSchema), input)
   if (view.activeEntries.length !== view.contributions.length)
     return yield* new CompactionError({
       reason: 'invalid',
@@ -213,7 +219,7 @@ export const pinRequest = Effect.fnUntraced(function* (
   selection: Selected,
   config: SummaryConfig,
 ): Effect.fn.Return<SummaryRequest, Failure> {
-  const request = yield* Value.copy(SummaryRequestSchema, { selection, config })
+  const request = yield* Value.copy(Schema.toCodecJson(SummaryRequestSchema), { selection, config })
   if (request.selection.firstKept > request.selection.tail)
     return yield* new CompactionError({
       reason: 'invalid',

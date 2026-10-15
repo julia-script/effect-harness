@@ -20,6 +20,7 @@ import * as Record from 'effect-harness/Record'
 import * as Session from 'effect-harness/Session'
 import * as Storage from 'effect-harness/Storage'
 import { StorageError } from 'effect-harness/StorageError'
+import * as StorageFormat from 'effect-harness/StorageFormat'
 import * as Transaction from 'effect-harness/Transaction'
 
 const ownerless = { ownership: { _tag: 'ownerless' } } as const
@@ -91,6 +92,10 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                 : Storage.layerJsonl({ filePath: `${directory}/state.jsonl` })
             const run = Effect.gen(function* () {
               const storage = yield* Storage.Storage
+              yield* StorageFormat.requireSupportedFormat({
+                formatVersion: 12,
+                minimumReaderVersion: 12,
+              })
               const entry =
                 boundary === 'fork'
                   ? yield* Effect.scoped(

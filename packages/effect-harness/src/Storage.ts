@@ -75,7 +75,13 @@ export class Storage extends Context.Service<
       id: Record.DocumentId,
       at?: DocumentPoint,
     ) => Effect.Effect<Option.Option<StoredDocument>, StorageError>
-    /** Optional for structural adapters; consumers must reject unavailable metadata support. */
+    /**
+     * Reads validated identity, policy and version without decoding the document body.
+     * Built-in adapters supply this optional capability. Custom adapters must supply it
+     * for ordinary unstaged document retirement and terminal task document cleanup,
+     * as well as explicit metadata retirement. Without it those operations fail with
+     * SessionError(invalid); they never fall back to reading the body.
+     */
     readonly documentMetadata?: (
       id: Record.DocumentId,
     ) => Effect.Effect<Option.Option<DocumentMetadata>, StorageError>

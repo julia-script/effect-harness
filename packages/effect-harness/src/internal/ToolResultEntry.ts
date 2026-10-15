@@ -25,20 +25,31 @@ export const encode = (value: typeof EntrySchema.Type) =>
     explicitEnvelope: value.explicitEnvelope,
     result: value,
   })
+const RecordSchema = Schema.Struct({
+  kind: Schema.Literal('tool.result'),
+  data: Schema.toCodecJson(StoredSchema),
+})
 const record = (entry: Record.Entry) =>
-  Schema.decodeUnknownEffect(Schema.toCodecJson(StoredSchema))(entry.data)
+  Schema.decodeUnknownEffect(RecordSchema)(entry).pipe(Effect.map((value) => value.data))
 export const read = (entry: Record.Entry) => record(entry).pipe(Effect.map((value) => value.result))
 export const messages = Effect.fnUntraced(function* (entry: Record.Entry) {
   const { result, ...call } = yield* record(entry)
-  const plain = result.content.flatMap((part) =>
+  const content = [...result.content]
+  if (result.diagnostics.length > 0)
+    content.push(
+      Prompt.textPart({
+        text: `<harness>\n${result.diagnostics.map((diagnostic) => `[${diagnostic.severity}] ${diagnostic.message}`).join('\n')}\n</harness>`,
+      }),
+    )
+  const plain = content.flatMap((part) =>
     part.type === 'text' && Object.keys(part.options).length === 0 ? [part.text] : [],
   )
   const value =
-    !call.explicitEnvelope && plain.length === result.content.length
+    !call.explicitEnvelope && plain.length === content.length
       ? plain.join('\n')
       : yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.Envelope))({
           _tag: '@effect-harness/ToolContent',
-          content: result.content,
+          content,
         })
   return [
     Prompt.toolMessage({

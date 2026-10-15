@@ -181,8 +181,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               ),
             )
             assert.deepEqual(yield* StorageFormat.inspect.pipe(Effect.provideContext(context)), {
-              formatVersion: 11,
-              minimumReaderVersion: 11,
+              formatVersion: 12,
+              minimumReaderVersion: 12,
             })
           }),
         ).pipe(Effect.provide(NodeServices.layer)),
@@ -461,8 +461,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               ['input'],
             )
             assert.deepEqual(yield* StorageFormat.inspect.pipe(Effect.provideContext(context)), {
-              formatVersion: 11,
-              minimumReaderVersion: 11,
+              formatVersion: 12,
+              minimumReaderVersion: 12,
             })
           }),
         ).pipe(Effect.provide(NodeServices.layer)),

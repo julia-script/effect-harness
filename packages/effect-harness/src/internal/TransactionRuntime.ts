@@ -428,14 +428,19 @@ export const putTask = Effect.fnUntraced(function* (state: State, input: Domain.
     )
   if (sameTask(previous.value, value)) return
   yield* validateTask(state, value)
-  const retiring = value.state.status === 'terminal' ? yield* taskDocuments(state, value.id) : []
+  const retiring =
+    value.state.status === 'terminal'
+      ? yield* taskDocuments(state, value.id)
+      : { drafts: [], metadata: [] }
   yield* active(state)
   // Prepare every retirement before staging anything: callers may catch storage errors.
-  for (const draft of retiring) {
+  for (const draft of retiring.drafts) {
     draft.retired = true
     if (!state.documents.has(draft.key)) state.documents.set(draft.key, draft)
     state.incarnations.set(draft.value.record.id, draft)
   }
+  for (const retirement of retiring.metadata)
+    state.retirements.set(retirement.record.id, retirement)
   state.tasks.set(value.id, value)
 })
 
@@ -516,30 +521,50 @@ const checkScope = Effect.fnUntraced(function* (state: State, scope: Domain.Scop
   }
 })
 
+const retirementMetadata = Effect.fnUntraced(function* (
+  state: State,
+  expected: Record.DocumentRecord,
+  operation: string,
+) {
+  const read = state.runtime.storage.documentMetadata
+  if (read === undefined)
+    return yield* error('invalid', operation, 'Storage does not support document metadata reads')
+  const found = yield* read(expected.id)
+  if (Option.isNone(found))
+    return yield* error('invalid', operation, 'Live document version metadata is absent')
+  const metadata = yield* Value.copy(
+    Schema.Struct({
+      record: Record.DocumentRecordSchema,
+      version: Record.Content.members[0].fields.version,
+    }),
+    found.value,
+  )
+  if (
+    metadata.record.id !== expected.id ||
+    !sameAddress(metadata.record, expected) ||
+    metadata.record.retiredAt !== undefined
+  )
+    return yield* error('conflict', operation, 'Document retirement metadata does not match')
+  return metadata
+})
+
 const taskDocuments = Effect.fnUntraced(function* (state: State, taskId: Domain.TaskId) {
-  const retiring = Array.from(state.incarnations.values()).filter(
+  const drafts = Array.from(state.incarnations.values()).filter(
     (draft) =>
       draft.value.record.scope._tag === 'task' && draft.value.record.scope.taskId === taskId,
   )
+  const metadata: Array<Retirement> = []
   const records = yield* state.runtime.storage
     .scanDocuments({ scope: { _tag: 'task', taskId } })
     .pipe(Stream.runCollect)
   for (const record of records) {
     if (state.incarnations.has(record.id) || state.retirements.has(record.id)) continue
-    const stored = yield* state.runtime.storage.document(record.id)
-    if (Option.isNone(stored))
-      return yield* error('invalid', 'task.write', 'Task document content is absent')
-    retiring.push({
-      key: yield* Value.key(record),
-      original: stored,
-      record: undefined,
-      source: undefined,
-      value: stored.value,
-      changed: false,
-      retired: false,
-    })
+    const stored = yield* retirementMetadata(state, record, 'task.write')
+    if (stored.record.scope._tag !== 'task' || stored.record.scope.taskId !== taskId)
+      return yield* error('conflict', 'task.write', 'Document belongs to another task')
+    metadata.push({ key: yield* Value.key(stored.record), record: stored.record })
   }
-  return retiring
+  return { drafts, metadata }
 })
 
 const load = Effect.fnUntraced(function* (state: State, address: Record.DocumentAddress) {
@@ -810,17 +835,34 @@ export const retireDocument = Effect.fnUntraced(function* <S extends Document.Co
   document: Document.Document<S>,
   target: Document.Target,
 ) {
-  const found = yield* load(state, yield* Value.address(document, target))
-  if (Option.isNone(found)) return
-  yield* Value.compatible(document, found.value.value)
-  if (state.copiedSources.has(found.value.value.record.id))
+  const address = yield* Value.address(document, target)
+  const key = yield* Value.key(address)
+  const draft = state.documents.get(key)
+  if (draft?.retired) return
+  let metadata: Storage.DocumentMetadata
+  if (draft !== undefined) metadata = draft.value
+  else {
+    const found = yield* state.runtime.storage.findDocument(address)
+    if (Option.isNone(found) || state.retirements.has(found.value.id)) return
+    metadata = yield* retirementMetadata(state, found.value, 'document.retire')
+    if (!sameAddress(metadata.record, address))
+      return yield* error(
+        'conflict',
+        'document.retire',
+        'Document retirement metadata does not match',
+      )
+  }
+  yield* Value.compatible(document, metadata)
+  if (state.copiedSources.has(metadata.record.id))
     return yield* error(
       'conflict',
       'document.retire',
       'A fork source cannot retire in the copying transaction',
     )
   yield* active(state)
-  found.value.retired = true
+  if (draft === undefined)
+    state.retirements.set(metadata.record.id, { key, record: metadata.record })
+  else draft.retired = true
 })
 
 const sameAddress = Schema.toEquivalence(Record.DocumentAddressSchema)

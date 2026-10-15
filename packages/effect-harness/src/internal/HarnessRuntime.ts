@@ -80,6 +80,20 @@ export const make = Effect.fnUntraced(function* <
     'runtime.make',
     Effect.gen(function* () {
       const storage = yield* Storage
+      const marker = yield* StorageFormat.inspect
+      if (marker.minimumReaderVersion < 12) {
+        const existing = yield* storage.scanConversations().pipe(Stream.runHead)
+        const documents = yield* storage
+          .scanDocuments({ scope: { _tag: 'session' } })
+          .pipe(Stream.runHead)
+        if (Option.isSome(existing) || Option.isSome(documents))
+          return yield* new StorageFormat.StorageFormatError({
+            reason: 'unsupported',
+            message:
+              'Nonempty storage requires runtime format 12; older prompt formats cannot be resumed',
+          })
+        yield* StorageFormat.requireSupportedFormat({ formatVersion: 12, minimumReaderVersion: 12 })
+      }
       const session = yield* Session.make({
         ...(options.documentRetentionMs === undefined
           ? {}
@@ -154,8 +168,8 @@ export const make = Effect.fnUntraced(function* <
         return Effect.void
       })
       const requireSubmissionFormat = StorageFormat.requireSupportedFormat({
-        formatVersion: 11,
-        minimumReaderVersion: 11,
+        formatVersion: 12,
+        minimumReaderVersion: 12,
       }).pipe(Effect.provideContext(context))
       const drainIdle = Effect.fnUntraced(function* () {
         yield* Session.commit(session, (tx) =>
@@ -334,8 +348,8 @@ export const make = Effect.fnUntraced(function* <
           }),
         )
       const nestedFormat = StorageFormat.requireSupportedFormat({
-        formatVersion: 11,
-        minimumReaderVersion: 11,
+        formatVersion: 12,
+        minimumReaderVersion: 12,
       }).pipe(Effect.provideContext(context))
       const inspectNestedFormat = StorageFormat.inspect.pipe(Effect.provideContext(context))
       const nestedDefinition = NestedToolTask.make(registry, inspectNestedFormat)
@@ -382,23 +396,23 @@ export const make = Effect.fnUntraced(function* <
         (lease) => ({
           toolTask: toolDefinition,
           requireToolRoundFormat: StorageFormat.requireSupportedFormat({
-            formatVersion: 11,
-            minimumReaderVersion: 11,
+            formatVersion: 12,
+            minimumReaderVersion: 12,
           }).pipe(Effect.provideContext(context)),
           session,
           cancellationCleanup,
           requireSubmissionFormat,
           requireDeferredFormat: StorageFormat.requireSupportedFormat({
-            formatVersion: 11,
-            minimumReaderVersion: 11,
+            formatVersion: 12,
+            minimumReaderVersion: 12,
           }).pipe(Effect.provideContext(context)),
           requireStreamFormat: StorageFormat.requireSupportedFormat({
-            formatVersion: 11,
-            minimumReaderVersion: 11,
+            formatVersion: 12,
+            minimumReaderVersion: 12,
           }).pipe(Effect.provideContext(context)),
           requireRequestFormat: StorageFormat.requireSupportedFormat({
-            formatVersion: 11,
-            minimumReaderVersion: 11,
+            formatVersion: 12,
+            minimumReaderVersion: 12,
           }).pipe(Effect.provideContext(context)),
           nativeModel: options.nativeModel ?? { id: 'effect/ai/LanguageModel', version: 1 },
           context,

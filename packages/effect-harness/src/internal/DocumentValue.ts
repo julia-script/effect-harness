@@ -35,7 +35,7 @@ export const key = Schema.encodeEffect(AddressJson)
 
 export const compatible = Effect.fnUntraced(function* <S extends Document.Codec>(
   document: Document.Document<S>,
-  stored: Record.StoredDocument,
+  stored: Pick<Record.StoredDocument, 'record' | 'version'>,
   allowMigration = false,
 ) {
   const definition = document.definition

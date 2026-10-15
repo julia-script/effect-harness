@@ -1,3 +1,4 @@
+import * as NativePrompt from './fixtures/NativePrompt.js'
 import * as RequestRecord from '../src/internal/RequestRecord.js'
 import * as ResultEntry from '../src/internal/ToolResultEntry.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
@@ -201,10 +202,11 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             const first = yield* open.pipe(Effect.provideService(Scope.Scope, firstScope))
             const job = yield* first.runtime.backend.submit({
               conversationId: root,
-              draft: { type: 'input', content: 'go' },
+              draft: { type: 'input', content: NativePrompt.content() },
             })
             yield* Deferred.await(entered)
             const stored = yield* preparation(first.runtime, yield* saved(first.runtime))
+            NativePrompt.assertFiles(stored.prompt)
             assert.deepEqual(stored, requests[0])
             assert.deepEqual(texts(stored.prompt), ['render-1', 'go', 'hook-1'])
             assert.deepEqual(stored.configuration, { value: 'first' })
@@ -213,7 +215,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(first.context)))
                 .minimumReaderVersion,
-              11,
+              12,
             )
             yield* first.runtime.backend.configure({
               conversationId: root,
@@ -226,6 +228,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             yield* Scope.close(firstScope, Exit.void)
             const second = yield* open
             assert.strictEqual((yield* second.runtime.backend.wait(job.id)).status, 'done')
+            NativePrompt.assertFiles(requests[1]!.prompt)
             assert.deepEqual(requests[1], stored)
             assert.deepEqual(values, ['first', 'first'])
             assert.strictEqual(renders, 1)
@@ -477,7 +480,7 @@ it.effect(
         })
         assert.strictEqual((yield* runtime.backend.wait(job.id)).status, 'unanswered')
         assert.isFalse((yield* entries(runtime)).some((entry) => entry.kind === 'context.change'))
-        assert.strictEqual((yield* StorageFormat.inspect).formatVersion, 11)
+        assert.strictEqual((yield* StorageFormat.inspect).formatVersion, 12)
       }),
     ).pipe(Effect.provide(Storage.layerMemory)),
 )

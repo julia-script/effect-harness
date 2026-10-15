@@ -89,19 +89,10 @@ describe('native nested invocation', () => {
                 }),
               ],
             }
-            const expected: Record<string, ToolResult.Content> = {
-              ...parts,
-              url: [
-                Prompt.filePart({ mediaType: 'image/png', data: 'https://example.test/cold.png' }),
-              ],
-            }
             const nativeCodec = Schema.toCodecJson(ToolResult.ContentSchema)
             for (const mode of Object.keys(parts)) {
               const encoded = yield* Schema.encodeEffect(nativeCodec)(parts[mode]!)
-              assert.deepStrictEqual(
-                yield* Schema.decodeEffect(nativeCodec)(encoded),
-                expected[mode],
-              )
+              assert.deepStrictEqual(yield* Schema.decodeEffect(nativeCodec)(encoded), parts[mode])
             }
             const leaf = Tool.makeResult('cold-shape', {
               parameters: Schema.Struct({ mode: Schema.String }),
@@ -169,7 +160,7 @@ describe('native nested invocation', () => {
                       if (receipt.valueKind === 'content')
                         assert.deepStrictEqual(
                           receipt.value,
-                          ToolResult.contentValue(expected[slot.mode]!),
+                          ToolResult.contentValue(parts[slot.mode]!),
                         )
                       assert.notProperty(receipt, 'control')
                     }
@@ -621,7 +612,7 @@ describe('native nested invocation', () => {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(storage)))
                 .minimumReaderVersion,
-              11,
+              12,
             )
             const receipts = yield* Session.commit(runtime.session, (tx) =>
               Usage.receipts(tx, root),

@@ -2,6 +2,7 @@
 import * as Cause from 'effect/Cause'
 import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
+import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Option from 'effect/Option'
@@ -41,6 +42,7 @@ export interface State {
   readonly documentPins: Map<Domain.DocumentId, number>
   readonly cacheWake: Queue.Queue<void>
   cacheWorker: Fiber.Fiber<void> | undefined
+  cacheTimersUnavailable: boolean
   readonly subscribers: Set<Subscriber>
   readonly reconciliations: Set<Queue.Queue<void, Cause.Done | SessionError>>
   readonly observations: Map<string, ObservationRuntime.Mount>
@@ -106,7 +108,13 @@ export const line = Effect.fnUntraced(function* <A, E, R>(
   return yield* state.semaphore.withPermit(
     Effect.gen(function* () {
       yield* open(state)
-      return yield* use(state)
+      return yield* use(state).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (state.cacheTimersUnavailable) sweepDocuments(state)
+          }),
+        ),
+      )
     }),
   )
 })
@@ -177,27 +185,55 @@ export const pinDocument = (state: State, key: string, id: Domain.DocumentId): (
   }
 }
 
-/** One sleeper per Session. Ordered idle entries avoid scans on reads and over active documents. */
+/** Caller holds the Session line. Returns the oldest remaining idle deadline. */
+const sweepDocuments = (state: State): number | undefined => {
+  if (state.closed || state.poison !== undefined) return undefined
+  const now = cacheTime(state)
+  for (const [key, since] of state.idleDocuments) {
+    const remaining = state.documentRetentionMs - (now - since)
+    if (remaining > 0) return remaining
+    dropDocument(state, key)
+  }
+  return undefined
+}
+
+const sleepForEviction = (state: State, delay: number): Effect.Effect<boolean> => {
+  // Clock has no unref option. Preserve supplied clocks (including TestClock) exactly.
+  if (state.clock !== Context.get(Context.empty(), Clock.Clock))
+    return state.clock.sleep(Duration.millis(delay)).pipe(Effect.as(true))
+  if (state.cacheTimersUnavailable) return Effect.succeed(false)
+  return Effect.callback<boolean>((resume) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      timer = setTimeout(() => resume(Effect.succeed(true)), delay)
+      if (
+        typeof timer === 'object' &&
+        timer !== null &&
+        'unref' in timer &&
+        typeof timer.unref === 'function'
+      ) {
+        timer.unref()
+        return Effect.sync(() => clearTimeout(timer))
+      }
+    } catch {
+      // Timer-restricted runtimes still reclaim expired entries on the Session line.
+    }
+    if (timer !== undefined) clearTimeout(timer)
+    state.cacheTimersUnavailable = true
+    resume(Effect.succeed(false))
+  })
+}
+
+/** One sleeper per Session. Ordered idle entries avoid scans over active documents. */
 const evictDocuments = (state: State) =>
   Effect.gen(function* () {
     while (true) {
       yield* Queue.take(state.cacheWake)
       while (true) {
-        const delay = yield* state.semaphore.withPermit(
-          Effect.sync(() => {
-            if (state.closed || state.poison !== undefined) return undefined
-            const now = cacheTime(state)
-            for (const [key, since] of state.idleDocuments) {
-              const remaining = state.documentRetentionMs - (now - since)
-              if (remaining > 0) return remaining
-              dropDocument(state, key)
-            }
-            return undefined
-          }),
-        )
+        const delay = yield* state.semaphore.withPermit(Effect.sync(() => sweepDocuments(state)))
         if (delay === undefined) break
         // Platform clocks may implement sleep with a signed 32-bit millisecond timer.
-        yield* Effect.sleep(Math.min(delay, 2_147_483_647))
+        if (!(yield* sleepForEviction(state, Math.min(delay, 2_147_483_647)))) break
       }
     }
   })
@@ -406,6 +442,7 @@ export const make = Effect.fnUntraced(function* (
     documentPins: new Map(),
     cacheWake: yield* Queue.dropping<void>(1),
     cacheWorker: undefined,
+    cacheTimersUnavailable: false,
     subscribers: new Set(),
     reconciliations: new Set(),
     observations: new Map(),

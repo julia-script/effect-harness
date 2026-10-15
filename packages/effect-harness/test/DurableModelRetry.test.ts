@@ -1,3 +1,4 @@
+import * as NativePrompt from './fixtures/NativePrompt.js'
 import * as RequestRecord from '../src/internal/RequestRecord.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
@@ -265,7 +266,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
               let calls = 0
               const model = yield* LanguageModel.make({
                 generateText: () => Effect.die('nonstreaming'),
-                streamText: () =>
+                streamText: ({ prompt }) =>
                   Stream.unwrap(
                     Effect.gen(function* () {
                       yield* Deferred.succeed(entered, undefined)
@@ -273,6 +274,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
                         Option.getOrThrow(yield* Effect.serviceOption(Prepared.PreparedRequest))
                           .current,
                       )
+                      NativePrompt.assertFiles(prompt)
                       calls++
                       return calls === 1 ? Stream.fail(rate) : Stream.fromIterable(answer)
                     }),
@@ -292,7 +294,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
               const admittedAt = yield* Clock.currentTimeMillis
               const job = yield* first.backend.submit({
                 conversationId: root,
-                draft: { type: 'input', content: 'go' },
+                draft: { type: 'input', content: NativePrompt.content() },
               })
               yield* Deferred.await(entered)
               yield* retry(first)

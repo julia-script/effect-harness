@@ -187,7 +187,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(storage)))
                 .minimumReaderVersion,
-              11,
+              12,
             )
             assert.strictEqual(calls, 1)
             assert.deepEqual(yield* runtime.backend.waitCompaction!(handle), result)
@@ -599,7 +599,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               assert.strictEqual(
                 (yield* StorageFormat.inspect.pipe(Effect.provideContext(storage)))
                   .minimumReaderVersion,
-                11,
+                12,
               )
             } else
               assert.deepEqual(
@@ -2005,7 +2005,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             const after = yield* StorageFormat.inspect.pipe(Effect.provideContext(storage))
             assert.strictEqual(
               after.minimumReaderVersion,
-              Math.max(format.minimumReaderVersion, 11),
+              Math.max(format.minimumReaderVersion, 12),
             )
             assert.strictEqual(
               (yield* entries(first)).filter(
@@ -2660,7 +2660,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(storage)))
                 .minimumReaderVersion,
-              11,
+              12,
             )
             yield* Scope.close(owner, Exit.void)
             if (mode !== 'interrupt') {

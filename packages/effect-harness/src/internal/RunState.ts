@@ -1,7 +1,7 @@
 /** Schema-backed durable checkpoints. A started tool intent is persisted before its handler runs. */
+import * as PromptWire from '../PromptWire.js'
 import * as Schema from 'effect/Schema'
 import * as Struct from 'effect/Struct'
-import * as Prompt from 'effect/ai/Prompt'
 import * as Record from '../Record.js'
 import * as Agent from '../Agent.js'
 import * as Submission from '../Submission.js'
@@ -181,7 +181,7 @@ export const encode = (state: RunState) =>
       : state,
   )
 export const decode = Schema.decodeUnknownEffect(Schema.toCodecJson(RunStateSchema))
-export const Messages = Schema.Array(Schema.toCodecJson(Prompt.Message))
+export const Messages = Schema.Array(Schema.toCodecJson(PromptWire.Message))
 
 /** Validate committed prefixes without repairing, discarding or replaying stored work. */
 export const validPrefix = (state: RunState): boolean => {

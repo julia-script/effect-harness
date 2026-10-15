@@ -181,11 +181,15 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
 
 describe('provider accounting boundaries', () => {
   it.effect(
-    'legacy affinity is acquired once before generation and unknown history stays unknown',
+    'missing affinity is acquired once before generation and unknown history stays unknown',
     () =>
       memory(
         Effect.gen(function* () {
           const storage = yield* Storage.Storage
+          yield* (yield* StorageFormat).requireSupportedFormat({
+            formatVersion: 12,
+            minimumReaderVersion: 12,
+          })
           yield* storage.commit([
             { _tag: 'conversation', value: { id: root } },
             {

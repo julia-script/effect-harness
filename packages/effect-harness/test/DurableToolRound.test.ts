@@ -235,7 +235,7 @@ describe('durable native tool rounds', () => {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(context)))
                 .minimumReaderVersion,
-              11,
+              12,
             )
           }),
         ).pipe(Effect.provide(NodeServices.layer)),

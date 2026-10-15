@@ -1,3 +1,4 @@
+import * as NativePrompt from './fixtures/NativePrompt.js'
 import * as SchemaGetter from 'effect/SchemaGetter'
 import * as Tool from 'effect-harness/Tool'
 import * as Toolkit from 'effect-harness/Toolkit'
@@ -107,7 +108,7 @@ it.effect('saves a handle and polls the same prepared attempt rather than stream
       yield* runtime.backend.root
       const job = yield* runtime.backend.submit({
         conversationId: root,
-        draft: { type: 'input', content: 'go' },
+        draft: { type: 'input', content: NativePrompt.content() },
       })
       const waiting = yield* Effect.forkChild(runtime.backend.wait(job.id))
       const checkpoint = (yield* Effect.raceFirst(
@@ -123,7 +124,7 @@ it.effect('saves a handle and polls the same prepared attempt rather than stream
         Schema.Struct({ requestId: Schema.String, execution: Schema.Literal('deferred') }),
       )(checkpoint['preparation'])
       assert.strictEqual(preparation.requestId, ids[0]?.requestId)
-      assert.strictEqual((yield* StorageFormat.inspect).minimumReaderVersion, 11)
+      assert.strictEqual((yield* StorageFormat.inspect).minimumReaderVersion, 12)
       assert.strictEqual(yield* Clock.currentTimeMillis, 0)
       assert.strictEqual(starts, 1)
       assert.strictEqual(polls, 0)
@@ -179,7 +180,7 @@ const submit = Effect.fnUntraced(function* (runtime: HarnessRuntime.HarnessRunti
   yield* runtime.backend.root
   return yield* runtime.backend.submit({
     conversationId: root,
-    draft: { type: 'input', content: 'go' },
+    draft: { type: 'input', content: NativePrompt.content() },
   })
 })
 
@@ -200,6 +201,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
               handle: Schema.String,
               start: (request) =>
                 Effect.sync(() => {
+                  NativePrompt.assertFiles(request.prompt)
                   starts++
                   identities.push({ requestId: request.requestId, attempt: request.attempt })
                   return {
@@ -211,6 +213,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
                 }),
               poll: (handle, previous, request) =>
                 Effect.sync(() => {
+                  NativePrompt.assertFiles(request.prompt)
                   polls++
                   assert.strictEqual(handle, 'same')
                   identities.push({ requestId: request.requestId, attempt: request.attempt })
@@ -247,7 +250,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(first.context)))
                 .minimumReaderVersion,
-              11,
+              12,
             )
             yield* policy.update({ stream: { deferred: false } })
             yield* Scope.close(owner, Exit.void)
@@ -692,7 +695,7 @@ for (const hint of [undefined, false, true, { window: '1h' as const }] as const)
             hint === undefined || hint === false ? 'done' : 'unanswered',
           )
           assert.strictEqual(streams, hint === undefined || hint === false ? 1 : 0)
-          assert.strictEqual((yield* StorageFormat.inspect).minimumReaderVersion, 11)
+          assert.strictEqual((yield* StorageFormat.inspect).minimumReaderVersion, 12)
         }),
       ).pipe(Effect.provide(Storage.layerMemory)),
   )

@@ -16,6 +16,7 @@ import storageReference from '../content/storage.md?raw'
 import firstSource from './examples/FirstConversation.ts?raw'
 import toolsSource from './examples/Tools.ts?raw'
 import toolImagesSource from './examples/ToolImages.ts?raw'
+import structuredResultSource from '../../example/src/StructuredResult.ts?raw'
 import observeSource from './examples/Observe.ts?raw'
 
 const embed = (body: string, name: string, source: string) =>
@@ -59,7 +60,11 @@ export const pages: ReadonlyArray<Page> = [
     title: 'Tools & dependencies',
     group: 'Guides',
     summary: 'Declare a contract. Supply its implementation through a Layer.',
-    body: embed(embed(tools, 'tools', toolsSource), 'tool-images', toolImagesSource),
+    body: embed(
+      embed(embed(tools, 'tools', toolsSource), 'tool-images', toolImagesSource),
+      'structured-result',
+      structuredResultSource,
+    ),
     source: 'apps/docs/content/tools.md',
   },
   {

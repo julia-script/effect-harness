@@ -1,8 +1,9 @@
 /** Durable request ownership and compatibility; no callbacks run while checking recovered work. */
+import * as PromptWire from '../PromptWire.js'
 import * as Effect from 'effect/Effect'
 import * as Equal from 'effect/Equal'
 import * as Schema from 'effect/Schema'
-import * as Prompt from 'effect/ai/Prompt'
+import type * as Prompt from 'effect/ai/Prompt'
 import * as NativeTool from 'effect/ai/Tool'
 import type * as Model from '../Model.js'
 import * as Prepared from '../PreparedRequest.js'
@@ -54,7 +55,7 @@ export const align = Effect.fnUntraced(function* (
   translation: Plan.Translation,
   input: Prompt.Prompt,
 ) {
-  const prompt = yield* Value.copy(Schema.toCodecJson(Prompt.Prompt), input)
+  const prompt = yield* Value.copy(Schema.toCodecJson(PromptWire.Prompt), input)
   if (Equal.equals(translation.prompt.content, prompt.content)) return { ...translation, prompt }
   const indices = new Set(translation.toolPositions.map((position) => position.messageIndex))
   if (translation.positioning.sections === 'positional')

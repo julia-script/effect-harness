@@ -922,12 +922,12 @@ it.live(
     ).pipe(Effect.provide([Storage.layerMemory, plain])),
 )
 
-/** Reader10 validation rules from b3e650f77 Metadata.ts, before domain rows. */
-const priorReader10 = Effect.fnUntraced(function* (metadata: {
+/** Reader11 validation rules before domain rows. */
+const priorReader11 = Effect.fnUntraced(function* (metadata: {
   format: number
   minimumReader?: number
 }) {
-  if (metadata.format > 10 || (metadata.minimumReader ?? 1) > 10)
+  if (metadata.format > 11 || (metadata.minimumReader ?? 1) > 11)
     return yield* new Storage.StorageError({
       reason: 'unsupportedFormat',
       operation: 'metadata',
@@ -950,17 +950,21 @@ const priorReader10 = Effect.fnUntraced(function* (metadata: {
 
 for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
   it.live(
-    `${backend}: format11 persists before grouped facts and unchanged reader10 refuses before replay`,
+    `${backend}: format12 persists before runtime writes and reader11 refuses before replay`,
     () =>
       Effect.scoped(
         Effect.gen(function* () {
           const disk = yield* fixture
           const context = yield* Layer.build(Layer.fresh(disk[backend]))
-          const runtime = yield* HarnessRuntime.make().pipe(Effect.provideContext(context))
-          yield* Session.commit(runtime.session, Transaction.ensureRoot)
           assert.deepStrictEqual(yield* Format.inspect.pipe(Effect.provideContext(context)), {
             formatVersion: 1,
             minimumReaderVersion: 1,
+          })
+          const runtime = yield* HarnessRuntime.make().pipe(Effect.provideContext(context))
+          yield* Session.commit(runtime.session, Transaction.ensureRoot)
+          assert.deepStrictEqual(yield* Format.inspect.pipe(Effect.provideContext(context)), {
+            formatVersion: 12,
+            minimumReaderVersion: 12,
           })
           const harness = yield* client(runtime)
           const draft = yield* runtime.backend.submit({
@@ -970,17 +974,17 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
           const saved = yield* harness.submission(draft.id)
           assert.strictEqual((yield* Submission.wait(saved))._tag, 'WriteDone')
           const marker = yield* Format.inspect.pipe(Effect.provideContext(context))
-          assert.deepStrictEqual(marker, { formatVersion: 11, minimumReaderVersion: 11 })
+          assert.deepStrictEqual(marker, { formatVersion: 12, minimumReaderVersion: 12 })
           assert.strictEqual(
-            (yield* priorReader10({
+            (yield* priorReader11({
               format: marker.formatVersion,
               minimumReader: marker.minimumReaderVersion,
             }).pipe(Effect.flip)).reason,
             'unsupportedFormat',
           )
-          for (const version of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+          for (const version of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
             assert.strictEqual(
-              (yield* priorReader10({ format: version, minimumReader: version })).format,
+              (yield* priorReader11({ format: version, minimumReader: version })).format,
               version,
             )
           if (backend === 'jsonl') {
@@ -998,7 +1002,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                   ),
                 )(line),
             )
-            const upgrade = frames.findIndex((frame) => frame.metadata.format === 11)
+            const upgrade = frames.findIndex((frame) => frame.metadata.format === 12)
             const documents = yield* Context.get(context, Storage.Storage)
               .scanDocuments({
                 scope: { _tag: 'conversation', conversationId: root },
