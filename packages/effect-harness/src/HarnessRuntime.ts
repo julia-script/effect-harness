@@ -42,6 +42,8 @@ export interface Options<
 > {
   /** Transactional callbacks after built-in agent initialization, including raw Session creation. */
   readonly initializers?: Initializers
+  /** Session idle materialization retention; see Session.Options.documentRetentionMs. */
+  readonly documentRetentionMs?: number
   /** Use this actual Registry service, or omit to create one in the runtime Scope. */
   readonly registry?: Registry.Service
   readonly tools?: Toolkit.Toolkit<Tools>
