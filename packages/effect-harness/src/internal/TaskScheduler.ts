@@ -118,6 +118,11 @@ const { ownedLive, hold } = Supervision
 export interface Service extends Scheduler.Service {
   /** Internal automatic wake: initializes recovery once and never clears scheduler health. */
   readonly activate: Effect.Effect<void, Scheduler.Failure>
+  /** Runtime controls wake and join work without retrying an unrelated scheduler failure. */
+  readonly automatic: Pick<
+    Scheduler.Service,
+    'wait' | 'waitForTask' | 'abort' | 'abortConversation'
+  >
 }
 
 export const make = Effect.fnUntraced(function* <R = never>(
@@ -382,36 +387,45 @@ export const make = Effect.fnUntraced(function* <R = never>(
     ),
   )
   const resume = resumeInvocation()
-  const wait: Scheduler.Service['wait'] = (ref) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        yield* check
-        const subscription = yield* PubSub.subscribe(publications)
-        yield* resume
-        for (;;) {
-          const found = yield* outcome(ref)
-          if (Option.isSome(found)) return found.value
-          if (failed !== undefined) return yield* failed
-          yield* PubSub.take(subscription)
-        }
-      }),
-    )
-
-  const waitForTask = (id: Record.TaskId) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        yield* check
-        const subscription = yield* PubSub.subscribe(publications)
-        yield* resume
-        for (;;) {
-          const record = yield* read(id)
+  const activate = resumeInvocation(true)
+  const waitWith =
+    (activation: Effect.Effect<void, Scheduler.Failure>): Scheduler.Service['wait'] =>
+    (ref) =>
+      Effect.scoped(
+        Effect.gen(function* () {
           yield* check
-          if (record.state.status === 'terminal') return record
-          if (failed !== undefined) return yield* failed
-          yield* PubSub.take(subscription)
-        }
-      }),
-    )
+          const subscription = yield* PubSub.subscribe(publications)
+          yield* activation
+          for (;;) {
+            const found = yield* outcome(ref)
+            if (Option.isSome(found)) return found.value
+            if (failed !== undefined) return yield* failed
+            yield* PubSub.take(subscription)
+          }
+        }),
+      )
+
+  const waitForTaskWith =
+    (activation: Effect.Effect<void, Scheduler.Failure>): Scheduler.Service['waitForTask'] =>
+    (id) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* check
+          const subscription = yield* PubSub.subscribe(publications)
+          yield* activation
+          for (;;) {
+            const record = yield* read(id)
+            yield* check
+            if (record.state.status === 'terminal') return record
+            if (failed !== undefined) return yield* failed
+            yield* PubSub.take(subscription)
+          }
+        }),
+      )
+  const wait = waitWith(resume)
+  const waitAutomatically = waitWith(activate)
+  const waitForTask = waitForTaskWith(resume)
+  const waitForTaskAutomatically = waitForTaskWith(activate)
   const outcomes = (ids: ReadonlyArray<Record.TaskId>) =>
     check.pipe(
       Effect.andThen(
@@ -432,13 +446,14 @@ export const make = Effect.fnUntraced(function* <R = never>(
       ),
     )
   const abortSet = (
+    activation: Effect.Effect<void, Scheduler.Failure>,
     id: Record.TaskId,
     includeSelf: boolean,
     abortOptions?: { readonly includeBackground?: boolean },
     gate?: (tx: Transaction.Transaction) => Effect.Effect<void, import('../TaskError.js').Failure>,
   ) =>
     Effect.gen(function* () {
-      yield* resume
+      yield* activation
       const captured = yield* Session.commit(session, (tx) =>
         Effect.gen(function* () {
           yield* check
@@ -456,9 +471,9 @@ export const make = Effect.fnUntraced(function* <R = never>(
       )
       enabled = true
       yield* wake
-      for (const member of captured) yield* waitForTask(member)
+      for (const member of captured) yield* waitForTaskAutomatically(member)
     }).pipe(Effect.mapError(invocationFailure))
-  const abort: Scheduler.Service['abort'] = (id, options) => abortSet(id, true, options)
+  const abort: Scheduler.Service['abort'] = (id, options) => abortSet(resume, id, true, options)
   const markConversation = (
     tx: Transaction.Transaction,
     id: Record.ConversationId,
@@ -500,14 +515,17 @@ export const make = Effect.fnUntraced(function* <R = never>(
   const joinMarked = (ids: ReadonlyArray<Record.TaskId>) =>
     Effect.gen(function* () {
       yield* wake
-      for (const id of ids) yield* waitForTask(id)
+      for (const id of ids) yield* waitForTaskAutomatically(id)
     })
-  const abortConversation: Scheduler.Service['abortConversation'] = (id, options) =>
-    Effect.gen(function* () {
-      yield* resume
-      const captured = yield* Session.commit(session, (tx) => markConversation(tx, id, options))
-      yield* joinMarked(captured)
-    })
+  const abortConversationWith =
+    (activation: Effect.Effect<void, Scheduler.Failure>): Scheduler.Service['abortConversation'] =>
+    (id, options) =>
+      Effect.gen(function* () {
+        yield* activation
+        const captured = yield* Session.commit(session, (tx) => markConversation(tx, id, options))
+        yield* joinMarked(captured)
+      })
+  const abortConversation = abortConversationWith(resume)
   const graph = check.pipe(
     Effect.andThen(
       Session.commit(session, (tx) => Tree.load(tx).pipe(Effect.map(Supervision.graph))),
@@ -892,13 +910,13 @@ export const make = Effect.fnUntraced(function* <R = never>(
       outcome: (ref) => nativeBoundary(withRead(outcome(ref))),
       wait: (ref) =>
         Effect.raceFirst(
-          nativeBoundary(withRead(wait(ref))),
+          nativeBoundary(withRead(waitAutomatically(ref))),
           Deferred.await(invocation.done).pipe(Effect.andThen(Effect.interrupt)),
         ),
       abort: (id, options) =>
         Effect.raceFirst(
           withRead(
-            abortSet(id, true, options, (tx) =>
+            abortSet(activate, id, true, options, (tx) =>
               Effect.gen(function* () {
                 yield* current(tx, invocation)
                 const record = yield* task(tx, id)
@@ -916,7 +934,7 @@ export const make = Effect.fnUntraced(function* <R = never>(
       abortOwned: (options) =>
         Effect.raceFirst(
           withRead(
-            abortSet(invocation.taskId, false, options, (tx) =>
+            abortSet(activate, invocation.taskId, false, options, (tx) =>
               current(tx, invocation).pipe(Effect.asVoid),
             ),
           ),
@@ -1493,7 +1511,13 @@ export const make = Effect.fnUntraced(function* <R = never>(
   )
 
   return {
-    activate: resumeInvocation(true),
+    activate,
+    automatic: {
+      wait: waitAutomatically,
+      waitForTask: waitForTaskAutomatically,
+      abort: (id, options) => abortSet(activate, id, true, options),
+      abortConversation: abortConversationWith(activate),
+    },
     resume,
     waitForTask,
     outcomes,

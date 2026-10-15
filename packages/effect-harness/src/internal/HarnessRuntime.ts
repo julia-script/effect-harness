@@ -919,7 +919,7 @@ export const make = Effect.fnUntraced(function* <
             Effect.gen(function* () {
               const record = yield* backend.compactionTask!(handle)
               yield* activate
-              const terminal = yield* scheduler.waitForTask(record.id)
+              const terminal = yield* scheduler.automatic.waitForTask(record.id)
               if (terminal.state.status !== 'terminal')
                 return yield* absent('compaction.wait', 'Task is not terminal')
               return yield* Task.decode(CompactionTask.OutcomeSchema, terminal.state.outcome)
@@ -930,7 +930,7 @@ export const make = Effect.fnUntraced(function* <
             'compaction.abort',
             Effect.gen(function* () {
               const record = yield* backend.compactionTask!(handle)
-              yield* scheduler.abort(record.id)
+              yield* scheduler.automatic.abort(record.id)
             }),
           ),
         usage: (id) =>
@@ -1000,7 +1000,7 @@ export const make = Effect.fnUntraced(function* <
             'conversation.abort',
             Effect.gen(function* () {
               yield* checkOpen
-              yield* scheduler.abortConversation(
+              yield* scheduler.automatic.abortConversation(
                 id,
                 yield* Schema.decodeEffect(AbortOptionsSchema)(options ?? {}),
               )

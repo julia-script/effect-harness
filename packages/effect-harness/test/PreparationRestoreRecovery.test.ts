@@ -24,6 +24,7 @@ import { ModelError, ModelUnsupportedError } from 'effect-harness/ModelError'
 import * as Prepared from 'effect-harness/PreparedRequest'
 import * as PromptSection from 'effect-harness/PromptSection'
 import * as Record from 'effect-harness/Record'
+import * as References from 'effect/References'
 import * as Storage from 'effect-harness/Storage'
 import * as StorageFormat from 'effect-harness/StorageFormat'
 
@@ -47,6 +48,7 @@ class ActivationProbe extends Context.Service<ActivationProbe, true>()(
   'test/restore/ActivationProbe',
 ) {}
 interface ActivationGate {
+  readonly schedulerCalls?: number
   readonly restoreEntered: Deferred.Deferred<void>
   readonly releaseRestore: Deferred.Deferred<void>
   readonly activationEntered: Deferred.Deferred<void>
@@ -73,6 +75,8 @@ const fixture = Effect.fnUntraced(function* (
       : Storage.layerJsonl({ filePath: `${directory}/restore.jsonl` })
   let store = yield* Layer.build(backend === 'memory' ? Storage.layerMemory : Layer.fresh(layer))
   let pauseActivation = false
+  let activationFiber: number | undefined
+  let schedulerCalls = 0
   const original = Context.get(store, Storage.Storage)
   const storage: Storage.Storage['Service'] =
     gate === undefined
@@ -84,6 +88,7 @@ const fixture = Effect.fnUntraced(function* (
               Effect.gen(function* () {
                 if (
                   gate !== undefined &&
+                  gate.schedulerCalls === undefined &&
                   pauseActivation &&
                   filter?.kind === 'harness.run' &&
                   Option.isSome(yield* Effect.serviceOption(ActivationProbe))
@@ -100,6 +105,23 @@ const fixture = Effect.fnUntraced(function* (
   store = Context.add(Context.add(store, Storage.Storage, storage), StorageFormat.StorageFormat, {
     ...format,
     storage,
+    requireSupportedFormat: (requested) =>
+      Effect.withFiber((fiber) =>
+        Effect.gen(function* () {
+          if (
+            gate?.schedulerCalls !== undefined &&
+            pauseActivation &&
+            fiber.id === activationFiber &&
+            requested.formatVersion === 2 &&
+            ++schedulerCalls === gate.schedulerCalls
+          ) {
+            pauseActivation = false
+            yield* Deferred.succeed(gate.activationEntered, undefined)
+            yield* Deferred.await(gate.releaseActivation)
+          }
+          return yield* format.requireSupportedFormat(requested)
+        }),
+      ),
   })
   const open = () =>
     backend === 'memory' ? Effect.succeed(store) : Layer.build(Layer.fresh(layer))
@@ -225,6 +247,11 @@ const fixture = Effect.fnUntraced(function* (
   })
   return {
     first,
+    markActivationFiber: Effect.withFiber((fiber) =>
+      Effect.sync(() => {
+        activationFiber = fiber.id
+      }),
+    ),
     armActivation: () => {
       pauseActivation = true
     },
@@ -447,3 +474,56 @@ it.live(
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
 )
+
+for (const operation of ['waitCompaction', 'abortCompaction', 'abortConversation'] as const)
+  for (const budget of [20, 100, 2048])
+    it.live(`${operation} preserves concurrent restore health at yield budget ${budget}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const gate: ActivationGate = {
+            schedulerCalls: operation === 'waitCompaction' ? 2 : 1,
+            restoreEntered: yield* Deferred.make<void>(),
+            releaseRestore: yield* Deferred.make<void>(),
+            activationEntered: yield* Deferred.make<void>(),
+            releaseActivation: yield* Deferred.make<void>(),
+          }
+          const f = yield* fixture('memory', 'failure', gate)
+          yield* Deferred.await(gate.restoreEntered)
+          const other = yield* f.first.backend.create()
+          const compaction = yield* f.first.backend.compact!(other)
+          const notifications = yield* Stream.toPull(f.first.scheduler.changes)
+          const control =
+            operation === 'abortConversation'
+              ? f.first.backend.abort(other)
+              : f.first.backend[operation]!(compaction)
+          f.armActivation()
+          const waiting = yield* Effect.forkChild(
+            f.markActivationFiber.pipe(Effect.andThen(control), Effect.exit),
+          )
+          yield* Deferred.await(gate.activationEntered)
+          yield* Deferred.succeed(gate.releaseRestore, undefined)
+          while (Option.isNone(yield* f.first.scheduler.failure)) yield* notifications
+          yield* Deferred.succeed(gate.releaseActivation, undefined)
+          yield* Fiber.join(waiting)
+          while (
+            Option.isNone(yield* f.first.scheduler.failure) &&
+            (yield* f.tasks)[0]!.state.status !== 'terminal'
+          )
+            yield* notifications
+          assert.strictEqual(f.counters.restore, 1)
+          assert.strictEqual(f.counters.provider, 0)
+          assert.isTrue(Option.isSome(yield* f.first.scheduler.failure))
+          assert.strictEqual((yield* f.tasks)[0]!.state.status, 'running')
+          yield* Scope.close(f.scope, Exit.void)
+          f.recover()
+          const cold = yield* f.make(yield* f.open())
+          assert.strictEqual((yield* cold.backend.wait(f.job.id)).status, 'done')
+          assert.deepStrictEqual(f.received(), f.accepted())
+          assert.strictEqual(f.counters.restore, 2)
+          assert.strictEqual(f.counters.provider, 1)
+        }),
+      ).pipe(
+        Effect.provide(NodeServices.layer),
+        Effect.provideService(References.MaxOpsBeforeYield, budget),
+      ),
+    )

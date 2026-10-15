@@ -6,4 +6,4 @@ Reclaim current-only document bodies on standalone retirement and persist docume
 
 The new physical layouts reject older JSONL files and SQL schemas without migration. Copy the JSONL journal and its adjacent `.parts` directory together while the store is closed. Logical StorageFormat feature versions and the Storage/Document APIs are unchanged.
 
-Automatic runtime activation preserves scheduler health failures instead of restarting an accepted request after restore fails. Explicit scheduler recovery and cold reopen remain available.
+Automatic runtime activation, compaction waits, cancellation, and native joins preserve scheduler health failures instead of restarting an accepted request after restore fails. Explicit scheduler recovery and cold reopen remain available.
