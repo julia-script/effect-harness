@@ -204,7 +204,7 @@ it.live('keeps Session sealed after a normalized SQL COMMIT error', () =>
       yield* sql`PRAGMA foreign_keys = ON`
       yield* sql`CREATE TABLE parent(id INTEGER PRIMARY KEY)`
       yield* sql`CREATE TABLE child(id INTEGER, FOREIGN KEY(id) REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED)`
-      yield* sql`CREATE TRIGGER fail_transaction AFTER INSERT ON effect_harness_records BEGIN INSERT INTO child(id) VALUES(999); END`
+      yield* sql`CREATE TRIGGER fail_transaction AFTER UPDATE ON effect_harness_records BEGIN INSERT INTO child(id) VALUES(999); END`
       const error = yield* Session.commit(session, (tx) =>
         Transaction.setDocument(tx, counter, target, { count: 42 }),
       ).pipe(Effect.flip)

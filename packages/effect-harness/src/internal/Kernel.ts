@@ -370,7 +370,10 @@ export const make = Effect.fnUntraced(function* (access: Access) {
             ...Commit.rowsOf(next).filter((row) => affected.has(Row.idOf(row))),
             ...Array.from(retirements.values(), (row) => ({
               ...row,
-              value: { ...row.value, record: { ...row.value.record, retiredAt } },
+              value: {
+                record: { ...row.value.record, retiredAt },
+                revisions: Domain.isCurrentOnly(row.value.record) ? [] : row.value.revisions,
+              },
             })),
           ],
           nextMetadata,
