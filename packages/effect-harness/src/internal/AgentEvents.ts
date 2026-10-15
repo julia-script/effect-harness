@@ -37,7 +37,17 @@ export const translate = (before: View.Value, after: View.Value): ReadonlyArray<
     const old = before.nested.find((item) => item.taskId === n.taskId)
     if (
       n.availability !== 'pending' &&
-      (old === undefined || !Schema.toEquivalence(ViewSchema.NestedSchema)(n, old))
+      (old === undefined ||
+        old.availability === 'pending' ||
+        n.receipts.some(
+          (receipt) =>
+            !old.receipts.some(
+              (previous) =>
+                previous.attempt === receipt.attempt &&
+                previous.callId === receipt.callId &&
+                previous.status === receipt.status,
+            ),
+        ))
     )
       events.push({ _tag: 'NestedEnd', nested: n })
   }

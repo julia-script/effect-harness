@@ -450,14 +450,9 @@ const retainedWindowLifecycle = Effect.fn(function* (
   const receipt = Option.getOrThrow(Option.fromUndefinedOr(terminalNested.receipts[0]))
   assert.strictEqual(terminalProgress.status, 'completed')
   assert.deepStrictEqual(terminalProgress.output, output)
-  assert.strictEqual(terminalNested.availability, 'available')
-  assert.deepStrictEqual(
-    receipt.result.structuredOutput,
-    Prompt.filePart({
-      mediaType: 'application/octet-stream',
-      data: new Uint8Array([13, 0, 255]),
-    }),
-  )
+  assert.strictEqual(terminalNested.availability, 'unavailable')
+  assert.isUndefined(receipt.result)
+  assert.strictEqual(receipt.status, 'succeeded')
   assert.deepStrictEqual(terminal.usage, yield* Conversation.usage(conversation))
   for (const id of [ref.id, terminalNested.taskId])
     assert.deepStrictEqual(
@@ -1014,8 +1009,8 @@ const nativeBorrowedLeaseResources = Effect.fn(function* (
   assert.strictEqual((yield* runtime.scheduler.wait(ref)).status, 'completed')
   const final = yield* View.snapshot(conversation)
   assert.strictEqual(final.value.nested.length, 1)
-  assert.strictEqual(final.value.nested[0]?.availability, 'available')
-  assert.strictEqual(final.value.nested[0]?.receipts[0]?.result.structuredOutput, 'ACTUAL')
+  assert.strictEqual(final.value.nested[0]?.availability, 'unavailable')
+  assert.isUndefined(final.value.nested[0]?.receipts[0]?.result)
   checkpoint('task-retired')
 })
 

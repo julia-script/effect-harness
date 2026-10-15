@@ -599,7 +599,7 @@ export const boundary = Effect.fnUntraced(function* (
       task.state.status === 'completing'
     )
       continue
-    const checkpoint = yield* Run.decode(task.state.checkpoint)
+    const checkpoint = yield* Run.decodeStored(task.state.checkpoint)
     if (checkpoint._tag !== 'queued') continue
     const receipt = yield* Transaction.submission(tx, checkpoint.submissionId)
     if (Option.isSome(receipt) && receipt.value._tag === 'InputQueued') deferFinalUsers = true

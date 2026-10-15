@@ -621,7 +621,7 @@ describe('native nested invocation', () => {
             assert.strictEqual(
               (yield* StorageFormat.inspect.pipe(Effect.provideContext(storage)))
                 .minimumReaderVersion,
-              10,
+              11,
             )
             const receipts = yield* Session.commit(runtime.session, (tx) =>
               Usage.receipts(tx, root),

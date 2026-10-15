@@ -20,6 +20,7 @@ import * as Toolkit from '../src/Toolkit.js'
 import type * as Agent from '../src/Agent.js'
 import * as Transaction from '../src/Transaction.js'
 import * as AgentState from '../src/internal/AgentState.js'
+import * as ResultEntry from '../src/internal/ToolResultEntry.js'
 
 const finish = {
   type: 'finish' as const,
@@ -140,9 +141,7 @@ describe('model-call control receipt compatibility', () => {
             Stream.runCollect,
           )
           const receipt = before.find((entry) => entry.kind === 'tool.result')
-          const messages = yield* Schema.decodeUnknownEffect(
-            Schema.Array(Schema.toCodecJson(Prompt.Message)),
-          )(receipt?.model)
+          const messages = yield* ResultEntry.messages(receipt!)
           assert.deepStrictEqual(messages, [
             Prompt.toolMessage({
               content: [
@@ -161,11 +160,7 @@ describe('model-call control receipt compatibility', () => {
             .find((part) => part.type === 'tool-result')?.result
           assert.strictEqual(modelResult, 'public')
           assert.notInclude(JSON.stringify(modelResult), 'private')
-          const encoded = Schema.toCodecJson(ToolResult.ResultSchema)
-          assert.deepStrictEqual(
-            (yield* Schema.decodeUnknownEffect(encoded)(receipt?.data)).control,
-            result.control,
-          )
+          assert.deepStrictEqual((yield* ResultEntry.read(receipt!)).control, result.control)
           yield* Scope.close(firstScope, Exit.void)
           const secondStorage = yield* Layer.build(Storage.layerJsonl({ filePath }))
           const session = yield* Session.make().pipe(Effect.provideContext(secondStorage))
@@ -173,7 +168,7 @@ describe('model-call control receipt compatibility', () => {
             Stream.runCollect,
           )
           const persisted = after.find((entry) => entry.kind === 'tool.result')
-          const restored = yield* Schema.decodeUnknownEffect(encoded)(persisted?.data)
+          const restored = yield* ResultEntry.read(persisted!)
           assert.deepStrictEqual(restored.control, result.control)
           assert.strictEqual(restored.structuredOutput, 'programmatic-private')
           assert.deepStrictEqual(restored.details, { panel: 'ui-private' })

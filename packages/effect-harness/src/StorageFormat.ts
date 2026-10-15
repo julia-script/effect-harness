@@ -11,8 +11,8 @@ export interface Format {
   readonly minimumReaderVersion: number
 }
 
-/** This reader understands legacy containers and explicitly activated formats 2 through 10. */
-export const readerVersion = 10
+/** This reader understands legacy containers and explicitly activated formats 2 through 11. */
+export const readerVersion = 11
 
 export class StorageFormatError extends Schema.TaggedError<StorageFormatError>()(
   'StorageFormatError',
@@ -72,6 +72,9 @@ export const inspect: Effect.Effect<Format, Failure, Storage> = capability.pipe(
  * reader8 refuses before interpreting their recovery and once-only control barrier.
  * v10 fences nested child ownership, parent result receipts and no-entry settlement.
  * Reader9 refuses before interpreting these task-owned invocation facts.
+ * v11 stores prepared request references and canonical tool result entries; completed
+ * rounds and nested observations retain receipts without result bodies. Reader10 refuses
+ * before interpreting these incompatible checkpoints, inputs, entries or documents.
  * Activation commits metadata before domain admission; a rejected domain batch may leave
  * the monotone marker upgraded without publishing any child or result.
  *
@@ -91,15 +94,15 @@ export const requireSupportedFormat = Effect.fn('StorageFormat.requireSupportedF
 export const validate = (format: Format): Effect.Effect<Format, StorageFormatError> =>
   Schema.decodeUnknownEffect(
     Schema.Struct({
-      formatVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
-      minimumReaderVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+      formatVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+      minimumReaderVersion: Schema.Literals([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
     }).check(Schema.makeFilter((marker) => marker.formatVersion === marker.minimumReaderVersion)),
   )(format).pipe(
     Effect.mapError(
       () =>
         new StorageFormatError({
           reason: 'unsupported',
-          message: 'Only matching container/reader pairs 1 through 10 are supported',
+          message: 'Only matching container/reader pairs 1 through 11 are supported',
         }),
     ),
     Effect.map(({ formatVersion, minimumReaderVersion }) => ({

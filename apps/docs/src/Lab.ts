@@ -1,8 +1,9 @@
 import { Context, Deferred, Effect, Exit, Layer, Schema, Scope, Stream } from 'effect'
 import * as LanguageModel from 'effect/ai/LanguageModel'
-import * as Prompt from 'effect/ai/Prompt'
+import type * as Prompt from 'effect/ai/Prompt'
 import type * as Response from 'effect/ai/Response'
 import * as Conversation from 'effect-harness/Conversation'
+import * as ContextProjection from 'effect-harness/ContextProjection'
 import * as Harness from 'effect-harness/Harness'
 import * as Storage from 'effect-harness/Storage'
 import * as Submission from 'effect-harness/Submission'
@@ -205,7 +206,7 @@ const make = Effect.gen(function* () {
     const value = current.value
     const messages: Array<Snapshot['messages'][number]> = []
     const entries = yield* Effect.forEach(value.entries, (entry) =>
-      Schema.decodeEffect(Schema.Array(Schema.toCodecJson(Prompt.Message)))(entry.model ?? []).pipe(
+      ContextProjection.messages(entry).pipe(
         Effect.map((decoded) => {
           for (const [index, message] of decoded.entries()) {
             if (message.role === 'system') continue

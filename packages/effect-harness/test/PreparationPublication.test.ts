@@ -83,7 +83,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
       'snapshot',
       'encode',
     ] as const)
-      it.live(`${failure} publishes neither facts nor a checkpoint nor format5`, () =>
+      it.live(`${failure} publishes neither preparation facts nor a prepared checkpoint`, () =>
         Effect.scoped(
           Effect.gen(function* () {
             const open = yield* fixture
@@ -181,8 +181,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               ),
             )
             assert.deepEqual(yield* StorageFormat.inspect.pipe(Effect.provideContext(context)), {
-              formatVersion: 4,
-              minimumReaderVersion: 4,
+              formatVersion: 11,
+              minimumReaderVersion: 11,
             })
           }),
         ).pipe(Effect.provide(NodeServices.layer)),
@@ -461,8 +461,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               ['input'],
             )
             assert.deepEqual(yield* StorageFormat.inspect.pipe(Effect.provideContext(context)), {
-              formatVersion: 4,
-              minimumReaderVersion: 4,
+              formatVersion: 11,
+              minimumReaderVersion: 11,
             })
           }),
         ).pipe(Effect.provide(NodeServices.layer)),
