@@ -260,11 +260,13 @@ for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
             const storage = yield* Storage.Storage
             const entry = Option.getOrThrow(yield* storage.entry(Record.EntryId.make(2))).entry
             assert.deepEqual((yield* ResultEntry.read(entry)).content, parts)
+            // The independent expected prompt is identical for every retained request.
+            const expectedRequest = { request: { prompt: encodePrompt(parts) } }
             for (let i = 0; i < 100; i++) {
               const document = Option.getOrThrow(
                 yield* storage.document(Record.DocumentId.make(10 + i)),
               )
-              assert.deepEqual(document.value, { request: { prompt: encodePrompt(parts) } })
+              assert.deepEqual(document.value, expectedRequest)
             }
             return yield* Projection.messages(entry)
           }).pipe(Effect.provide(layer))
@@ -329,6 +331,9 @@ for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
             }).pipe(Effect.provide(sqlLayer))
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
+    // Node 24's portable encoder processes hundreds of MiB across 100 durable request
+    // writes and cold reads. Keep headroom local to these disk-backed growth fixtures.
+    backend === 'memory' ? undefined : 120_000,
   )
 }
 
