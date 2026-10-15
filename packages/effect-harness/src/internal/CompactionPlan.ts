@@ -114,17 +114,13 @@ const requireJson = Effect.fnUntraced(function* (
   return yield* Schema.decodeUnknownEffect(Schema.Json)(value)
 })
 
-const checkMessages = Effect.fnUntraced(function* (
-  messages: ReadonlyArray<Prompt.Message>,
-  canonical: boolean,
-) {
+const checkMessages = Effect.fnUntraced(function* (messages: ReadonlyArray<Prompt.Message>) {
+  yield* Schema.decodeEffect(Schema.toType(Schema.Array(PromptWire.Message)))(messages)
   for (const message of messages) {
     if (message.role === 'system') continue
     for (const part of message.content) {
       if (part.type === 'tool-call') yield* requireJson(part.params)
       if (part.type === 'tool-result') yield* requireJson(part.result)
-      if (canonical && part.type === 'file' && typeof part.data !== 'string')
-        return yield* invalid('Canonical entry media must use its persisted JSON representation')
     }
   }
 })
@@ -136,8 +132,8 @@ const canonical = Effect.fnUntraced(function* (
   input: CanonicalInput,
 ): Effect.fn.Return<CanonicalInput, Failure> {
   // Validate before JSON copying: URL serialization must not silently become a string branch.
-  yield* checkMessages(input.view.prompt.content, true)
-  for (const messages of input.view.contributions) yield* checkMessages(messages, true)
+  yield* checkMessages(input.view.prompt.content)
+  for (const messages of input.view.contributions) yield* checkMessages(messages)
   const protocol = freeze(yield* Value.copy(Protocol.ProtocolSchema, input.protocol))
   const entries = freeze(yield* Value.copy(Schema.Array(Record.Entry), input.entries))
   const view = yield* Value.copy(Schema.toCodecJson(Projection.ContextViewSchema), input.view)
@@ -229,8 +225,8 @@ export const capture = Effect.fnUntraced(function* (
   inputSelection: Compaction.Selected,
   input: CanonicalInput,
 ): Effect.fn.Return<Fingerprint, Failure> {
-  yield* checkMessages(inputSelection.source.content, true)
-  yield* checkMessages(inputSelection.retained.content, true)
+  yield* checkMessages(inputSelection.source.content)
+  yield* checkMessages(inputSelection.retained.content)
   const selection = yield* Value.copy(Schema.toCodecJson(Compaction.SelectedSchema), inputSelection)
   const current = yield* canonical(input)
   const { view } = current
@@ -266,7 +262,7 @@ export const validate = Effect.fnUntraced(function* (
   input: CanonicalInput,
 ): Effect.fn.Return<Fingerprint, Failure> {
   for (const item of [...inputFingerprint.selected, ...inputFingerprint.retained])
-    yield* checkMessages(item.contribution, true)
+    yield* checkMessages(item.contribution)
   const pinned = freeze(yield* Value.copy(Schema.toCodecJson(FingerprintSchema), inputFingerprint))
   const current = yield* canonical(input)
   const observed = yield* fingerprint(current, pinned.firstKept, pinned.tail)
@@ -284,7 +280,7 @@ export const serialize = Effect.fnUntraced(function* (
   input: Prompt.Prompt,
 ): Effect.fn.Return<Transcript, CompactionError | Schema.SchemaError> {
   const prompt = yield* Schema.decodeEffect(Prompt.Prompt)(input)
-  yield* checkMessages(prompt.content, false)
+  yield* checkMessages(prompt.content)
   const parts: Array<string> = []
   const omittedMedia: Array<Transcript['omittedMedia'][number]> = []
   for (const [messageIndex, message] of prompt.content.entries()) {

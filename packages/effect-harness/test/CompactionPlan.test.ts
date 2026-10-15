@@ -3,6 +3,7 @@ import * as Effect from 'effect/Effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as Prompt from 'effect/ai/Prompt'
+import * as PromptWire from '../src/PromptWire.js'
 import * as Compaction from '../src/Compaction.js'
 import * as Projection from '../src/ContextProjection.js'
 import * as Record from '../src/Record.js'
@@ -165,7 +166,7 @@ describe('pure compaction range planning', () => {
             ],
           }),
         ])
-        const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(Prompt.Prompt))(native)
+        const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(PromptWire.Prompt))(native)
         const encodedPrompt = yield* Schema.decodeUnknownEffect(
           Schema.Struct({ content: Schema.Array(Schema.Json) }),
         )(encoded)
@@ -175,16 +176,16 @@ describe('pure compaction range planning', () => {
           entry(3, [user('keep')]),
         ]
         const { fingerprint } = yield* pin(entries)
-        const json = yield* Schema.encodeEffect(Schema.fromJsonString(Plan.FingerprintSchema))(
-          fingerprint,
-        )
-        const restored = yield* Schema.decodeEffect(Schema.fromJsonString(Plan.FingerprintSchema))(
-          json,
-        )
+        const json = yield* Schema.encodeEffect(
+          Schema.fromJsonString(Schema.toCodecJson(Plan.FingerprintSchema)),
+        )(fingerprint)
+        const restored = yield* Schema.decodeEffect(
+          Schema.fromJsonString(Schema.toCodecJson(Plan.FingerprintSchema)),
+        )(json)
         yield* Plan.validate(restored, yield* canonical(entries))
         assert.deepEqual(restored.selected[0]!.entry.model, encodedPrompt.content)
         assert.deepEqual(restored.selected[1]!.entry.model, entries[1]!.model)
-        const replacement = yield* Schema.encodeEffect(Schema.toCodecJson(Prompt.Message))(
+        const replacement = yield* Schema.encodeEffect(Schema.toCodecJson(PromptWire.Message))(
           Prompt.userMessage({
             content: [Prompt.filePart({ mediaType: 'image/png', data: 'changed' })],
           }),
@@ -479,12 +480,12 @@ describe('pure compaction range planning', () => {
         assert.strictEqual(stored.role, 'user')
         if (stored.role === 'user')
           assert.deepEqual(stored.content[0]!.options, { fixture: { detail: 'high' } })
-        const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(Plan.FingerprintSchema))(
-          fingerprint,
-        )
-        const restored = yield* Schema.decodeEffect(Schema.fromJsonString(Plan.FingerprintSchema))(
-          encoded,
-        )
+        const encoded = yield* Schema.encodeEffect(
+          Schema.fromJsonString(Schema.toCodecJson(Plan.FingerprintSchema)),
+        )(fingerprint)
+        const restored = yield* Schema.decodeEffect(
+          Schema.fromJsonString(Schema.toCodecJson(Plan.FingerprintSchema)),
+        )(encoded)
         assert.deepEqual(restored, fingerprint)
         rejected(yield* Effect.result(Plan.validate(fingerprint, yield* canonical(entries))))
       }),
@@ -608,9 +609,9 @@ describe('native text-only compaction transcript', () => {
           [1, 2, 3],
         )
         assert.isTrue(Object.isFrozen(transcript.omittedMedia[0]))
-        // The actual codec lowers native bytes and URL to strings; canonical fingerprints
-        // compare persisted JSON and do not invent branch identity that storage does not retain.
-        const json = yield* Schema.encodeEffect(Schema.toCodecJson(Prompt.Prompt))(source)
+        // The lossless codec preserves native branches; an unrelated source still cannot
+        // impersonate the selected canonical history.
+        const json = yield* Schema.encodeEffect(Schema.toCodecJson(PromptWire.Prompt))(source)
         assert.isTrue(Schema.is(Schema.Json)(json))
         const { input, selection } = yield* pin(history())
         rejected(yield* Effect.result(Plan.capture({ ...selection, source }, input)))

@@ -115,7 +115,7 @@ export const layerSql: Layer.Layer<Storage | StorageFormat, StorageError, SqlCli
 /**
  * Scoped single-writer journal. Own one writer per file, including across processes.
  * Keep the file and its adjacent `<filePath>.parts` and `<filePath>.media` directories together when copying or
- * backing up a closed store. The sidecars-v2 layout rejects older journals.
+ * backing up a closed store. The sidecars-v3 layout rejects older journals.
  * New image objects, sidecars and directory entries are synced before each journal marker. Normal
  * commits reclaim superseded task rows and current-only document content after the
  * marker is durable; reopening removes orphan sidecars and images left by interrupted writes.

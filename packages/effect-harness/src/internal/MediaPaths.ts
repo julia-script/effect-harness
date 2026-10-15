@@ -1,5 +1,7 @@
 /** Only protocol-owned content channels are visited; application JSON stays opaque. */
-import type * as Schema from 'effect/Schema'
+import * as Schema from 'effect/Schema'
+import * as Option from 'effect/Option'
+import * as ToolResult from '../ToolResult.js'
 
 export type Path = ReadonlyArray<string | number>
 type Visit = (path: Path) => void
@@ -24,8 +26,10 @@ const part = (value: unknown, path: Path, visit: Visit) => {
 }
 const content = (value: unknown, path: Path, visit: Visit) =>
   each(value, path, (item, at) => part(item, at, visit))
+const decodeEnvelope = Schema.decodeUnknownOption(Schema.toCodecJson(ToolResult.Envelope))
 const envelope = (value: unknown, path: Path, visit: Visit) => {
-  if (field(value, '_tag') === '@effect-harness/ToolContent')
+  // Provider adapters recognize the complete codec, not an application-owned tag.
+  if (Option.isSome(decodeEnvelope(value)))
     content(field(value, 'content'), [...path, 'content'], visit)
 }
 const messages = (value: unknown, path: Path, visit: Visit) =>
@@ -44,12 +48,36 @@ const entry = (value: unknown, path: Path, visit: Visit) => {
     if (field(edit, '_tag') === 'replace')
       messages(field(edit, 'messages'), [...at, 'messages'], visit)
   })
+  if (field(value, 'kind') === 'assistant.interrupted')
+    messages(
+      field(field(field(value, 'data'), 'message'), 'content'),
+      [...path, 'data', 'message', 'content'],
+      visit,
+    )
   if (field(value, 'kind') === 'tool.result')
     content(
       field(field(field(value, 'data'), 'result'), 'content'),
       [...path, 'data', 'result', 'content'],
       visit,
     )
+}
+
+const fingerprint = (value: unknown, path: Path, visit: Visit) => {
+  entry(field(value, 'head'), [...path, 'head'], visit)
+  for (const key of ['selected', 'retained'])
+    each(field(value, key), [...path, key], (item, at) => {
+      entry(field(item, 'entry'), [...at, 'entry'], visit)
+      messages(field(item, 'contribution'), [...at, 'contribution'], visit)
+    })
+  each(field(value, 'edits'), [...path, 'edits'], (item, at) => entry(item, at, visit))
+}
+const prepared = (value: unknown, path: Path, visit: Visit) => {
+  messages(field(field(value, 'prompt'), 'content'), [...path, 'prompt', 'content'], visit)
+  messages(
+    field(field(field(value, 'translation'), 'prompt'), 'content'),
+    [...path, 'translation', 'prompt', 'content'],
+    visit,
+  )
 }
 
 export const record = (category: string, value: Schema.Json): ReadonlyArray<Path> => {
@@ -59,6 +87,27 @@ export const record = (category: string, value: Schema.Json): ReadonlyArray<Path
   if (category === 'task') {
     const kind = field(value, 'kind')
     const checkpoint = field(field(value, 'state'), 'checkpoint')
+    if (kind === 'harness.subagent') {
+      const draft = field(field(value, 'input'), 'draft')
+      if (field(draft, 'type') === 'input')
+        content(field(draft, 'content'), ['input', 'draft', 'content'], visit)
+      if (field(draft, 'type') === 'write')
+        entry(field(draft, 'entry'), ['input', 'draft', 'entry'], visit)
+    }
+    if (kind === 'harness.compaction') {
+      fingerprint(field(checkpoint, 'fingerprint'), ['state', 'checkpoint', 'fingerprint'], visit)
+      const saved = field(checkpoint, 'envelope')
+      fingerprint(
+        field(saved, 'fingerprint'),
+        ['state', 'checkpoint', 'envelope', 'fingerprint'],
+        visit,
+      )
+      prepared(
+        field(saved, 'preparation'),
+        ['state', 'checkpoint', 'envelope', 'preparation'],
+        visit,
+      )
+    }
     if (kind === 'harness.run') {
       if (field(checkpoint, '_tag') === 'queued')
         content(
@@ -90,6 +139,7 @@ export const ownsDocumentMedia = (kind: string): boolean =>
     'harness.tool.round',
     'harness.tool.nested.result',
     'harness.model.live',
+    'harness.promptUsage',
   ].includes(kind)
 
 export const document = (kind: string, value: Schema.Json): ReadonlyArray<Path> => {
@@ -108,8 +158,15 @@ export const document = (kind: string, value: Schema.Json): ReadonlyArray<Path> 
       visit,
     )
   if (kind === 'harness.inbox')
-    each(field(value, 'items'), ['items'], (item, at) =>
-      entry(field(item, 'payload'), [...at, 'payload'], visit),
+    each(field(value, 'items'), ['items'], (item, at) => {
+      entry(field(item, 'payload'), [...at, 'payload'], visit)
+      fingerprint(field(item, 'compaction'), [...at, 'compaction'], visit)
+    })
+  if (kind === 'harness.promptUsage')
+    messages(
+      field(field(field(value, 'baseline'), 'prompt'), 'content'),
+      ['baseline', 'prompt', 'content'],
+      visit,
     )
   if (kind === 'harness.tool.round')
     each(field(field(value, 'round'), 'slots'), ['round', 'slots'], (slot, at) =>

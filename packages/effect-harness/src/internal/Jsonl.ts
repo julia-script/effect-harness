@@ -4,6 +4,7 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as Ndjson from 'effect/encoding/Ndjson'
+import * as Hex from 'effect/encoding/Hex'
 import type { Access } from './Kernel.js'
 import * as Kernel from './Kernel.js'
 import * as Metadata from './Metadata.js'
@@ -20,11 +21,12 @@ const Reference = Schema.Struct({
   kind: Schema.Literals(['conversation', 'entry', 'task', 'submission', 'document']),
   seq: Domain.Seq,
   firstRevision: Schema.NullOr(Domain.Seq),
+  ownership: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
   revisions: Schema.Array(Domain.Seq),
 })
 type Reference = typeof Reference.Type
 const Frame = Schema.Struct({
-  persistence: Schema.Literal('sidecars-v2'),
+  persistence: Schema.Literal('sidecars-v3'),
   metadata: Metadata.Metadata,
   rows: Schema.Array(Reference),
 })
@@ -48,6 +50,32 @@ const io = <A, E, R>(operation: string, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     Effect.mapError((cause) => Errors.make('io', operation, `JSONL ${operation} failed`, cause)),
   )
+
+// Commit markers independently bind every retained owner manifest. Checking only
+// the references a sidecar happens to list cannot detect an omitted reference.
+// Do not hash/decode bodies: malformed obsolete bodies must remain retireable.
+const ownership = (row: MediaRow.PackedRow) => {
+  const manifest = (refs: ReadonlyArray<Media.Reference>) =>
+    refs.map((ref) => [
+      ref.path,
+      ref.digest,
+      ref.byteLength,
+      ref.presentation._tag,
+      ref.presentation._tag === 'data-url' ? ref.presentation.prefix : null,
+    ])
+  const encoded = new TextEncoder().encode(
+    JSON.stringify([
+      'effect-harness/jsonl/ownership/1',
+      manifest(row.value.media),
+      row.revisions.map((revision) => [revision.seq, manifest(revision.content.media)]),
+    ]),
+  )
+  return Effect.tryPromise({
+    try: async () =>
+      Hex.encode(new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', encoded))),
+    catch: (cause) => Errors.make('io', 'media.hash', 'Cannot hash media ownership', cause),
+  })
+}
 
 export const make = Effect.fnUntraced(function* (options: { readonly filePath: string }) {
   yield* Schema.decodeEffect(Schema.NonEmptyString)(options.filePath).pipe(
@@ -83,7 +111,7 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
       (envelope.metadata.minimumReader ?? 1) < (previous.minimumReader ?? 1)
     )
       return yield* Errors.make('corrupt', 'recover', 'JSONL format marker decreased')
-    if (envelope.persistence !== 'sidecars-v2')
+    if (envelope.persistence !== 'sidecars-v3')
       return yield* Errors.make(
         'unsupportedFormat',
         'recover',
@@ -210,6 +238,12 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
       row = { ...row, value: { ...row.value, revisions } }
     }
     const physical = { ...packed, revisions: packedRevisions }
+    if ((yield* ownership(physical)) !== ref.ownership)
+      return yield* Errors.make(
+        'corrupt',
+        'media.manifest',
+        'Media ownership does not match its commit marker',
+      )
     for (const ref of MediaRow.references(physical)) {
       let bytes = objects.get(ref.digest)
       if (bytes === undefined) {
@@ -294,12 +328,14 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
           const old = references.get(id)
           const revisions = row._tag === 'document' ? row.value.revisions : []
           const added = revisions.filter((revision) => revision.seq === metadata.nextSeq - 1)
+          const physical = prepared.rows.get(id)!
           const ref: Reference = {
             id: yield* Schema.decodeEffect(Domain.StorageIdSchema)(id),
             kind: row._tag,
             seq: Domain.Seq.make(metadata.nextSeq - 1),
             firstRevision: revisions[0]?.seq ?? null,
             revisions: added.map((revision) => revision.seq),
+            ownership: yield* ownership(physical),
           }
           changes.push(ref)
           const retained = { ...ref, revisions: revisions.map((revision) => revision.seq) }
@@ -307,7 +343,6 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
           const keep = new Set(filesOf(retained))
           for (const name of old === undefined ? [] : filesOf(old))
             if (!keep.has(name)) obsolete.add(name)
-          const physical = prepared.rows.get(id)!
           yield* write(rowName(ref), { ...physical, revisions: [] })
           for (const revision of physical.revisions) {
             if (revision.seq === metadata.nextSeq - 1)
@@ -317,7 +352,7 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
         // A durable marker may only reference durable files and directory entries.
         if (rows.length > 0) yield* syncDirectory(directory)
         const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(Frame))({
-          persistence: 'sidecars-v2',
+          persistence: 'sidecars-v3',
           rows: changes,
           metadata,
         })

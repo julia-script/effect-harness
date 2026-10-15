@@ -39,6 +39,6 @@ See [storage layers](/reference/storage) for adapter requirements and [recovery]
 
 ## Image persistence and backups
 
-Built-in stores share image bytes across retained requests, entries and document revisions while returning hydrated values. Native prompt bytes and URL objects survive JSON encoding through `effect-harness/PromptWire`; custom adapters may remain inline if they honor the runtime-12 logical contract. Current stores require format 12/12, SQL persistence schema 3 or JSONL sidecars-v2. Older stores are rejected without migration.
+Built-in stores share image bytes across retained requests, entries and document revisions while returning hydrated values. Native prompt bytes and URL objects survive JSON encoding through `effect-harness/PromptWire`; custom adapters may remain inline if they honor the runtime-12 logical contract. Current stores require format 12/12, SQL persistence schema 3 or JSONL sidecars-v3. Older stores are rejected without migration.
 
 A closed JSONL backup must include the journal and both adjacent `.parts` and `.media` directories. SQL objects and owner manifests live in the database. Historical entries and rewindable revisions retain their images even when omitted from the current context; only removal of the final retained owner permits reclamation.

@@ -118,9 +118,18 @@ export const verify = Effect.fnUntraced(function* (
 export const sameObject = (left: Uint8Array, right: Uint8Array): boolean =>
   left.length === right.length && left.every((value, index) => value === right[index])
 
+// JSON has occurrences, not object identity. structuredClone preserves aliases;
+// punching one selected hole would otherwise also erase an opaque/unselected alias.
+const copyJson = (value: Schema.Json): Schema.Json => {
+  if (Array.isArray(value)) return value.map(copyJson)
+  if (value !== null && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, copyJson(item)]))
+  return value
+}
+
 /** Packs only known image slots, leaving arbitrary JSON, aliases, URLs and metadata untouched. */
 export const pack = Effect.fnUntraced(function* (value: Schema.Json, context: Context) {
-  const body = structuredClone(value)
+  const body = copyJson(value)
   const media: Array<Reference> = []
   const objects = new Map<string, ObjectData>()
   for (const path of yield* select(body, context)) {
@@ -143,7 +152,11 @@ export const pack = Effect.fnUntraced(function* (value: Schema.Json, context: Co
   return { packed: { version: 1 as const, body, media }, objects: [...objects.values()] }
 })
 
-/** Validate an ownership manifest without reading or interpreting its potentially malformed body. */
+/**
+ * Validate listed references without decoding the document body.
+ * This structural check cannot detect omitted references. Before reclamation,
+ * adapters must also verify completeness against independently committed ownership.
+ */
 export const manifest = (value: unknown) =>
   Schema.decodeUnknownEffect(PackedBodySchema)(value).pipe(
     Effect.flatMap((packed) => {
@@ -169,7 +182,7 @@ export const hydrate = Effect.fnUntraced(function* (
   read: (digest: string) => Effect.Effect<Uint8Array, Errors.StorageError>,
 ) {
   const packed = yield* manifest(value)
-  const body = structuredClone(packed.body)
+  const body = copyJson(packed.body)
   for (const ref of packed.media) {
     const bytes = new Uint8Array(yield* read(ref.digest))
     yield* verify(ref, bytes)
