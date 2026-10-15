@@ -1,5 +1,10 @@
 import { assert, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
+import * as Stream from 'effect/Stream'
+import * as Prompt from 'effect/ai/Prompt'
+import * as OpenAiSchema from '@effect/ai-openai/Generated'
+import * as ToolResult from '../src/ToolResult.js'
+import { payload } from './fixtures/SubscriptionProtocol.js'
 import * as Context from 'effect/Context'
 import * as Native from '@effect/ai-openai-compat/OpenAiLanguageModel'
 import * as Layer from 'effect/Layer'
@@ -203,3 +208,169 @@ it.effect(
       ),
     ),
 )
+
+for (const streaming of [false, true]) {
+  for (const format of ['openai', 'openrouter'] as const) {
+    it.effect(
+      `${format} maps reasoning and tool media on ${streaming ? 'streaming' : 'completion'} requests`,
+      () =>
+        Effect.gen(function* () {
+          const bodies: Schema.JsonObject[] = []
+          const client = HttpClient.make((request) =>
+            Effect.sync(() => {
+              const body = payload(request)
+              bodies.push(body)
+              const answer = {
+                id: 'chat-1',
+                object: 'chat.completion',
+                created: 0,
+                model: 'same-model',
+                choices: [
+                  {
+                    index: 0,
+                    message: { role: 'assistant', content: 'hello' },
+                    finish_reason: 'stop',
+                  },
+                ],
+              }
+              return HttpClientResponse.fromWeb(
+                request,
+                new Response(
+                  streaming
+                    ? `data: ${JSON.stringify({ ...answer, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: 'hello' }, finish_reason: null }] })}\n\ndata: [DONE]\n\n`
+                    : JSON.stringify(answer),
+                ),
+              )
+            }),
+          )
+          const manager = yield* Providers.make({ definitions: { api: Gateway.definition } })
+          const instance = yield* manager.add({
+            provider: 'api',
+            label: 'Gateway',
+            config: {
+              baseUrl: 'https://gateway.example/v1',
+              authentication: 'optional',
+              ...(format === 'openai' ? {} : { reasoningFormat: format }),
+              models: [
+                {
+                  ...info,
+                  capabilities: { ...info.capabilities!, images: true, reasoning: true },
+                  reasoning: { effort: { values: ['low', 'high'], default: 'low' } },
+                },
+              ],
+            },
+          })
+          const model = yield* manager.models
+            .resolve({
+              instanceId: instance.id,
+              modelId: info.id,
+              options: { reasoning: { effort: 'high' } },
+            })
+            .pipe(Effect.provideService(HttpClient.HttpClient, client))
+          const imageResult = yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.Envelope))({
+            _tag: '@effect-harness/ToolContent',
+            content: [
+              Prompt.makePart('text', { text: 'Screenshot' }),
+              Prompt.makePart('file', {
+                data: new Uint8Array([137, 80, 78, 71]),
+                mediaType: 'image/png',
+                options: { openai: { imageDetail: 'high' } },
+              }),
+            ],
+          })
+          const prompt = Prompt.make([
+            {
+              role: 'assistant',
+              content: [
+                { type: 'tool-call', id: 'image-call', name: 'screenshot', params: {} },
+                { type: 'tool-call', id: 'text-call', name: 'status', params: {} },
+              ],
+            },
+            {
+              role: 'tool',
+              content: [
+                {
+                  type: 'tool-result',
+                  id: 'image-call',
+                  name: 'screenshot',
+                  isFailure: false,
+                  result: imageResult,
+                },
+                {
+                  type: 'tool-result',
+                  id: 'text-call',
+                  name: 'status',
+                  isFailure: false,
+                  result: 'ready',
+                },
+              ],
+            },
+          ])
+          if (streaming) yield* model.languageModel.streamText({ prompt }).pipe(Stream.runCollect)
+          else yield* model.languageModel.generateText({ prompt })
+          const body = bodies[0]!
+          if (format === 'openai') {
+            assert.equal(body.reasoning_effort, 'high')
+            assert.isUndefined(body.reasoning)
+            yield* Schema.decodeUnknownEffect(OpenAiSchema.CreateChatCompletionRequest, {
+              onExcessProperty: 'error',
+            })(body)
+          } else {
+            assert.deepEqual(body.reasoning, { effort: 'high' })
+            assert.isUndefined(body.reasoning_effort)
+          }
+          const messages = body.messages as Array<Schema.JsonObject>
+          assert.deepEqual(
+            messages.map((message) => message.role),
+            ['assistant', 'tool', 'tool', 'user'],
+          )
+          assert.equal(messages[1]!.tool_call_id, 'image-call')
+          assert.deepEqual(messages[2], {
+            role: 'tool',
+            tool_call_id: 'text-call',
+            content: 'ready',
+          })
+          const media = messages[3]!.content as Array<Schema.JsonObject>
+          assert.include(JSON.stringify(media), 'image-call')
+          assert.deepEqual(media.slice(-2), [
+            { type: 'text', text: 'Screenshot' },
+            {
+              type: 'image_url',
+              image_url: { url: 'data:image/png;base64,iVBORw==', detail: 'high' },
+            },
+          ])
+          assert.notInclude(JSON.stringify(body), '@effect-harness/ToolContent')
+          const unsupported = yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.Envelope))({
+            _tag: '@effect-harness/ToolContent',
+            content: [
+              Prompt.makePart('file', { data: new Uint8Array([1]), mediaType: 'application/pdf' }),
+            ],
+          })
+          const failed = yield* Effect.flip(
+            model.languageModel.generateText({
+              prompt: Prompt.make([
+                {
+                  role: 'assistant',
+                  content: [{ type: 'tool-call', id: 'pdf', name: 'read', params: {} }],
+                },
+                {
+                  role: 'tool',
+                  content: [
+                    {
+                      type: 'tool-result',
+                      id: 'pdf',
+                      name: 'read',
+                      isFailure: false,
+                      result: unsupported,
+                    },
+                  ],
+                },
+              ]),
+            }),
+          )
+          assert.equal(failed.reason._tag, 'InvalidRequestError')
+          assert.equal(bodies.length, 1)
+        }).pipe(Effect.provide(Layer.merge(ProviderStore.layerMemory, MemoryCredentials.layer))),
+    )
+  }
+}

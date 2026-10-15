@@ -124,6 +124,8 @@ export const define = <LE, LR, GE, GR>(
         config,
         thinkingModes: modes,
         efforts,
+        supportsTemperature: info.capabilities?.temperature === true,
+        supportsLongCache: info.capabilities?.longCache === true,
       })
     }),
   })

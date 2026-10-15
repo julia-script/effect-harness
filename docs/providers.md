@@ -96,10 +96,14 @@ refresh. Neither guesses missing capabilities or invents pricing.
 Their `define({ list, get })` helpers replace metadata discovery while retaining
 inference mechanics. Claude accepts a second `{ thinkingPolicy(info) }` argument
 for its durable thinking-history policy. Protocol-specific controls are still
-validated by each model factory after portable validation.
+validated by each model factory after portable validation. Custom metadata can set
+`capabilities.temperature: true` for Codex or Claude, and `capabilities.longCache: true`
+for Claude's extended cache retention. Missing declarations keep those controls
+disabled. These declarations belong to each model and are pinned in its durable
+configuration; changing them requires repreparation.
 
 `provider-openai-compatible/Provider.define({ version, config, connection, models })`
-creates a gateway integration. `connection(config)` returns `{ baseUrl, authentication? }`;
+creates a gateway integration. `connection(config)` returns `{ baseUrl, authentication?, reasoningFormat? }`;
 `models` supplies independent list/get callbacks with the same typed context.
 The shared transport handles Chat Completions and API-key authorization. Set
 `authentication: 'optional'` for an anonymous endpoint. The default definition uses:
@@ -131,6 +135,17 @@ reads metadata from instance config. Metadata includes optional pricing, limits,
 and per-model effort values. The compatible adapter supports `temperature`,
 `max_output_tokens`, and `reasoning.effort` as schema-backed model options. Portable
 thinking budgets are rejected because this transport has no mapping for them.
+Reasoning is sent as standard Chat Completions `reasoning_effort` by default. Set
+`reasoningFormat: 'openrouter'` on the connection (or the default definition's config)
+to send OpenRouter's `reasoning: { effort }` format. Selection and durable model
+options use the same portable `reasoning.effort` in either case.
+
+Canonical tool results are translated at the client boundary for ordinary and
+streaming requests. Text-only results stay in their tool messages. Tool images
+become `image_url` content in a user message after the consecutive tool-result
+batch, with each image group identified by its original call ID. This preserves
+the tool-call/result ordering required by Chat Completions. Unsupported tool media,
+such as PDFs, fail explicitly before HTTP dispatch.
 
 `ModelCatalog.cached(source, { capacity, timeToLive })` captures discovery services
 without fetching and shares concurrent successful lookups. Create a separate cache

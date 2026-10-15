@@ -89,6 +89,7 @@ export const define = <LE, LR, GE, GR>(models: {
         definition: yield* ModelInfo.toDefinition(resolved.info, 'openai-codex'),
         config,
         reasoningEfforts,
+        supportsTemperature: resolved.info.capabilities?.temperature === true,
       })
     }),
   })

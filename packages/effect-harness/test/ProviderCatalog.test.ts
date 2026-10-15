@@ -4,6 +4,7 @@ import * as TestClock from 'effect/testing/TestClock'
 import * as CodexCatalog from '../src/provider-openai-codex/Catalog.js'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 import * as Redacted from 'effect/Redacted'
 import type * as Schema from 'effect/Schema'
 import * as HttpClient from 'effect/http/HttpClient'
@@ -370,3 +371,75 @@ it.effect(
       assert.equal(requests, 4)
     }),
 )
+
+for (const provider of ['codex', 'claude'] as const) {
+  for (const capability of ['temperature', 'longCache'] as const) {
+    if (provider === 'codex' && capability === 'longCache') continue
+    it.effect(`${provider} uses per-model ${capability} support and pins it for recovery`, () => {
+      const bodies: Schema.JsonObject[] = []
+      const client = HttpClient.make((request) =>
+        Effect.sync(() => {
+          bodies.push(payload(request))
+          return HttpClientResponse.fromWeb(
+            request,
+            new Response(provider === 'codex' ? sse(codexEvents) : JSON.stringify(claudeResponse)),
+          )
+        }),
+      )
+      return Effect.gen(function* () {
+        let supported = true
+        const models = {
+          list: () => Effect.succeed({ items: [] }),
+          get: () =>
+            Effect.succeed({
+              id: 'custom-model',
+              name: 'Custom model',
+              capabilities: {
+                tools: true,
+                images: false,
+                reasoning: false,
+                structuredOutput: false,
+                temperature: capability === 'temperature' && supported,
+                longCache: capability === 'longCache' && supported,
+              },
+            }),
+        }
+        const configured =
+          capability === 'temperature' ? { temperature: 0.5 } : { cache: 'long' as const }
+        const selection =
+          provider === 'codex'
+            ? yield* managed(
+                Codex.define(models),
+                { clientVersion: '1.0', config: { temperature: 0.5 } },
+                binding,
+              )
+            : yield* managed(Claude.define(models), { config: configured }, binding)
+        const model = yield* selection.resolve({ modelId: 'custom-model' })
+        const prompt = [{ role: 'user' as const, content: 'hello' }]
+        yield* model.languageModel.generateText({ prompt })
+        if (capability === 'temperature') assert.equal(bodies[0]!.temperature, 0.5)
+        else assert.include(JSON.stringify(bodies[0]), '"ttl":"1h"')
+        const snapshot = yield* model.configuration!.encode(Context.empty())
+        supported = false
+        const unsupported = yield* selection.resolve({ modelId: 'custom-model' })
+        assert.equal(
+          (yield* Effect.flip(unsupported.configuration!.restore(snapshot))).reason._tag,
+          'ModelUnsupportedError',
+        )
+        assert.equal(
+          (yield* Effect.flip(unsupported.languageModel.generateText({ prompt }))).reason._tag,
+          'InvalidRequestError',
+        )
+        assert.equal(bodies.length, 1)
+      }).pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.provide(
+          Layer.effect(
+            Store.CredentialStore,
+            credentials(provider === 'codex' ? 'openai-codex' : 'anthropic'),
+          ),
+        ),
+      )
+    })
+  }
+}

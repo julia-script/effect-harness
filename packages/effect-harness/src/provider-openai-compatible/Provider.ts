@@ -11,6 +11,7 @@ import * as ModelInfo from '../ModelInfo.js'
 import * as Credential from '../provider-auth/Credential.js'
 import { ModelError, ModelUnsupportedError } from '../ModelError.js'
 import { ModelCatalogError } from '../ModelCatalogError.js'
+import * as CompatibleRequest from '../internal/CompatibleRequest.js'
 import { AuthError } from '../provider-auth/AuthError.js'
 
 export const Settings = Schema.Struct({
@@ -25,6 +26,8 @@ export interface Connection {
   readonly baseUrl: string
   /** Explicitly permit anonymous gateways. Missing API keys otherwise require authentication. */
   readonly authentication?: 'required' | 'optional'
+  /** Standard reasoning_effort by default; OpenRouter uses a reasoning object. */
+  readonly reasoningFormat?: 'openai' | 'openrouter'
 }
 
 /** Declare endpoint configuration and model metadata while sharing inference mechanics. */
@@ -66,7 +69,10 @@ export const define = <C extends Provider.Codec, LE, LR, GE, GR>(input: {
       const effort = resolved.options.reasoning?.effort ?? resolved.info.reasoning?.effort?.default
       const defaults: Settings = effort === undefined ? {} : { reasoning: { effort } }
       const languageModel = yield* Native.make({ model: resolved.info.id, config: defaults }).pipe(
-        Effect.provideService(Client.OpenAiClient, client),
+        Effect.provideService(
+          Client.OpenAiClient,
+          CompatibleRequest.client(client, connection.reasoningFormat ?? 'openai'),
+        ),
       )
       const validate = (settings: Settings) =>
         ModelInfo.validateOptions(
@@ -112,6 +118,7 @@ export const define = <C extends Provider.Codec, LE, LR, GE, GR>(input: {
 export const Config = Schema.Struct({
   baseUrl: Schema.NonEmptyString,
   authentication: Schema.optionalKey(Schema.Literals(['required', 'optional'])),
+  reasoningFormat: Schema.optionalKey(Schema.Literals(['openai', 'openrouter'])),
   models: Schema.Array(ModelInfo.ModelInfoSchema),
 })
 export const definition = define({
@@ -119,6 +126,7 @@ export const definition = define({
   config: Config,
   connection: (config) => ({
     baseUrl: config.baseUrl,
+    ...(config.reasoningFormat === undefined ? {} : { reasoningFormat: config.reasoningFormat }),
     ...(config.authentication === undefined ? {} : { authentication: config.authentication }),
   }),
   models: ModelCatalog.fromConfig((config: typeof Config.Type) => config.models),
