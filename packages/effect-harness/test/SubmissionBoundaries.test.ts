@@ -988,17 +988,26 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               (yield* disk.fs.readFileString(`${disk.directory}/submissions.jsonl`))
                 .trim()
                 .split('\n'),
-              (line) => Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(line),
+              (line) =>
+                Schema.decodeEffect(
+                  Schema.fromJsonString(
+                    Schema.Struct({
+                      metadata: Schema.Struct({ format: Schema.Finite }),
+                      rows: Schema.Array(Schema.Struct({ id: Schema.Finite })),
+                    }),
+                  ),
+                )(line),
             )
-            const upgrade = frames.findIndex(
-              (frame) =>
-                frame !== null &&
-                typeof frame === 'object' &&
-                !Array.isArray(frame) &&
-                JSON.stringify(frame).includes('"format":4'),
-            )
+            const upgrade = frames.findIndex((frame) => frame.metadata.format === 4)
+            const documents = yield* Context.get(context, Storage.Storage)
+              .scanDocuments({
+                scope: { _tag: 'conversation', conversationId: root },
+                kind: 'harness.contextProtocol',
+              })
+              .pipe(Stream.runCollect)
+            assert.lengthOf(documents, 1)
             const protocol = frames.findIndex((frame) =>
-              JSON.stringify(frame).includes('harness.contextProtocol'),
+              frame.rows.some((row) => row.id === documents[0]!.id),
             )
             assert.isTrue(upgrade >= 0 && upgrade < protocol)
           }

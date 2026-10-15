@@ -6,6 +6,7 @@ import * as Schema from 'effect/Schema'
 import * as SchemaTransformation from 'effect/SchemaTransformation'
 import * as SqlError from 'effect/sql/SqlError'
 import * as SqlClient from 'effect/sql/SqlClient'
+import type * as Statement from 'effect/sql/Statement'
 import * as Errors from '../StorageError.js'
 import type { Access } from './Kernel.js'
 import * as Kernel from './Kernel.js'
@@ -14,6 +15,8 @@ import * as Row from './Row.js'
 
 const metadataName = 'effect_harness_metadata'
 const recordsName = 'effect_harness_records'
+const revisionsName = 'effect_harness_revisions'
+const persistenceVersion = 2
 // Drivers return BIGINT columns as numbers, decimal strings, or bigints.
 const SqlBigIntCounter = Schema.BigInt.check(
   Schema.isBetweenBigInt({ minimum: 1n, maximum: BigInt(Number.MAX_SAFE_INTEGER) + 1n }),
@@ -44,6 +47,8 @@ const PayloadRows = Schema.Array(
     id: SqlCounter,
     category: Schema.String,
     payload: Schema.fromJsonString(Row.Stored),
+    revision_seq: Schema.NullOr(SqlCounter),
+    revision_content: Schema.NullOr(Schema.fromJsonString(Schema.Json)),
   }).check(
     Schema.makeFilter(
       (row) => Row.idOf(row.payload) === row.id && row.payload._tag === row.category,
@@ -76,13 +81,45 @@ export const make = Effect.gen(function* () {
   yield* independent('initialize')
   const metadataTable = sql(metadataName)
   const recordsTable = sql(recordsName)
+  const revisionsTable = sql(revisionsName)
   const text = sql.onDialectOrElse({
     mssql: () => sql.literal('NVARCHAR(MAX)'),
     orElse: () => sql.literal('TEXT'),
   })
+  const hasMetadata = yield* io(
+    'initialize',
+    sql.onDialectOrElse({
+      sqlite: () => sql`SELECT 1 FROM sqlite_master WHERE type='table' AND name=${metadataName}`,
+      mssql: () => sql`SELECT 1 FROM sys.tables WHERE name=${metadataName}`,
+      mysql: () =>
+        sql`SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=${metadataName}`,
+      orElse: () =>
+        sql`SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=${metadataName}`,
+    }),
+  )
+  if (hasMetadata.length > 0) {
+    // Probe the schema before DDL: opening an incompatible container must not migrate it.
+    const marker =
+      yield* sql`SELECT persistence_version, minimum_reader FROM ${metadataTable}`.pipe(
+        Effect.mapError((cause) =>
+          Errors.make(
+            'unsupportedFormat',
+            'initialize',
+            'Unsupported SQL persistence schema',
+            cause,
+          ),
+        ),
+      )
+    if (marker.some((row) => row.persistence_version !== persistenceVersion))
+      return yield* Errors.make(
+        'unsupportedFormat',
+        'initialize',
+        'Unsupported SQL persistence schema',
+      )
+  }
   const metadataDdl = sql`CREATE TABLE ${metadataTable} (
-    singleton INTEGER PRIMARY KEY, format INTEGER NOT NULL,
-    next_id BIGINT NOT NULL, next_seq BIGINT NOT NULL
+    singleton INTEGER PRIMARY KEY, format INTEGER NOT NULL, minimum_reader BIGINT,
+    persistence_version INTEGER NOT NULL, next_id BIGINT NOT NULL, next_seq BIGINT NOT NULL
   )`
   const recordsDdl = sql`CREATE TABLE ${recordsTable} (
     id BIGINT PRIMARY KEY, category VARCHAR(32) NOT NULL, payload ${text} NOT NULL,
@@ -109,7 +146,7 @@ export const make = Effect.gen(function* () {
       orElse: () =>
         Effect.gen(function* () {
           yield* sql`CREATE TABLE IF NOT EXISTS ${metadataTable} (
-        singleton INTEGER PRIMARY KEY, format INTEGER NOT NULL, next_id BIGINT NOT NULL, next_seq BIGINT NOT NULL
+        singleton INTEGER PRIMARY KEY, format INTEGER NOT NULL, minimum_reader BIGINT, persistence_version INTEGER NOT NULL, next_id BIGINT NOT NULL, next_seq BIGINT NOT NULL
       )`
           yield* sql`CREATE TABLE IF NOT EXISTS ${recordsTable} (
         id BIGINT PRIMARY KEY, category VARCHAR(32) NOT NULL, payload ${text} NOT NULL,
@@ -122,41 +159,41 @@ export const make = Effect.gen(function* () {
   )
   const existingMetadata = yield* io(
     'initialize',
-    sql`SELECT singleton FROM ${metadataTable} WHERE singleton = 1`,
+    sql`SELECT singleton, persistence_version FROM ${metadataTable} WHERE singleton = 1`,
   )
-  // Additive metadata support leaves legacy containers at format 1. Only the guard activates v2.
-  const hasMinimumReader = sql.onDialectOrElse({
-    sqlite: () =>
-      sql`PRAGMA table_info(${metadataTable})`.pipe(
-        Effect.map((rows) => rows.some((row) => row.name === 'minimum_reader')),
-      ),
-    mssql: () =>
-      sql`SELECT 1 AS present FROM sys.columns
-      WHERE object_id = OBJECT_ID(${metadataName}) AND name = 'minimum_reader'`.pipe(
-        Effect.map((rows) => rows.length > 0),
-      ),
-    mysql: () =>
-      sql`SELECT 1 AS present FROM information_schema.columns
-      WHERE table_schema = DATABASE() AND table_name = ${metadataName} AND column_name = 'minimum_reader'`.pipe(
-        Effect.map((rows) => rows.length > 0),
-      ),
-    orElse: () =>
-      sql`SELECT 1 AS present FROM information_schema.columns
-      WHERE table_schema = current_schema() AND table_name = ${metadataName} AND column_name = 'minimum_reader'`.pipe(
-        Effect.map((rows) => rows.length > 0),
-      ),
-  })
-  if (!(yield* io('initialize', hasMinimumReader)))
-    yield* io(
+  if (
+    existingMetadata.length > 0 &&
+    existingMetadata[0]?.persistence_version !== persistenceVersion
+  )
+    return yield* Errors.make(
+      'unsupportedFormat',
       'initialize',
-      sql`ALTER TABLE ${metadataTable} ADD minimum_reader BIGINT NULL`.pipe(
-        Effect.catch((error) =>
-          hasMinimumReader.pipe(
-            Effect.flatMap((present) => (present ? Effect.void : Effect.fail(error))),
-          ),
-        ),
-      ),
+      'Unsupported SQL persistence schema',
     )
+  const revisionsDdl = sql`CREATE TABLE ${revisionsTable} (
+    document_id BIGINT NOT NULL,
+    seq BIGINT NOT NULL CHECK (seq > 0), content ${text} NOT NULL,
+    PRIMARY KEY (document_id, seq), FOREIGN KEY (document_id) REFERENCES ${recordsTable}(id)
+  )`
+  yield* io(
+    'initialize',
+    sql.onDialectOrElse({
+      mssql: () =>
+        Effect.gen(function* () {
+          if (
+            (yield* sql`SELECT 1 AS present FROM sys.tables WHERE name = ${revisionsName}`)
+              .length === 0
+          )
+            yield* revisionsDdl
+        }),
+      orElse: () =>
+        sql`CREATE TABLE IF NOT EXISTS ${revisionsTable} (
+      document_id BIGINT NOT NULL,
+      seq BIGINT NOT NULL CHECK (seq > 0), content ${text} NOT NULL,
+      PRIMARY KEY (document_id, seq), FOREIGN KEY (document_id) REFERENCES ${recordsTable}(id)
+    )`.pipe(Effect.asVoid),
+    }),
+  )
   if (
     existingMetadata.length === 0 &&
     (yield* io('initialize', sql`SELECT id FROM ${recordsTable}`)).length > 0
@@ -166,12 +203,12 @@ export const make = Effect.gen(function* () {
     'initialize',
     sql.onDialectOrElse({
       mysql:
-        () => sql`INSERT INTO ${metadataTable} (singleton, format, next_id, next_seq) VALUES (1, 1, 2, 1)
+        () => sql`INSERT INTO ${metadataTable} (singleton, format, persistence_version, next_id, next_seq) VALUES (1, 1, 2, 2, 1)
       ON DUPLICATE KEY UPDATE singleton = singleton`,
       mssql: () => sql`IF NOT EXISTS (SELECT 1 FROM ${metadataTable} WHERE singleton = 1)
-      INSERT INTO ${metadataTable} (singleton, format, next_id, next_seq) VALUES (1, 1, 2, 1)`,
+      INSERT INTO ${metadataTable} (singleton, format, persistence_version, next_id, next_seq) VALUES (1, 1, 2, 2, 1)`,
       orElse:
-        () => sql`INSERT INTO ${metadataTable} (singleton, format, next_id, next_seq) VALUES (1, 1, 2, 1)
+        () => sql`INSERT INTO ${metadataTable} (singleton, format, persistence_version, next_id, next_seq) VALUES (1, 1, 2, 2, 1)
       ON CONFLICT (singleton) DO NOTHING`,
     }),
   )
@@ -214,14 +251,20 @@ export const make = Effect.gen(function* () {
       sql.onDialectOrElse({
         // Node SQLite refuses numeric reads above MAX_SAFE_INTEGER. The valid
         // exhausted sentinel is decoded losslessly by SqlCounter from decimal text.
-        sqlite: () => sql`SELECT format, minimum_reader,
+        sqlite: () => sql`SELECT format, minimum_reader, persistence_version,
           CAST(next_id AS TEXT) AS next_id, CAST(next_seq AS TEXT) AS next_seq
           FROM ${metadataTable} WHERE singleton = 1`,
-        orElse: () => sql`SELECT format, minimum_reader, next_id, next_seq
+        orElse: () => sql`SELECT format, minimum_reader, persistence_version, next_id, next_seq
           FROM ${metadataTable} WHERE singleton = 1`,
       }),
     )
     const row = rows[0]
+    if (row !== undefined && row.persistence_version !== persistenceVersion)
+      return yield* Errors.make(
+        'unsupportedFormat',
+        'metadata',
+        'Unsupported SQL persistence schema',
+      )
     // SQL NULL means the original format-1 marker, not an automatically upgraded reader floor.
     const raw =
       row === undefined
@@ -238,12 +281,50 @@ export const make = Effect.gen(function* () {
   })
   yield* metadata
   const payloads = Effect.fnUntraced(function* (
-    query: Effect.Effect<ReadonlyArray<unknown>, import('effect/sql/SqlError').SqlError>,
+    query: Statement.Statement<unknown>,
+    order: 'ascending' | 'descending' = 'ascending',
   ) {
-    const rows = yield* Schema.decodeUnknownEffect(PayloadRows)(yield* io('read', query)).pipe(
+    // One statement gives headers and revisions the same snapshot, including during retirement.
+    const direction = sql.literal(order === 'ascending' ? 'ASC' : 'DESC')
+    const joined = yield* io(
+      'read',
+      sql`SELECT r.id, r.category, r.payload,
+      v.seq AS revision_seq, v.content AS revision_content FROM (${query}) r
+      LEFT JOIN ${revisionsTable} v ON v.document_id = r.id
+      ORDER BY r.id ${direction}, v.seq ASC`,
+    )
+    const rows = yield* Schema.decodeUnknownEffect(PayloadRows)(joined).pipe(
       Effect.mapError(Errors.corrupt('record')),
     )
-    return rows.map((row) => row.payload)
+    const results = new Map<number, Row.Stored>()
+    const histories = new Map<
+      number,
+      Array<typeof Row.StoredDocument.fields.revisions.value.Type>
+    >()
+    for (const { id, payload, revision_seq: seq, revision_content: content } of rows) {
+      if (payload._tag !== 'document') {
+        if (seq !== null || content !== null)
+          return yield* Errors.make('corrupt', 'record', 'Non-document record owns revisions')
+        results.set(id, payload)
+        continue
+      }
+      if (payload.value.revisions.length !== 0)
+        return yield* Errors.make('corrupt', 'record', 'Document row contains inline revisions')
+      let revisions = histories.get(id)
+      if (revisions === undefined) {
+        revisions = []
+        histories.set(id, revisions)
+        results.set(id, { ...payload, value: { ...payload.value, revisions } })
+      }
+      if (seq !== null) {
+        const revision = yield* Schema.decodeEffect(Row.StoredDocument.fields.revisions.value)({
+          seq,
+          content,
+        }).pipe(Effect.mapError(Errors.corrupt('record')))
+        revisions.push(revision)
+      }
+    }
+    return [...results.values()]
   })
   const access: Access = {
     metadata,
@@ -305,6 +386,7 @@ export const make = Effect.gen(function* () {
             orElse: () =>
               sql`SELECT id, category, payload FROM ${recordsTable} WHERE ${sql.and(clauses)} ORDER BY id ${direction} LIMIT 64`,
           }),
+          order,
         )
         // SQL collations can match extra strings; enforce the same exact comparison as memory.
         results.push(...rows.filter((row) => Row.matches(row, filter)))
@@ -319,25 +401,60 @@ export const make = Effect.gen(function* () {
         Effect.mapError(Errors.invalid('commit')),
       )
       for (const row of rows) {
-        const payload = yield* Schema.encodeEffect(RowJson)(row).pipe(
+        const payload = yield* Schema.encodeEffect(RowJson)(
+          row._tag === 'document'
+            ? { ...row, value: { record: row.value.record, revisions: [] } }
+            : row,
+        ).pipe(
           Effect.mapError((cause) =>
             Errors.make('invalid', 'commit', 'Cannot encode SQL record', cause),
           ),
         )
         const index = Row.indexOf(row)
-        // The metadata row serializes writers, so delete/insert is an atomic portable upsert.
-        yield* io('write', sql`DELETE FROM ${recordsTable} WHERE id = ${Row.idOf(row)}`)
-        yield* io(
-          'write',
-          sql`INSERT INTO ${recordsTable}
-          (id, category, payload, conversation_id, kind, owner_conversation_id, owner_task_id,
-            status, background, abort_requested, request_id, address, scope_key, created_at, retired_at)
-          VALUES (${Row.idOf(row)}, ${row._tag}, ${payload}, ${index.conversationId}, ${index.kind},
-            ${index.ownerConversationId}, ${index.ownerTaskId}, ${index.status},
-            ${index.background === null ? null : Number(index.background)},
-            ${index.abortRequested === null ? null : Number(index.abortRequested)}, ${index.requestId},
-            ${index.address}, ${index.scope}, ${index.createdAt}, ${index.retiredAt})`,
-        )
+        const values = {
+          category: row._tag,
+          payload,
+          conversation_id: index.conversationId,
+          kind: index.kind,
+          owner_conversation_id: index.ownerConversationId,
+          owner_task_id: index.ownerTaskId,
+          status: index.status,
+          background: index.background === null ? null : Number(index.background),
+          abort_requested: index.abortRequested === null ? null : Number(index.abortRequested),
+          request_id: index.requestId,
+          address: index.address,
+          scope_key: index.scope,
+          created_at: index.createdAt,
+          retired_at: index.retiredAt,
+        }
+        const id = Row.idOf(row)
+        // The metadata lock serializes insert/update, revision pruning and allocation counters.
+        const exists =
+          (yield* io('read', sql`SELECT id FROM ${recordsTable} WHERE id = ${id}`)).length > 0
+        if (exists)
+          yield* io('write', sql`UPDATE ${recordsTable} SET ${sql.update(values)} WHERE id = ${id}`)
+        else yield* io('write', sql`INSERT INTO ${recordsTable} ${sql.insert({ id, ...values })}`)
+        if (row._tag === 'document') {
+          const first = row.value.revisions[0]
+          if (first === undefined)
+            yield* io('write', sql`DELETE FROM ${revisionsTable} WHERE document_id = ${id}`)
+          else
+            yield* io(
+              'write',
+              sql`DELETE FROM ${revisionsTable} WHERE document_id = ${id} AND seq < ${first.seq}`,
+            )
+          for (const revision of row.value.revisions) {
+            if (revision.seq !== next.nextSeq - 1) continue
+            const content = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Json))(
+              revision.content,
+            ).pipe(Effect.mapError(Errors.invalid('commit')))
+            yield* io(
+              'write',
+              sql`INSERT INTO ${revisionsTable} (document_id, seq, content)
+              VALUES (${id}, ${revision.seq}, ${content})`,
+            )
+          }
+        }
       }
       yield* io(
         'write',

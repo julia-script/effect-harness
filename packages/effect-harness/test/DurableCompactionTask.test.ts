@@ -1585,7 +1585,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
                   )
               }
               const fs = yield* FileSystem.FileSystem
-              for (const name of yield* fs.readDirectory(store.directory)) {
+              for (const name of yield* fs.readDirectory(store.directory, { recursive: true })) {
+                if ((yield* fs.stat(`${store.directory}/${name}`)).type !== 'File') continue
                 const bytes = yield* fs.readFile(`${store.directory}/${name}`)
                 assert.isFalse(new TextDecoder().decode(bytes).includes('checkpoint-dummy-key'))
               }

@@ -402,7 +402,7 @@ for (const failure of ['partial', 'synced-but-reported-failed'] as const)
                     ? file.writeAll(bytes.subarray(0, 12)).pipe(Effect.andThen(Effect.fail(fault)))
                     : file.writeAll(bytes),
                 sync:
-                  failure === 'synced-but-reported-failed'
+                  failure === 'synced-but-reported-failed' && path === filename
                     ? file.sync.pipe(Effect.andThen(Effect.fail(fault)))
                     : file.sync,
               })),
@@ -449,10 +449,13 @@ it.live('interruption during JSONL sync cannot expose a partially activated in-m
             Effect.map((file) => ({
               ...file,
               writeAll: (bytes) => file.writeAll(bytes),
-              sync: Deferred.succeed(syncing, undefined).pipe(
-                Effect.andThen(Deferred.await(release)),
-                Effect.andThen(file.sync),
-              ),
+              sync:
+                path !== filename
+                  ? file.sync
+                  : Deferred.succeed(syncing, undefined).pipe(
+                      Effect.andThen(Deferred.await(release)),
+                      Effect.andThen(file.sync),
+                    ),
             })),
           ),
       }

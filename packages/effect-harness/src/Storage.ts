@@ -104,15 +104,21 @@ export const layerMemory: Layer.Layer<Storage | StorageFormat, StorageError> = L
  * Uses the supplied SQL client with an independent durable transaction per write.
  * Initialization, commit and ID allocation reject that client's ambient transactions
  * with an invalid StorageError; invoke them outside SqlClient.withTransaction.
- * Opening adds nullable minimum-reader metadata support without activating v2.
- * The deliberate StorageFormat guard activates v2 under the same metadata-row lock
- * as writes; already-open foreign readers are not fenced by that marker.
+ * Document headers and revisions use separate tables; commits append new revisions and
+ * reclaim superseded current-only content in the same transaction. Schema version 2
+ * rejects older physical layouts without migration. StorageFormat feature activation
+ * remains independent and shares the metadata-row lock with domain writes.
  */
 export const layerSql: Layer.Layer<Storage | StorageFormat, StorageError, SqlClient.SqlClient> =
   Layer.effectContext(Sql.make.pipe(Effect.map(services)))
 
 /**
  * Scoped single-writer journal. Own one writer per file, including across processes.
+ * Keep the file and its adjacent `<filePath>.parts` directory together when copying or
+ * backing up a closed store. This physical layout rejects older inline-row journals.
+ * New sidecars and directory entries are synced before each journal marker. Normal
+ * commits reclaim superseded task rows and current-only document content after the
+ * marker is durable; reopening removes orphan sidecars left by interrupted writes.
  * Format upgrades and domain writes share that writer's semaphore and synced frames.
  * The marker rejects old readers on reopen; it cannot stop an already-open foreign
  * writer appending a legacy frame. Such downgrade frames are corruption on reopen.
