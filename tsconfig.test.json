@@ -10,6 +10,9 @@
         "./packages/effect-harness/src/provider-anthropic/index.ts"
       ],
       "effect-harness/provider-auth": ["./packages/effect-harness/src/provider-auth/index.ts"],
+      "effect-harness/provider-auth-bun": [
+        "./packages/effect-harness/src/provider-auth-bun/index.ts"
+      ],
       "effect-harness/provider-auth-node": [
         "./packages/effect-harness/src/provider-auth-node/index.ts"
       ],
