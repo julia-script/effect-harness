@@ -123,12 +123,16 @@ export const make = Effect.fnUntraced(function* (options: { readonly filePath: s
     name: string,
     schema: S,
   ) =>
-    fs
-      .readFileString(`${directory}/${name}`)
-      .pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(schema))),
-        Effect.mapError(Errors.corrupt('recover')),
-      )
+    fs.readFile(`${directory}/${name}`).pipe(
+      Effect.flatMap((bytes) =>
+        Effect.try({
+          try: () => new TextDecoder('utf-8', { fatal: true }).decode(bytes),
+          catch: Errors.corrupt('recover'),
+        }),
+      ),
+      Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(schema))),
+      Effect.mapError(Errors.corrupt('recover')),
+    )
   const rows: Array<Row.Stored> = []
   for (const ref of references.values()) {
     let row = yield* read(rowName(ref), Row.Stored)
