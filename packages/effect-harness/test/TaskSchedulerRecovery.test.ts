@@ -1,7 +1,6 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -109,7 +108,7 @@ const open = Effect.gen(function* () {
 const settle = Effect.forEach(Array.from({ length: 120 }), () => Effect.yieldNow, { discard: true })
 
 describe('scheduler durable reopen and rejected persistence', () => {
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     it.effect(
       `${backend}: cold Session reopen resumes running checkpoint without repeating the committed phase`,
       () =>
@@ -117,17 +116,11 @@ describe('scheduler durable reopen and rejected persistence', () => {
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
-            const memory = yield* Layer.build(Storage.layerMemory)
-            const storage =
-              backend === 'sqlite'
-                ? Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(SqliteClient.layer({ filename: `${directory}/tasks.sqlite` })),
-                  )
-                : Storage.layerJsonl({ filePath: `${directory}/tasks.jsonl` })
+            const temporary = yield* Layer.build(TemporaryStorage.layer)
+            const storage = Storage.layerJsonl({ filePath: `${directory}/tasks.jsonl` })
             const use = <A, E>(effect: Effect.Effect<A, E, Storage.Storage | Scope.Scope>) =>
-              backend === 'memory'
-                ? effect.pipe(Effect.provideContext(memory))
+              backend === 'temporary'
+                ? effect.pipe(Effect.provideContext(temporary))
                 : effect.pipe(Effect.provide(Layer.fresh(storage)))
             const started = yield* Deferred.make<void>()
             const oldAccess = yield* Deferred.make<Access>()
@@ -231,6 +224,7 @@ describe('scheduler durable reopen and rejected persistence', () => {
             let reject = true
             let phases = 0
             let finalizers = 0
+            const finalized = yield* Deferred.make<void>()
             const io = new StorageError({
               reason: 'io',
               operation: 'scheduler.probe',
@@ -263,14 +257,15 @@ describe('scheduler durable reopen and rejected persistence', () => {
                     yield* Effect.addFinalizer(() =>
                       Effect.sync(() => {
                         finalizers++
-                      }),
+                      }).pipe(Effect.andThen(Deferred.succeed(finalized, undefined))),
                     )
                   }),
                   Effect.void,
                 )
                 yield* install(registry, definition)
+                const changes = yield* Stream.toPull(scheduler.changes)
                 const ref = yield* scheduler.start(definition, 0, { conversationId: root })
-                yield* settle
+                while (Option.isNone(yield* scheduler.failure)) yield* changes
                 assert.deepStrictEqual(yield* scheduler.failure, Option.some(io))
                 const record = yield* Session.task(session, ref.id)
                 assert.isTrue(Option.isSome(record))
@@ -283,6 +278,7 @@ describe('scheduler durable reopen and rejected persistence', () => {
                   [],
                 )
                 assert.strictEqual(phases, failAt === 'reservation' ? 0 : 1)
+                if (failAt === 'phase') yield* Deferred.await(finalized)
                 assert.strictEqual(finalizers, phases)
                 reject = false
                 assert.deepStrictEqual(yield* scheduler.wait(ref), {
@@ -293,7 +289,7 @@ describe('scheduler durable reopen and rejected persistence', () => {
               }),
             ).pipe(Effect.provideContext(services))
           }),
-        ).pipe(Effect.provide(Storage.layerMemory)),
+        ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
   it.effect(
     'rejects an already-entered masked callback when its invocation scope ends, rolling back domain drafts',
@@ -361,7 +357,7 @@ describe('scheduler durable reopen and rejected persistence', () => {
             })
           assert.strictEqual((yield* scheduler.resume.pipe(Effect.flip))._tag, 'TaskError')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect(
     'native JSONL bytes remain unchanged when a phase batch is rejected before persistence',

@@ -1,12 +1,10 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Effect from 'effect/Effect'
 import * as Brand from 'effect/Brand'
 import * as Domain from '../src/Record.js'
 import * as FileSystem from 'effect/FileSystem'
-import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Struct from 'effect/Struct'
@@ -18,7 +16,7 @@ import * as Sequence from 'effect-harness/Sequence'
 import * as Storage from 'effect-harness/Storage'
 import * as Transaction from 'effect-harness/Transaction'
 import * as Kernel from '../src/internal/Kernel.js'
-import * as Memory from '../src/internal/Memory.js'
+import * as Projection from '../src/internal/Projection.js'
 import * as Metadata from '../src/internal/Metadata.js'
 import * as Row from '../src/internal/Row.js'
 
@@ -48,18 +46,30 @@ const RawRow = Schema.Union([
     }),
   }),
 ])
-const RowJson = Schema.fromJsonString(RawRow)
 const FrameJson = Schema.fromJsonString(
   Schema.Struct({
+    format: Schema.Finite,
+    type: Schema.String,
+    seq: Schema.Finite,
     metadata: Metadata.Metadata,
-    rows: Schema.Array(
-      Schema.Struct({
-        id: Schema.Finite,
-        seq: Schema.Finite,
-        firstRevision: Schema.NullOr(Schema.Finite),
-        revisions: Schema.Array(Schema.Finite),
-      }),
+    writes: Schema.Array(
+      Schema.StructWithRest(
+        Schema.Struct({
+          type: Schema.String,
+          record: Schema.optionalKey(Row.StoredDocument.fields.record),
+        }),
+        [Schema.Record(Schema.String, Schema.Unknown)],
+      ),
     ),
+  }),
+)
+const PayloadJson = Schema.fromJsonString(
+  Schema.Struct({
+    format: Schema.Finite,
+    type: Schema.String,
+    seq: Schema.Finite,
+    ordinal: Schema.Finite,
+    payload: RawRow.members[4].fields.value.fields.revisions.value,
   }),
 )
 const testError = (cause: unknown) =>
@@ -69,57 +79,63 @@ const testError = (cause: unknown) =>
     message: 'Native fixture access failed',
     cause,
   })
-const jsonlReference = (filePath: string, id: number) =>
+const readFrames = (filePath: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
-    const text = yield* fs.readFileString(filePath)
-    const frames = yield* Effect.forEach(text.trimEnd().split('\n'), (line) =>
-      Schema.decodeEffect(FrameJson)(line),
+    return yield* Effect.forEach(
+      (yield* fs.readFileString(filePath)).trimEnd().split('\n'),
+      (line) => Schema.decodeEffect(FrameJson)(line),
     )
-    const references = frames.flatMap((frame) => frame.rows).filter((ref) => ref.id === id)
-    let revisions: ReadonlyArray<number> = []
-    for (const ref of references)
-      revisions = [
-        ...revisions.filter((seq) => ref.firstRevision !== null && seq >= ref.firstRevision),
-        ...ref.revisions,
-      ]
-    return { ...references.at(-1)!, revisions }
   })
 const readJsonl = (filePath: string, id: number) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
-    const ref = yield* jsonlReference(filePath, id)
-    const row = yield* fs
-      .readFileString(`${filePath}.parts/${id}-${ref.seq}.row`)
-      .pipe(Effect.flatMap(Schema.decodeEffect(RowJson)))
-    if (row._tag !== 'document') return row
-    const revisions = yield* Effect.forEach(ref.revisions, (seq) =>
-      fs
-        .readFileString(`${filePath}.parts/${id}-${seq}.revision`)
-        .pipe(
-          Effect.flatMap(
-            Schema.decodeEffect(
-              Schema.fromJsonString(RawRow.members[4].fields.value.fields.revisions.value),
-            ),
-          ),
-        ),
-    )
-    return { ...row, value: { ...row.value, revisions } }
-  }).pipe(Effect.mapError(testError))
+    const frames = yield* readFrames(filePath)
+    const record = frames
+      .flatMap((frame) => frame.writes)
+      .filter((write) => write.record?.id === id)
+      .at(-1)!.record!
+    const path = `${filePath}.parts/doc-${id}.jsonl`
+    const lines = (yield* fs.exists(path))
+      ? (yield* fs.readFileString(path)).trimEnd().split('\n')
+      : []
+    const payloads = yield* Effect.forEach(lines, (line) => Schema.decodeEffect(PayloadJson)(line))
+    return {
+      _tag: 'document' as const,
+      value: { record, revisions: payloads.map((p) => p.payload) },
+    }
+  }).pipe(
+    Effect.map((row): Row.Stored => row),
+    Effect.mapError(testError),
+  )
 const writeJsonl = (filePath: string, row: Row.Stored) =>
   Effect.gen(function* () {
+    if (row._tag !== 'document') return
     const fs = yield* FileSystem.FileSystem
-    const id = Row.idOf(row)
-    const ref = yield* jsonlReference(filePath, id)
-    const header =
-      row._tag === 'document' ? { ...row, value: { ...row.value, revisions: [] } } : row
-    yield* fs.writeFileString(`${filePath}.parts/${id}-${ref.seq}.row`, JSON.stringify(header))
-    if (row._tag === 'document')
-      for (const [index, seq] of ref.revisions.entries())
-        yield* fs.writeFileString(
-          `${filePath}.parts/${id}-${seq}.revision`,
-          JSON.stringify(row.value.revisions[index]),
+    const frames = yield* readFrames(filePath)
+    const selected = frames
+      .flatMap((frame) => frame.writes)
+      .filter((write) => write.record?.id === row.value.record.id)
+      .at(-1)!
+    Reflect.set(selected, 'record', row.value.record)
+    yield* fs.writeFileString(
+      filePath,
+      frames.map((frame) => JSON.stringify(frame)).join('\n') + '\n',
+    )
+    const path = `${filePath}.parts/doc-${row.value.record.id}.jsonl`
+    if (!(yield* fs.exists(path))) return
+    const payloads = yield* Effect.forEach(
+      (yield* fs.readFileString(path)).trimEnd().split('\n'),
+      (line) => Schema.decodeEffect(PayloadJson)(line),
+    )
+    yield* fs.writeFileString(
+      path,
+      payloads
+        .map((payload, index) =>
+          JSON.stringify({ ...payload, payload: row.value.revisions[index] }),
         )
+        .join('\n') + '\n',
+    )
   }).pipe(Effect.mapError(testError))
 const modes = [
   'missing-body',
@@ -306,7 +322,7 @@ const verifyCommit = <E, R>(
     }
   }).pipe(Effect.provideService(Storage.Storage, storage))
 
-for (const backend of ['memory', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   for (const mode of modes.filter((mode) => successful(mode) || modes.indexOf(mode) >= 9)) {
     it.effect(
       `native ${backend} revalidates ${mode} after staging and rolls back mixed writes`,
@@ -315,8 +331,8 @@ for (const backend of ['memory', 'jsonl'] as const) {
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'native-header-commit-' })
-            if (backend === 'memory') {
-              const access = yield* Memory.makeAccess
+            if (backend === 'temporary') {
+              const access = yield* Projection.makeAccess
               const storage = yield* Kernel.make(access)
               yield* verifyCommit(
                 storage,
@@ -397,7 +413,7 @@ for (const backend of ['memory', 'jsonl'] as const) {
 }
 
 for (const ordinary of [false, true]) {
-  for (const backend of ['memory', 'jsonl'] as const) {
+  for (const backend of ['temporary', 'jsonl'] as const) {
     for (const mode of modes.filter(
       (mode) =>
         !ordinary ||
@@ -415,8 +431,8 @@ for (const ordinary of [false, true]) {
             Effect.gen(function* () {
               const fs = yield* FileSystem.FileSystem
               const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'native-retirement-' })
-              if (backend === 'memory') {
-                const access = yield* Memory.makeAccess
+              if (backend === 'temporary') {
+                const access = yield* Projection.makeAccess
                 const storage = yield* Kernel.make(access)
                 const selected = yield* seed.pipe(Effect.provideService(Storage.Storage, storage))
                 const changed = yield* corrupt(
@@ -483,7 +499,7 @@ it.effect(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const access = yield* Memory.makeAccess
+        const access = yield* Projection.makeAccess
         const storage = yield* Kernel.make(access)
         const selected = yield* seed.pipe(Effect.provideService(Storage.Storage, storage))
         const original = Option.getOrThrow(yield* access.get(selected.id))
@@ -508,7 +524,7 @@ it.effect(
     ),
 )
 
-for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   for (const shape of ['reset', 'asOf', 'current', 'initial'] as const) {
     it.effect(`native ${backend} preserves migrated ${shape} history and copied fork headers`, () =>
       Effect.scoped(
@@ -619,16 +635,7 @@ for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
                 count: 1,
               })
           })
-          if (backend === 'memory') yield* run.pipe(Effect.provide(Storage.layerMemory))
-          else if (backend === 'sqlite')
-            yield* run.pipe(
-              Effect.provide(
-                Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provideMerge(SqliteClient.layer({ filename: `${directory}/store.sqlite` })),
-                ),
-              ),
-            )
+          if (backend === 'temporary') yield* run.pipe(Effect.provide(TemporaryStorage.layer))
           else
             yield* run.pipe(
               Effect.provide(Storage.layerJsonl({ filePath: `${directory}/store.jsonl` })),
@@ -645,7 +652,7 @@ for (const ordinary of [false, true]) {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const access = yield* Memory.makeAccess
+          const access = yield* Projection.makeAccess
           const storage = yield* Kernel.make(access)
           const selected = yield* seed.pipe(Effect.provideService(Storage.Storage, storage))
           const changed = yield* corrupt(
@@ -697,7 +704,7 @@ for (const mode of ['malformed-body', 'malformed-delta', 'zero-version', 'earlie
   it.effect(`terminal settlement handles native ${mode} atomically with existing drafts`, () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const access = yield* Memory.makeAccess
+        const access = yield* Projection.makeAccess
         const storage = yield* Kernel.make(access)
         const taskDocument = Document.family({ ...definition.definition, scope: 'task' })
         const seeded = yield* Effect.scoped(
@@ -825,7 +832,7 @@ it.effect(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const access = yield* Memory.makeAccess
+        const access = yield* Projection.makeAccess
         const storage = yield* Kernel.make(access)
         const document = Document.define({
           ...definition.definition,

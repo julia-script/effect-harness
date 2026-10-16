@@ -1,284 +1,122 @@
-/** A single-writer commit journal with immutable, reclaimable row and revision sidecars. */
+/** Filesystem implementation of an opaque log with named payload streams. */
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
-import * as Schema from 'effect/Schema'
-import * as Stream from 'effect/Stream'
-import * as Ndjson from 'effect/encoding/Ndjson'
-import type { Access } from './Kernel.js'
-import * as Kernel from './Kernel.js'
-import * as Metadata from './Metadata.js'
-import * as Row from './Row.js'
-import * as Memory from './Memory.js'
-import * as Domain from '../Record.js'
+import type { Persistence } from './Persistence.js'
 import * as Errors from '../StorageError.js'
 
-// This physical format is independent of runtime feature activation in metadata.format.
-const Reference = Schema.Struct({
-  id: Domain.StorageIdSchema,
-  kind: Schema.Literals(['conversation', 'entry', 'task', 'submission', 'document']),
-  seq: Domain.Seq,
-  firstRevision: Schema.NullOr(Domain.Seq),
-  revisions: Schema.Array(Domain.Seq),
-})
-type Reference = typeof Reference.Type
-const Frame = Schema.Struct({
-  persistence: Schema.Literal('sidecars-v1'),
-  metadata: Metadata.Metadata,
-  rows: Schema.Array(Reference),
-})
-const Envelope = Schema.Struct({
-  persistence: Schema.optionalKey(Schema.String),
-  metadata: Metadata.Metadata,
-  rows: Schema.Array(Schema.Unknown),
-})
-const Revision = Row.StoredDocument.fields.revisions.value
-const RevisionHeader = Schema.Struct({
-  _tag: Schema.Literals(['base', 'delta']),
-  version: Domain.Content.members[0].fields.version,
-})
-const rowName = (ref: Reference) => `${ref.id}-${ref.seq}.row`
-const revisionName = (id: number, seq: number) => `${id}-${seq}.revision`
-const filesOf = (ref: Reference) => [
-  rowName(ref),
-  ...ref.revisions.map((seq) => revisionName(ref.id, seq)),
-]
 const io = <A, E, R>(operation: string, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     Effect.mapError((cause) => Errors.make('io', operation, `JSONL ${operation} failed`, cause)),
   )
 
 export const make = Effect.fnUntraced(function* (options: { readonly filePath: string }) {
-  yield* Schema.decodeEffect(Schema.NonEmptyString)(options.filePath).pipe(
-    Effect.mapError(Errors.invalid('initialize')),
-  )
   const fs = yield* FileSystem.FileSystem
-  const directory = `${options.filePath}.parts`
+  if (options.filePath.length === 0)
+    return yield* Errors.make('invalid', 'initialize', 'JSONL path must not be empty')
   if (
     !(yield* io('open', fs.exists(options.filePath))) &&
-    (yield* io('open', fs.exists(directory)))
+    (yield* io('open', fs.exists(`${options.filePath}.parts`)))
   )
-    return yield* Errors.make('corrupt', 'recover', 'JSONL sidecars exist without their journal')
+    return yield* Errors.make('corrupt', 'recover', 'Payload streams exist without their log')
   const file = yield* io('open', fs.open(options.filePath, { flag: 'a+' }))
-  const memory = yield* Memory.makeAccess
-  const bytes = yield* io('read', fs.readFile(options.filePath))
-  const end = bytes.lastIndexOf(10) + 1
-  const complete = yield* Effect.try({
-    try: () => new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, end)),
-    catch: (cause) => Errors.make('corrupt', 'recover', 'JSONL contains invalid UTF-8', cause),
-  })
-  const frames = yield* Stream.make(complete).pipe(
-    Stream.pipeThroughChannel(Ndjson.decodeSchemaString(Envelope)()),
-    Stream.runCollect,
-    Effect.mapError(Errors.corrupt('recover')),
-  )
-  let previous = Metadata.initialMetadata
-  const references = new Map<number, Reference>()
-  for (const envelope of frames) {
-    yield* Metadata.requireSupported(envelope.metadata)
-    if (
-      envelope.metadata.format < previous.format ||
-      (envelope.metadata.minimumReader ?? 1) < (previous.minimumReader ?? 1)
-    )
-      return yield* Errors.make('corrupt', 'recover', 'JSONL format marker decreased')
-    if (envelope.persistence !== 'sidecars-v1')
-      return yield* Errors.make(
-        'unsupportedFormat',
-        'recover',
-        'Unsupported JSONL persistence format',
-      )
-    const frame = yield* Schema.decodeUnknownEffect(Frame)(envelope).pipe(
-      Effect.mapError(Errors.corrupt('recover')),
-    )
-    if (
-      frame.metadata.nextId < previous.nextId ||
-      (frame.metadata.nextSeq !== previous.nextSeq &&
-        frame.metadata.nextSeq !== previous.nextSeq + 1) ||
-      (frame.rows.length > 0 && frame.metadata.nextSeq !== previous.nextSeq + 1)
-    )
-      return yield* Errors.make('corrupt', 'recover', 'JSONL allocation counters are inconsistent')
-    const seen = new Set<number>()
-    for (const ref of frame.rows) {
-      const old = references.get(ref.id)
-      if (
-        seen.has(ref.id) ||
-        ref.id >= frame.metadata.nextId ||
-        ref.seq !== frame.metadata.nextSeq - 1 ||
-        (old !== undefined && old.kind !== ref.kind) ||
-        (old !== undefined && (ref.kind === 'entry' || ref.kind === 'conversation')) ||
-        (ref.kind !== 'document' && (ref.firstRevision !== null || ref.revisions.length !== 0)) ||
-        ref.revisions.some((seq) => seq !== ref.seq) ||
-        ref.revisions.length > 1 ||
-        (ref.firstRevision === null && ref.revisions.length !== 0)
-      )
-        return yield* Errors.make('corrupt', 'recover', 'JSONL contains invalid record references')
-      seen.add(ref.id)
-      const retained = (old?.revisions ?? []).filter(
-        (seq) => ref.firstRevision !== null && seq >= ref.firstRevision,
-      )
-      const revisions = [...retained, ...ref.revisions]
-      if (ref.kind === 'document' && (revisions[0] ?? null) !== ref.firstRevision)
-        return yield* Errors.make('corrupt', 'recover', 'JSONL is missing a retained revision')
-      references.set(ref.id, { ...ref, revisions })
-    }
-    previous = frame.metadata
-  }
-  // Validate the entire journal and every live sidecar before modifying recovery state.
-  const read = <S extends Schema.Top & { readonly DecodingServices: never }>(
-    name: string,
-    schema: S,
-  ) =>
-    fs.readFile(`${directory}/${name}`).pipe(
-      Effect.flatMap((bytes) =>
-        Effect.try({
-          try: () => new TextDecoder('utf-8', { fatal: true }).decode(bytes),
-          catch: Errors.corrupt('recover'),
-        }),
-      ),
-      Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(schema))),
-      Effect.mapError(Errors.corrupt('recover')),
-    )
-  const names = (yield* io('recover', fs.exists(directory)))
-    ? yield* io('recover', fs.readDirectory(directory))
-    : []
-  if (names.some((name) => !/^\d+-\d+\.(row|revision)$/.test(name)))
-    return yield* Errors.make('corrupt', 'recover', 'Unexpected file in JSONL sidecar directory')
-  const pruning = new Set<number>()
-  for (const name of names) {
-    const match = /^(\d+)-(\d+)\.revision$/.exec(name)
-    if (match === null) continue
-    const id = Number(match[1])
-    const first = references.get(id)?.firstRevision
-    if (first !== undefined && first !== null && Number(match[2]) < first) pruning.add(id)
-  }
-  const rows: Array<Row.Stored> = []
-  for (const ref of references.values()) {
-    let row = yield* read(rowName(ref), Row.Stored)
-    if (
-      Row.idOf(row) !== ref.id ||
-      row._tag !== ref.kind ||
-      (row._tag === 'entry' && row.value.commitSeq !== ref.seq)
-    )
-      return yield* Errors.make(
-        'corrupt',
-        'recover',
-        'JSONL sidecar identity does not match its marker',
-      )
-    if (row._tag === 'document') {
-      if (
-        (!Domain.isCurrentOnly(row.value.record) &&
-          ref.firstRevision !== row.value.record.createdAt) ||
-        (ref.firstRevision === null && row.value.record.retiredAt !== ref.seq)
-      )
-        return yield* Errors.make('corrupt', 'recover', 'JSONL document has lost required history')
-      if (row.value.revisions.length !== 0)
-        return yield* Errors.make('corrupt', 'recover', 'Document row contains inline revisions')
-      const revisions = []
-      for (const seq of ref.revisions) {
-        const revision = yield* read(revisionName(ref.id, seq), Revision)
-        if (revision.seq !== seq)
-          return yield* Errors.make(
-            'corrupt',
-            'recover',
-            'JSONL revision identity does not match its marker',
-          )
-        revisions.push(revision)
-      }
-      // Replacing a current-only base may prune earlier revisions, but a delta
-      // cannot authorize that deletion. Retired bodies remain entirely opaque.
-      if (pruning.has(ref.id)) {
-        let version: number | undefined
-        for (const [index, revision] of revisions.entries()) {
-          const header = yield* Schema.decodeUnknownEffect(RevisionHeader)(revision.content).pipe(
-            Effect.mapError(Errors.corrupt('recover')),
-          )
-          if (
-            (index === 0 && header._tag !== 'base') ||
-            (index > 0 && (header._tag !== 'delta' || header.version !== version))
-          )
-            return yield* Errors.make('corrupt', 'recover', 'JSONL prune has no continuous base')
-          version = header.version
-        }
-      }
-      row = { ...row, value: { ...row.value, revisions } }
-    }
-    rows.push(row)
-  }
-  yield* memory.save(rows, previous)
+  const path = yield* io('open', fs.realPath(options.filePath))
+  const directory = `${path}.parts`
   yield* io('initialize', fs.makeDirectory(directory, { recursive: true }))
   const syncDirectory = (path: string) =>
-    Effect.scoped(fs.open(path, { flag: 'r' }).pipe(Effect.flatMap((directory) => directory.sync)))
-  // Persist both directory entries (journal and sidecar directory) before admitting writes.
+    Effect.scoped(fs.open(path, { flag: 'r' }).pipe(Effect.flatMap((handle) => handle.sync)))
   yield* io('initialize', syncDirectory(`${directory}/..`))
-  if (end !== bytes.length) yield* io('truncate', file.truncate(end))
-  // A complete marker can survive a failed sync. Make recovery's chosen prefix
-  // durable before deleting files needed by the previously durable prefix.
-  yield* io('sync', file.sync)
-  const live = new Set(Array.from(references.values()).flatMap(filesOf))
-  for (const name of names) {
-    if (!live.has(name)) yield* io('recover', fs.remove(`${directory}/${name}`))
-  }
-  yield* io('recover', syncDirectory(directory))
-  const write = (name: string, value: unknown) =>
+  const readLines = (path: string) =>
+    Effect.gen(function* () {
+      const bytes = yield* io('read', fs.readFile(path))
+      const end = bytes.lastIndexOf(10) + 1
+      const text = yield* Effect.try({
+        try: () => new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, end)),
+        catch: Errors.corrupt('recover'),
+      })
+      return {
+        lines: text.split('\n').filter((line) => line.length > 0),
+        end,
+        length: bytes.length,
+      }
+    })
+  const initial = yield* readLines(path)
+  let repaired = false
+  const repair = Effect.gen(function* () {
+    if (repaired) return
+    if (initial.end !== initial.length) yield* io('truncate', file.truncate(initial.end))
+    yield* io('sync', file.sync)
+    repaired = true
+  })
+  const location = (key: string) =>
+    /^[a-z]+-\d+$/.test(key)
+      ? Effect.succeed(`${directory}/${key}.jsonl`)
+      : Errors.make('corrupt', 'recover', 'Invalid payload stream key')
+  const write = (path: string, text: string, flag: 'a' | 'w') =>
     Effect.scoped(
       Effect.gen(function* () {
-        const sidecar = yield* fs.open(`${directory}/${name}`, { flag: 'wx' })
-        yield* sidecar.writeAll(new TextEncoder().encode(JSON.stringify(value)))
-        yield* sidecar.sync
+        const handle = yield* fs.open(path, { flag })
+        yield* handle.writeAll(new TextEncoder().encode(text))
+        yield* handle.sync
       }),
     )
-  const access: Access = {
-    ...memory,
-    save: Effect.fnUntraced(function* (rows, metadata) {
-      const changes: Array<Reference> = []
-      const obsolete = new Set<string>()
-      const next = new Map<number, Reference>()
-      yield* Effect.gen(function* () {
-        for (const row of rows) {
-          const id = Row.idOf(row)
-          const old = references.get(id)
-          const revisions = row._tag === 'document' ? row.value.revisions : []
-          const added = revisions.filter((revision) => revision.seq === metadata.nextSeq - 1)
-          const ref: Reference = {
-            id: yield* Schema.decodeEffect(Domain.StorageIdSchema)(id),
-            kind: row._tag,
-            seq: Domain.Seq.make(metadata.nextSeq - 1),
-            firstRevision: revisions[0]?.seq ?? null,
-            revisions: added.map((revision) => revision.seq),
+  return {
+    checkWrite: Effect.void,
+    accept: repair,
+    journal: Effect.succeed(initial.lines),
+    keys: io('read', fs.readDirectory(directory)).pipe(
+      Effect.flatMap((names) =>
+        Effect.forEach(names, (name) => {
+          if (!/^[a-z]+-\d+\.jsonl(?:\.tmp)?$/.test(name))
+            return Errors.make('corrupt', 'recover', 'Unexpected payload file')
+          return Effect.succeed(name.replace(/\.jsonl(?:\.tmp)?$/, ''))
+        }),
+      ),
+      Effect.map((keys) => Array.from(new Set(keys))),
+    ),
+    read: (key) =>
+      Effect.gen(function* () {
+        const path = yield* location(key)
+        if (!(yield* io('read', fs.exists(path)))) return []
+        return (yield* readLines(path)).lines
+      }),
+    append: (batch) =>
+      Effect.gen(function* () {
+        yield* repair
+        yield* Effect.gen(function* () {
+          for (const stream of batch.append) {
+            const path = yield* location(stream.key)
+            yield* write(path, `${stream.lines.join('\n')}\n`, 'a')
           }
-          changes.push(ref)
-          const retained = { ...ref, revisions: revisions.map((revision) => revision.seq) }
-          next.set(id, retained)
-          const keep = new Set(filesOf(retained))
-          for (const name of old === undefined ? [] : filesOf(old))
-            if (!keep.has(name)) obsolete.add(name)
-          yield* write(
-            rowName(ref),
-            row._tag === 'document'
-              ? { ...row, value: { record: row.value.record, revisions: [] } }
-              : row,
-          )
-          for (const revision of added) yield* write(revisionName(id, revision.seq), revision)
-        }
-        // A durable marker may only reference durable files and directory entries.
-        if (rows.length > 0) yield* syncDirectory(directory)
-        const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(Frame))({
-          persistence: 'sidecars-v1',
-          rows: changes,
-          metadata,
-        })
-        yield* file.writeAll(new TextEncoder().encode(`${encoded}\n`))
-        yield* file.sync
-        // The old files remain valid through any failed/partial marker append.
-        for (const name of obsolete) yield* fs.remove(`${directory}/${name}`)
-        if (obsolete.size > 0) yield* syncDirectory(directory)
-      }).pipe(
-        Effect.mapError((cause) =>
-          Errors.make('uncertain', 'commit', 'JSONL write outcome is uncertain', cause),
-        ),
-      )
-      for (const [id, ref] of next) references.set(id, ref)
-      yield* memory.save(rows, metadata)
-    }),
-  }
-  return yield* Kernel.make(access)
+          if (batch.append.length > 0) yield* syncDirectory(directory)
+          yield* file.writeAll(new TextEncoder().encode(`${batch.frame}\n`))
+          yield* file.sync
+        }).pipe(
+          Effect.mapError((cause) =>
+            Errors.make(
+              'uncertain',
+              'commit',
+              'JSONL append outcome is uncertain; reopen storage',
+              cause,
+            ),
+          ),
+        )
+      }),
+    replace: ({ key, lines }) =>
+      Effect.gen(function* () {
+        yield* repair
+        const path = yield* location(key)
+        yield* io(
+          'reclaim',
+          Effect.gen(function* () {
+            if (lines.length === 0) yield* fs.remove(path, { force: true })
+            else {
+              yield* write(`${path}.tmp`, `${lines.join('\n')}\n`, 'w')
+              yield* fs.rename(`${path}.tmp`, path)
+            }
+            yield* fs.remove(`${path}.tmp`, { force: true })
+            yield* syncDirectory(directory)
+          }),
+        )
+      }),
+  } satisfies Persistence
 })

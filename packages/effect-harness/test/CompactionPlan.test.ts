@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ToolResult from 'effect-harness/ToolResult'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
@@ -8,7 +9,7 @@ import * as Compaction from '../src/Compaction.js'
 import * as Projection from '../src/ContextProjection.js'
 import * as Record from '../src/Record.js'
 import * as Session from '../src/Session.js'
-import * as Storage from '../src/Storage.js'
+
 import * as Transaction from '../src/Transaction.js'
 import * as Stream from 'effect/Stream'
 import * as Plan from '../src/internal/CompactionPlan.js'
@@ -142,7 +143,7 @@ describe('pure compaction range planning', () => {
               )
               assert.deepEqual(after.slice(0, 3), originals)
               assert.strictEqual(after.length, 4)
-            }).pipe(Effect.provide(Storage.layerMemory)),
+            }).pipe(Effect.provide(TemporaryStorage.layer)),
           ),
       )
     }

@@ -33,7 +33,7 @@ export type StorageService = Context.Service.Shape<typeof Storage.Storage>
 export interface StorageConformanceCapabilities {
   /** Retained rewindable document revisions, historical address scans and copies. */
   readonly history?: boolean
-  /** Durable state, sequence and reserved IDs survive closing and reopening. */
+  /** Durable state, sequence and committed IDs survive closing and reopening. */
   readonly reopen?: boolean
   /** Initialization, writes and ID allocation reject ambient client transactions. */
   readonly sqlAmbient?: boolean
@@ -193,7 +193,7 @@ const assertions = (caseName: string) => {
  * import * as Testing from 'effect-harness/Testing'
  * const cases = Testing.storageConformance({
  *   make: Effect.succeed({
- *     open: Layer.build(Storage.layerMemory).pipe(
+ *     open: Layer.build(Storage.layerJsonl({ filePath: './test.jsonl' })).pipe(
  *       Effect.map(context => Context.get(context, Storage.Storage)),
  *     ),
  *   }),
@@ -1762,7 +1762,7 @@ export const storageConformance = <E = never, R = never, FactoryError = E>(
     )
 
   if (options.capabilities?.reopen === true)
-    add('storage: reopened state and reserved identities', (fixture, { same, some, failure }) =>
+    add('storage: reopened state and committed identities', (fixture, { same, some, failure }) =>
       Effect.gen(function* () {
         yield* Effect.scoped(
           Effect.gen(function* () {
@@ -1845,7 +1845,11 @@ export const storageConformance = <E = never, R = never, FactoryError = E>(
               yield* storage.entry(entryId(7)),
               Option.none(),
             )
-            yield* same('reserved IDs survive reopen', yield* storage.mintId(), 7)
+            yield* same(
+              'committed identities are never reused',
+              (yield* storage.mintId()) > 5,
+              true,
+            )
             yield* same('sequence survives reopen and rollback', yield* storage.commit([]), 3)
           }),
         )

@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Cause from 'effect/Cause'
 import * as Clock from 'effect/Clock'
@@ -6,6 +7,7 @@ import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Option from 'effect/Option'
+import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as TestClock from 'effect/testing/TestClock'
@@ -88,7 +90,7 @@ describe('durable coalesced tool progress', () => {
           yield* writer.settle('completed', () => Effect.void)
           assert.strictEqual((yield* saved(session, 'skip-validation')).output.text, 'accepted')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect(
     'settlement drains the existing write, includes later reports, and acknowledges only after its atomic batch',
@@ -157,7 +159,7 @@ describe('durable coalesced tool progress', () => {
           assert.strictEqual((yield* saved(session, 'drain')).status, 'cancelled')
           assert.deepStrictEqual((yield* saved(session, 'drain')).details, { step: 2 })
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect(
     'reopening a committed tail or empty window continues exact counters without replaying retained text',
@@ -198,7 +200,7 @@ describe('durable coalesced tool progress', () => {
             assert.isTrue(value.endsWithNewline)
           }
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect('accepted details are detached from later caller mutation', () =>
     Effect.scoped(
@@ -220,7 +222,7 @@ describe('durable coalesced tool progress', () => {
         yield* Fiber.join(pending)
         assert.deepStrictEqual((yield* saved(session, 'owned')).details, { nested: { phase: 1 } })
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect(
     'first dirty state writes immediately; a Unicode flood coalesces at the minimum interval',
@@ -229,13 +231,14 @@ describe('durable coalesced tool progress', () => {
         Effect.gen(function* () {
           const { session, gate } = yield* open
           let commits = 0
+          const committed = yield* Queue.unbounded<void>()
           const observed: ToolProgress.Gate = {
             commit: (change) =>
               gate.commit(change).pipe(
                 Effect.tap(() =>
                   Effect.sync(() => {
                     commits++
-                  }),
+                  }).pipe(Effect.andThen(Queue.offer(committed, undefined))),
                 ),
               ),
           }
@@ -246,9 +249,10 @@ describe('durable coalesced tool progress', () => {
             retention,
             policy,
           })
+          yield* Queue.take(committed)
           commits = 0
           yield* writer.output('first\n')
-          yield* turns
+          yield* Queue.take(committed)
           assert.strictEqual(commits, 1)
           assert.strictEqual((yield* saved(session, 'flood')).output.text, 'first\n')
           for (let index = 0; index < 10000; index++) yield* writer.output('漢')
@@ -258,7 +262,7 @@ describe('durable coalesced tool progress', () => {
           yield* TestClock.adjust(999)
           assert.strictEqual(commits, 1)
           yield* TestClock.adjust(1)
-          yield* turns
+          yield* Queue.take(committed)
           assert.strictEqual(commits, 2)
           const value = yield* saved(session, 'flood')
           assert.strictEqual(value.output.text, 'last 😀\n')
@@ -268,13 +272,14 @@ describe('durable coalesced tool progress', () => {
           assert.strictEqual(value.output.skippedBytes, 30007)
           yield* writer.settle('completed', () => Effect.void)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect('the complete encoded snapshot buys byte-rate time from the start of its write', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { session, gate } = yield* open
         let writes = 0
+        const committed = yield* Queue.unbounded<void>()
         const writer = yield* ToolProgress.make(
           {
             commit: (change) =>
@@ -282,7 +287,7 @@ describe('durable coalesced tool progress', () => {
                 Effect.tap(() =>
                   Effect.sync(() => {
                     writes++
-                  }),
+                  }).pipe(Effect.andThen(Queue.offer(committed, undefined))),
                 ),
               ),
           },
@@ -294,8 +299,10 @@ describe('durable coalesced tool progress', () => {
             policy: { minInterval: 0, bytesPerSecond: 1000 },
           },
         )
+        yield* Queue.take(committed)
         writes = 0
         yield* writer.details({ payload: 'x'.repeat(600) })
+        yield* Queue.take(committed)
         const first = yield* saved(session, 'rate')
         const json = yield* Schema.encodeEffect(Schema.fromJsonString(ToolProgress.Snapshot))(first)
         const pause = new TextEncoder().encode(json).length
@@ -303,13 +310,13 @@ describe('durable coalesced tool progress', () => {
         yield* TestClock.adjust(pause - 1)
         assert.strictEqual(writes, 1)
         yield* TestClock.adjust(1)
-        yield* turns
+        yield* Queue.take(committed)
         assert.strictEqual(writes, 2)
         assert.strictEqual((yield* saved(session, 'rate')).output.text, 'next')
         // The rate still applies with a zero minimum interval.
         yield* writer.settle('completed', () => Effect.void)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect(
     'a slow write has one owner; later details wait for the snapshot that includes them',
@@ -368,7 +375,7 @@ describe('durable coalesced tool progress', () => {
           assert.strictEqual(peak, 1)
           yield* writer.settle('completed', () => Effect.void)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect(
     'cancelling a details waiter retains its accepted update, and bounded admissions apply backpressure',
@@ -398,7 +405,7 @@ describe('durable coalesced tool progress', () => {
           assert.deepStrictEqual((yield* saved(session, 'cancel-waiter')).details, { accepted: 1 })
           yield* writer.settle('completed', () => Effect.void)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect(
     'storage failure reaches every waiting caller and later reports, with no false acknowledgement',
@@ -448,7 +455,7 @@ describe('durable coalesced tool progress', () => {
             }),
           ).pipe(Effect.provideService(Storage.Storage, broken))
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect(
     'scope closure ends timers, revokes reports and fails outstanding acknowledgements',
@@ -480,7 +487,7 @@ describe('durable coalesced tool progress', () => {
             'ToolProgressError',
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect(
     'split UTF8, skips, zero limits and final incomplete bytes retain exact persisted counters',
@@ -531,7 +538,7 @@ describe('durable coalesced tool progress', () => {
           assert.strictEqual(failure._tag, 'OutputRetentionError')
           assert.strictEqual((yield* saved(session, 'full')).status, 'running')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect('refuses flush outside settlement and stale competing writers', () =>
     Effect.scoped(
@@ -563,7 +570,7 @@ describe('durable coalesced tool progress', () => {
         assert.deepStrictEqual((yield* saved(session, 'fence')).details, { owner: 'a' })
         yield* a.settle('completed', () => Effect.void)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect(
     'the joined post-hook text is retained while bytes, options and structured/details channels survive',
@@ -633,6 +640,6 @@ describe('durable coalesced tool progress', () => {
           assert.strictEqual(yield* Clock.monotonicTimeNanos, started)
           assert.strictEqual((yield* saved(session, 'tiny-rate')).output.text, 'held')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

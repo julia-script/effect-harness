@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 
@@ -11,7 +12,7 @@ try {
   execFileSync('bun', [
     'build',
     new URL('./restricted.ts', import.meta.url).pathname,
-    '--target=browser',
+    '--target=node',
     '--format=cjs',
     `--outfile=${bundle}`,
   ])
@@ -25,6 +26,11 @@ try {
     runInNewContext(readFileSync(bundle, 'utf8'), {
       module,
       exports: module.exports,
+      require: createRequire(import.meta.url),
+      process,
+      Buffer,
+      setImmediate,
+      clearImmediate,
       performance,
       console,
       TextEncoder,

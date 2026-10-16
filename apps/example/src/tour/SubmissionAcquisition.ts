@@ -1,4 +1,3 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { NodeRuntime, NodeServices } from '@effect/platform-node'
 import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Effect from 'effect/Effect'
@@ -26,8 +25,7 @@ export const program = Effect.scoped(
     const client = Harness.layerLocal().pipe(
       Layer.provide(DemoModel.layer),
       Layer.provide(
-        Storage.layerJournal().pipe(
-          Layer.provide(SqlEventJournal.layer()),
+        Storage.layerSql().pipe(
           Layer.provide(SqliteClient.layer({ filename: path.join(directory, 'agent.sqlite') })),
         ),
       ),

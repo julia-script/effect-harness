@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { NodeServices } from '@effect/platform-node'
 import { assert, describe, it } from '@effect/vitest'
@@ -83,7 +84,7 @@ describe('model-call control receipt compatibility', () => {
             yield* Session.snapshot(session, AgentState.document, AgentState.target(root.id)),
           )
           assert.deepStrictEqual(parent.value.tools, [])
-        }).pipe(Effect.provide(Storage.layerMemory)),
+        }).pipe(Effect.provide(TemporaryStorage.layer)),
       ),
   )
   it.effect(

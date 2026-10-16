@@ -1,6 +1,5 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
@@ -51,7 +50,7 @@ const scenarios = [
 ] as const
 
 describe('checkpoint observed spend during cold denial', () => {
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const { binding, priced, mode } of scenarios)
       it.live(`${backend}: ${binding}, ${priced ? 'observed' : 'unreported'} spend, ${mode}`, () =>
         Effect.scoped(
@@ -59,16 +58,10 @@ describe('checkpoint observed spend during cold denial', () => {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
             const filename = `${directory}/cold.${backend}`
-            const memory = yield* Layer.build(Storage.layerMemory)
+            const temporary = yield* Layer.build(TemporaryStorage.layer)
             const open = (scope: Scope.Scope) => {
-              if (backend === 'memory') return Effect.succeed(memory)
-              const layer =
-                backend === 'sqlite'
-                  ? Storage.layerJournal().pipe(
-                      Layer.provide(SqlEventJournal.layer()),
-                      Layer.provide(SqliteClient.layer({ filename })),
-                    )
-                  : Storage.layerJsonl({ filePath: filename })
+              if (backend === 'temporary') return Effect.succeed(temporary)
+              const layer = Storage.layerJsonl({ filePath: filename })
               return Layer.buildWithScope(layer, scope)
             }
             const firstScope = yield* Scope.make()

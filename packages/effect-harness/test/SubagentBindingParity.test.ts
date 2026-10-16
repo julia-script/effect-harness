@@ -1,4 +1,4 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Context from 'effect/Context'
@@ -68,7 +68,7 @@ const finish = {
 }
 
 describe('actual tool subagent binding', () => {
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     // Unsafe foreground cold replay is covered by ToolSubagentColdReplay on every backend.
     for (const [mode, replay] of [
       ['foreground', 'safe'],
@@ -101,20 +101,16 @@ describe('actual tool subagent binding', () => {
                     .readFileString(`${directory}/fixture.json`)
                     .pipe(Effect.flatMap(Schema.decodeEffect(savedSchema)))
                 : undefined
-              const sqlite = nativeBun
-                ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-                : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient')))
-                    .layer
+
               const layer = (() => {
-                if (backend === 'memory') return Storage.layerMemory
+                if (backend === 'temporary') return TemporaryStorage.layer
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/cold.jsonl` })
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(sqlite({ filename: `${directory}/cold.sqlite` })),
+                return Storage.layerJsonl({ filePath: `${directory}/cold.sqlite` }).pipe(
+                  Layer.provide(NodeServices.layer),
                 )
               })()
-              const memory = backend === 'memory' ? yield* Layer.build(layer) : undefined
+              const temporary = backend === 'temporary' ? yield* Layer.build(layer) : undefined
               const ready = yield* Deferred.make<Subagent.Receipt>()
               const toolkit = Toolkit.make(
                 Tool.makeResult('cold-delegate', { success: Schema.String, replay }),
@@ -153,7 +149,7 @@ describe('actual tool subagent binding', () => {
               })
               const open = (scope: Scope.Scope) =>
                 Effect.gen(function* () {
-                  const storage = memory ?? (yield* Layer.buildWithScope(layer, scope))
+                  const storage = temporary ?? (yield* Layer.buildWithScope(layer, scope))
                   const registry = yield* Registry.make.pipe(
                     Effect.provideService(Scope.Scope, scope),
                   )
@@ -507,7 +503,7 @@ describe('actual tool subagent binding', () => {
                 ]
               }),
           })
-          const storage = yield* Layer.build(Storage.layerMemory)
+          const storage = yield* Layer.build(TemporaryStorage.layer)
           const runtime = yield* HarnessRuntime.make({
             registry,
             agent: {

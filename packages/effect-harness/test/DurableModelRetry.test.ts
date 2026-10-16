@@ -1,9 +1,9 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as NativePrompt from './fixtures/NativePrompt.js'
 import * as RequestRecord from '../src/internal/RequestRecord.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import { SqliteClient } from '@effect/sql-sqlite-node'
+
 import * as Clock from 'effect/Clock'
 import * as Duration from 'effect/Duration'
 import * as Deferred from 'effect/Deferred'
@@ -111,7 +111,7 @@ it.live(
           [0, 1, 2],
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 it.effect('abort clears a saved retry deadline and prevents the next outbound attempt', () =>
@@ -154,7 +154,7 @@ it.effect('abort clears a saved retry deadline and prevents the next outbound at
         Option.some({}),
       )
     }),
-  ).pipe(Effect.provide(Storage.layerMemory)),
+  ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 for (const [cap, expected] of [
@@ -192,7 +192,7 @@ for (const [cap, expected] of [
         assert.strictEqual(saved.until, now + expected)
         yield* runtime.backend.abort(root)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
 it.live('an infinite provider retry hint fails once without persisting an infinite deadline', () =>
@@ -223,7 +223,7 @@ it.live('an infinite provider retry hint fails once without persisting an infini
       assert.strictEqual(calls, 1)
       assert.strictEqual((yield* Session.usage(runtime.session, root)).unknownAttempts, 1)
     }),
-  ).pipe(Effect.provide(Storage.layerMemory)),
+  ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 const task = (runtime: HarnessRuntime.HarnessRuntimeService) =>
   Session.scanTasks(runtime.session, { kind: 'harness.run' }).pipe(
@@ -239,18 +239,13 @@ const checkpoint = Schema.Struct({
 })
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
-  const memory = yield* Layer.build(Storage.layerMemory)
-  const sqlite = Storage.layerJournal().pipe(
-    Layer.provide(SqlEventJournal.layer()),
-    Layer.provide(SqliteClient.layer({ filename: `${directory}/retry.sqlite` })),
-  )
+  const temporary = yield* Layer.build(TemporaryStorage.layer)
+
   const jsonl = Storage.layerJsonl({ filePath: `${directory}/retry.jsonl` })
-  return (backend: 'memory' | 'sqlite' | 'jsonl') =>
-    backend === 'memory'
-      ? Effect.succeed(memory)
-      : Layer.build(Layer.fresh(backend === 'sqlite' ? sqlite : jsonl))
+  return (backend: 'temporary' | 'jsonl') =>
+    backend === 'temporary' ? Effect.succeed(temporary) : Layer.build(Layer.fresh(jsonl))
 })
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   describe(`${backend} durable retry TestClock`, () => {
     for (const expired of [false, true])
       it.effect(
@@ -403,7 +398,7 @@ it.effect('finite capped exponential retries use live policy only for new decisi
       assert.strictEqual(calls, 3)
       assert.strictEqual((yield* Session.usage(runtime.session, root)).unknownAttempts, 3)
     }),
-  ).pipe(Effect.provide(Storage.layerMemory)),
+  ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 for (const reason of [
@@ -435,5 +430,5 @@ for (const reason of [
         assert.strictEqual(calls, 1)
         assert.strictEqual((yield* Session.usage(runtime.session, root)).unknownAttempts, 1)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )

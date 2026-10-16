@@ -1,7 +1,6 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ResultEntry from '../src/internal/ToolResultEntry.js'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
@@ -55,7 +54,7 @@ const calls = [
 ]
 
 describe('durable native tool rounds', () => {
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     it.live(
       `${backend}: overlap, reverse completion, ordered controls and atomic final progress`,
       () =>
@@ -64,14 +63,8 @@ describe('durable native tool rounds', () => {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
             const storage = yield* Effect.gen(function* () {
-              if (backend === 'memory') return yield* Layer.build(Storage.layerMemory)
-              if (backend === 'sqlite')
-                return yield* Layer.build(
-                  Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(SqliteClient.layer({ filename: `${directory}/round.sqlite` })),
-                  ),
-                )
+              if (backend === 'temporary') return yield* Layer.build(TemporaryStorage.layer)
+
               return yield* Layer.build(
                 Storage.layerJsonl({ filePath: `${directory}/round.jsonl` }),
               )
@@ -324,7 +317,7 @@ describe('durable native tool rounds', () => {
             assert.strictEqual((yield* runtime.backend.wait(job.id)).status, 'done')
             assert.strictEqual(secondRuns, 1)
           }),
-        ).pipe(Effect.provide(Storage.layerMemory)),
+        ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
 
   it.live(
@@ -413,7 +406,7 @@ describe('durable native tool rounds', () => {
           )!
           assert.isUndefined(receipt.usage)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.live('a failed child does not cancel its sibling and vetoes termination', () =>
@@ -487,7 +480,7 @@ describe('durable native tool rounds', () => {
           ['failed', 'succeeded'],
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.live(
@@ -571,10 +564,10 @@ describe('durable native tool rounds', () => {
             reason: 'revoked',
           })
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const replay of ['safe', 'unsafe'] as const)
       it.live(
         `${backend}/${replay}: cold nonprefix recovery keeps completed work and accepted arguments`,
@@ -583,18 +576,11 @@ describe('durable native tool rounds', () => {
             Effect.gen(function* () {
               const fs = yield* FileSystem.FileSystem
               const directory = yield* fs.makeTempDirectoryScoped()
-              const memory = yield* Layer.build(Storage.layerMemory)
+              const temporary = yield* Layer.build(TemporaryStorage.layer)
               const open = (scope: Scope.Scope) =>
                 Effect.gen(function* () {
-                  if (backend === 'memory') return memory
-                  if (backend === 'sqlite')
-                    return yield* Layer.buildWithScope(
-                      Storage.layerJournal().pipe(
-                        Layer.provide(SqlEventJournal.layer()),
-                        Layer.provide(SqliteClient.layer({ filename: `${directory}/cold.sqlite` })),
-                      ),
-                      scope,
-                    )
+                  if (backend === 'temporary') return temporary
+
                   return yield* Layer.buildWithScope(
                     Storage.layerJsonl({ filePath: `${directory}/cold.jsonl` }),
                     scope,
@@ -832,7 +818,7 @@ describe('durable native tool rounds', () => {
           1,
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.live(
@@ -907,7 +893,7 @@ describe('durable native tool rounds', () => {
             4,
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.live('each hook callback and handler has its own access epoch', () =>
@@ -978,7 +964,7 @@ describe('durable native tool rounds', () => {
         })
         assert.strictEqual((yield* runtime.backend.wait(job.id)).status, 'done')
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   for (const operation of ['abort', 'cold'] as const)
@@ -987,7 +973,7 @@ describe('durable native tool rounds', () => {
       () =>
         Effect.scoped(
           Effect.gen(function* () {
-            const storage = yield* Layer.build(Storage.layerMemory)
+            const storage = yield* Layer.build(TemporaryStorage.layer)
             let executions = 0
             let requests = 0
             const entered = yield* Deferred.make<void>()
@@ -1066,10 +1052,10 @@ describe('durable native tool rounds', () => {
             })
             if (operation === 'abort') assert.isUndefined(receipts[0]?.linkedEntryId)
           }),
-        ).pipe(Effect.provide(Storage.layerMemory)),
+        ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
 
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     it.live(
       `${backend}: cancellation freezes accepted throttled UTF8/details/diagnostics without acknowledging a pending reporter`,
       () =>
@@ -1078,14 +1064,8 @@ describe('durable native tool rounds', () => {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
             const storage = yield* Effect.gen(function* () {
-              if (backend === 'memory') return yield* Layer.build(Storage.layerMemory)
-              if (backend === 'sqlite')
-                return yield* Layer.build(
-                  Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(SqliteClient.layer({ filename: `${directory}/cancel.sqlite` })),
-                  ),
-                )
+              if (backend === 'temporary') return yield* Layer.build(TemporaryStorage.layer)
+
               return yield* Layer.build(
                 Storage.layerJsonl({ filePath: `${directory}/cancel.jsonl` }),
               )
@@ -1304,10 +1284,10 @@ describe('durable native tool rounds', () => {
           )).find((entry) => entry.kind === 'tool.result')!
           assert.strictEqual((yield* ResultEntry.read(entry)).structuredOutput, 'after:2')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const boundary of ['result', 'controls', 'cancel'] as const)
       for (const uncertain of [false, true])
         it.live(
@@ -1318,16 +1298,8 @@ describe('durable native tool rounds', () => {
                 const fs = yield* FileSystem.FileSystem
                 const directory = yield* fs.makeTempDirectoryScoped()
                 const storage = yield* Effect.gen(function* () {
-                  if (backend === 'memory') return yield* Layer.build(Storage.layerMemory)
-                  if (backend === 'sqlite')
-                    return yield* Layer.build(
-                      Storage.layerJournal().pipe(
-                        Layer.provide(SqlEventJournal.layer()),
-                        Layer.provide(
-                          SqliteClient.layer({ filename: `${directory}/fault.sqlite` }),
-                        ),
-                      ),
-                    )
+                  if (backend === 'temporary') return yield* Layer.build(TemporaryStorage.layer)
+
                   return yield* Layer.build(
                     Storage.layerJsonl({ filePath: `${directory}/fault.jsonl` }),
                   )
@@ -1487,7 +1459,7 @@ describe('durable native tool rounds', () => {
             ).pipe(Effect.provide(NodeServices.layer)),
         )
 
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const mode of ['parallel', 'sequential'] as const)
       for (const fault of ['none', 'rollback', 'uncertain'] as const)
         it.live(
@@ -1498,16 +1470,8 @@ describe('durable native tool rounds', () => {
                 const fs = yield* FileSystem.FileSystem
                 const directory = yield* fs.makeTempDirectoryScoped()
                 const storage = yield* Effect.gen(function* () {
-                  if (backend === 'memory') return yield* Layer.build(Storage.layerMemory)
-                  if (backend === 'sqlite')
-                    return yield* Layer.build(
-                      Storage.layerJournal().pipe(
-                        Layer.provide(SqlEventJournal.layer()),
-                        Layer.provide(
-                          SqliteClient.layer({ filename: `${directory}/fatal.sqlite` }),
-                        ),
-                      ),
-                    )
+                  if (backend === 'temporary') return yield* Layer.build(TemporaryStorage.layer)
+
                   return yield* Layer.build(
                     Storage.layerJsonl({ filePath: `${directory}/fatal.jsonl` }),
                   )
@@ -1765,10 +1729,10 @@ describe('durable native tool rounds', () => {
           assert.strictEqual(final.output.text, '�')
           assert.strictEqual(final.status, 'cancelled')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const mode of ['parallel', 'sequential'] as const)
       it.live(
         `${backend}: ${mode} preserves every handler compound branch and finishes its sibling`,
@@ -1793,16 +1757,8 @@ describe('durable native tool rounds', () => {
                   Effect.succeed([...calls, { ...finish, reason: 'tool-calls' as const }]),
               })
               const storage = yield* Effect.gen(function* () {
-                if (backend === 'memory') return yield* Layer.build(Storage.layerMemory)
-                if (backend === 'sqlite')
-                  return yield* Layer.build(
-                    Storage.layerJournal().pipe(
-                      Layer.provide(SqlEventJournal.layer()),
-                      Layer.provide(
-                        SqliteClient.layer({ filename: `${directory}/compound.sqlite` }),
-                      ),
-                    ),
-                  )
+                if (backend === 'temporary') return yield* Layer.build(TemporaryStorage.layer)
+
                 return yield* Layer.build(
                   Storage.layerJsonl({ filePath: `${directory}/compound.jsonl` }),
                 )
@@ -1943,10 +1899,10 @@ describe('durable native tool rounds', () => {
             'running',
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
 
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     it.live(
       `${backend}: public tool-call record and settle enforce protection without mutation`,
       () =>
@@ -1957,12 +1913,8 @@ describe('durable native tool rounds', () => {
             const filename = `${directory}/usage.${backend}`
             const context = yield* Layer.build(
               yield* Effect.sync(() => {
-                if (backend === 'memory') return Storage.layerMemory
-                if (backend === 'sqlite')
-                  return Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(SqliteClient.layer({ filename })),
-                  )
+                if (backend === 'temporary') return TemporaryStorage.layer
+
                 return Storage.layerJsonl({ filePath: filename })
               }),
             )
@@ -2021,7 +1973,7 @@ describe('durable native tool rounds', () => {
               if (version === 8)
                 yield* format.requireSupportedFormat({ formatVersion: 8, minimumReaderVersion: 8 })
               const before = yield* format.inspect
-              const bytes = backend === 'memory' ? undefined : yield* fs.readFile(filename)
+              const bytes = backend === 'temporary' ? undefined : yield* fs.readFile(filename)
               const documents = yield* storage
                 .scanDocuments({ scope: { _tag: 'conversation', conversationId: root } })
                 .pipe(Stream.runCollect)
@@ -2102,7 +2054,7 @@ describe('durable native tool rounds', () => {
     it.live(`public tool-call check preserves ${mode} capability failure`, () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const context = yield* Layer.build(Storage.layerMemory)
+          const context = yield* Layer.build(TemporaryStorage.layer)
           const storage = Context.get(context, Storage.Storage)
           const format = Context.get(context, StorageFormat.StorageFormat)
           const original = new StorageError({
@@ -2207,7 +2159,7 @@ describe('durable native tool rounds', () => {
       ).pipe(Effect.provide(NodeServices.layer)),
     )
 
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const fault of ['rollback', 'uncertain'] as const)
       it.live(
         `${backend}: direct public settlement ${fault} preserves the native receipt boundary`,
@@ -2218,12 +2170,8 @@ describe('durable native tool rounds', () => {
               const directory = yield* fs.makeTempDirectoryScoped()
               const filename = `${directory}/fault.${backend}`
               const layer = yield* Effect.sync(() => {
-                if (backend === 'memory') return Storage.layerMemory
-                if (backend === 'sqlite')
-                  return Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(SqliteClient.layer({ filename })),
-                  )
+                if (backend === 'temporary') return TemporaryStorage.layer
+
                 return Storage.layerJsonl({ filePath: filename })
               })
               const context = yield* Layer.build(layer)

@@ -12,8 +12,7 @@ Your application supplies `tools`, `ToolsLive` (their handlers), and `ModelLive`
 
 ```ts
 import { Effect, Layer } from 'effect'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import { NodeServices } from '@effect/platform-node'
 import * as Harness from 'effect-harness/Harness'
 import * as Conversation from 'effect-harness/Conversation'
 import * as Submission from 'effect-harness/Submission'
@@ -23,10 +22,7 @@ const HarnessLive = Harness.layerLocal({ tools }).pipe(
   Layer.provide(ToolsLive),
   Layer.provide(ModelLive),
   Layer.provide(
-    Storage.layerJournal().pipe(
-      Layer.provide(SqlEventJournal.layer()),
-      Layer.provide(SqliteClient.layer({ filename: './agent.sqlite' })),
-    ),
+    Storage.layerJsonl({ filePath: './agent.jsonl' }).pipe(Layer.provide(NodeServices.layer)),
   ),
 )
 
@@ -142,7 +138,7 @@ Import `Document` and `Transaction` from their `effect-harness/*` subpaths. This
 
 ## Runtime support
 
-The library uses standard JavaScript, Web APIs, and Effect services. `Storage.layerMemory` needs no platform services. `Storage.layerJournal({ storeId })` requires Effect’s `EventJournal`; the application chooses its backend. Own one runtime per journal store. Each write is a complete event, and reopening rebuilds the local projection. SQLite applications supply `SqlEventJournal.layer()` and a dedicated `SqlClient` at the application edge. `Storage.layerJsonl({ filePath })` requires `FileSystem`.
+`Storage.layerJsonl({ filePath })` requires Effect's `FileSystem`; `Storage.layerSql({ storeId })` requires a host-supplied SQLite `SqlClient`. `Storage.layerMemory` needs no platform services and starts empty for each fresh Layer construction. All three use one state engine for records, replay and retention. The adapters only persist opaque commit records and named payload streams. Memory storage is volatile; the EventJournal storage Layer has been removed. See [persistence](../../docs/persistence.md) for the format and recovery boundaries.
 
 Tool dependencies define their environment: a handler can use a local filesystem, an issue-tracker service, or a remote object store supplied through Layers. The library has no Bun or Node runtime imports. The example application chooses Node adapters; the portable example also runs in a browser bundle. Bun is the repository's development tool.
 

@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
@@ -11,7 +12,7 @@ import * as Hook from '../src/Hook.js'
 import { HookExecution } from '../src/HookExecution.js'
 import * as Registry from '../src/Registry.js'
 import * as Session from '../src/Session.js'
-import * as Storage from '../src/Storage.js'
+
 import * as Transaction from '../src/Transaction.js'
 
 class Backend extends Context.Service<Backend, string>()('test/HookCapture/Backend') {}
@@ -69,7 +70,7 @@ describe('Hook callback capture', () => {
         assert.strictEqual(failure._tag, 'RegistryError')
         if (failure._tag === 'RegistryError') assert.strictEqual(failure.reason, 'revoked')
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect('captures before asynchronous installation and retains its own scoped backend', () =>
@@ -135,6 +136,6 @@ describe('Hook callback capture', () => {
         yield* Scope.close(scope, Exit.void)
         assert.strictEqual(released, 1)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

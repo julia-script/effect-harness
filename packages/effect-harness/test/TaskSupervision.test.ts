@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -11,7 +12,7 @@ import * as Record from '../src/Record.js'
 import * as Registry from '../src/Registry.js'
 import * as Session from '../src/Session.js'
 import * as Settings from '../src/Settings.js'
-import * as Storage from '../src/Storage.js'
+
 import * as Task from '../src/Task.js'
 import { TaskExecution } from '../src/TaskExecution.js'
 import * as TaskSupervision from '../src/TaskSupervision.js'
@@ -139,7 +140,7 @@ describe('native task ownership', () => {
           yield* scheduler.abortConversation(root, { includeBackground: true })
           assert.strictEqual((yield* scheduler.waitForTask(backgroundId!)).state.status, 'terminal')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -260,7 +261,7 @@ describe('native task ownership', () => {
             'TaskError',
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   for (const outcome of [
@@ -316,7 +317,7 @@ describe('native task ownership', () => {
           assert.deepStrictEqual(yield* scheduler.wait(ref), outcome)
           assert.strictEqual(aborted, 1)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
 
   it.effect(
@@ -329,6 +330,7 @@ describe('native task ownership', () => {
           const cleanupStarted = yield* Deferred.make<void>()
           const cleanupRelease = yield* Deferred.make<void>()
           const parentStarted = yield* Deferred.make<void>()
+          const lateStarted = yield* Deferred.make<void>()
           let backgroundId: Record.TaskId | undefined
           let backgroundRuns = 0
           const leaves: Array<Record.TaskId> = []
@@ -366,7 +368,7 @@ describe('native task ownership', () => {
                       )
                     }),
                   )
-                  yield* Deferred.succeed(entered, undefined)
+                  yield* Deferred.succeed(backgroundRuns === 1 ? entered : lateStarted, undefined)
                   return yield* Effect.never
                 }),
             },
@@ -430,7 +432,7 @@ describe('native task ownership', () => {
             conversationId: (yield* scheduler.inspect(backgroundId!)).record.conversationId,
             background: true,
           })
-          yield* settle
+          yield* Deferred.await(lateStarted)
           assert.strictEqual(backgroundRuns, 2)
           assert.isFalse((yield* scheduler.inspect(late.id)).record.abortRequested)
           assert.isFalse((yield* scheduler.inspect(leaves[1]!)).record.abortRequested)
@@ -439,7 +441,7 @@ describe('native task ownership', () => {
           assert.strictEqual((yield* scheduler.waitForTask(backgroundId!)).state.status, 'terminal')
           assert.strictEqual((yield* scheduler.inspect(late.id)).record.state.status, 'running')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   for (const [policy, ownedConversation] of [
     ['allSettled', false],
@@ -576,7 +578,7 @@ describe('native task ownership', () => {
                 assert.strictEqual(conversation.value.owner?.taskId, ref.id)
             }
           }),
-        ).pipe(Effect.provide(Storage.layerMemory)),
+        ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
 
   it.effect('completion holds task documents until owned-conversation foreground work drains', () =>
@@ -631,10 +633,8 @@ describe('native task ownership', () => {
         yield* install(registry, registration(child))
         yield* install(registry, registration(parent))
         const ref = yield* scheduler.start(parent, 0, { conversationId: root })
-        yield* settle
-        assert.deepStrictEqual(yield* scheduler.failure, Option.none())
-        assert.strictEqual((yield* scheduler.inspect(ref.id)).record.state.status, 'completing')
         yield* Deferred.await(entered)
+        assert.deepStrictEqual(yield* scheduler.failure, Option.none())
         const target = { scope: { _tag: 'task' as const, taskId: ref.id } }
         assert.strictEqual((yield* scheduler.inspect(ref.id)).record.state.status, 'completing')
         assert.isTrue(Option.isSome(yield* Session.snapshot(session, doc, target)))
@@ -648,7 +648,7 @@ describe('native task ownership', () => {
           1,
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -742,6 +742,6 @@ describe('native task ownership', () => {
             snapshots[0],
           )
         }),
-      ).pipe(Effect.provide(Layer.merge(Storage.layerMemory, Settings.layer({ maxTurns: 8 })))),
+      ).pipe(Effect.provide(Layer.merge(TemporaryStorage.layer, Settings.layer({ maxTurns: 8 })))),
   )
 })

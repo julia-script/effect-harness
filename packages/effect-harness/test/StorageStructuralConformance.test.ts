@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Context from 'effect/Context'
@@ -22,8 +23,10 @@ const names = [
   'storage: long document replacement tails',
   'storage: safe-integer allocator exhaustion',
 ]
-const memory = Effect.succeed({
-  open: Layer.build(Storage.layerMemory).pipe(Effect.map((c) => Context.get(c, Storage.Storage))),
+const temporary = Effect.succeed({
+  open: Layer.build(TemporaryStorage.layer).pipe(
+    Effect.map((c) => Context.get(c, Storage.Storage)),
+  ),
 })
 const persistent = () =>
   Effect.gen(function* () {
@@ -38,7 +41,7 @@ const persistent = () =>
   })
 // Backend behavior is covered by StorageConformance; these mutations test its assertions.
 describe('storage conformance assertions', () => {
-  const make = memory
+  const make = temporary
   for (const mode of ['reuse-current', 'reuse-current-row', 'fresh-copy'] as const)
     it.live(`long-tail current reads: ${mode}`, () =>
       Effect.gen(function* () {
@@ -197,7 +200,7 @@ const broken = (
 ) =>
   Effect.gen(function* () {
     const cases = Testing.storageConformance({
-      make: memory.pipe(Effect.map((f) => ({ open: f.open.pipe(Effect.map(wrap)) }))),
+      make: temporary.pipe(Effect.map((f) => ({ open: f.open.pipe(Effect.map(wrap)) }))),
       capabilities: { history: true },
     })
     const selected = cases.find((c) => c.name === name)
@@ -297,7 +300,7 @@ it.effect(
     Effect.gen(function* () {
       let historicalReads = 0
       const cases = Testing.storageConformance({
-        make: memory.pipe(
+        make: temporary.pipe(
           Effect.map((fixture) => ({
             open: fixture.open.pipe(
               Effect.map((storage) => ({
@@ -345,7 +348,7 @@ for (const mode of ['input', 'nested-read', 'fresh-copy'] as const) {
     })
     if (mode === 'fresh-copy') {
       const c = Testing.storageConformance({
-        make: memory.pipe(Effect.map((f) => ({ open: f.open.pipe(Effect.map(wrap)) }))),
+        make: temporary.pipe(Effect.map((f) => ({ open: f.open.pipe(Effect.map(wrap)) }))),
       }).find((c) => c.name === names[4])!
       return c.run
     }
@@ -378,7 +381,7 @@ for (const mode of ['input', 'nested-read', 'fresh-copy'] as const) {
     })
     if (mode === 'fresh-copy') {
       const c = Testing.storageConformance({
-        make: memory.pipe(Effect.map((f) => ({ open: f.open.pipe(Effect.map(wrap)) }))),
+        make: temporary.pipe(Effect.map((f) => ({ open: f.open.pipe(Effect.map(wrap)) }))),
       }).find((c) => c.name === names[5])!
       return c.run
     }

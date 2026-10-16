@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Clock from 'effect/Clock'
 import * as Deferred from 'effect/Deferred'
@@ -37,7 +38,7 @@ const selected = { ...target, key: 'one' }
 const address = { ...selected, kind: document.definition.kind }
 const some = Option.getOrThrow
 const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.scoped(effect).pipe(Effect.provide(Storage.layerMemory))
+  Effect.scoped(effect).pipe(Effect.provide(TemporaryStorage.layer))
 const counted = Effect.gen(function* () {
   const storage = yield* Storage.Storage
   const counts = { finds: 0, loads: 0 }

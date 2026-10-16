@@ -1,9 +1,9 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as RuntimeRecords from './fixtures/RuntimeRecords.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import { SqliteClient } from '@effect/sql-sqlite-node'
+
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -57,7 +57,7 @@ interface ActivationGate {
   readonly releaseActivation: Deferred.Deferred<void>
 }
 const fixture = Effect.fnUntraced(function* (
-  backend: 'memory' | 'sqlite' | 'jsonl',
+  backend: 'temporary' | 'jsonl',
   mode:
     | 'failure'
     | 'caughtProvider'
@@ -69,14 +69,10 @@ const fixture = Effect.fnUntraced(function* (
   gate?: ActivationGate,
 ) {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
-  const layer =
-    backend === 'sqlite'
-      ? Storage.layerJournal().pipe(
-          Layer.provide(SqlEventJournal.layer()),
-          Layer.provide(SqliteClient.layer({ filename: `${directory}/restore.db` })),
-        )
-      : Storage.layerJsonl({ filePath: `${directory}/restore.jsonl` })
-  let store = yield* Layer.build(backend === 'memory' ? Storage.layerMemory : Layer.fresh(layer))
+  const layer = Storage.layerJsonl({ filePath: `${directory}/restore.jsonl` })
+  let store = yield* Layer.build(
+    backend === 'temporary' ? TemporaryStorage.layer : Layer.fresh(layer),
+  )
   let pauseActivation = false
   let activationFiber: number | undefined
   let schedulerCalls = 0
@@ -127,7 +123,7 @@ const fixture = Effect.fnUntraced(function* (
       ),
   })
   const open = () =>
-    backend === 'memory' ? Effect.succeed(store) : Layer.build(Layer.fresh(layer))
+    backend === 'temporary' ? Effect.succeed(store) : Layer.build(Layer.fresh(layer))
   const counters = { configure: 0, render: 0, hook: 0, restore: 0, provider: 0 }
   const failure = new ModelError({
     reason: new ModelUnsupportedError({ message: 'restore offline' }),
@@ -274,7 +270,7 @@ const fixture = Effect.fnUntraced(function* (
   }
 })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   describe(`${backend} accepted restore recovery`, () => {
     it.live(
       'retains the exact accepted checkpoint, stops retries, and explicitly recovers cold',
@@ -446,7 +442,7 @@ it.live(
           activationEntered: yield* Deferred.make<void>(),
           releaseActivation: yield* Deferred.make<void>(),
         }
-        const f = yield* fixture('memory', 'failure', gate)
+        const f = yield* fixture('temporary', 'failure', gate)
         yield* Deferred.await(gate.restoreEntered)
         const notifications = yield* Stream.toPull(f.first.scheduler.changes)
         f.armActivation()
@@ -487,7 +483,7 @@ for (const operation of ['waitCompaction', 'abortCompaction', 'abortConversation
             activationEntered: yield* Deferred.make<void>(),
             releaseActivation: yield* Deferred.make<void>(),
           }
-          const f = yield* fixture('memory', 'failure', gate)
+          const f = yield* fixture('temporary', 'failure', gate)
           yield* Deferred.await(gate.restoreEntered)
           const other = yield* f.first.backend.create()
           const compaction = yield* f.first.backend.compact!(other)

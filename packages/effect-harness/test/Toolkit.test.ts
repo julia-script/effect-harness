@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Cause from 'effect/Cause'
@@ -12,7 +13,7 @@ import * as Harness from 'effect-harness/Harness'
 import { HarnessBackend } from 'effect-harness/HarnessBackend'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Session from 'effect-harness/Session'
-import * as Storage from 'effect-harness/Storage'
+
 import * as Submission from 'effect-harness/Submission'
 import * as Tool from 'effect-harness/Tool'
 import * as Toolkit from 'effect-harness/Toolkit'
@@ -105,7 +106,11 @@ describe('Toolkit scoped failure classification', () => {
           }
         }),
       ).pipe(
-        Effect.provide([Storage.layerMemory, model, toolkit.toLayer({ work: () => test.handler })]),
+        Effect.provide([
+          TemporaryStorage.layer,
+          model,
+          toolkit.toLayer({ work: () => test.handler }),
+        ]),
       ),
     )
   }

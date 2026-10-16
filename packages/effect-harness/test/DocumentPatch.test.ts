@@ -1,13 +1,9 @@
-import * as JournalFixture from './fixtures/Journal.js'
-import * as EventJournal from 'effect/eventlog/EventJournal'
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
-import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
@@ -21,7 +17,7 @@ import * as StorageFormat from 'effect-harness/StorageFormat'
 import * as Transaction from 'effect-harness/Transaction'
 import * as ConversationInitializer from 'effect-harness/ConversationInitializer'
 import * as Kernel from '../src/internal/Kernel.js'
-import * as Memory from '../src/internal/Memory.js'
+import * as Projection from '../src/internal/Projection.js'
 import * as Metadata from '../src/internal/Metadata.js'
 import * as Reader2 from './fixtures/DocumentPatch/MetadataV2.js'
 import { program as example } from '../../../apps/example/src/tour/DocumentPatch.js'
@@ -52,13 +48,9 @@ const baseDefinition = {
 const some = Option.getOrThrow
 const contentWrites = (writes: ReadonlyArray<Record.StorageWrite>) =>
   writes.filter((write) => write._tag === 'document.change' || write._tag === 'document.create')
-const backendLayer = (backend: 'memory' | 'sqlite' | 'jsonl', file: string) => {
-  if (backend === 'memory') return Storage.layerMemory
-  if (backend === 'sqlite')
-    return Storage.layerJournal().pipe(
-      Layer.provide(SqlEventJournal.layer()),
-      Layer.provide(SqliteClient.layer({ filename: file })),
-    )
+const backendLayer = (backend: 'temporary' | 'jsonl', file: string) => {
+  if (backend === 'temporary') return TemporaryStorage.layer
+
   return Storage.layerJsonl({ filePath: file })
 }
 const fixture = Effect.gen(function* () {
@@ -99,7 +91,7 @@ const initialize = (session: Session.Session, document: Document.Document<typeof
     }),
   )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   describe(`Document patches: ${backend}`, () => {
     it.live(
       'persists compact update splices, ordered patches and base/delta/delta/base checkpoints',
@@ -237,7 +229,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               )
               return { id, final, initial, first, last }
             })
-            if (backend === 'memory') {
+            if (backend === 'temporary') {
               // Retain the underlying native storage across independent Session scopes.
               yield* Effect.gen(function* () {
                 const result = yield* Effect.scoped(run)
@@ -361,7 +353,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
   })
 }
 
-for (const backend of ['sqlite', 'jsonl'] as const) {
+for (const backend of ['jsonl'] as const) {
   it.live(`${backend} persists an upgraded marker rejected by the actual format2 decoder`, () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -383,19 +375,6 @@ for (const backend of ['sqlite', 'jsonl'] as const) {
             (yield* Reader2.requireSupported(frame.metadata).pipe(Effect.flip)).reason,
             'unsupportedFormat',
           )
-        } else {
-          yield* Effect.gen(function* () {
-            const marker = (yield* JournalFixture.frames).at(-1)?.metadata
-            const decoded = yield* Schema.decodeUnknownEffect(Reader2.Metadata)(marker)
-            assert.strictEqual(
-              (yield* Reader2.requireSupported(decoded).pipe(Effect.flip)).reason,
-              'unsupportedFormat',
-            )
-          }).pipe(
-            Effect.provide(
-              SqlEventJournal.layer().pipe(Layer.provide(SqliteClient.layer({ filename: file }))),
-            ),
-          )
         }
         yield* StorageFormat.inspect.pipe(
           Effect.provide(backendLayer(backend, file)),
@@ -411,7 +390,7 @@ it.effect(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const access = yield* Memory.makeAccess
+        const access = yield* Projection.makeAccess
         const storage = yield* Kernel.make(access)
         const id = Record.DocumentId.make(2)
         yield* storage.commit([
@@ -514,7 +493,7 @@ it.effect(
         assert.deepEqual(seen, ['5:decoded'])
       }),
     ).pipe(
-      Effect.provide(Storage.layerMemory),
+      Effect.provide(TemporaryStorage.layer),
       Effect.provideService(Decode, 'decoded'),
       Effect.provideService(Encode, 'encoded'),
     ),
@@ -607,7 +586,7 @@ for (const policy of [
           policy.fork === 'current' ? 1 : 0,
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 }
 
@@ -686,7 +665,7 @@ it.effect(
           0,
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 it.effect(
@@ -739,7 +718,7 @@ it.effect(
           minimumReaderVersion: 1,
         })
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 it.effect(
@@ -785,7 +764,7 @@ it.effect(
           0,
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 it.effect(
@@ -825,7 +804,7 @@ it.effect(
           Transaction.patchDocument(tx, document, target, [['set', ['label'], 'usable']]),
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 it.effect('uncertain format activation poisons the Session and closes its document observers', () =>
@@ -868,7 +847,7 @@ it.effect('uncertain format activation poisons the Session and closes its docume
         assert.strictEqual(observerFailure.reason, 'closed')
       assert.deepEqual(yield* StorageFormat.inspect, { formatVersion: 1, minimumReaderVersion: 1 })
     }),
-  ).pipe(Effect.provide(Storage.layerMemory)),
+  ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 it.effect(
@@ -923,10 +902,10 @@ it.effect(
           minimumReaderVersion: 1,
         })
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
-for (const backend of ['sqlite', 'jsonl'] as const) {
+for (const backend of ['jsonl'] as const) {
   for (const marker of [
     { format: 3, minimumReader: 2 },
     { format: 2, minimumReader: 3 },
@@ -939,7 +918,13 @@ for (const backend of ['sqlite', 'jsonl'] as const) {
             const { fs, file } = yield* fixture
             if (backend === 'jsonl') {
               const bytes =
-                JSON.stringify({ metadata: { ...marker, nextId: 2, nextSeq: 1 }, rows: [] }) + '\n'
+                JSON.stringify({
+                  format: 1,
+                  type: 'commit',
+                  seq: 1,
+                  metadata: { ...marker, nextId: 2, nextSeq: 1 },
+                  writes: [],
+                }) + '\n'
               yield* fs.writeFileString(file, bytes)
               const failure = yield* StorageFormat.inspect.pipe(
                 Effect.provide(backendLayer(backend, file)),
@@ -948,31 +933,6 @@ for (const backend of ['sqlite', 'jsonl'] as const) {
               assert.strictEqual(failure._tag, 'StorageError')
               if (failure._tag === 'StorageError') assert.strictEqual(failure.reason, 'corrupt')
               assert.strictEqual(yield* fs.readFileString(file), bytes)
-            } else {
-              yield* Effect.gen(function* () {
-                const journal = yield* EventJournal.EventJournal
-                yield* JournalFixture.append({
-                  version: 1,
-                  revision: 1,
-                  previous: null,
-                  metadata: { ...marker, nextId: 2, nextSeq: 1 },
-                  rows: [],
-                })
-                const before = yield* journal.entries
-                const failure = yield* StorageFormat.inspect.pipe(
-                  Effect.provide(Storage.layerJournal()),
-                  Effect.flip,
-                )
-                assert.strictEqual(failure._tag, 'StorageError')
-                if (failure._tag === 'StorageError') assert.strictEqual(failure.reason, 'corrupt')
-                assert.deepEqual(yield* journal.entries, before)
-              }).pipe(
-                Effect.provide(
-                  SqlEventJournal.layer().pipe(
-                    Layer.provide(SqliteClient.layer({ filename: file })),
-                  ),
-                ),
-              )
             }
           }),
         ).pipe(Effect.provide(NodeServices.layer)),

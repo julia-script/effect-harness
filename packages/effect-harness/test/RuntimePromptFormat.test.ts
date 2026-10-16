@@ -1,7 +1,7 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import { SqliteClient } from '@effect/sql-sqlite-node'
+
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -14,7 +14,7 @@ import * as Storage from 'effect-harness/Storage'
 import * as StorageFormat from 'effect-harness/StorageFormat'
 import * as Transaction from 'effect-harness/Transaction'
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   it.live(
     `${backend}: runtime rejects nonempty format11 before mutation or provider execution`,
     () =>
@@ -22,14 +22,9 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
         Effect.gen(function* () {
           const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
           const layer = (() => {
-            if (backend === 'sqlite')
-              return Storage.layerJournal().pipe(
-                Layer.provide(SqlEventJournal.layer()),
-                Layer.provide(SqliteClient.layer({ filename: `${directory}/old.sqlite` })),
-              )
             if (backend === 'jsonl')
               return Storage.layerJsonl({ filePath: `${directory}/old.jsonl` })
-            return Storage.layerMemory
+            return TemporaryStorage.layer
           })()
           const services = yield* Layer.build(layer)
           const session = yield* Session.make().pipe(Effect.provideContext(services))

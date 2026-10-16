@@ -1,4 +1,4 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Context from 'effect/Context'
@@ -63,19 +63,16 @@ const root = Record.ROOT_CONVERSATION_ID
 const HydrationProbe = Context.Reference<boolean>('test/ObservationReview/HydrationProbe', {
   defaultValue: () => false,
 })
-type Backend = 'memory' | 'sqlite' | 'jsonl'
+type Backend = 'temporary' | 'jsonl'
 
 const nativeLayer = Effect.fn(function* (backend: Backend) {
   const fs = yield* FileSystem.FileSystem
   const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'observation-review-' })
-  if (backend === 'memory') return Storage.layerMemory
+  if (backend === 'temporary') return TemporaryStorage.layer
   if (backend === 'jsonl') return Storage.layerJsonl({ filePath: `${directory}/store.jsonl` })
-  const sql = bun
-    ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-    : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
-  return Storage.layerJournal().pipe(
-    Layer.provide(SqlEventJournal.layer()),
-    Layer.provide(sql({ filename: `${directory}/store.sqlite` })),
+
+  return Storage.layerJsonl({ filePath: `${directory}/store.sqlite` }).pipe(
+    Layer.provide(NodeServices.layer),
   )
 })
 
@@ -1018,7 +1015,7 @@ const nativeBorrowedLeaseResources = Effect.fn(function* (
   checkpoint('task-retired')
 })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   for (const ending of ['detach', 'close', 'poison'] as const)
     it.live(`independent actual mount resources ${ending}: ${backend}`, () =>
       Effect.scoped(nativeMountResources(backend, ending)).pipe(Effect.provide(services)),
@@ -1214,7 +1211,7 @@ const progressRetryClearOracle = Effect.fn(function* (backend: Backend) {
   assert.deepStrictEqual(final.usage, yield* Conversation.usage(conversation))
 })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   it.live(`independent genuine retry clears details and diagnostics: ${backend}`, () =>
     Effect.scoped(progressRetryClearOracle(backend)).pipe(Effect.provide(services)),
   )
@@ -1750,7 +1747,7 @@ const nativeCompactionObserver = Effect.fn(function* (
   }
 })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   for (const mode of ['manual', 'blocking', 'background', 'overflow'] as const)
     it.live(`independent actual ${mode} compaction success: ${backend}`, () =>
       Effect.scoped(nativeCompactionObserver(backend, mode, 'success')).pipe(
@@ -2116,14 +2113,14 @@ const nativeRoundOrder = Effect.fn(function* (
   assert.deepStrictEqual(final.usage, yield* Conversation.usage(conversation))
 })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   it.live(`independent actual sequential unstarted abort order: ${backend}`, () =>
     Effect.scoped(nativeRoundOrder(backend, 'sequential', false, true)).pipe(
       Effect.provide(services),
     ),
   )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   for (const scenario of [
     { mode: 'parallel', fault: false },
     { mode: 'sequential', fault: false },
@@ -2137,19 +2134,19 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
         ),
     )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   for (const mode of ['preserveManaged', 'honorAll'] as const)
     it.live(`independent recorded ${mode} and stored agent fork: ${backend}`, () =>
       Effect.scoped(legacyForkOracle(backend, mode)).pipe(Effect.provide(services)),
     )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   for (const retain of ['head', 'tail', 'full'] as const)
     it.live(`independent actual retained ${retain} native batches: ${backend}`, () =>
       Effect.scoped(retainedWindowLifecycle(backend, retain)).pipe(Effect.provide(services)),
     )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   describe(`independent full atomic state: ${backend}`, () => {
     it.live('graph stays coherent across hydration and a two-handle commit', () =>
       Effect.scoped(atomicReplicaRace(backend, observationPorts.graph)).pipe(

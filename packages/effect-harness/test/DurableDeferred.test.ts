@@ -1,4 +1,4 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as NativePrompt from './fixtures/NativePrompt.js'
 import * as SchemaGetter from 'effect/SchemaGetter'
 import * as Tool from 'effect-harness/Tool'
@@ -14,7 +14,7 @@ import * as DeferredResponse from 'effect-harness/provider-openai/DeferredRespon
 import * as OwnedOpenAiModel from 'effect-harness/provider-openai/OpenAiLanguageModel'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import { SqliteClient } from '@effect/sql-sqlite-node'
+
 import * as Deferred from 'effect/Deferred'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
@@ -139,7 +139,7 @@ it.effect('saves a handle and polls the same prepared attempt rather than stream
       assert.strictEqual(receipts[0]?.usage?._tag, 'model')
       assert.strictEqual((yield* Session.usage(runtime.session, root)).models[0]?.tokens.input, 13)
     }),
-  ).pipe(Effect.provide(Storage.layerMemory)),
+  ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 const entries = (runtime: HarnessRuntime.HarnessRuntimeService) =>
@@ -167,16 +167,11 @@ const saved = Effect.fnUntraced(function* (
 })
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
-  const memory = yield* Layer.build(Storage.layerMemory)
-  const sqlite = Storage.layerJournal().pipe(
-    Layer.provide(SqlEventJournal.layer()),
-    Layer.provide(SqliteClient.layer({ filename: `${directory}/deferred.sqlite` })),
-  )
+  const temporary = yield* Layer.build(TemporaryStorage.layer)
+
   const jsonl = Storage.layerJsonl({ filePath: `${directory}/deferred.jsonl` })
-  return (backend: 'memory' | 'sqlite' | 'jsonl') =>
-    backend === 'memory'
-      ? Effect.succeed(memory)
-      : Layer.build(Layer.fresh(backend === 'sqlite' ? sqlite : jsonl))
+  return (backend: 'temporary' | 'jsonl') =>
+    backend === 'temporary' ? Effect.succeed(temporary) : Layer.build(Layer.fresh(jsonl))
 })
 const submit = Effect.fnUntraced(function* (runtime: HarnessRuntime.HarnessRuntimeService) {
   yield* runtime.backend.root
@@ -186,7 +181,7 @@ const submit = Effect.fnUntraced(function* (runtime: HarnessRuntime.HarnessRunti
   })
 })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   describe(`${backend} durable deferred recovery`, () => {
     it.effect(
       'cold reopen pins handle, deadlines, identity and configuration without another create',
@@ -595,10 +590,10 @@ for (const cancellation of ['success', 'typed', 'defect', 'never', 'uninterrupti
           assert.strictEqual(receipts.length, 1)
           assert.strictEqual(receipts[0]?.outcome._tag, 'interrupted')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   it.effect(
     `${backend}: interrupted create without a saved handle is inspectably unknown and never recreated`,
     () =>
@@ -699,7 +694,7 @@ for (const hint of [undefined, false, true, { window: '1h' as const }] as const)
           assert.strictEqual(streams, hint === undefined || hint === false ? 1 : 0)
           assert.strictEqual((yield* StorageFormat.inspect).minimumReaderVersion, 12)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
 for (const window of ['15m', '1h', '24h'] as const)
@@ -725,7 +720,7 @@ for (const window of ['15m', '1h', '24h'] as const)
         yield* TestClock.adjust(1)
         assert.strictEqual((yield* runtime.backend.wait(job.id)).status, 'done')
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
 for (const deadline of [0, -1, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
@@ -762,7 +757,7 @@ for (const deadline of [0, -1, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
           assert.strictEqual(polls, 0)
           assert.strictEqual((yield* Session.usage(runtime.session, root)).unknownAttempts, 1)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
 it.effect(
@@ -822,7 +817,7 @@ it.effect(
           1,
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 for (const action of ['complete', 'abort', 'cancel-timeout'] as const)
@@ -948,7 +943,7 @@ for (const action of ['complete', 'abort', 'cancel-timeout'] as const)
                 return restore({ temperature: 0.7, marker: 'saved' })
               }),
           })
-          const storage = yield* Layer.build(Storage.layerMemory)
+          const storage = yield* Layer.build(TemporaryStorage.layer)
           const policy = yield* Settings.make({ stream: { deferred: true } })
           const open = HarnessRuntime.make({ models: [descriptor] }).pipe(
             Effect.provideContext(storage),
@@ -1038,7 +1033,7 @@ for (const boundary of ['start-error', 'poll-error', 'poll-complete', 'terminal'
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const context = yield* Layer.build(Storage.layerMemory)
+          const context = yield* Layer.build(TemporaryStorage.layer)
           const native = Context.get(context, Storage.Storage)
           const format = Context.get(context, StorageFormat.StorageFormat)
           let rejected = false
@@ -1140,7 +1135,7 @@ for (const boundary of ['start-error', 'poll-error', 'poll-complete', 'terminal'
       ),
   )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   for (const boundary of ['handle', 'known'] as const)
     it.effect(
       `${backend}: genuinely committed uncertain ${boundary} retains authoritative recovery and never repeats create`,
@@ -1460,7 +1455,7 @@ it.effect(
         yield* Scope.close(resourceOwner, Exit.void)
         assert.isFalse(alive)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 it.live(
@@ -1565,7 +1560,7 @@ it.live(
           1,
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 for (const delayed of ['start', 'poll'] as const)
@@ -1639,5 +1634,5 @@ for (const delayed of ['start', 'poll'] as const)
             else
               assert.strictEqual((yield* Session.usage(runtime.session, root)).unknownAttempts, 1)
           }),
-        ).pipe(Effect.provide(Storage.layerMemory)),
+        ).pipe(Effect.provide(TemporaryStorage.layer)),
     )

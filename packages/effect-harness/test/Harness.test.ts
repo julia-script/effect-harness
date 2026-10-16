@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
@@ -22,7 +23,7 @@ import * as Extension from 'effect-harness/Extension'
 import * as Model from 'effect-harness/Model'
 import * as PromptSection from 'effect-harness/PromptSection'
 import * as Session from 'effect-harness/Session'
-import * as Storage from 'effect-harness/Storage'
+
 import * as Submission from 'effect-harness/Submission'
 import * as Tool from 'effect-harness/Tool'
 import { ToolExecution } from 'effect-harness/ToolExecution'
@@ -80,7 +81,7 @@ const work = (replay: Tool.Replay = 'safe') =>
     replay,
   })
 const withMemory = <A, E, R>(program: Effect.Effect<A, E, R>) =>
-  Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
+  Effect.scoped(program).pipe(Effect.provide(TemporaryStorage.layer))
 const client = (runtime: HarnessRuntime.HarnessRuntimeService) =>
   Harness.make.pipe(Effect.provideService(HarnessBackend, runtime.backend))
 const openScope = Effect.fnUntraced(function* () {
@@ -555,7 +556,7 @@ describe('local runtime', () => {
       const runtime = Harness.layerLocal({ tools: toolkit }).pipe(
         Layer.provide(handlers.pipe(Layer.provide(tracker))),
         Layer.provide(modelForTool),
-        Layer.provide(Storage.layerMemory),
+        Layer.provide(TemporaryStorage.layer),
       )
       return Effect.gen(function* () {
         yield* Effect.scoped(

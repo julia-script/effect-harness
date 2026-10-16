@@ -1,48 +1,44 @@
+/** Volatile storage of opaque commit frames and named payload streams. */
+import * as Chunk from 'effect/Chunk'
 import * as Effect from 'effect/Effect'
+import * as HashMap from 'effect/HashMap'
 import * as Option from 'effect/Option'
 import * as Ref from 'effect/Ref'
-import * as Semaphore from 'effect/Semaphore'
-import type { Access } from './Kernel.js'
-import * as Kernel from './Kernel.js'
-import * as Metadata from './Metadata.js'
-import * as Row from './Row.js'
+import type { Persistence } from './Persistence.js'
 
-/** Each layer construction owns a distinct reference and mutation semaphore. */
-export const makeAccess = Effect.gen(function* () {
+export const make = Effect.gen(function* () {
   const state = yield* Ref.make({
-    metadata: Metadata.initialMetadata,
-    rows: new Map<number, Row.Stored>(),
+    frames: Chunk.empty<string>(),
+    streams: HashMap.empty<string, Chunk.Chunk<string>>(),
   })
-  const lock = yield* Semaphore.make(1)
   return {
-    metadata: Ref.get(state).pipe(Effect.map((state) => ({ ...state.metadata }))),
-    get: (id) =>
-      Ref.get(state).pipe(Effect.map((state) => Option.fromUndefinedOr(state.rows.get(id)))),
-    page: (kind, after, limit, filter, order) =>
+    checkWrite: Effect.void,
+    accept: Effect.void,
+    journal: Ref.get(state).pipe(Effect.map(({ frames }) => Array.from(frames))),
+    keys: Ref.get(state).pipe(Effect.map(({ streams }) => Array.from(HashMap.keys(streams)))),
+    read: (key) =>
       Ref.get(state).pipe(
-        Effect.map((state) =>
-          [...state.rows.values()]
-            .filter(
-              (row) =>
-                row._tag === kind &&
-                Row.matches(row, filter) &&
-                (after === undefined ||
-                  (order === 'ascending' ? Row.idOf(row) > after : Row.idOf(row) < after)),
-            )
-            .sort((a, b) =>
-              order === 'ascending' ? Row.idOf(a) - Row.idOf(b) : Row.idOf(b) - Row.idOf(a),
-            )
-            .slice(0, limit),
+        Effect.map(({ streams }) =>
+          Array.from(Option.getOrElse(HashMap.get(streams, key), Chunk.empty<string>)),
         ),
       ),
-    save: (rows, metadata) =>
-      Ref.update(state, (state) => {
-        const next = new Map(state.rows)
-        for (const row of rows) next.set(Row.idOf(row), row)
-        return { metadata, rows: next }
-      }),
-    exclusive: (effect) => lock.withPermit(effect),
-  } satisfies Access
+    append: (batch) =>
+      Ref.update(state, ({ frames, streams }) => ({
+        frames: Chunk.append(frames, batch.frame),
+        streams: HashMap.mutate(streams, (map) => {
+          for (const { key, lines } of batch.append) {
+            const previous = Option.getOrElse(HashMap.get(map, key), Chunk.empty<string>)
+            HashMap.set(map, key, Chunk.appendAll(previous, Chunk.fromIterable(Array.from(lines))))
+          }
+        }),
+      })),
+    replace: ({ key, lines }) =>
+      Ref.update(state, ({ frames, streams }) => ({
+        frames,
+        streams:
+          lines.length === 0
+            ? HashMap.remove(streams, key)
+            : HashMap.set(streams, key, Chunk.fromIterable(Array.from(lines))),
+      })),
+  } satisfies Persistence
 })
-
-export const make = makeAccess.pipe(Effect.flatMap(Kernel.make))

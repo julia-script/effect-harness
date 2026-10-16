@@ -1,4 +1,4 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Cause from 'effect/Cause'
@@ -50,7 +50,7 @@ class DecoderBinding extends Context.Service<
 >()('subagent/test/DecoderBinding') {}
 
 describe('subagent native ownership', () => {
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const observation of ['snapshot', 'watch'] as const)
       for (const cancellation of ['interruptible', 'held', 'held-fault'] as const)
         it.live(
@@ -193,18 +193,13 @@ describe('subagent native ownership', () => {
                 )
                 const fs = yield* FileSystem.FileSystem
                 const directory = yield* fs.makeTempDirectoryScoped()
-                const sqlite = nativeBun
-                  ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient')))
-                      .layer
-                  : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient')))
-                      .layer
+
                 const layer = (() => {
-                  if (backend === 'memory') return Storage.layerMemory
+                  if (backend === 'temporary') return TemporaryStorage.layer
                   if (backend === 'jsonl')
                     return Storage.layerJsonl({ filePath: `${directory}/decode.jsonl` })
-                  return Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(sqlite({ filename: `${directory}/decode.sqlite` })),
+                  return Storage.layerJsonl({ filePath: `${directory}/decode.sqlite` }).pipe(
+                    Layer.provide(NodeServices.layer),
                   )
                 })()
                 const storage = yield* Layer.build(layer)
@@ -306,7 +301,7 @@ describe('subagent native ownership', () => {
               }),
             ).pipe(Effect.provide(services)),
         )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     it.live(
       `${backend}: bound cross-conversation configure, reset and fork retain authority until the caller ends`,
       () =>
@@ -377,16 +372,13 @@ describe('subagent native ownership', () => {
             )
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
-            const sqlite = nativeBun
-              ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-              : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
+
             const layer = (() => {
-              if (backend === 'memory') return Storage.layerMemory
+              if (backend === 'temporary') return TemporaryStorage.layer
               if (backend === 'jsonl')
                 return Storage.layerJsonl({ filePath: `${directory}/controls.jsonl` })
-              return Storage.layerJournal().pipe(
-                Layer.provide(SqlEventJournal.layer()),
-                Layer.provide(sqlite({ filename: `${directory}/controls.sqlite` })),
+              return Storage.layerJsonl({ filePath: `${directory}/controls.sqlite` }).pipe(
+                Layer.provide(NodeServices.layer),
               )
             })()
             const storage = yield* Layer.build(layer)
@@ -427,7 +419,7 @@ describe('subagent native ownership', () => {
           }),
         ).pipe(Effect.provide(services)),
     )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     it.live(`${backend}: live compaction identities cannot fall back after caller revocation`, () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -497,16 +489,13 @@ describe('subagent native ownership', () => {
           )
           const fs = yield* FileSystem.FileSystem
           const directory = yield* fs.makeTempDirectoryScoped()
-          const sqlite = nativeBun
-            ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-            : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
+
           const layer = (() => {
-            if (backend === 'memory') return Storage.layerMemory
+            if (backend === 'temporary') return TemporaryStorage.layer
             if (backend === 'jsonl')
               return Storage.layerJsonl({ filePath: `${directory}/content.jsonl` })
-            return Storage.layerJournal().pipe(
-              Layer.provide(SqlEventJournal.layer()),
-              Layer.provide(sqlite({ filename: `${directory}/content.sqlite` })),
+            return Storage.layerJsonl({ filePath: `${directory}/content.sqlite` }).pipe(
+              Layer.provide(NodeServices.layer),
             )
           })()
           const storage = yield* Layer.build(layer)
@@ -541,7 +530,7 @@ describe('subagent native ownership', () => {
         }),
       ).pipe(Effect.provide(services)),
     )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const observerState of ['current', 'revoked'] as const)
       it.live(
         `${backend}/${observerState}: actual bound compaction queues one paid durable summary`,
@@ -605,17 +594,13 @@ describe('subagent native ownership', () => {
               )
               const fs = yield* FileSystem.FileSystem
               const directory = yield* fs.makeTempDirectoryScoped()
-              const sqlite = nativeBun
-                ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-                : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient')))
-                    .layer
+
               const layer = (() => {
-                if (backend === 'memory') return Storage.layerMemory
+                if (backend === 'temporary') return TemporaryStorage.layer
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/compact.jsonl` })
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(sqlite({ filename: `${directory}/compact.sqlite` })),
+                return Storage.layerJsonl({ filePath: `${directory}/compact.sqlite` }).pipe(
+                  Layer.provide(NodeServices.layer),
                 )
               })()
               const storage = yield* Layer.build(layer)
@@ -743,7 +728,7 @@ describe('subagent native ownership', () => {
             }),
           ).pipe(Effect.provide(services)),
       )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const rejection of ['typed', 'defect', 'mixed', 'interruption'] as const)
       it.live(
         `${backend}: caught ${rejection} initializer leaves no admitted supervisor in the caller transaction`,
@@ -821,17 +806,13 @@ describe('subagent native ownership', () => {
               )
               const fs = yield* FileSystem.FileSystem
               const directory = yield* fs.makeTempDirectoryScoped()
-              const sqlite = nativeBun
-                ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-                : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient')))
-                    .layer
+
               const layer = (() => {
-                if (backend === 'memory') return Storage.layerMemory
+                if (backend === 'temporary') return TemporaryStorage.layer
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/content.jsonl` })
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(sqlite({ filename: `${directory}/content.sqlite` })),
+                return Storage.layerJsonl({ filePath: `${directory}/content.sqlite` }).pipe(
+                  Layer.provide(NodeServices.layer),
                 )
               })()
               const storage = yield* Layer.build(layer)

@@ -1,4 +1,4 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { NodeServices } from '@effect/platform-node'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
@@ -146,7 +146,7 @@ describe('native nested recovery and ownership', () => {
           assert.strictEqual(closed, 1)
           assert.isTrue(Option.isNone(yield* scheduler.failure))
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.live(
     'neutral snapshot detaches aliases, cycles, own properties, byte views, Date and options before asynchronous owner selection',
@@ -282,7 +282,7 @@ describe('native nested recovery and ownership', () => {
           assert.strictEqual(payload.self, payload)
           assert.strictEqual(shared.value, 'mutated')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.live(
@@ -523,7 +523,7 @@ describe('native nested recovery and ownership', () => {
           yield* runtime.scheduler.abort(aborted.id)
           assert.isTrue(abortChecked)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.live(
@@ -728,7 +728,7 @@ describe('native nested recovery and ownership', () => {
           yield* ContextProjection.read(runtime.session, root)
           assert.deepStrictEqual(yield* Session.usage(runtime.session), baseline)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   for (const consumerEnd of ['release', 'cancel'] as const)
@@ -936,7 +936,7 @@ describe('native nested recovery and ownership', () => {
             assert.sameMembers(closed, ['ORIGINAL', 'OUTER', 'NEW'])
             assert.include(calls, 'decode:NEW')
           }),
-        ).pipe(Effect.provide(Storage.layerMemory)),
+        ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
 
   it.live(
@@ -1052,9 +1052,9 @@ describe('native nested recovery and ownership', () => {
             result: 'done',
           })
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const recovery of [
       'safe',
       'unsafe',
@@ -1068,21 +1068,14 @@ describe('native nested recovery and ownership', () => {
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
-            const sqlite = nativeBun
-              ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-              : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
-            const memory = yield* Layer.build(Storage.layerMemory)
+
+            const temporary = yield* Layer.build(TemporaryStorage.layer)
             const openStorage = (scope: Scope.Scope) =>
-              backend === 'memory'
-                ? Effect.succeed(memory)
-                : Layer.build(
-                    backend === 'sqlite'
-                      ? Storage.layerJournal().pipe(
-                          Layer.provide(SqlEventJournal.layer()),
-                          Layer.provide(sqlite({ filename: `${directory}/cold.sqlite` })),
-                        )
-                      : Storage.layerJsonl({ filePath: `${directory}/cold.jsonl` }),
-                  ).pipe(Effect.provideService(Scope.Scope, scope))
+              backend === 'temporary'
+                ? Effect.succeed(temporary)
+                : Layer.build(Storage.layerJsonl({ filePath: `${directory}/cold.jsonl` })).pipe(
+                    Effect.provideService(Scope.Scope, scope),
+                  )
             const entered = yield* Deferred.make<void>()
             const observed = yield* Deferred.make<void>()
             let runs = 0

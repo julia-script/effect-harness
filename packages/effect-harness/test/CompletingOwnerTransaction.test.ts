@@ -1,7 +1,6 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
@@ -64,17 +63,13 @@ const initialize = (session: Session.Session) =>
     }),
   )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   const storage = Layer.unwrap(
     Effect.gen(function* () {
-      if (backend === 'memory') return Storage.layerMemory
+      if (backend === 'temporary') return TemporaryStorage.layer
       const fs = yield* FileSystem.FileSystem
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'completing-owner-' })
-      if (backend === 'sqlite')
-        return Storage.layerJournal().pipe(
-          Layer.provide(SqlEventJournal.layer()),
-          Layer.provide(SqliteClient.layer({ filename: `${directory}/storage.sqlite` })),
-        )
+
       return Storage.layerJsonl({ filePath: `${directory}/storage.jsonl` })
     }),
   ).pipe(Layer.provide(NodeServices.layer))

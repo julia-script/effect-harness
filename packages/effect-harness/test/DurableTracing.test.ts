@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
@@ -16,7 +17,7 @@ import * as Record from 'effect-harness/Record'
 import * as Registry from 'effect-harness/Registry'
 import * as Session from 'effect-harness/Session'
 import * as Settings from 'effect-harness/Settings'
-import * as Storage from 'effect-harness/Storage'
+
 import * as Task from 'effect-harness/Task'
 import * as TaskScheduler from 'effect-harness/TaskScheduler'
 import { TaskExecution } from 'effect-harness/TaskExecution'
@@ -90,7 +91,7 @@ describe('durable tracing', () => {
         assert.strictEqual(commits[2]!.attributes.get('commit.changes'), 0)
         assert.isFalse(commits[2]!.attributes.has('commit.sequence'))
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect('interrupted commits end their span and release the session line', () =>
@@ -108,7 +109,7 @@ describe('durable tracing', () => {
         assert.isTrue(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause))
         yield* Session.commit(session, Transaction.ensureRoot)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   for (const enabled of [true, false])
@@ -175,7 +176,7 @@ describe('durable tracing', () => {
           assert.strictEqual(calls, 3)
         }),
       ).pipe(
-        Effect.provide(Storage.layerMemory),
+        Effect.provide(TemporaryStorage.layer),
         Effect.withSpan('runtime'),
         Effect.withTracer(tracer),
         Effect.withTracerEnabled(enabled),
@@ -259,7 +260,7 @@ describe('durable tracing', () => {
           assert.strictEqual(result.status, 'failed')
         }),
       ).pipe(
-        Effect.provide(Storage.layerMemory),
+        Effect.provide(TemporaryStorage.layer),
         Effect.withTracer(tracer),
         Effect.tap(() =>
           Effect.sync(() => {
@@ -361,7 +362,7 @@ describe('durable tracing', () => {
       const interrupted = ended(before)
       assert.isTrue(Exit.isFailure(interrupted) && Cause.hasInterruptsOnly(interrupted.cause))
       assert.isTrue(Exit.isSuccess(ended(after)))
-    }).pipe(Effect.provide(Storage.layerMemory)),
+    }).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect('Effect tracing can be disabled without changing commit behavior', () => {
@@ -373,7 +374,7 @@ describe('durable tracing', () => {
         assert.strictEqual(yield* Session.commit(session, () => Effect.succeed(42)), 42)
       }),
     ).pipe(
-      Effect.provide(Storage.layerMemory),
+      Effect.provide(TemporaryStorage.layer),
       Effect.withTracer(tracer),
       Effect.withTracerEnabled(false),
       Effect.tap(() => Effect.sync(() => assert.deepStrictEqual(spans, []))),

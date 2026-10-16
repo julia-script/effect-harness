@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
@@ -11,7 +12,7 @@ import { HookExecution } from '../src/HookExecution.js'
 import * as Record from '../src/Record.js'
 import * as Registry from '../src/Registry.js'
 import * as Session from '../src/Session.js'
-import * as Storage from '../src/Storage.js'
+
 import * as Task from '../src/Task.js'
 import { TaskExecution } from '../src/TaskExecution.js'
 import * as TaskHook from '../src/TaskHook.js'
@@ -149,7 +150,7 @@ describe('native supervisor leased hooks', () => {
             'ExecutionError',
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect('native failure and fresh abort cleanup dispatch the matching lifecycle stages', () =>
@@ -217,6 +218,6 @@ describe('native supervisor leased hooks', () => {
           '2/settled',
         ])
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

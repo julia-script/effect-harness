@@ -1,8 +1,7 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -53,7 +52,7 @@ const model = Layer.effect(
   }),
 )
 const withMemory = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.scoped(effect).pipe(Effect.provide(Storage.layerMemory))
+  Effect.scoped(effect).pipe(Effect.provide(TemporaryStorage.layer))
 const initialize = ConversationInitializer.make({
   execute: (tx, record) =>
     Effect.gen(function* () {
@@ -74,7 +73,7 @@ const seedParent = (session: Session.Session) =>
     }),
   )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   for (const boundary of ['root', 'create', 'fork'] as const) {
     it.effect(
       `${backend}: failed Harness ${boundary} persists no partial initialization after reopen`,
@@ -85,13 +84,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             const directory = yield* fs.makeTempDirectoryScoped({
               prefix: 'conversation-initialization-',
             })
-            const disk =
-              backend === 'sqlite'
-                ? Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(SqliteClient.layer({ filename: `${directory}/state.sqlite` })),
-                  )
-                : Storage.layerJsonl({ filePath: `${directory}/state.jsonl` })
+            const disk = Storage.layerJsonl({ filePath: `${directory}/state.jsonl` })
             const run = Effect.gen(function* () {
               const storage = yield* Storage.Storage
               yield* StorageFormat.requireSupportedFormat({
@@ -168,11 +161,11 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                 }
               }),
             )
-            if (backend === 'memory')
+            if (backend === 'temporary')
               yield* Effect.gen(function* () {
                 yield* run
                 yield* read
-              }).pipe(Effect.provide(Storage.layerMemory))
+              }).pipe(Effect.provide(TemporaryStorage.layer))
             else {
               yield* run.pipe(Effect.provide(disk))
               yield* read.pipe(Effect.provide(disk))
@@ -704,21 +697,21 @@ describe('transactional conversation initialization', () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const memory = yield* Storage.Storage
+          const temporary = yield* Storage.Storage
           let reject = true
           const storage = Storage.Storage.of({
-            ...memory,
+            ...temporary,
             commit: (writes) =>
               reject
                 ? Effect.fail(
                     new StorageError({ reason: 'io', operation: 'commit', message: 'reject' }),
                   )
-                : memory.commit(writes),
+                : temporary.commit(writes),
           })
           yield* Effect.gen(function* () {
             const session = yield* Session.make({ initializers: [initialize] })
             yield* Session.commit(session, (tx) => Transaction.ensureRoot(tx)).pipe(Effect.flip)
-            assert.isTrue(Option.isNone(yield* memory.conversation(root)))
+            assert.isTrue(Option.isNone(yield* temporary.conversation(root)))
             reject = false
             yield* Session.commit(session, (tx) => Transaction.ensureRoot(tx))
             assert.strictEqual(
@@ -728,6 +721,6 @@ describe('transactional conversation initialization', () => {
             )
           }).pipe(Effect.provideService(Storage.Storage, storage))
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

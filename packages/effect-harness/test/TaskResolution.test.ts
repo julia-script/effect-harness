@@ -1,4 +1,4 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
@@ -18,7 +18,6 @@ import * as Transaction from 'effect-harness/Transaction'
 import * as TaskRegistry from '../src/internal/TaskRegistry.js'
 import * as TaskTransitions from '../src/internal/TaskTransitions.js'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Registry from 'effect-harness/Registry'
@@ -391,19 +390,13 @@ describe('task invocation preparation seams', () => {
   )
 })
 
-for (const backend of ['sqlite', 'jsonl'] as const) {
+for (const backend of ['jsonl'] as const) {
   it.effect(`private migration survives native ${backend} close/reopen`, () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'task-migration-' })
-        const layer =
-          backend === 'sqlite'
-            ? Storage.layerJournal().pipe(
-                Layer.provide(SqlEventJournal.layer()),
-                Layer.provide(SqliteClient.layer({ filename: `${directory}/store.sqlite` })),
-              )
-            : Storage.layerJsonl({ filePath: `${directory}/store.jsonl` })
+        const layer = Storage.layerJsonl({ filePath: `${directory}/store.jsonl` })
         let calls = 0
         const migrating = Task.make({
           ...options,
@@ -473,7 +466,7 @@ describe('scheduler-private task migration', () => {
         )
         assert.deepEqual(Option.getOrThrow(yield* Session.task(session, saved.id)), saved)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -535,7 +528,7 @@ describe('scheduler-private task migration', () => {
           )
           assert.deepEqual(Option.getOrThrow(yield* Session.task(session, task.id)), task)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   for (const failure of [
@@ -607,7 +600,7 @@ describe('scheduler-private task migration', () => {
           )
           assert.deepEqual(Option.getOrThrow(yield* Session.task(session, saved.id)), saved)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
   }
 
@@ -664,6 +657,6 @@ describe('scheduler-private task migration', () => {
           )
           assert.strictEqual(calls, 0)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

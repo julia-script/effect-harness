@@ -1,8 +1,8 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import { SqliteClient } from '@effect/sql-sqlite-node'
+
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -36,7 +36,7 @@ import * as Tool from 'effect-harness/Tool'
 import * as Toolkit from 'effect-harness/Toolkit'
 import * as Transaction from 'effect-harness/Transaction'
 import * as Kernel from '../src/internal/Kernel.js'
-import * as Memory from '../src/internal/Memory.js'
+import * as Projection from '../src/internal/Projection.js'
 import * as Run from '../src/internal/RunState.js'
 
 const root = Record.ROOT_CONVERSATION_ID
@@ -76,8 +76,8 @@ const tick = Effect.forEach(Array.from({ length: 20 }), () => Effect.yieldNow, {
 const fixture = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const directory = yield* fs.makeTempDirectoryScoped()
-  const access = yield* Memory.makeAccess
-  const memory = Layer.effectContext(
+  const access = yield* Projection.makeAccess
+  const temporary = Layer.effectContext(
     Kernel.make(access).pipe(
       Effect.map((storage) =>
         Context.make(Storage.Storage, storage).pipe(
@@ -86,15 +86,14 @@ const fixture = Effect.gen(function* () {
       ),
     ),
   )
-  const sqlite = Storage.layerJournal().pipe(
-    Layer.provide(SqlEventJournal.layer()),
-    Layer.provide(SqliteClient.layer({ filename: `${directory}/submissions.sqlite` })),
+  const sqlite = Storage.layerJsonl({ filePath: `${directory}/submissions.sqlite` }).pipe(
+    Layer.provide(NodeServices.layer),
   )
   const jsonl = Storage.layerJsonl({ filePath: `${directory}/submissions.jsonl` })
-  return { fs, directory, memory, sqlite, jsonl }
+  return { fs, directory, temporary, sqlite, jsonl }
 })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   describe(`${backend} durable submission boundaries`, () => {
     it.live(
       'final all-mode settles the old run before one successor; saved handles resume without opening',
@@ -420,7 +419,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
   })
 }
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   for (const settleMode of ['abort', 'failed'] as const) {
     it.live(
       `${backend}: grouped ${settleMode} settles every member once and survives cold reopen`,
@@ -608,7 +607,7 @@ it.live(
         assert.strictEqual((yield* Fiber.join(waitingInput))._tag, 'InputUnanswered')
         assert.strictEqual((yield* Fiber.join(waitingWrite))._tag, 'WriteUnanswered')
       }),
-    ).pipe(Effect.provide([Storage.layerMemory, plain])),
+    ).pipe(Effect.provide([TemporaryStorage.layer, plain])),
 )
 
 it.live(
@@ -707,7 +706,7 @@ it.live(
             ),
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 it.live(
@@ -791,7 +790,7 @@ it.live(
         assert.deepStrictEqual(yield* Format.inspect, before)
         assert.strictEqual((yield* runtime.backend.read(seeded.id)).status, 'queued')
       }),
-    ).pipe(Effect.provide([Storage.layerMemory, plain])),
+    ).pipe(Effect.provide([TemporaryStorage.layer, plain])),
 )
 
 it.live('withdrawal/admission races remove each queued item and do not duplicate placements', () =>
@@ -859,7 +858,7 @@ it.live('withdrawal/admission races remove each queued item and do not duplicate
       )
       assert.strictEqual((yield* taskRecords(runtime)).length, 1)
     }),
-  ).pipe(Effect.provide(Storage.layerMemory)),
+  ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 it.live(
@@ -915,7 +914,7 @@ it.live(
         assert.strictEqual((yield* entries(runtime)).length, 1)
         assert.strictEqual((yield* taskRecords(runtime)).length, 0)
       }),
-    ).pipe(Effect.provide([Storage.layerMemory, plain])),
+    ).pipe(Effect.provide([TemporaryStorage.layer, plain])),
 )
 
 /** Reader11 validation rules before domain rows. */
@@ -944,7 +943,7 @@ const priorReader11 = Effect.fnUntraced(function* (metadata: {
   return metadata
 })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   it.live(
     `${backend}: format12 persists before runtime writes and reader11 refuses before replay`,
     () =>
@@ -993,7 +992,12 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                   Schema.fromJsonString(
                     Schema.Struct({
                       metadata: Schema.Struct({ format: Schema.Finite }),
-                      rows: Schema.Array(Schema.Struct({ id: Schema.Finite })),
+                      writes: Schema.Array(
+                        Schema.Struct({
+                          type: Schema.String,
+                          record: Schema.optionalKey(Schema.Struct({ id: Schema.Finite })),
+                        }),
+                      ),
                     }),
                   ),
                 )(line),
@@ -1007,7 +1011,10 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               .pipe(Stream.runCollect)
             assert.lengthOf(documents, 1)
             const protocol = frames.findIndex((frame) =>
-              frame.rows.some((row) => row.id === documents[0]!.id),
+              frame.writes.some(
+                (write) =>
+                  write.type === 'document.create' && write.record?.id === documents[0]!.id,
+              ),
             )
             assert.isTrue(upgrade >= 0 && upgrade < protocol)
           }
@@ -1091,11 +1098,11 @@ for (const includeBackground of [false, true]) {
           [1, 2],
         )
       }),
-    ).pipe(Effect.provide([Storage.layerMemory, plain])),
+    ).pipe(Effect.provide([TemporaryStorage.layer, plain])),
   )
 }
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   it.live(
     `${backend}: cold reopen of placed grouped steering answers each ID once without replaying completed tools`,
     () =>
@@ -1296,5 +1303,5 @@ it.live('historical queued v1 tasks retain IDs and order ahead of new inbox batc
         old.map((item) => ({ id: item.task.id, input: item.receipt.id, version: 1 })),
       )
     }),
-  ).pipe(Effect.provide(Storage.layerMemory)),
+  ).pipe(Effect.provide(TemporaryStorage.layer)),
 )

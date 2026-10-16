@@ -1,14 +1,12 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as FileSystem from 'effect/FileSystem'
-import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Pull from 'effect/Pull'
 import * as Schema from 'effect/Schema'
@@ -54,7 +52,7 @@ const failure = new StorageError({
 })
 const some = Option.getOrThrow
 const withMemory = <A, E, R>(program: Effect.Effect<A, E, R>) =>
-  Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
+  Effect.scoped(program).pipe(Effect.provide(TemporaryStorage.layer))
 const initialize = (session: Session.Session) =>
   Session.commit(session, (tx) =>
     Effect.gen(function* () {
@@ -590,20 +588,14 @@ describe('obsolete document metadata retirement', () => {
   )
 })
 
-for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   for (const fork of ['asOf', 'current', 'initial'] as const) {
     it.effect(`preserves ${fork} history/fork and retirement after ${backend} reopen`, () =>
       Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem
           const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'obsolete-retirement-' })
-          const layer =
-            backend === 'sqlite'
-              ? Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(SqliteClient.layer({ filename: `${directory}/store.sqlite` })),
-                )
-              : Storage.layerJsonl({ filePath: `${directory}/store.jsonl` })
+          const layer = Storage.layerJsonl({ filePath: `${directory}/store.jsonl` })
           const definition = Document.define({
             ...old.definition,
             scope: 'conversation',
@@ -704,7 +696,8 @@ for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
             )
             return { selected, recreated, seq }
           })
-          if (backend === 'memory') return yield* run.pipe(Effect.provide(Storage.layerMemory))
+          if (backend === 'temporary')
+            return yield* run.pipe(Effect.provide(TemporaryStorage.layer))
           const result = yield* run.pipe(Effect.provide(layer))
           yield* Effect.gen(function* () {
             const storage = yield* Storage.Storage

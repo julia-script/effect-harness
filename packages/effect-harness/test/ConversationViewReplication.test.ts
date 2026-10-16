@@ -1,4 +1,4 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Context from 'effect/Context'
@@ -34,7 +34,7 @@ const bun = 'Bun' in globalThis
 const services = bun ? (await import('@effect/platform-bun')).BunServices.layer : NodeServices.layer
 
 describe('durable semantic replica', () => {
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     it.live(
       `actual nested payload survives parent retirement and cold reopen without replay or charge: ${backend}`,
       () =>
@@ -42,16 +42,10 @@ describe('durable semantic replica', () => {
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'nested-observation-' })
-            const sql = bun
-              ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-              : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
+
             const storageLayer = (() => {
-              if (backend === 'memory') return Storage.layerMemory
-              if (backend === 'sqlite')
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(sql({ filename: `${directory}/native.sqlite` })),
-                )
+              if (backend === 'temporary') return TemporaryStorage.layer
+
               return Storage.layerJsonl({ filePath: `${directory}/native.jsonl` })
             })()
             const storageScope = yield* Scope.make()
@@ -222,9 +216,9 @@ describe('durable semantic replica', () => {
             assert.strictEqual(forkView.value.usage.tools.length, 0)
             yield* Scope.close(scope, Exit.void)
             const coldStorageScope = yield* Scope.make()
-            if (backend !== 'memory') yield* Scope.close(storageScope, Exit.void)
+            if (backend !== 'temporary') yield* Scope.close(storageScope, Exit.void)
             const coldContext =
-              backend === 'memory'
+              backend === 'temporary'
                 ? context
                 : yield* Layer.buildWithScope(storageLayer, coldStorageScope)
             const before = yield* Context.get(coldContext, Storage.Storage)
@@ -336,6 +330,6 @@ describe('durable semantic replica', () => {
           'continuity',
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

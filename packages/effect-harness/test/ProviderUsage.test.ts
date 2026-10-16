@@ -1,4 +1,4 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ResultEntry from '../src/internal/ToolResultEntry.js'
 import * as Run from '../src/internal/RunState.js'
 import * as RuntimeRecords from './fixtures/RuntimeRecords.js'
@@ -7,7 +7,6 @@ import * as Hook from 'effect-harness/Hook'
 import * as Prompt from 'effect/ai/Prompt'
 import * as Document from 'effect-harness/Document'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
@@ -99,10 +98,10 @@ const affinity = (session: Session.Session, id = root) =>
   Session.snapshot(session, providerDocument, {
     scope: { _tag: 'conversation', conversationId: id },
   }).pipe(Effect.map(Option.map((value) => value.value.id)))
-const memory = <A, E, R>(program: Effect.Effect<A, E, R>) =>
-  Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
+const temporary = <A, E, R>(program: Effect.Effect<A, E, R>) =>
+  Effect.scoped(program).pipe(Effect.provide(TemporaryStorage.layer))
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   it.effect(
     `${backend}: affinity, priced receipts, forks and repeated queries survive reopen`,
     () =>
@@ -110,20 +109,14 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem
           const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'provider-usage-' })
-          const disk =
-            backend === 'sqlite'
-              ? Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(SqliteClient.layer({ filename: `${directory}/state.sqlite` })),
-                )
-              : Storage.layerJsonl({ filePath: `${directory}/state.jsonl` })
+          const disk = Storage.layerJsonl({ filePath: `${directory}/state.jsonl` })
           const identities: Array<string> = []
           const native = yield* ScriptedStream.make({
             generateText: () => Effect.succeed(answer),
           })
           const models = [definition(native, identities)]
           const open = Effect.gen(function* () {
-            if (backend === 'memory') return yield* HarnessRuntime.make({ models })
+            if (backend === 'temporary') return yield* HarnessRuntime.make({ models })
             const context = yield* Layer.build(disk)
             return yield* HarnessRuntime.make({ models }).pipe(Effect.provideContext(context))
           })
@@ -177,7 +170,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
           assert.strictEqual(record?._tag, 'model')
           if (record?._tag === 'model') assert.deepEqual(record.pricing, pricing)
         }),
-      ).pipe(Effect.provide(Layer.merge(NodeServices.layer, Storage.layerMemory))),
+      ).pipe(Effect.provide(Layer.merge(NodeServices.layer, TemporaryStorage.layer))),
   )
 }
 
@@ -185,7 +178,7 @@ describe('provider accounting boundaries', () => {
   it.effect(
     'missing affinity is acquired once before generation and unknown history stays unknown',
     () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           const storage = yield* Storage.Storage
           yield* (yield* StorageFormat).requireSupportedFormat({
@@ -243,7 +236,7 @@ describe('provider accounting boundaries', () => {
 
   it.effect('distinct durable sessions cannot reuse integer conversation IDs as affinity', () =>
     Effect.gen(function* () {
-      const create = memory(
+      const create = temporary(
         Effect.gen(function* () {
           const session = yield* Session.make()
           yield* Session.commit(session, Transaction.ensureRoot)
@@ -255,7 +248,7 @@ describe('provider accounting boundaries', () => {
   )
 
   it.effect('caught initializer failure rolls back affinity along with creation', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const session = yield* Session.make({
           initializers: [ConversationInitializer.make({ execute: () => Effect.fail('reject') })],
@@ -277,7 +270,7 @@ describe('provider accounting boundaries', () => {
   it.effect(
     'unknown usage is absent even with caller pricing; partial counters poison only their aggregate',
     () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           let calls = 0
           const native = yield* ScriptedStream.make({
@@ -324,7 +317,7 @@ describe('provider accounting boundaries', () => {
   )
 
   it.effect('rejected response retains one known failed receipt without assistant entry', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const real = yield* Storage.Storage
         const format = yield* StorageFormat
@@ -414,7 +407,7 @@ describe('provider accounting boundaries', () => {
 
   for (const boundary of ['uncertain', 'corrupt', 'closed', 'settlement'] as const) {
     it.effect(`native response ${boundary} failure retains health and recoverable state`, () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           const real = yield* Storage.Storage
           const format = yield* StorageFormat
@@ -522,7 +515,7 @@ describe('provider accounting boundaries', () => {
     it.effect(
       `reported ${failed ? 'failed' : 'successful'} tool spend is durable and not replayed after its checkpoint`,
       () =>
-        memory(
+        temporary(
           Effect.gen(function* () {
             const entered = yield* Deferred.make<void>()
             const tools = Toolkit.make(Tool.makeResult('__proto__', { replay: 'safe' }))
@@ -595,7 +588,7 @@ describe('provider accounting boundaries', () => {
 
 describe('accounting for omitted history and failed attempts', () => {
   it.effect('context omission cannot erase spend and prices stay snapshotted', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const declared = { ...pricing }
         const native = yield* ScriptedStream.make({
@@ -626,7 +619,7 @@ describe('accounting for omitted history and failed attempts', () => {
   it.effect(
     'a failed generation following a committed continuation counts only the first response',
     () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           let requests = 0
           const native = yield* ScriptedStream.make({
@@ -659,7 +652,7 @@ describe('accounting for omitted history and failed attempts', () => {
       ),
   )
   it.effect('unpriced native defaults keep unknown model identity and real counters', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const native = yield* ScriptedStream.make({
           generateText: () => Effect.succeed(answer),

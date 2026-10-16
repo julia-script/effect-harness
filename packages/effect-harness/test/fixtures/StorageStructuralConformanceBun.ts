@@ -1,7 +1,5 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 import * as BunPath from '@effect/platform-bun/BunPath'
-import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -10,7 +8,7 @@ import * as Path from 'effect/Path'
 import * as Storage from 'effect-harness/Storage'
 import * as Testing from 'effect-harness/Testing'
 
-// Public imports; Bun's native SQLite driver and fresh scoped stores for every case.
+// Public imports; Bun filesystem services and fresh JSONL stores for every case.
 const names = new Set([
   'storage: prototype-sensitive JSON keys',
   'storage: lossless indexed string identities',
@@ -21,35 +19,23 @@ const names = new Set([
   'storage: long document replacement tails',
 ])
 const directories: Array<string> = []
-const make = (backend: 'memory' | 'sqlite' | 'jsonl') =>
+const make = () =>
   Effect.gen(function* () {
-    if (backend === 'memory')
-      return {
-        open: Layer.build(Storage.layerMemory).pipe(
-          Effect.map((c) => Context.get(c, Storage.Storage)),
-        ),
-      }
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'storage-structural-bun-' })
     directories.push(directory)
     const filename = path.join(directory, 'storage')
-    const layer =
-      backend === 'sqlite'
-        ? Storage.layerJournal().pipe(
-            Layer.provide(SqlEventJournal.layer()),
-            Layer.provide(SqliteClient.layer({ filename })),
-          )
-        : Storage.layerJsonl({ filePath: filename }).pipe(
-            Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
-          )
+    const layer = Storage.layerJsonl({ filePath: filename }).pipe(
+      Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
+    )
     return { open: Layer.build(layer).pipe(Effect.map((c) => Context.get(c, Storage.Storage))) }
   })
 await Effect.runPromise(
   Effect.gen(function* () {
-    for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+    for (const backend of ['jsonl'] as const) {
       const cases = Testing.storageConformance({
-        make: make(backend),
+        make: make(),
         capabilities: { history: true },
       }).filter((c) => names.has(c.name))
       if (cases.length !== names.size)

@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Effect from 'effect/Effect'
@@ -47,7 +48,7 @@ const current = Document.define({
   migrations,
 })
 const withMemory = <A, E>(program: Effect.Effect<A, E, Storage.Storage | Scope.Scope>) =>
-  Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
+  Effect.scoped(program).pipe(Effect.provide(TemporaryStorage.layer))
 const some = <A>(value: Option.Option<A>): A => {
   assert.isTrue(Option.isSome(value))
   return Option.getOrThrow(value)

@@ -1,3 +1,4 @@
+import * as TemporaryStorage from '../test/fixtures/Storage.js'
 import { expect, test } from 'tstyche'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -35,7 +36,7 @@ test('public cases preserve factory errors and requirements while owning Scope',
 test('public layer factories need no runner dependency or outer Scope', () => {
   const cases = Testing.storageConformance({
     make: Effect.succeed({
-      open: Layer.build(Storage.layerMemory).pipe(
+      open: Layer.build(TemporaryStorage.layer).pipe(
         Effect.map((context) => Context.get(context, Storage.Storage)),
       ),
     }),

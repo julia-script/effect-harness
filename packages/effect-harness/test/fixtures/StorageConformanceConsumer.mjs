@@ -1,6 +1,4 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -10,6 +8,11 @@ import { Testing as RootTesting } from 'effect-harness'
 import * as Storage from 'effect-harness/Storage'
 import * as Testing from 'effect-harness/Testing'
 
+const { SqliteClient } =
+  'Bun' in globalThis
+    ? await import('@effect/sql-sqlite-bun')
+    : await import('@effect/sql-sqlite-node')
+
 // Executes against package exports and dist, outside Vitest's source aliases.
 const program = Effect.gen(function* () {
   if (RootTesting.storageConformance !== Testing.storageConformance)
@@ -18,24 +21,21 @@ const program = Effect.gen(function* () {
   const path = yield* Path.Path
   const directories = []
   const executed = []
-  for (const backend of ['memory', 'sqlite', 'jsonl']) {
+  for (const backend of ['memory', 'jsonl', 'sqlite']) {
     const make = Effect.gen(function* () {
       const layer = yield* Effect.gen(function* () {
         if (backend === 'memory') return Storage.layerMemory
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'storage-consumer-' })
         directories.push(directory)
         const filename = path.join(directory, 'storage')
-        return backend === 'sqlite'
-          ? Storage.layerJournal().pipe(
-              Layer.provide(SqlEventJournal.layer()),
-              Layer.provide(SqliteClient.layer({ filename })),
-            )
-          : Storage.layerJsonl({ filePath: filename }).pipe(
-              Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
-            )
+        if (backend === 'sqlite')
+          return Storage.layerSql().pipe(Layer.provide(SqliteClient.layer({ filename })))
+        return Storage.layerJsonl({ filePath: filename }).pipe(
+          Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
+        )
       })
       return {
-        open: Layer.build(layer).pipe(
+        open: Layer.build(Layer.fresh(layer)).pipe(
           Effect.map((context) => Context.get(context, Storage.Storage)),
         ),
       }
@@ -44,8 +44,8 @@ const program = Effect.gen(function* () {
     // execution, and scoped factory/reopen wiring on the built public modules.
     const name =
       backend === 'memory'
-        ? 'storage: historical document revisions and copies'
-        : 'storage: reopened state and reserved identities'
+        ? 'storage: mixed batch rollback'
+        : 'storage: reopened state and committed identities'
     const test = Testing.storageConformance({
       make,
       capabilities: { history: true, reopen: backend !== 'memory' },

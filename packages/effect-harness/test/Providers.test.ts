@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
@@ -14,7 +15,7 @@ import type * as ModelCatalog from '../src/ModelCatalog.js'
 import * as Model from '../src/Model.js'
 import * as ModelInfo from '../src/ModelInfo.js'
 import * as HarnessRuntime from '../src/HarnessRuntime.js'
-import * as Storage from '../src/Storage.js'
+
 import * as CredentialStore from '../src/provider-auth/CredentialStore.js'
 import * as MemoryCredentials from '../src/provider-auth/MemoryCredentialStore.js'
 import * as Scripted from './fixtures/ScriptedStream.js'
@@ -205,7 +206,7 @@ it.effect(
       const one = yield* manager.models.resolve({ instanceId: a.id, modelId: metadata.id })
       const two = yield* manager.models.resolve({ instanceId: b.id, modelId: metadata.id })
       assert.notDeepEqual(one.definition.ref, two.definition.ref)
-      const storage = yield* Layer.build(Storage.layerMemory)
+      const storage = yield* Layer.build(TemporaryStorage.layer)
       const runtime = yield* HarnessRuntime.make({ models: [one, two] }).pipe(
         Effect.provideContext(storage),
       )

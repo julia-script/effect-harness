@@ -1,7 +1,6 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
@@ -161,7 +160,7 @@ describe('native restart policy', () => {
       ).pipe(Effect.provide(NodeServices.layer)),
   )
 
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     it.effect(
       `${backend}: marks before dispatch, survives two missing-definition reopens, cleans once in fresh scope`,
       () =>
@@ -169,19 +168,11 @@ describe('native restart policy', () => {
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
-            const memory = yield* Layer.build(Storage.layerMemory)
-            const persistent =
-              backend === 'sqlite'
-                ? Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(
-                      SqliteClient.layer({ filename: `${directory}/supervision.sqlite` }),
-                    ),
-                  )
-                : Storage.layerJsonl({ filePath: `${directory}/supervision.jsonl` })
+            const temporary = yield* Layer.build(TemporaryStorage.layer)
+            const persistent = Storage.layerJsonl({ filePath: `${directory}/supervision.jsonl` })
             const use = <A, E>(effect: Effect.Effect<A, E, Storage.Storage | Scope.Scope>) =>
-              backend === 'memory'
-                ? effect.pipe(Effect.provideContext(memory))
+              backend === 'temporary'
+                ? effect.pipe(Effect.provideContext(temporary))
                 : effect.pipe(Effect.provide(Layer.fresh(persistent)))
             const entered = yield* Deferred.make<void>()
             let runs = 0
@@ -326,7 +317,7 @@ describe('native restart policy', () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const retained = yield* Layer.build(Storage.layerMemory)
+          const retained = yield* Layer.build(TemporaryStorage.layer)
           const id = yield* Effect.scoped(
             Effect.gen(function* () {
               const session = yield* Session.make()

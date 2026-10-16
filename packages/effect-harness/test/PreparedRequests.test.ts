@@ -1,11 +1,11 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as NativePrompt from './fixtures/NativePrompt.js'
 import * as RequestRecord from '../src/internal/RequestRecord.js'
 import * as ResultEntry from '../src/internal/ToolResultEntry.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import { SqliteClient } from '@effect/sql-sqlite-node'
+
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -109,17 +109,12 @@ const entries = (runtime: HarnessRuntime.HarnessRuntimeService) =>
   )
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
-  const memory = yield* Layer.build(Storage.layerMemory)
-  const sqlite = Storage.layerJournal().pipe(
-    Layer.provide(SqlEventJournal.layer()),
-    Layer.provide(SqliteClient.layer({ filename: `${directory}/prepared.sqlite` })),
-  )
+  const temporary = yield* Layer.build(TemporaryStorage.layer)
+
   const jsonl = Storage.layerJsonl({ filePath: `${directory}/prepared.jsonl` })
   return {
-    open: (backend: 'memory' | 'sqlite' | 'jsonl') =>
-      backend === 'memory'
-        ? Effect.succeed(memory)
-        : Layer.build(Layer.fresh(backend === 'sqlite' ? sqlite : jsonl)),
+    open: (backend: 'temporary' | 'jsonl') =>
+      backend === 'temporary' ? Effect.succeed(temporary) : Layer.build(Layer.fresh(jsonl)),
   }
 })
 const texts = (prompt: Prompt.Prompt) =>
@@ -129,7 +124,7 @@ const texts = (prompt: Prompt.Prompt) =>
       : message.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])),
   )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   describe(`${backend} canonical prepared requests`, () => {
     it.live(
       'commits final hook prompt/config before call and cold recovery never renders newer callbacks',
@@ -484,7 +479,7 @@ it.effect(
         assert.isFalse((yield* entries(runtime)).some((entry) => entry.kind === 'context.change'))
         assert.strictEqual((yield* StorageFormat.inspect).formatVersion, 12)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 it.live(
@@ -628,10 +623,10 @@ it.live(
           'modelDoesNotSupportImages',
         )
       }),
-    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, Storage.layerMemory))),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, TemporaryStorage.layer))),
 )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   it.live(
     `${backend} native OpenAI wire keeps saved options, image bytes, offered schema and explicit latest fallback after cold reopen`,
     () =>

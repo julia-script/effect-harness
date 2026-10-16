@@ -1,11 +1,11 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as Registry from 'effect-harness/Registry'
 import * as Task from 'effect-harness/Task'
 import { TaskExecution } from 'effect-harness/TaskExecution'
 import * as ToolInvocation from 'effect-harness/ToolInvocation'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import { SqliteClient } from '@effect/sql-sqlite-node'
+
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -49,7 +49,7 @@ const images = Array.from({ length: 4 }, (_, index) =>
 )
 const occurrences = (value: unknown, image: string) => JSON.stringify(value).split(image).length - 1
 const root = Record.ROOT_CONVERSATION_ID
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   for (const ending of ['complete', 'abort'] as const) {
     it.live(
       `${backend}: image-rich rounds retain one result and one pending request across cold recovery and ${ending}`,
@@ -58,14 +58,9 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
           Effect.gen(function* () {
             const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
             const layer = (() => {
-              if (backend === 'sqlite')
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(SqliteClient.layer({ filename: `${directory}/store.db` })),
-                )
               if (backend === 'jsonl')
                 return Storage.layerJsonl({ filePath: `${directory}/store.jsonl` })
-              return Storage.layerMemory
+              return TemporaryStorage.layer
             })()
             const storageScope = yield* Scope.make()
             const store = yield* Layer.build(Layer.fresh(layer)).pipe(
@@ -214,10 +209,11 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               images.reduce((size, image) => size + image.length, 0) * 2 + 120_000,
             )
             yield* Scope.close(firstScope, Exit.void)
-            if (backend !== 'memory') yield* Scope.close(storageScope, Exit.void)
+            if (backend !== 'temporary') yield* Scope.close(storageScope, Exit.void)
             else yield* Effect.addFinalizer(() => Scope.close(storageScope, Exit.void))
             recovering = true
-            const coldStore = backend === 'memory' ? store : yield* Layer.build(Layer.fresh(layer))
+            const coldStore =
+              backend === 'temporary' ? store : yield* Layer.build(Layer.fresh(layer))
             activeStore = coldStore
             const second = yield* open(coldStore)
             const settled = yield* second.backend.wait(job.id).pipe(Effect.forkChild)
@@ -273,7 +269,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
   }
 }
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   for (const payload of ['text', 'image', 'json'] as const) {
     for (const ending of ['complete', 'abort'] as const) {
       it.live(
@@ -283,14 +279,9 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
             Effect.gen(function* () {
               const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
               const layer = (() => {
-                if (backend === 'sqlite')
-                  return Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(SqliteClient.layer({ filename: `${directory}/store.db` })),
-                  )
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/store.jsonl` })
-                return Storage.layerMemory
+                return TemporaryStorage.layer
               })()
               const storageScope = yield* Scope.make()
               let store = yield* Layer.build(Layer.fresh(layer)).pipe(
@@ -432,7 +423,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                 )
               assert.strictEqual(occurrences(observed, images[0]!), 0)
               yield* Scope.close(owner, Exit.void)
-              if (backend !== 'memory') {
+              if (backend !== 'temporary') {
                 yield* Scope.close(storageScope, Exit.void)
                 store = yield* Layer.build(Layer.fresh(layer))
               }

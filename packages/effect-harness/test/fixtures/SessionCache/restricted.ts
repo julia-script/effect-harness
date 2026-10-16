@@ -1,3 +1,4 @@
+import * as TemporaryStorage from '../Storage.js'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Document from '../../../src/Document.js'
@@ -34,5 +35,5 @@ export const verify = Effect.runPromise(
       yield* Session.snapshot(session, document, target)
       if (finds !== 2) return yield* Effect.die('Commit did not sweep the expired cached miss')
     }),
-  ).pipe(Effect.provide(Storage.layerMemory)),
+  ).pipe(Effect.provide(TemporaryStorage.layer)),
 )

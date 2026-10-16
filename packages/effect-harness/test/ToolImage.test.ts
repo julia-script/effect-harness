@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Context from 'effect/Context'
@@ -349,5 +350,5 @@ it.effect(
           assert.strictEqual((yield* rgba(file.data)).info.width, 1)
         assert.isTrue(Option.isNone(yield* storage.document(requests[0]!.id)))
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
 )

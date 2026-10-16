@@ -5,7 +5,6 @@ import type * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import type * as Option from 'effect/Option'
 import type * as Stream from 'effect/Stream'
-import type * as EventJournal from 'effect/eventlog/EventJournal'
 import type * as Record from './Record.js'
 import type * as Identity from './Identity.js'
 import type * as Sequence from './Sequence.js'
@@ -25,9 +24,11 @@ import type {
   DocumentQuery,
 } from './Record.js'
 import type { StorageError } from './StorageError.js'
+import * as Store from './internal/Store.js'
 import * as Memory from './internal/Memory.js'
-import * as Journal from './internal/Journal.js'
 import * as Jsonl from './internal/Jsonl.js'
+import * as Sql from './internal/Sql.js'
+import type * as SqlClient from 'effect/sql/SqlClient'
 import { StorageFormat } from './StorageFormat.js'
 
 export * from './Record.js'
@@ -99,43 +100,54 @@ export class Storage extends Context.Service<
   }
 >()('effect-harness/Storage') {}
 
-const services = (storage: Effect.Success<typeof Memory.make>) =>
-  Context.make(Storage, storage).pipe(Context.add(StorageFormat, storage.storageFormat))
-
+/**
+ * Volatile storage using the same record engine and commit format as JSONL and SQL.
+ * Requires no platform services. Each fresh Layer construction starts empty;
+ * share its built context to keep state across runtime restarts in the same process.
+ * Closing the storage scope ends access; a new construction cannot recover its data.
+ */
 export const layerMemory: Layer.Layer<Storage | StorageFormat, StorageError> = Layer.effectContext(
-  Memory.make.pipe(Effect.map(services)),
+  Memory.make.pipe(
+    Effect.flatMap(Store.make),
+    Effect.map((storage) =>
+      Context.make(Storage, storage).pipe(Context.add(StorageFormat, storage.storageFormat)),
+    ),
+  ),
 )
 
 /**
- * Replays complete commits from an application-supplied EventJournal into local state.
- * Own one runtime per storeId, including across processes and journal instances.
- * Each batch, ID reservation and format upgrade is one event. Reads use the local
- * projection; close and reopen to reconcile an uncertain append. The journal must
- * acknowledge durable writes independently of application transactions. Construct
- * and use its backend outside ambient transactions, with a dedicated client.
- * Effect 4.0.1's IndexedDB journal does not wait for transaction completion and
- * cannot satisfy this contract; use an implementation that awaits commit or abort.
- * Existing SQL-table and JSONL containers are not imported into this journal format.
- */
-export const layerJournal = (
-  options: {
-    readonly storeId?: string
-  } = {},
-): Layer.Layer<Storage | StorageFormat, StorageError, EventJournal.EventJournal> =>
-  Layer.effectContext(Journal.make(options).pipe(Effect.map(services)))
-
-/**
- * Scoped single-writer journal. Own one writer per file, including across processes.
- * Keep the file and its adjacent `<filePath>.parts` directory together when copying or
- * backing up a closed store. This physical layout rejects older inline-row journals.
- * New sidecars and directory entries are synced before each journal marker. Normal
- * commits reclaim superseded task rows and current-only document content after the
- * marker is durable; reopening removes orphan sidecars left by interrupted writes.
- * Format upgrades and domain writes share that writer's semaphore and synced frames.
- * The marker rejects old readers on reopen; it cannot stop an already-open foreign
- * writer appending a legacy frame. Such downgrade frames are corruption on reopen.
+ * Readable JSONL commit log with named document and active-task payload streams.
+ * The shared state engine owns record validation, replay and retention. Own one
+ * writer per path across processes. Keep `<filePath>.parts` with the main log.
+ * This spike uses a new format; sidecars-v1 files must be kept separately.
+ * IDs allocated without a committed record may be reused after reopening.
  */
 export const layerJsonl = (options: {
   readonly filePath: string
 }): Layer.Layer<Storage | StorageFormat, StorageError, FileSystem.FileSystem> =>
-  Layer.effectContext(Jsonl.make(options).pipe(Effect.map(services)))
+  Layer.effectContext(
+    Jsonl.make(options).pipe(
+      Effect.flatMap(Store.make),
+      Effect.map((storage) =>
+        Context.make(Storage, storage).pipe(Context.add(StorageFormat, storage.storageFormat)),
+      ),
+    ),
+  )
+
+/**
+ * SQLite commit and payload tables using the same state engine and format as JSONL.
+ * Provide an Effect SqlClient from the host. Each storeId selects an independent store.
+ * Own one writer per store and call it outside application SQL transactions.
+ * Existing EventJournal / legacy SQL tables are left untouched; no migration is performed.
+ */
+export const layerSql = (options?: {
+  readonly storeId?: string
+}): Layer.Layer<Storage | StorageFormat, StorageError, SqlClient.SqlClient> =>
+  Layer.effectContext(
+    Sql.make(options).pipe(
+      Effect.flatMap(Store.make),
+      Effect.map((storage) =>
+        Context.make(Storage, storage).pipe(Context.add(StorageFormat, storage.storageFormat)),
+      ),
+    ),
+  )
