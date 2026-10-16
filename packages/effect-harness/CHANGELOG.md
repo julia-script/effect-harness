@@ -1,5 +1,74 @@
 # effect-harness
 
+## 0.6.0
+
+### Minor Changes
+
+- 43483da: Add BunSecretsCredentialStore under effect-harness/provider-auth-bun for storing provider credentials with Bun Secrets, including cross-process locking, metadata listing, and sanitized storage errors.
+- 4ac03aa: Add Claude OAuth login and Messages adapters with reversible tool-name translation, protected authentication headers, and durable configuration bindings. Preserve existing API-key constructors. Document the unofficial OAuth integration and lack of live entitlement verification.
+- 9079818: Apply model-specific Claude OAuth thinking replay policies across history and tool declaration changes, and bind the policy and supported generation capabilities into durable request configuration. Verified prefix-bound models request server mismatch handling with adaptive thinking; unverified thinking models fail before dispatch.
+- 4b127c1: Add ChatGPT Codex browser/device OAuth, SSE completion and streaming, native tool/media/reasoning translation, and account-bound durable model configuration. WebSocket transport and structured final output remain unsupported by this adapter.
+- 6de38ac: Add explicit ToolImage.prepare for custom tools, using the existing image services and request-pinned model policy. Share validated multimodal output and coordinate metadata with image file reads, and document a typechecked screenshot-tool example.
+- 76a03bb: Add opt-in deferred tool discovery with native annotations, an invocation-scoped permission-filtered metadata catalog, local BM25 ranking, and a replay-safe model-only tool_search toolkit. Persist ordered model loads and owner/version fences across restart, compaction and historical forks. Replace modelTools arrays with explicit default/explicit selection objects and apply one canonical inventory to offers, admission and activation validation.
+- 723464d: Add explicit provider credential schemas, serialized and bounded OAuth refresh, and optional durable file/loopback host integrations. Keep live secrets separate from durable conversations and fence logout/account replacement through the credential store.
+- cff402a: Give credential store implementations explicit backend names. Import `FileSystemCredentialStore` from `effect-harness/provider-auth-node` (or its `/FileSystemCredentialStore` subpath), and `MemoryCredentialStore` from `effect-harness/provider-auth` (or its `/MemoryCredentialStore` subpath). Both modules expose `make` and `layer`; `CredentialStore` remains the shared service contract.
+
+  This is a breaking API change: replace `provider-auth-node/CredentialStore` with `provider-auth-node/FileSystemCredentialStore`, and replace `CredentialStore.makeMemory` / `CredentialStore.layerMemory` with `MemoryCredentialStore.make` / `MemoryCredentialStore.layer`.
+
+- 6de38ac: Bound Session's idle document materialization retention with a configurable ten-minute default. Reads and committed writes refresh retention, watches and remote mounts pin their incarnation, and expired documents and missing lookups reload from storage. `documentRetentionMs` is available through Session and Harness runtime options, accepts zero or Infinity, and leaves durable history unchanged.
+- 80a937e: Share record validation, commit encoding, replay and retention across JSONL, SQLite and memory storage. The adapters persist opaque commit frames and named payload streams instead of implementing harness rules.
+
+  Replace `Storage.layerJournal` with `Storage.layerSql({ storeId })`, backed directly by a host-supplied SQLite `SqlClient`. Each batch stores its frame and payloads in one transaction; ambient application transactions are rejected and uncertain writes require reopening. `Storage.layerMemory` uses Effect Ref, HashMap and Chunk without platform dependencies.
+
+  JSONL now stores readable commits with document revisions and active task checkpoints in adjacent named streams. Current-only content is reclaimed after commit, while rewindable history is retained. Previous JSONL and EventJournal layouts are not migrated. IDs become durable when committed; IDs only allocated since the last commit may be reused after restart.
+
+- dac5092: Add lazy provider model catalogs with separate list, detail lookup, and construction Effects. Preserve each operation's error and service requirements, expose serializable model and reasoning metadata, and offer account-bound bounded discovery caches.
+
+  Include concrete Codex and Claude OAuth provider factories with native option translation and durable configuration. Codex discovers the authenticated account catalog; Claude OAuth uses bundled definitions, with a separate API-key source for paginated Models API discovery. Custom sources retain their operation-specific requirements.
+
+- 9488dea: Discover Claude models and reasoning capabilities lazily through OAuth-authenticated Models API requests instead of a bundled inventory. Preserve discovery service requirements and use the existing credential refresh lifecycle.
+
+  Allow newly discovered models to use ordinary thinking replay without a model-family allowlist. Keep known server-side mismatch handling and expose per-model replay compatibility overrides, pinned in durable configuration.
+
+  The API-key catalog's `apiUrl` now denotes the API origin, matching OAuth inference and discovery.
+
+- 15235b2: Add a ready-to-use OpenRouter provider with unauthenticated public model listing and direct detail lookup, live capabilities/pricing/reasoning efforts, and credential-managed inference through the shared compatible transport.
+- f427442: Replace per-account provider declarations with schema-defined integrations and a dynamic Providers manager. Separate public instance persistence from credential storage, allow unauthenticated instances, and return secrets from explicit login helpers for consumer-owned updates. Carry instance identity and revision through model selection and durable recovery.
+
+  Add a configurable OpenAI-compatible Chat Completions provider factory with independent metadata discovery and a static-catalog option. Codex and Claude definitions support live catalogs and custom metadata callbacks. Remove profile-keyed credentials and the former provider/catalog construction APIs; stored credential envelopes and prepared account bindings require explicit migration or repreparation.
+
+  Map compatible-provider reasoning to standard Chat Completions or explicit OpenRouter format, translate canonical tool images while preserving tool-call ordering, and enable subscription temperature/long-cache declarations through per-model metadata.
+
+- 6de38ac: Reclaim current-only document bodies on standalone retirement and persist document revisions separately so small deltas do not rewrite accumulated history. SQL commits prune obsolete revisions transactionally. JSONL uses synced immutable sidecars and a commit journal, automatically reclaiming superseded task checkpoints and document content during normal writes and recovery.
+
+  The new physical layouts reject older JSONL files and SQL schemas without migration. Copy the JSONL journal and its adjacent `.parts` directory together while the store is closed. Logical StorageFormat feature versions and the Storage/Document APIs are unchanged.
+
+  Automatic runtime activation, compaction waits, cancellation, and native joins preserve scheduler health failures instead of restarting an accepted request after restore fails. Explicit scheduler recovery and cold reopen remain available.
+
+- 6de38ac: Store immutable prepared requests in run-owned documents and reference them from checkpoints and tool children. Retire request state after use and keep completed tool rounds as compact receipts.
+
+  Store tool result content once and reconstruct provider messages and public views from the canonical entry. `ContextProjection.messages` exposes the original messages of a transcript entry for consumers such as the docs app. Nested invocation arguments and result bodies belong to the caller and retire with it; terminal nested observations retain status metadata.
+
+  Activate storage format 12 before runtime admission. The new request, result, checkpoint, and nested invocation shapes replace the previous alpha formats.
+
+- f96658e: Enable durable compaction for Codex subscription and Claude OAuth models, with pinned summary configuration, live credential refresh, narrow input-overflow recovery, reasoning-free summary transcripts, and model-specific Claude thinking replay policies. Measure the full planned prompt and tools, reusing normalized usage only for unchanged request prefixes. Codex summary budgets are explicit local acceptance bounds, not remote output limits.
+
+### Patch Changes
+
+- 01d1042: Default explicitly enabled and adaptive Claude thinking to summarized display for OAuth and API-key requests, while preserving explicit display overrides.
+- d6d4b10: Render tool diagnostics with severity and message in model projections while preserving canonical result channels. Add the service-free `ToolResultRecord.read` API for committed tool results, restore storage aliases, and migrate the structured-result example and reading documentation.
+- 8816ab0: Trace durable admission, commits, scheduler recovery and task execution, model stream attempts, deferred execution, tools, and compaction with named Effect spans. Include correlation IDs and attempt metadata, preserve Cause identity at fault-provenance boundaries, and preserve invocation tracing across captured task, tool, and streaming-provider contexts.
+- d6d4b10: Preserve native Uint8Array and URL file data through prompt admission, context projection, prepared requests, recovery, subagent submissions, and compaction. Export the service-free PromptWire schemas for applications that serialize native prompts. Literal string data, provider options, and application JSON retain their original meaning.
+
+  Summarize tool-content text without serializing image payloads into the text budget. Retain trailing captions, result identity and failure status, and omitted-media metadata. Persist usage baselines with native media so cold automatic compaction honors measured input tokens.
+
+  Require logical runtime format 12 and reject nonempty older stores before runtime mutation. Physical SQLite and JSONL formats are unchanged.
+
+- 7528e63: Disable strict JSON Schema mode by default for Codex and Claude OAuth tools so ordinary schemas with optional fields and open objects remain usable. Explicit per-tool strict-mode annotations still take precedence. Classify invalid function parameters as a non-retryable request error without exposing provider error details.
+- d6d4b10: Let otherwise idle processes exit while Session document caches retain entries. Cache eviction preserves supplied clocks and cancellation, and falls back to sweeping during Session operations when the host cannot provide an unreferenced timer.
+
+  Retire ordinary documents and terminal task documents from validated metadata without decoding obsolete bodies. Exact-version and policy checks, atomic settlement, staged changes, and rewindable history remain enforced. Custom storage adapters must provide `documentMetadata` for retirement of unstaged documents; unavailable metadata is rejected without a content fallback.
+
 ## 0.5.0
 
 ### Minor Changes

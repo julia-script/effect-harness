@@ -1,6 +1,6 @@
 {
   "name": "effect-harness",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Durable AI conversations with Effect services, schema-backed state, and scoped local execution.",
   "repository": {
     "type": "git",
