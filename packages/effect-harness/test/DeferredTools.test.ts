@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -10,7 +11,7 @@ import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as HarnessRuntime from '../src/HarnessRuntime.js'
 import * as Registry from '../src/Registry.js'
 import * as Session from '../src/Session.js'
-import * as Storage from '../src/Storage.js'
+
 import * as Tool from '../src/Tool.js'
 import * as ToolInventory from '../src/ToolInventory.js'
 import * as Toolkit from '../src/Toolkit.js'
@@ -103,7 +104,7 @@ describe('deferred tools', () => {
         assert.isDefined(state.modelTools)
         assert.include(JSON.stringify(state.modelTools), 'lookup')
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.live('rejects a discovered owner replacement between the result and activation', () =>
     Effect.scoped(
@@ -163,7 +164,7 @@ describe('deferred tools', () => {
         assert.isUndefined((yield* runtime.backend.agent(root)).modelTools)
         assert.strictEqual(executions, 0)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.live(
@@ -240,7 +241,7 @@ describe('deferred tools', () => {
           assert.deepStrictEqual(offers, [['tool_search'], ['tool_search']])
           assert.isUndefined((yield* runtime.backend.agent(root)).modelTools)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   for (const change of [
     { modelTools: { mode: 'explicit' as const, names: [] } },
@@ -305,6 +306,6 @@ describe('deferred tools', () => {
             })
             assert.deepStrictEqual(yield* runtime.backend.agent(root), change)
           }),
-        ).pipe(Effect.provide(Storage.layerMemory)),
+        ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
 })

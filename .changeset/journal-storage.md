@@ -2,6 +2,8 @@
 'effect-harness': minor
 ---
 
-Replace `Storage.layerSql` with `Storage.layerJournal({ storeId? })`, backed by an application-supplied Effect `EventJournal`. The harness no longer contains SQL queries. SQLite applications compose Effect's `SqlEventJournal.layer()` with their database client.
+Share record validation, commit encoding, replay and retention across JSONL, SQLite and memory storage. The adapters persist opaque commit frames and named payload streams instead of implementing harness rules.
 
-The new adapter requires one owning runtime per store, persists each batch and metadata mutation as one event, and rebuilds local state from a validated revision chain. Uncertain appends seal the instance until a scoped reopen reconciles durable state. Existing custom SQL tables are not automatically imported. Memory and JSONL storage remain available.
+Replace `Storage.layerJournal` with `Storage.layerSql({ storeId })`, backed directly by a host-supplied SQLite `SqlClient`. Each batch stores its frame and payloads in one transaction; ambient application transactions are rejected and uncertain writes require reopening. `Storage.layerMemory` uses Effect Ref, HashMap and Chunk without platform dependencies.
+
+JSONL now stores readable commits with document revisions and active task checkpoints in adjacent named streams. Current-only content is reclaimed after commit, while rewindable history is retained. Previous JSONL and EventJournal layouts are not migrated. IDs become durable when committed; IDs only allocated since the last commit may be reused after restart.

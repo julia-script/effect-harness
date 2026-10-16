@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { encodeCredential, decodeOAuth } from './fixtures/Credentials.js'
 import { assert, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
@@ -231,7 +232,7 @@ for (const provider of ['openai-codex', 'anthropic'] as const) {
               1,
             )
           }),
-        ).pipe(Effect.provide(Storage.layerMemory)),
+        ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
   }
 }
@@ -367,7 +368,7 @@ for (const provider of ['openai-codex', 'anthropic'] as const) {
           assert.strictEqual(receipts.length, 1)
           assert.notInclude(JSON.stringify(receipts), 'SECRET')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
   }
 }
@@ -586,5 +587,5 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
             'A changed leading prefix must invalidate historical usage',
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )

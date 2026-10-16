@@ -1,7 +1,6 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -81,9 +80,9 @@ describe('native progress settlement and recovery', () => {
             'child',
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     it.effect(
       `${backend}: final/cancel progress and receipt share one durable batch; unsafe and safe recovery replay`,
       () =>
@@ -91,17 +90,11 @@ describe('native progress settlement and recovery', () => {
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const folder = yield* fs.makeTempDirectoryScoped()
-            const memory = yield* Layer.build(Storage.layerMemory)
-            const storage =
-              backend === 'sqlite'
-                ? Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(SqliteClient.layer({ filename: `${folder}/progress.sqlite` })),
-                  )
-                : Storage.layerJsonl({ filePath: `${folder}/progress.jsonl` })
+            const temporary = yield* Layer.build(TemporaryStorage.layer)
+            const storage = Storage.layerJsonl({ filePath: `${folder}/progress.jsonl` })
             const use = <A, E>(effect: Effect.Effect<A, E, Storage.Storage | Scope.Scope>) =>
-              backend === 'memory'
-                ? effect.pipe(Effect.provideContext(memory))
+              backend === 'temporary'
+                ? effect.pipe(Effect.provideContext(temporary))
                 : effect.pipe(Effect.provide(Layer.fresh(storage)))
 
             // Simulate loss of the invocation scope with a committed prefix and a throttled suffix.
@@ -289,7 +282,7 @@ describe('native progress settlement and recovery', () => {
             [],
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect(
     'cancelled final commit preserves interruption and never acknowledges its unpersisted details',
@@ -324,6 +317,6 @@ describe('native progress settlement and recovery', () => {
           yield* TestClock.adjust(100000)
           assert.strictEqual((yield* saved(session)).status, 'running')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

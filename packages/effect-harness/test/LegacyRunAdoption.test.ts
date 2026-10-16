@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Cause from 'effect/Cause'
@@ -129,7 +130,7 @@ describe('native legacy run adoption', () => {
           )
           assert.strictEqual(duplicate._tag, 'TaskError')
         }),
-      ).pipe(Effect.provide([Storage.layerMemory, plainModel])),
+      ).pipe(Effect.provide([TemporaryStorage.layer, plainModel])),
   )
 
   it.effect('rejects inconsistent legacy prefixes without orphaning or invoking them', () =>
@@ -171,14 +172,14 @@ describe('native legacy run adoption', () => {
         assert.strictEqual(inspection.record.state.status, 'pending')
         assert.strictEqual(inspection.resolution._tag, 'blocked')
       }),
-    ).pipe(Effect.provide([Storage.layerMemory, plainModel])),
+    ).pipe(Effect.provide([TemporaryStorage.layer, plainModel])),
   )
   it.effect(
     'actual interrupted tool and custom phase reopen together; retained callbacks revoke and task docs retire',
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const memory = yield* Layer.build(Storage.layerMemory)
+          const temporary = yield* Layer.build(TemporaryStorage.layer)
           const entered = yield* Deferred.make<void>()
           const customEntered = yield* Deferred.make<void>()
           let release = false
@@ -251,7 +252,7 @@ describe('native legacy run adoption', () => {
           )
           const firstScope = yield* Scope.make()
           const first = yield* HarnessRuntime.make({ tools: toolkit }).pipe(
-            Effect.provideContext(memory),
+            Effect.provideContext(temporary),
             Effect.provide([model, handlers]),
             Scope.provide(firstScope),
           )
@@ -269,8 +270,8 @@ describe('native legacy run adoption', () => {
           assert.strictEqual((yield* Run.decodeStored(run.state.checkpoint)).phase, 'toolRound')
           yield* Scope.close(firstScope, Exit.void)
           assert.strictEqual(
-            (yield* Context.get(memory, Storage.Storage).task(run.id)).pipe(Option.getOrThrow).state
-              .status,
+            (yield* Context.get(temporary, Storage.Storage).task(run.id)).pipe(Option.getOrThrow)
+              .state.status,
             'waiting',
           )
           assert.strictEqual(
@@ -308,7 +309,7 @@ describe('native legacy run adoption', () => {
                 'native-live',
               )
             }),
-          ).pipe(Effect.provideContext(memory), Effect.provide([model, handlers]))
+          ).pipe(Effect.provideContext(temporary), Effect.provide([model, handlers]))
         }),
       ),
   )
@@ -398,7 +399,7 @@ describe('native legacy run adoption', () => {
         }),
       ).pipe(
         Effect.provide([
-          Storage.layerMemory,
+          TemporaryStorage.layer,
           Layer.effect(
             LanguageModel.LanguageModel,
             ScriptedStream.make({
@@ -497,7 +498,7 @@ describe('native legacy run adoption', () => {
           yield* Deferred.succeed(release, undefined)
           assert.strictEqual((yield* runtime.backend.wait(submission.id)).status, 'done')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -616,7 +617,7 @@ describe('native legacy run adoption', () => {
         }),
       ).pipe(
         Effect.provide([
-          Storage.layerMemory,
+          TemporaryStorage.layer,
           Layer.effect(
             LanguageModel.LanguageModel,
             ScriptedStream.make({
@@ -694,7 +695,7 @@ it.effect(
         yield* Scope.close(scope, Exit.void)
         assert.strictEqual(released, 1)
       }),
-    ).pipe(Effect.provide([Storage.layerMemory, plainModel])),
+    ).pipe(Effect.provide([TemporaryStorage.layer, plainModel])),
 )
 
 for (const reused of [false, true]) {
@@ -852,7 +853,7 @@ for (const reused of [false, true]) {
             assert.strictEqual(entries.filter((entry) => entry.kind === 'tool.output').length, 0)
             assert.strictEqual(entries.filter((entry) => entry.kind === 'tool.result').length, 0)
           }),
-        ).pipe(Effect.provide(Storage.layerMemory)),
+        ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
   }
 }

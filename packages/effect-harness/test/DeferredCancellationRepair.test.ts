@@ -1,7 +1,7 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import { SqliteClient } from '@effect/sql-sqlite-node'
+
 import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
@@ -74,7 +74,7 @@ const diagnostic = Effect.fnUntraced(function* (runtime: HarnessRuntime.HarnessR
   )(outcome.result)
 })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   for (const variant of [
     'active',
     'same',
@@ -92,18 +92,13 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
-            const sqlite = Storage.layerJournal().pipe(
-              Layer.provide(SqlEventJournal.layer()),
-              Layer.provide(SqliteClient.layer({ filename: `${directory}/cancel.sqlite` })),
-            )
-            const disk =
-              backend === 'sqlite'
-                ? sqlite
-                : Storage.layerJsonl({ filePath: `${directory}/cancel.jsonl` })
-            const store = backend === 'memory' ? Storage.layerMemory : disk
-            const memory = backend === 'memory' ? yield* Layer.build(Layer.fresh(store)) : undefined
+
+            const disk = Storage.layerJsonl({ filePath: `${directory}/cancel.jsonl` })
+            const store = backend === 'temporary' ? TemporaryStorage.layer : disk
+            const temporary =
+              backend === 'temporary' ? yield* Layer.build(Layer.fresh(store)) : undefined
             const openStore = () =>
-              memory === undefined ? Layer.build(Layer.fresh(store)) : Effect.succeed(memory)
+              temporary === undefined ? Layer.build(Layer.fresh(store)) : Effect.succeed(temporary)
             let creates = 0,
               restores = 0,
               cancels = 0,
@@ -402,7 +397,7 @@ for (const narrow of [false, true])
             yield* Scope.close(modelOwner, Exit.void)
             assert.isFalse(alive)
           }),
-        ).pipe(Effect.provide(Storage.layerMemory)),
+        ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
 
 it.effect(

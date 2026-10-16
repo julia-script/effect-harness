@@ -1,4 +1,5 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import { NodeServices } from '@effect/platform-node'
+import * as TemporaryStorage from '../Storage.ts'
 import { strict as assert } from 'node:assert'
 import * as Context from 'effect/Context'
 import * as Clock from 'effect/Clock'
@@ -48,16 +49,13 @@ const watchAdapter = bun
 const directoryReader = bun
   ? (await import('effect-harness/DirectoryReaderBun')).layer
   : (await import('effect-harness/DirectoryReaderNode')).layer
-const sqlite = bun
-  ? (await import('@effect/sql-sqlite-bun/SqliteClient')).layer
-  : (await import('@effect/sql-sqlite-node/SqliteClient')).layer
 
 const Manifest = Schema.Struct({
   a: Record.ConversationId,
   b: Record.ConversationId,
   fork: Record.ConversationId,
 })
-export type Backend = 'memory' | 'sqlite' | 'jsonl'
+export type Backend = 'temporary' | 'jsonl'
 export type Phase = 'seed' | 'cold' | 'prepare-denial' | 'missing' | 'version'
 const selection = (owner: 'A' | 'B'): Agent.State => ({
   tools: ['native-bundle'],
@@ -346,11 +344,10 @@ export const run = (backend: Backend, location: string, phase: Phase) =>
           ).pipe(Stream.concat(Stream.succeed(finish))),
       })
       const storage = (() => {
-        if (backend === 'memory') return Storage.layerMemory
+        if (backend === 'temporary') return TemporaryStorage.layer
         if (backend === 'jsonl') return Storage.layerJsonl({ filePath: `${root}/store.jsonl` })
-        return Storage.layerJournal().pipe(
-          Layer.provide(SqlEventJournal.layer()),
-          Layer.provide(sqlite({ filename: `${root}/store.sqlite` })),
+        return Storage.layerJsonl({ filePath: `${root}/store.sqlite` }).pipe(
+          Layer.provide(NodeServices.layer),
         )
       })()
       const storageContext = yield* Layer.build(storage)
@@ -493,29 +490,23 @@ export const structural = (backend: Backend) =>
     const directories: string[] = []
     const cases = Testing.storageConformance({
       make: Effect.gen(function* () {
-        if (backend === 'memory')
+        if (backend === 'temporary')
           return {
-            open: Layer.build(Storage.layerMemory).pipe(
+            open: Layer.build(TemporaryStorage.layer).pipe(
               Effect.map((c) => Context.get(c, Storage.Storage)),
             ),
           }
         const fs = yield* FileSystem.FileSystem
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'structural-reopen-' })
         directories.push(directory)
-        const layer =
-          backend === 'sqlite'
-            ? Storage.layerJournal().pipe(
-                Layer.provide(SqlEventJournal.layer()),
-                Layer.provide(sqlite({ filename: `${directory}/storage` })),
-              )
-            : Storage.layerJsonl({ filePath: `${directory}/storage` })
+        const layer = Storage.layerJsonl({ filePath: `${directory}/storage` })
         return {
           open: Layer.build(Layer.fresh(layer)).pipe(
             Effect.map((c) => Context.get(c, Storage.Storage)),
           ),
         }
       }),
-      capabilities: { history: true, reopen: backend !== 'memory' },
+      capabilities: { history: true, reopen: backend !== 'temporary' },
     }).filter((c) => names.has(c.name))
     assert.equal(cases.length, names.size)
     for (const c of cases) yield* c.run

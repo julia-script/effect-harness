@@ -1,7 +1,6 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -14,41 +13,35 @@ import * as Sequence from 'effect-harness/Sequence'
 import * as Storage from 'effect-harness/Storage'
 import * as Testing from 'effect-harness/Testing'
 
-const memory = Effect.succeed({
-  open: Layer.build(Storage.layerMemory).pipe(
+const temporary = Effect.succeed({
+  open: Layer.build(TemporaryStorage.layer).pipe(
     Effect.map((context) => Context.get(context, Storage.Storage)),
   ),
 })
 
 // A new temporary store per factory evaluation; fresh backend connections per open.
-const persistent = (backend: 'sqlite' | 'jsonl', directories: Array<string>) =>
+const persistent = (directories: Array<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'storage-conformance-' })
     directories.push(directory)
     const filename = path.join(directory, 'storage')
-    const layer =
-      backend === 'sqlite'
-        ? Storage.layerJournal().pipe(
-            Layer.provide(SqlEventJournal.layer()),
-            Layer.provide(SqliteClient.layer({ filename })),
-          )
-        : Storage.layerJsonl({ filePath: filename }).pipe(
-            Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
-          )
+    const layer = Storage.layerJsonl({ filePath: filename }).pipe(
+      Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
+    )
     return {
       open: Layer.build(layer).pipe(Effect.map((context) => Context.get(context, Storage.Storage))),
     }
   })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   describe(`public conformance: ${backend}`, () => {
     const directories: Array<string> = []
-    const make = backend === 'memory' ? memory : persistent(backend, directories)
+    const make = backend === 'temporary' ? temporary : persistent(directories)
     for (const test of Testing.storageConformance({
       make,
-      capabilities: { history: true, reopen: backend !== 'memory' },
+      capabilities: { history: true, reopen: backend !== 'temporary' },
     }))
       it.live(test.name, () =>
         test.run.pipe(
@@ -68,7 +61,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
   })
 
 const brokenFixture = (breakStorage: (storage: Testing.StorageService) => Testing.StorageService) =>
-  memory.pipe(Effect.map((fixture) => ({ open: fixture.open.pipe(Effect.map(breakStorage)) })))
+  temporary.pipe(Effect.map((fixture) => ({ open: fixture.open.pipe(Effect.map(breakStorage)) })))
 const caseNamed = <E, R>(
   cases: ReadonlyArray<Testing.StorageConformanceCase<E, R>>,
   name: string,
@@ -139,7 +132,7 @@ it.effect('detects an adapter that collapses historical document reads to curren
 it.effect('detects loss of backing state during reopen', () =>
   expectAssertion(
     caseNamed(
-      Testing.storageConformance({ make: memory, capabilities: { reopen: true } }),
+      Testing.storageConformance({ make: temporary, capabilities: { reopen: true } }),
       'reopened state',
     ),
     'reopen restores conversation',
@@ -165,7 +158,7 @@ it.effect('detects an ambient hook that fails to enter a transaction', () =>
   expectAssertion(
     caseNamed(
       Testing.storageConformance({
-        make: memory.pipe(
+        make: temporary.pipe(
           Effect.map((fixture) => ({
             ...fixture,
             withAmbientTransaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => effect,
@@ -183,7 +176,7 @@ it.effect('detects an uncertainty fixture that leaves a healthy service accessib
   expectAssertion(
     caseNamed(
       Testing.storageConformance({
-        make: memory.pipe(
+        make: temporary.pipe(
           Effect.map((fixture) => ({
             ...fixture,
             uncertainCommit: () =>
@@ -207,7 +200,10 @@ it.effect('detects an uncertainty fixture that leaves a healthy service accessib
 
 for (const capability of ['sqlAmbient', 'sqlUncertain'] as const)
   it.effect(`enabled ${capability} fails explicitly without fixture hooks`, () => {
-    const cases = Testing.storageConformance({ make: memory, capabilities: { [capability]: true } })
+    const cases = Testing.storageConformance({
+      make: temporary,
+      capabilities: { [capability]: true },
+    })
     return expectAssertion(
       caseNamed(cases, capability === 'sqlAmbient' ? 'SQL ambient' : 'SQL uncertain'),
       capability === 'sqlAmbient'
@@ -246,7 +242,7 @@ it.effect('evaluates factories once per run and cleans both scopes after asserti
             yield* Effect.addFinalizer(() =>
               Ref.update(events, (events) => [...events, 'service cleanup']),
             )
-            const storage = yield* memory.pipe(Effect.flatMap((fixture) => fixture.open))
+            const storage = yield* temporary.pipe(Effect.flatMap((fixture) => fixture.open))
             return {
               ...storage,
               mintId: <I extends Storage.StorageId>() =>

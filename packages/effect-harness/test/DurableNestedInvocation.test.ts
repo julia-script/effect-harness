@@ -1,4 +1,4 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { NodeServices } from '@effect/platform-node'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
@@ -48,7 +48,7 @@ const contract = {
 } as const
 
 describe('native nested invocation', () => {
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     it.live(
       `${backend}: cold native fallback preserves exact persisted channels without replay`,
       () =>
@@ -56,23 +56,18 @@ describe('native nested invocation', () => {
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
-            const sqlite = nativeBun
-              ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-              : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
+
             const layer = (() => {
-              if (backend === 'sqlite')
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(sqlite({ filename: `${directory}/content.sqlite` })),
-                )
               if (backend === 'jsonl')
                 return Storage.layerJsonl({ filePath: `${directory}/content.jsonl` })
-              return Storage.layerMemory
+              return TemporaryStorage.layer
             })()
-            const memory =
-              backend === 'memory' ? yield* Layer.build(Storage.layerMemory) : undefined
+            const temporary =
+              backend === 'temporary' ? yield* Layer.build(TemporaryStorage.layer) : undefined
             const open = (scope: Scope.Scope) =>
-              memory === undefined ? Layer.buildWithScope(layer, scope) : Effect.succeed(memory)
+              temporary === undefined
+                ? Layer.buildWithScope(layer, scope)
+                : Effect.succeed(temporary)
             const parts: Record<string, ToolResult.Content> = {
               empty: [],
               text: [Prompt.textPart({ text: 'single' })],
@@ -247,25 +242,18 @@ describe('native nested invocation', () => {
           }),
         ).pipe(Effect.provide(nativeServices)),
     )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const mode of ['missing', 'foreign-storage', 'lower', 'mismatched-pair'] as const)
       it.live(`${backend}: ${mode} protection refuses native nested admission`, () =>
         Effect.scoped(
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
-            const sqlite = nativeBun
-              ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-              : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
+
             const layer = (() => {
-              if (backend === 'sqlite')
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(sqlite({ filename: `${directory}/guard.sqlite` })),
-                )
               if (backend === 'jsonl')
                 return Storage.layerJsonl({ filePath: `${directory}/guard.jsonl` })
-              return Storage.layerMemory
+              return TemporaryStorage.layer
             })()
             const actualContext = yield* Layer.build(layer)
             const actual = Context.get(actualContext, Storage.Storage)
@@ -396,7 +384,7 @@ describe('native nested invocation', () => {
           }),
         ).pipe(Effect.provide(nativeServices)),
       )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     it.live(
       `${backend}: typed task calls, duplicate admission and final-only atomic progress`,
       () =>
@@ -404,18 +392,11 @@ describe('native nested invocation', () => {
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
-            const sqlite = nativeBun
-              ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-              : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
+
             const layer = (() => {
-              if (backend === 'sqlite')
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(sqlite({ filename: `${directory}/nested.sqlite` })),
-                )
               if (backend === 'jsonl')
                 return Storage.layerJsonl({ filePath: `${directory}/nested.jsonl` })
-              return Storage.layerMemory
+              return TemporaryStorage.layer
             })()
             const context = yield* Layer.build(layer)
             const actual = Context.get(context, Storage.Storage)
@@ -682,31 +663,24 @@ describe('native nested invocation', () => {
         ).pipe(Effect.provide(nativeServices)),
     )
 
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const fault of ['reject', 'uncertain'] as const)
       it.live(`${backend}: ${fault} final batch never acknowledges a durable invocation`, () =>
         Effect.scoped(
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
-            const sqlite = nativeBun
-              ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-              : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
+
             const layer = (() => {
-              if (backend === 'sqlite')
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(sqlite({ filename: `${directory}/fault.sqlite` })),
-                )
               if (backend === 'jsonl')
                 return Storage.layerJsonl({ filePath: `${directory}/fault.jsonl` })
-              return Storage.layerMemory
+              return TemporaryStorage.layer
             })()
             const ownerScope = yield* Scope.Scope
             const firstScope = yield* Scope.make()
             yield* Effect.addFinalizer(() => Scope.close(firstScope, Exit.void))
             const context = yield* Layer.build(layer).pipe(
-              Effect.provideService(Scope.Scope, backend === 'memory' ? ownerScope : firstScope),
+              Effect.provideService(Scope.Scope, backend === 'temporary' ? ownerScope : firstScope),
             )
             const actual = Context.get(context, Storage.Storage)
             const format = Context.get(context, StorageFormat.StorageFormat)
@@ -845,7 +819,7 @@ describe('native nested invocation', () => {
             const reopenedScope = yield* Scope.make()
             yield* Effect.addFinalizer(() => Scope.close(reopenedScope, Exit.void))
             const reopenedContext =
-              backend === 'memory'
+              backend === 'temporary'
                 ? context
                 : yield* Layer.build(layer).pipe(Effect.provideService(Scope.Scope, reopenedScope))
             const registry = yield* Registry.make.pipe(

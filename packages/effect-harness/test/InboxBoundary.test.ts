@@ -1,14 +1,12 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import type * as Context from 'effect/Context'
 import * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as FileSystem from 'effect/FileSystem'
-import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Stream from 'effect/Stream'
 import * as ConversationInitializer from '../src/ConversationInitializer.js'
@@ -31,8 +29,8 @@ const open = Effect.gen(function* () {
   yield* Session.commit(session, Transaction.ensureRoot)
   return session
 })
-const memory = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.scoped(effect).pipe(Effect.provide(Storage.layerMemory))
+const temporary = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.scoped(effect).pipe(Effect.provide(TemporaryStorage.layer))
 const task = (tx: Transaction.Transaction, conversationId = root) =>
   Transaction.createTask(tx, {
     conversationId,
@@ -74,7 +72,7 @@ describe('inactive inbox boundary foundation', () => {
       it.effect(
         `final: independent ${followUp}/${steering} modes, writes first and users in ID order`,
         () =>
-          memory(
+          temporary(
             Effect.gen(function* () {
               const session = yield* open
               const s1 = yield* admit(session, 'steer', 's1')
@@ -124,7 +122,7 @@ describe('inactive inbox boundary foundation', () => {
   it.effect(
     'postTools selects only steers and retains original run membership; defaults are one',
     () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           const session = yield* open
           const original = yield* admit(session, 'followUp', 'original')
@@ -162,7 +160,7 @@ describe('inactive inbox boundary foundation', () => {
   )
 
   it.effect('postTools all mode drains steers without consuming follow-ups', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const session = yield* open
         yield* admit(session, 'followUp', 'original')
@@ -193,7 +191,7 @@ describe('inactive inbox boundary foundation', () => {
   it.effect(
     'a queued reset converts postTools into final only through the context seam; later head edits can be stale',
     () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           const session = yield* open
           yield* admit(session, 'followUp', 'old')
@@ -235,7 +233,7 @@ describe('inactive inbox boundary foundation', () => {
   )
 
   it.effect('incidental self-heads are passive writes, and idle writes create no run', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const session = yield* open
         yield* Session.commit(session, (tx) =>
@@ -254,7 +252,7 @@ describe('inactive inbox boundary foundation', () => {
   it.effect(
     'deduplicates requests before queue mutation, even after placement/withdrawal; cross-type conflict rolls back',
     () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           const session = yield* open
           const requestId = Identity.RequestId.make('same')
@@ -285,7 +283,7 @@ describe('inactive inbox boundary foundation', () => {
   it.effect(
     'caught selection failure discards appended writes, receipts and documents but preserves earlier caller drafts',
     () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           const session = yield* open
           const write = yield* admit(session, 'write', 'rollback.write')
@@ -328,7 +326,7 @@ describe('inactive inbox boundary foundation', () => {
   it.effect(
     'caught context failure rolls back earlier writes; final enclosing failure rolls back successful helper selection',
     () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           const session = yield* open
           yield* admit(session, 'write', 'first')
@@ -358,7 +356,7 @@ describe('inactive inbox boundary foundation', () => {
   )
 
   it.effect('forks initialize empty queue and membership rather than copying parent work', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const session = yield* open
         yield* admit(session, 'followUp', 'placed')
@@ -387,7 +385,7 @@ describe('inactive inbox boundary foundation', () => {
   it.effect(
     'reconciles settled queue receipts and terminal/missing run memberships; stale boundary owners cannot place writes',
     () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           const session = yield* open
           const original = yield* admit(session, 'followUp', 'original')
@@ -445,7 +443,7 @@ describe('inactive inbox boundary foundation', () => {
     it.effect(
       `caught ${operation} failure restores earlier document drafts and submission receipts`,
       () =>
-        memory(
+        temporary(
           Effect.gen(function* () {
             const storage = yield* Storage.Storage
             let remaining: number | undefined
@@ -516,7 +514,7 @@ describe('inactive inbox boundary foundation', () => {
     it.effect(
       `${failure} after admission drafts leaves no overlay changes and releases the parent permit`,
       () =>
-        memory(
+        temporary(
           Effect.gen(function* () {
             const storage = yield* Storage.Storage
             const reached = yield* Deferred.make<void>()
@@ -582,7 +580,7 @@ describe('inactive inbox boundary foundation', () => {
     'placement first',
   ] as const) {
     it.effect(`concurrent boundary uses Session commit order: ${ordering}`, () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           const session = yield* open
           const initial = yield* admit(session, 'followUp', 'initial')
@@ -635,7 +633,7 @@ describe('inactive inbox boundary foundation', () => {
   }
 })
 
-for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   it.effect(
     `${backend}: reopen before and after selection retains receipts/membership without duplicate placement`,
     () =>
@@ -643,13 +641,7 @@ for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem
           const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'inbox-boundary-' })
-          const disk =
-            backend === 'sqlite'
-              ? Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(SqliteClient.layer({ filename: `${directory}/state.sqlite` })),
-                )
-              : Storage.layerJsonl({ filePath: `${directory}/state.jsonl` })
+          const disk = Storage.layerJsonl({ filePath: `${directory}/state.jsonl` })
           const before = Effect.scoped(
             Effect.gen(function* () {
               const session = yield* open
@@ -689,12 +681,12 @@ for (const backend of ['memory', 'jsonl', 'sqlite'] as const) {
                 assert.isUndefined(yield* membership(session))
               }),
             )
-          if (backend === 'memory')
+          if (backend === 'temporary')
             yield* Effect.gen(function* () {
               const input = yield* before
               const run = yield* select
               yield* after(input, run)
-            }).pipe(Effect.provide(Storage.layerMemory))
+            }).pipe(Effect.provide(TemporaryStorage.layer))
           else {
             const input = yield* before.pipe(Effect.provide(disk))
             const run = yield* select.pipe(Effect.provide(disk))

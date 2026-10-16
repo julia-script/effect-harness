@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as Deferred from 'effect/Deferred'
@@ -356,6 +357,6 @@ describe('durable deferred activation', () => {
           })
           assert.deepStrictEqual((yield* runtime.backend.agent(root)).modelTools?.names, ['lookup'])
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

@@ -1,7 +1,7 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import { SqliteClient } from '@effect/sql-sqlite-node'
+
 import * as Context from 'effect/Context'
 import * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
@@ -32,17 +32,12 @@ import * as Usage from 'effect-harness/Usage'
 const root = Record.ROOT_CONVERSATION_ID
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
-  const memory = yield* Layer.build(Storage.layerMemory)
-  const sql = Storage.layerJournal().pipe(
-    Layer.provide(SqlEventJournal.layer()),
-    Layer.provide(SqliteClient.layer({ filename: `${directory}/origin.sqlite` })),
-  )
+  const temporary = yield* Layer.build(TemporaryStorage.layer)
+
   const jsonl = Storage.layerJsonl({ filePath: `${directory}/origin.jsonl` })
   return {
-    open: (backend: 'memory' | 'sqlite' | 'jsonl') =>
-      backend === 'memory'
-        ? Effect.succeed(memory)
-        : Layer.build(Layer.fresh(backend === 'sqlite' ? sql : jsonl)),
+    open: (backend: 'temporary' | 'jsonl') =>
+      backend === 'temporary' ? Effect.succeed(temporary) : Layer.build(Layer.fresh(jsonl)),
   }
 })
 const make = Effect.fnUntraced(function* (
@@ -92,7 +87,7 @@ const history = (runtime: HarnessRuntime.HarnessRuntimeService) =>
     Stream.runCollect,
   )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   describe(`${backend} compaction context origin`, () => {
     for (const activated of [false, true]) {
       for (const mutation of [

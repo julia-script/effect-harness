@@ -1,4 +1,4 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { NodeServices } from '@effect/platform-node'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
@@ -48,7 +48,7 @@ describe('native supervised conversations', () => {
       () =>
         Effect.scoped(
           Effect.gen(function* () {
-            const base = yield* Layer.build(Storage.layerMemory)
+            const base = yield* Layer.build(TemporaryStorage.layer)
             const actual = Context.get(base, Storage.Storage)
             const format = Context.get(base, StorageFormat.StorageFormat)
             const native = new StorageError({
@@ -122,7 +122,7 @@ describe('native supervised conversations', () => {
           }),
         ).pipe(Effect.provide(services)),
     )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const projection of ['read', 'guard', 'reused', 'distinct', 'stale'] as const)
       it.live(
         `${backend}/${projection}: native occurrence proof rejects ordinary error reuse`,
@@ -131,17 +131,13 @@ describe('native supervised conversations', () => {
             Effect.gen(function* () {
               const fs = yield* FileSystem.FileSystem
               const directory = yield* fs.makeTempDirectoryScoped()
-              const sqlite = nativeBun
-                ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-                : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient')))
-                    .layer
+
               const layer = (() => {
-                if (backend === 'memory') return Storage.layerMemory
+                if (backend === 'temporary') return TemporaryStorage.layer
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/proof.jsonl` })
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(sqlite({ filename: `${directory}/proof.sqlite` })),
+                return Storage.layerJsonl({ filePath: `${directory}/proof.sqlite` }).pipe(
+                  Layer.provide(NodeServices.layer),
                 )
               })()
               const base = yield* Layer.build(layer)
@@ -352,7 +348,7 @@ describe('native supervised conversations', () => {
             }),
           ).pipe(Effect.provide(services)),
       )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const mode of ['foreground', 'background'] as const)
       for (const stage of ['admission', 'settlement'] as const)
         for (const fault of ['reject', 'uncertain'] as const)
@@ -363,18 +359,13 @@ describe('native supervised conversations', () => {
                 Effect.gen(function* () {
                   const fs = yield* FileSystem.FileSystem
                   const directory = yield* fs.makeTempDirectoryScoped()
-                  const sqlite = nativeBun
-                    ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient')))
-                        .layer
-                    : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient')))
-                        .layer
+
                   const layer = (() => {
-                    if (backend === 'memory') return Storage.layerMemory
+                    if (backend === 'temporary') return TemporaryStorage.layer
                     if (backend === 'jsonl')
                       return Storage.layerJsonl({ filePath: `${directory}/fault.jsonl` })
-                    return Storage.layerJournal().pipe(
-                      Layer.provide(SqlEventJournal.layer()),
-                      Layer.provide(sqlite({ filename: `${directory}/fault.sqlite` })),
+                    return Storage.layerJsonl({ filePath: `${directory}/fault.sqlite` }).pipe(
+                      Layer.provide(NodeServices.layer),
                     )
                   })()
                   const ownerScope = yield* Scope.Scope
@@ -383,7 +374,7 @@ describe('native supervised conversations', () => {
                   const base = yield* Layer.build(layer).pipe(
                     Effect.provideService(
                       Scope.Scope,
-                      backend === 'memory' ? ownerScope : firstScope,
+                      backend === 'temporary' ? ownerScope : firstScope,
                     ),
                   )
                   const actual = Context.get(base, Storage.Storage)
@@ -608,7 +599,7 @@ describe('native supervised conversations', () => {
                   const coldScope = yield* Scope.make()
                   yield* Effect.addFinalizer(() => Scope.close(coldScope, Exit.void))
                   const reopenedStorage =
-                    backend === 'memory'
+                    backend === 'temporary'
                       ? base
                       : yield* Layer.build(layer).pipe(
                           Effect.provideService(Scope.Scope, coldScope),
@@ -651,7 +642,7 @@ describe('native supervised conversations', () => {
                 }),
               ).pipe(Effect.provide(services)),
           )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const mode of ['foreground', 'background'] as const)
       it.live(
         `${backend}/${mode}: admission freezes stored selection, overrides, null clears and fork asOf`,
@@ -660,17 +651,13 @@ describe('native supervised conversations', () => {
             Effect.gen(function* () {
               const fs = yield* FileSystem.FileSystem
               const directory = yield* fs.makeTempDirectoryScoped()
-              const sqlite = nativeBun
-                ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-                : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient')))
-                    .layer
+
               const storageLayer = (() => {
-                if (backend === 'memory') return Storage.layerMemory
+                if (backend === 'temporary') return TemporaryStorage.layer
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/selection.jsonl` })
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(sqlite({ filename: `${directory}/selection.sqlite` })),
+                return Storage.layerJsonl({ filePath: `${directory}/selection.sqlite` }).pipe(
+                  Layer.provide(NodeServices.layer),
                 )
               })()
               const storage = yield* Layer.build(storageLayer)
@@ -898,26 +885,23 @@ describe('native supervised conversations', () => {
             }),
           ).pipe(Effect.provide(services)),
       )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const mode of ['foreground', 'background'] as const)
       it.live(`${backend}: ${mode} cold attachment consumes the paid terminal child once`, () =>
         Effect.scoped(
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
-            const sqlite = nativeBun
-              ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-              : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
+
             const layer = (() => {
-              if (backend === 'memory') return Storage.layerMemory
+              if (backend === 'temporary') return TemporaryStorage.layer
               if (backend === 'jsonl')
                 return Storage.layerJsonl({ filePath: `${directory}/cold.jsonl` })
-              return Storage.layerJournal().pipe(
-                Layer.provide(SqlEventJournal.layer()),
-                Layer.provide(sqlite({ filename: `${directory}/cold.sqlite` })),
+              return Storage.layerJsonl({ filePath: `${directory}/cold.sqlite` }).pipe(
+                Layer.provide(NodeServices.layer),
               )
             })()
-            const memory = backend === 'memory' ? yield* Layer.build(layer) : undefined
+            const temporary = backend === 'temporary' ? yield* Layer.build(layer) : undefined
             const ready = yield* Deferred.make<Subagent.Receipt>()
             let warm = true
             let calls = 0
@@ -996,7 +980,7 @@ describe('native supervised conversations', () => {
             })
             const open = (scope: Scope.Scope) =>
               Effect.gen(function* () {
-                const context = memory ?? (yield* Layer.buildWithScope(layer, scope))
+                const context = temporary ?? (yield* Layer.buildWithScope(layer, scope))
                 const registry = yield* Registry.make.pipe(
                   Effect.provideService(Scope.Scope, scope),
                 )
@@ -1047,7 +1031,7 @@ describe('native supervised conversations', () => {
           }),
         ).pipe(Effect.provide(services)),
       )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const mode of ['foreground', 'background'] as const)
       for (const work of ['input', 'write'] as const)
         it.live(`${backend}: ${mode} admits and observes an actual child ${work}`, () =>
@@ -1055,17 +1039,13 @@ describe('native supervised conversations', () => {
             Effect.gen(function* () {
               const fs = yield* FileSystem.FileSystem
               const directory = yield* fs.makeTempDirectoryScoped()
-              const sqlite = nativeBun
-                ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-                : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient')))
-                    .layer
+
               const storage = (() => {
-                if (backend === 'memory') return Storage.layerMemory
+                if (backend === 'temporary') return TemporaryStorage.layer
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/content.jsonl` })
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(sqlite({ filename: `${directory}/content.sqlite` })),
+                return Storage.layerJsonl({ filePath: `${directory}/content.sqlite` }).pipe(
+                  Layer.provide(NodeServices.layer),
                 )
               })()
               const contract = {
@@ -1229,7 +1209,7 @@ describe('native supervised conversations', () => {
             }),
           ).pipe(Effect.provide(services)),
         )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     for (const policy of ['allSettled', 'failFast'] as const)
       it.live(
         `${backend}/${policy}: actual subagent joins preserve direct ownership and ordered duplicate outcomes`,
@@ -1238,17 +1218,13 @@ describe('native supervised conversations', () => {
             Effect.gen(function* () {
               const fs = yield* FileSystem.FileSystem
               const directory = yield* fs.makeTempDirectoryScoped()
-              const sqlite = nativeBun
-                ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-                : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient')))
-                    .layer
+
               const storage = (() => {
-                if (backend === 'memory') return Storage.layerMemory
+                if (backend === 'temporary') return TemporaryStorage.layer
                 if (backend === 'jsonl')
                   return Storage.layerJsonl({ filePath: `${directory}/joins.jsonl` })
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(sqlite({ filename: `${directory}/joins.sqlite` })),
+                return Storage.layerJsonl({ filePath: `${directory}/joins.sqlite` }).pipe(
+                  Layer.provide(NodeServices.layer),
                 )
               })()
               const entered = yield* Deferred.make<void>()
@@ -1419,7 +1395,7 @@ describe('native supervised conversations', () => {
             }),
           ).pipe(Effect.provide(services)),
       )
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     it.live(
       `${backend}: simultaneous actual parents keep identical keys in separate ownership epochs`,
       () =>
@@ -1427,16 +1403,13 @@ describe('native supervised conversations', () => {
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped()
-            const sqlite = nativeBun
-              ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-              : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
+
             const storage = (() => {
-              if (backend === 'memory') return Storage.layerMemory
+              if (backend === 'temporary') return TemporaryStorage.layer
               if (backend === 'jsonl')
                 return Storage.layerJsonl({ filePath: `${directory}/parents.jsonl` })
-              return Storage.layerJournal().pipe(
-                Layer.provide(SqlEventJournal.layer()),
-                Layer.provide(sqlite({ filename: `${directory}/parents.sqlite` })),
+              return Storage.layerJsonl({ filePath: `${directory}/parents.sqlite` }).pipe(
+                Layer.provide(NodeServices.layer),
               )
             })()
             const both = yield* Deferred.make<void>()

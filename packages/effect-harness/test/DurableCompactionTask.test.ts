@@ -1,4 +1,4 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as Cause from 'effect/Cause'
 import { ModelError, ModelUnsupportedError } from 'effect-harness/ModelError'
@@ -20,7 +20,7 @@ import * as OpenAiLanguageModel from 'effect-harness/provider-openai/OpenAiLangu
 import * as AnthropicLanguageModel from 'effect-harness/provider-anthropic/AnthropicLanguageModel'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import { SqliteClient } from '@effect/sql-sqlite-node'
+
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -63,18 +63,13 @@ const answer = (text: string): Response.PartEncoded[] => [
 ]
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
-  const memory = yield* Layer.build(Storage.layerMemory)
-  const sql = Storage.layerJournal().pipe(
-    Layer.provide(SqlEventJournal.layer()),
-    Layer.provide(SqliteClient.layer({ filename: `${directory}/compaction.sqlite` })),
-  )
+  const temporary = yield* Layer.build(TemporaryStorage.layer)
+
   const jsonl = Storage.layerJsonl({ filePath: `${directory}/compaction.jsonl` })
   return {
     directory,
-    open: (backend: 'memory' | 'sqlite' | 'jsonl') =>
-      backend === 'memory'
-        ? Effect.succeed(memory)
-        : Layer.build(Layer.fresh(backend === 'sqlite' ? sql : jsonl)),
+    open: (backend: 'temporary' | 'jsonl') =>
+      backend === 'temporary' ? Effect.succeed(temporary) : Layer.build(Layer.fresh(jsonl)),
   }
 })
 const seed = (runtime: HarnessRuntime.HarnessRuntimeService) =>
@@ -115,7 +110,7 @@ const descriptor = (
     ...(capability === undefined ? {} : { compaction: capability }),
   })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   describe(`${backend} durable compaction`, () => {
     it.live(
       'manual task pins policy, queues a fenced summary, records usage and clears separate status',
@@ -1447,7 +1442,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
   })
 }
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   it.live(
     `${backend}: raw native structured overflow preserves metadata without durable credentials and recovers only once after cold reopen`,
     () =>
@@ -1619,7 +1614,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
   )
 
 for (const provider of ['openai', 'anthropic'] as const)
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+  for (const backend of ['temporary', 'jsonl'] as const) {
     it.live(
       `${provider}/${backend}: native final wire enforces pinned summary controls and cold restore preserves client auth and transforms`,
       () =>
@@ -1863,7 +1858,7 @@ for (const provider of ['openai', 'anthropic'] as const)
   }
 
 // The charge belongs to the failed generation, before summary preflight starts.
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   describe(`${backend} overflow preflight accounting`, () => {
     for (const mode of ['empty', 'codec', 'typed', 'mixed', 'unknown', 'decline'] as const)
       it.live(`${mode} retains original attempt and pricing once across cold reopen`, () =>
@@ -2188,7 +2183,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
   })
 }
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   for (const evidence of [
     'absent',
     'other-request',
@@ -2297,7 +2292,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
       ).pipe(Effect.provide(NodeServices.layer)),
     )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   for (const fault of ['corrupt', 'closed', 'mixed', 'settlement'] as const)
     it.live(
       `${backend} overflow receipt ${fault} retains native health and the accepted checkpoint`,
@@ -2460,7 +2455,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
         ).pipe(Effect.provide(NodeServices.layer)),
     )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   describe(`${backend} critical hook causes`, () => {
     for (const mode of [
       'defect',

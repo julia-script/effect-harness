@@ -1,7 +1,7 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import { SqliteClient } from '@effect/sql-sqlite-node'
+
 import * as Effect from 'effect/Effect'
 import * as Context from 'effect/Context'
 import * as Exit from 'effect/Exit'
@@ -41,7 +41,7 @@ const answer: Response.StreamPartEncoded[] = [
   },
 ]
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   describe(`${backend} rejected stream usage publication`, () => {
     for (const boundary of ['trailing', 'body'] as const)
       it.live(
@@ -50,16 +50,10 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
           Effect.scoped(
             Effect.gen(function* () {
               const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
-              const memory = yield* Layer.build(Storage.layerMemory)
-              const disk =
-                backend === 'sqlite'
-                  ? Storage.layerJournal().pipe(
-                      Layer.provide(SqlEventJournal.layer()),
-                      Layer.provide(SqliteClient.layer({ filename: `${directory}/usage.sqlite` })),
-                    )
-                  : Storage.layerJsonl({ filePath: `${directory}/usage.jsonl` })
+              const temporary = yield* Layer.build(TemporaryStorage.layer)
+              const disk = Storage.layerJsonl({ filePath: `${directory}/usage.jsonl` })
               const store =
-                backend === 'memory' ? Effect.succeed(memory) : Layer.build(Layer.fresh(disk))
+                backend === 'temporary' ? Effect.succeed(temporary) : Layer.build(Layer.fresh(disk))
               const owner = yield* Scope.make()
               const context = yield* store.pipe(Effect.provideService(Scope.Scope, owner))
               const real = yield* Effect.service(Storage.Storage).pipe(

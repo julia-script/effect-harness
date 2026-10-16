@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -834,6 +835,6 @@ describe('versioned context interpretation', () => {
             ['later reset'],
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

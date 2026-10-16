@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -16,7 +17,7 @@ import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Remote from 'effect-harness/RemoteDocument'
 import * as Record from 'effect-harness/Record'
 import * as Session from 'effect-harness/Session'
-import * as Storage from 'effect-harness/Storage'
+
 import * as Transaction from 'effect-harness/Transaction'
 import * as Native from '../src/internal/SessionRuntime.js'
 const root = Record.ROOT_CONVERSATION_ID
@@ -44,7 +45,7 @@ const fixture = Effect.gen(function* () {
   return { runtime, conversation }
 })
 const run = <A, E, R>(program: Effect.Effect<A, E, R>) =>
-  Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
+  Effect.scoped(program).pipe(Effect.provide(TemporaryStorage.layer))
 describe('remote document native seam', () => {
   it.effect('missing capabilities fail before document, target and option getters', () =>
     run(

@@ -1,13 +1,11 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as FileSystem from 'effect/FileSystem'
-import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Pull from 'effect/Pull'
 import * as Schema from 'effect/Schema'
@@ -89,7 +87,7 @@ const initialize = (session: Session.Session) =>
   )
 const withMemory = <A, E>(
   program: Effect.Effect<A, E, Storage.Storage | StorageFormat | Scope.Scope>,
-) => Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
+) => Effect.scoped(program).pipe(Effect.provide(TemporaryStorage.layer))
 const assertConflict = (failure: Session.Failure) => {
   assert.strictEqual(failure._tag, 'SessionError')
   if (failure._tag === 'SessionError') {
@@ -117,7 +115,7 @@ const rejectWrites = (tx: Transaction.Transaction, taskId: Record.TaskId) =>
     }
   })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   describe(`task document retirement: ${backend}`, () => {
     for (const outcome of outcomes) {
       it.effect(`retires ${outcome.status} documents atomically and survives reopen`, () =>
@@ -125,13 +123,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'task-retirement-' })
-            const layer =
-              backend === 'sqlite'
-                ? Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(SqliteClient.layer({ filename: `${directory}/storage.sqlite` })),
-                  )
-                : Storage.layerJsonl({ filePath: `${directory}/storage.jsonl` })
+            const layer = Storage.layerJsonl({ filePath: `${directory}/storage.jsonl` })
             const run = Effect.gen(function* () {
               const storage = yield* Storage.Storage
               const initialized = yield* Effect.scoped(
@@ -251,7 +243,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               yield* Session.commit(reopened, (tx) => rejectWrites(tx, initialized.task.id))
               return initialized
             })
-            if (backend === 'memory') return yield* run.pipe(Effect.provide(Storage.layerMemory))
+            if (backend === 'temporary')
+              return yield* run.pipe(Effect.provide(TemporaryStorage.layer))
             const initialized = yield* run.pipe(Effect.provide(layer))
             // Rebuild the backend too, proving disk recovery rather than just Session cache eviction.
             yield* Effect.gen(function* () {

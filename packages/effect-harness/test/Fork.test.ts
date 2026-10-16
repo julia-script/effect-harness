@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -92,7 +93,7 @@ describe('fork operation rollback', () => {
                 assert.strictEqual(source.value.value.count, caught ? 9 : 0)
               }
             }),
-          ).pipe(Effect.provide(Storage.layerMemory)),
+          ).pipe(Effect.provide(TemporaryStorage.layer)),
       )
     }
   }

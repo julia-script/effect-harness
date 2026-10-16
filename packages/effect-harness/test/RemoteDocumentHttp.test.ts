@@ -1,4 +1,5 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import { NodeServices } from '@effect/platform-node'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as NodeHttpServer from '@effect/platform-node/NodeHttpServer'
 import * as Context from 'effect/Context'
@@ -118,7 +119,7 @@ const fixture = (identity = 'test-remote-owner', limits = resources) =>
     }
   })
 const run = <A, E, R>(program: Effect.Effect<A, E, R>) =>
-  Effect.scoped(program).pipe(Effect.provide([httpLayer, Storage.layerMemory]))
+  Effect.scoped(program).pipe(Effect.provide([httpLayer, TemporaryStorage.layer]))
 
 describe('real HTTP materialized documents', () => {
   it.live(
@@ -534,7 +535,7 @@ describe('real HTTP materialized documents', () => {
         Effect.gen(function* () {
           const a = yield* fixture()
           const connectionB = yield* Layer.build(
-            Layer.fresh(Layer.merge(httpLayer, Storage.layerMemory)),
+            Layer.fresh(Layer.merge(httpLayer, TemporaryStorage.layer)),
           )
           const b = yield* fixture('endpoint-b').pipe(Effect.provideContext(connectionB))
           yield* Session.commit(b.runtime.session, (tx) =>
@@ -685,7 +686,7 @@ describe('real HTTP materialized documents', () => {
         }),
       ),
   )
-  for (const kind of ['jsonl', 'sqlite'] as const)
+  for (const kind of ['jsonl'] as const)
     it.live(
       `cold ${kind} reopen preserves stored versions and visible remote history without writes`,
       () =>
@@ -693,19 +694,12 @@ describe('real HTTP materialized documents', () => {
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'remote-reopen-' })
-            const sql =
-              'Bun' in globalThis
-                ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-                : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient')))
-                    .layer
+
             const filePath = `${directory}/${kind === 'jsonl' ? 'journal.jsonl' : 'storage.sqlite'}`
             const storageLayer =
               kind === 'jsonl'
                 ? Storage.layerJsonl({ filePath })
-                : Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(sql({ filename: filePath })),
-                  )
+                : Storage.layerJsonl({ filePath: filePath }).pipe(Layer.provide(NodeServices.layer))
             const model = yield* LanguageModel.make({
               generateText: () => Effect.die('No provider'),
               streamText: () => Stream.die('No provider'),

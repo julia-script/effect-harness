@@ -1,8 +1,6 @@
-import * as JournalFixture from './fixtures/Journal.js'
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -15,7 +13,7 @@ import * as Schema from 'effect/Schema'
 import * as Storage from 'effect-harness/Storage'
 import * as Format from 'effect-harness/StorageFormat'
 import * as Metadata from '../src/internal/Metadata.js'
-import * as Memory from '../src/internal/Memory.js'
+import * as Projection from '../src/internal/Projection.js'
 import * as Kernel from '../src/internal/Kernel.js'
 import * as Record from 'effect-harness/Record'
 import { program as storageFormatExample } from '../../../apps/example/src/tour/StorageFormat.js'
@@ -32,13 +30,9 @@ const fixture = Effect.gen(function* () {
   const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'storage-format-' })
   return { fs, filename: `${directory}/store` }
 })
-const backendLayer = (backend: 'memory' | 'sqlite' | 'jsonl', filename: string) => {
-  if (backend === 'memory') return Storage.layerMemory
-  if (backend === 'sqlite')
-    return Storage.layerJournal().pipe(
-      Layer.provide(SqlEventJournal.layer()),
-      Layer.provide(SqliteClient.layer({ filename })),
-    )
+const backendLayer = (backend: 'temporary' | 'jsonl', filename: string) => {
+  if (backend === 'temporary') return TemporaryStorage.layer
+
   return Storage.layerJsonl({ filePath: filename })
 }
 
@@ -54,7 +48,7 @@ it.effect('runs the public example through temporary source mapping', () =>
   ),
 )
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   describe(`format guard: ${backend}`, () => {
     it.live('opens legacy unchanged and serializes upgrades with IDs and domain commits', () =>
       Effect.scoped(
@@ -163,7 +157,7 @@ it.effect(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const context = yield* Layer.build(Storage.layerMemory)
+        const context = yield* Layer.build(TemporaryStorage.layer)
         const storage = Context.get(context, Storage.Storage)
         const native = Context.get(context, Format.StorageFormat)
         const custom: Storage.Storage['Service'] = { ...storage }
@@ -205,7 +199,7 @@ it.effect(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const access = yield* Memory.makeAccess
+        const access = yield* Projection.makeAccess
         const first = yield* Effect.scoped(
           Kernel.make(access).pipe(
             Effect.tap((storage) =>
@@ -219,7 +213,7 @@ it.effect(
         assert.deepEqual(yield* second.storageFormat.inspect, current)
         assert.strictEqual(yield* second.mintId(), 3)
         assert.strictEqual((yield* first.commit([]).pipe(Effect.flip)).reason, 'closed')
-        assert.deepEqual(yield* Format.inspect.pipe(Effect.provide(Storage.layerMemory)), legacy)
+        assert.deepEqual(yield* Format.inspect.pipe(Effect.provide(TemporaryStorage.layer)), legacy)
         yield* access.save([], { format: 13, minimumReader: 13, nextId: 4, nextSeq: 1 })
         assert.strictEqual(
           (yield* Kernel.make(access).pipe(Effect.flip)).reason,
@@ -232,7 +226,7 @@ it.effect(
 it.effect('document metadata reads stored version without materializing invalid old content', () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const access = yield* Memory.makeAccess
+      const access = yield* Projection.makeAccess
       const id = Record.DocumentId.make(2)
       const record: Record.Document = {
         id,
@@ -275,7 +269,7 @@ it.effect('document metadata reads stored version without materializing invalid 
   ),
 )
 
-for (const backend of ['sqlite', 'jsonl'] as const)
+for (const backend of ['jsonl'] as const)
   it.live(
     `${backend} cold reopen preserves v2 and rejects the exact previous format=1 reader schema`,
     () =>
@@ -296,15 +290,6 @@ for (const backend of ['sqlite', 'jsonl'] as const)
               Schema.fromJsonString(Schema.Struct({ metadata: Metadata.Metadata })),
             )(frames.at(-1))
             yield* Schema.decodeUnknownEffect(OldReaderMetadata)(marker.metadata).pipe(Effect.flip)
-          } else {
-            yield* Effect.gen(function* () {
-              const marker = (yield* JournalFixture.frames).at(-1)?.metadata
-              yield* Schema.decodeUnknownEffect(OldReaderMetadata)(marker).pipe(Effect.flip)
-            }).pipe(
-              Effect.provide(
-                SqlEventJournal.layer().pipe(Layer.provide(SqliteClient.layer({ filename }))),
-              ),
-            )
           }
           yield* Effect.gen(function* () {
             const storage = yield* Storage.Storage
@@ -332,7 +317,10 @@ for (const marker of [
           const bytes =
             JSON.stringify({
               metadata: { ...marker, nextId: 2, nextSeq: 1 },
-              rows: [{ _tag: 'future.opcode' }],
+              format: 1,
+              type: 'commit',
+              seq: 1,
+              writes: [{ type: 'future.opcode' }],
             }) + '\n'
           yield* fs.writeFileString(filename, bytes)
           const error = yield* Format.inspect.pipe(
@@ -472,7 +460,13 @@ it.live('JSONL reopen rejects downgrade bytes appended by an already-open foreig
       // The original writer protocol appends cached format-1 metadata, without checking v2.
       yield* foreign.writeAll(
         new TextEncoder().encode(
-          JSON.stringify({ metadata: { format: 1, nextId: 2, nextSeq: 1 }, rows: [] }) + '\n',
+          JSON.stringify({
+            format: 1,
+            type: 'commit',
+            seq: 2,
+            metadata: { format: 1, nextId: 2, nextSeq: 1 },
+            writes: [],
+          }) + '\n',
         ),
       )
       yield* foreign.sync

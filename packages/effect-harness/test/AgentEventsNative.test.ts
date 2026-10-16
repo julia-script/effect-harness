@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -28,7 +29,7 @@ import * as Harness from 'effect-harness/Harness'
 import { HarnessBackend } from 'effect-harness/HarnessBackend'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Settings from 'effect-harness/Settings'
-import * as Storage from 'effect-harness/Storage'
+
 import * as Submission from 'effect-harness/Submission'
 
 describe('native live event replication', () => {
@@ -176,7 +177,7 @@ describe('native live event replication', () => {
         assert.deepStrictEqual(final.value.usage, yield* Conversation.usage(conversation))
         yield* Scope.close(consumer, Exit.void)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   for (const mode of ['parallel', 'sequential'] as const)
@@ -341,7 +342,7 @@ describe('native live event replication', () => {
             assert.deepStrictEqual(final.value.graph.tasks, [])
             yield* Scope.close(consumer, Exit.void)
           }),
-        ).pipe(Effect.provide(Storage.layerMemory)),
+        ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
 
   it.effect(
@@ -471,7 +472,7 @@ describe('native live event replication', () => {
           assert.strictEqual(final.value.usage.models[0]!.tokens.input, 13)
           yield* Scope.close(consumer, Exit.void)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   for (const parameters of [false, true])
@@ -621,6 +622,6 @@ describe('native live event replication', () => {
             )
             yield* Scope.close(consumer, Exit.void)
           }),
-        ).pipe(Effect.provide(Storage.layerMemory)),
+        ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
 })

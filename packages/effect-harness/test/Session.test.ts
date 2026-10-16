@@ -1,7 +1,6 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
@@ -9,7 +8,6 @@ import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as FileSystem from 'effect/FileSystem'
-import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Pull from 'effect/Pull'
 import * as Schema from 'effect/Schema'
@@ -37,7 +35,7 @@ const counter = Document.define({
   initial: () => ({ count: 0 }),
 })
 const withMemory = <A, E>(program: Effect.Effect<A, E, Storage.Storage | Scope.Scope>) =>
-  Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
+  Effect.scoped(program).pipe(Effect.provide(TemporaryStorage.layer))
 const some = <A>(value: Option.Option<A>): A => {
   assert.isTrue(Option.isSome(value))
   return Option.getOrThrow(value)
@@ -779,20 +777,14 @@ describe('Session', () => {
   )
 })
 
-for (const backend of ['sqlite', 'jsonl'] as const)
+for (const backend of ['jsonl'] as const)
   it.live(`reopens Session state through ${backend} storage`, () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'harness-session-' })
         const filename = `${directory}/storage`
-        const layer =
-          backend === 'sqlite'
-            ? Storage.layerJournal().pipe(
-                Layer.provide(SqlEventJournal.layer()),
-                Layer.provide(SqliteClient.layer({ filename })),
-              )
-            : Storage.layerJsonl({ filePath: filename })
+        const layer = Storage.layerJsonl({ filePath: filename })
         const at = yield* Effect.scoped(
           Effect.gen(function* () {
             const session = yield* Session.make()

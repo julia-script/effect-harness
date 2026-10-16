@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ToolResultRecord from 'effect-harness/ToolResultRecord'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { NodeServices } from '@effect/platform-node'
@@ -83,12 +84,12 @@ const execute = <Tools extends Record<string, Tool.Any>>(
     )
     return { observed, settled, persisted: entries.find((entry) => entry.kind === 'tool.result') }
   })
-const memory = <A, E, R>(program: Effect.Effect<A, E, R>) =>
-  Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
+const temporary = <A, E, R>(program: Effect.Effect<A, E, R>) =>
+  Effect.scoped(program).pipe(Effect.provide(TemporaryStorage.layer))
 
 describe('independent tool result channels', () => {
   it.effect('empty content still delivers actionable diagnostics to the model', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const diagnostics: ReadonlyArray<ToolResult.Diagnostic> = [
           { severity: 'warning', code: 'pagination', message: 'Rows truncated; rerun with page=2' },
@@ -138,7 +139,7 @@ describe('independent tool result channels', () => {
   it.effect(
     'hooks and durable receipts retain data while the model receives selected content',
     () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           let receipt: ToolResult.Result | undefined
           let completed: ReadonlyArray<ToolResult.Result> = []
@@ -190,7 +191,7 @@ describe('independent tool result channels', () => {
   )
 
   it.live('deferred starts and polls receive the same rendered diagnostics', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         let calls = 0
         let starts = 0
@@ -296,7 +297,7 @@ describe('independent tool result channels', () => {
   )
 
   it.effect('public reading restores aliases and rejects noncanonical entries', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const content = [
           Prompt.filePart({ mediaType: 'image/png', data: new Uint8Array([1, 2, 3]) }),
@@ -337,7 +338,7 @@ describe('independent tool result channels', () => {
 
   for (const variant of ['explicit', 'options'] as const) {
     it.effect(`diagnostics preserve ${variant} text envelopes`, () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           const content = [
             Prompt.textPart({
@@ -379,7 +380,7 @@ describe('independent tool result channels', () => {
   }
 
   it.effect('model diagnostics survive the tool text retention limit', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const tools = Toolkit.make(
           Tool.makeResult('work', {
@@ -415,7 +416,7 @@ describe('independent tool result channels', () => {
   )
 
   it.effect('declared failures choose independent visible, structured and UI values', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const { observed, settled, persisted } = yield* execute(toolkit).pipe(
           Effect.provide(
@@ -452,7 +453,7 @@ describe('independent tool result channels', () => {
 
   for (const invalid of ['success', 'failure', 'hook'] as const) {
     it.effect(`rejects invalid ${invalid} structured output before durable publication`, () =>
-      memory(
+      temporary(
         Effect.gen(function* () {
           const hook = Hook.make({
             event: 'afterTool',
@@ -484,7 +485,7 @@ describe('independent tool result channels', () => {
   }
 
   it.effect('omission stays absent even with a declared schema', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const omitted = yield* Effect.scoped(execute(toolkit)).pipe(
           Effect.provide(
@@ -499,7 +500,7 @@ describe('independent tool result channels', () => {
   )
 
   it.effect('schema-free results accept JSON null without synthesizing visible content', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const jsonTools = Toolkit.make(Tool.makeResult('work'))
         const fallback = yield* Effect.scoped(execute(jsonTools)).pipe(
@@ -519,7 +520,7 @@ describe('independent tool result channels', () => {
   )
 
   it.effect('hooks can replace structured data and UI details', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const hook = Hook.make({
           event: 'afterTool',
@@ -547,7 +548,7 @@ describe('independent tool result channels', () => {
   )
 
   it.effect('UI details shaped like a legacy content envelope remain private', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const privateEnvelope = yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.Envelope))(
           { _tag: '@effect-harness/ToolContent', content: text('private UI content') },
@@ -573,7 +574,7 @@ describe('independent tool result channels', () => {
   )
 
   it.effect('matching content envelopes preserve additional detail fields', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const content = text('shared content')
         const encoded = yield* Schema.encodeEffect(Schema.toCodecJson(ToolResult.Envelope))({
@@ -599,7 +600,7 @@ describe('independent tool result channels', () => {
   )
 
   it.effect('a hook can remove structured output and details with a full replacement', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         const hook = Hook.make({
           event: 'afterTool',
@@ -627,7 +628,7 @@ describe('independent tool result channels', () => {
   )
 
   it.effect('codec services and transformed structured values survive JSON recovery', () =>
-    memory(
+    temporary(
       Effect.gen(function* () {
         class Codec extends Context.Service<Codec, string>()('test/StructuredToolResult/Codec') {}
         const schema = Schema.Struct({ instant: Schema.DateFromString }).pipe(

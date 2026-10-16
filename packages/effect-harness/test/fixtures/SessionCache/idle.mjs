@@ -1,3 +1,5 @@
+import { NodeServices } from '@effect/platform-node'
+import * as FileSystem from 'effect/FileSystem'
 import * as Context from 'effect/Context'
 import * as Layer from 'effect/Layer'
 import * as Effect from 'effect/Effect'
@@ -17,9 +19,11 @@ await Effect.runPromise(
   Effect.gen(function* () {
     // Deliberately independently owned: process exit must not require closing this scope.
     const scope = yield* Scope.make()
-    const services = yield* Layer.build(Storage.layerMemory).pipe(
-      Effect.provideService(Scope.Scope, scope),
-    )
+    const fs = yield* FileSystem.FileSystem
+    const directory = yield* fs.makeTempDirectoryScoped()
+    const services = yield* Layer.build(
+      Storage.layerJsonl({ filePath: `${directory}/main.jsonl` }),
+    ).pipe(Effect.provideService(Scope.Scope, scope))
     const storage = Context.get(services, Storage.Storage)
     let finds = 0
     const counted = {
@@ -50,5 +54,5 @@ await Effect.runPromise(
       if (finds !== 2) throw new Error('Live timer did not evict the cached miss')
       console.log('live eviction observed')
     } else console.log('idle session ready')
-  }),
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 )

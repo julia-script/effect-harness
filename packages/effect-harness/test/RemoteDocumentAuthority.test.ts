@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as NodeHttpServer from '@effect/platform-node/NodeHttpServer'
 import * as Deferred from 'effect/Deferred'
@@ -25,7 +26,7 @@ import * as Remote from 'effect-harness/RemoteDocument'
 import * as Record from 'effect-harness/Record'
 import * as Registry from 'effect-harness/Registry'
 import * as Session from 'effect-harness/Session'
-import * as Storage from 'effect-harness/Storage'
+
 import * as Task from 'effect-harness/Task'
 import { TaskExecution } from 'effect-harness/TaskExecution'
 import * as Toolkit from 'effect-harness/Toolkit'
@@ -321,6 +322,6 @@ describe('authentic remote document authority', () => {
           assert.strictEqual(getters, 0)
           assert.strictEqual((yield* Native.get(runtime.session)).documentMounts.size, 0)
         }),
-      ).pipe(Effect.provide([httpLayer, Storage.layerMemory])),
+      ).pipe(Effect.provide([httpLayer, TemporaryStorage.layer])),
   )
 })

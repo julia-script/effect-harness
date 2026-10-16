@@ -1,8 +1,8 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import { SqliteClient } from '@effect/sql-sqlite-node'
+
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -45,16 +45,11 @@ const answer: Array<Response.PartEncoded> = [
 ]
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
-  const memory = yield* Layer.build(Storage.layerMemory)
-  const sqlite = Storage.layerJournal().pipe(
-    Layer.provide(SqlEventJournal.layer()),
-    Layer.provide(SqliteClient.layer({ filename: `${directory}/publication.sqlite` })),
-  )
+  const temporary = yield* Layer.build(TemporaryStorage.layer)
+
   const jsonl = Storage.layerJsonl({ filePath: `${directory}/publication.jsonl` })
-  return (backend: 'memory' | 'sqlite' | 'jsonl') =>
-    backend === 'memory'
-      ? Effect.succeed(memory)
-      : Layer.build(Layer.fresh(backend === 'sqlite' ? sqlite : jsonl))
+  return (backend: 'temporary' | 'jsonl') =>
+    backend === 'temporary' ? Effect.succeed(temporary) : Layer.build(Layer.fresh(jsonl))
 })
 const tasks = (runtime: HarnessRuntime.HarnessRuntimeService) =>
   Session.scanTasks(runtime.session, { conversationId: root, kind: 'harness.run' }).pipe(
@@ -76,7 +71,7 @@ const descriptor = (native: typeof LanguageModel.LanguageModel.Service) =>
     positioning: { sections: 'positional', tools: 'positional' },
   })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   describe(`${backend} validated preparation publication`, () => {
     for (const failure of [
       'invalid-prompt',

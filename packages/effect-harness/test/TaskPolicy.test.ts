@@ -1,10 +1,8 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
-import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Struct from 'effect/Struct'
@@ -25,7 +23,7 @@ const draft = (): Transaction.TaskCreate => ({
   state: { status: 'running', checkpoint: { phase: 'work' } },
 })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   it.effect(
     `persists restart/abort policies and upgrades legacy defaults on ${backend} reopen`,
     () =>
@@ -33,13 +31,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem
           const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'task-policy-' })
-          const layer =
-            backend === 'sqlite'
-              ? Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(SqliteClient.layer({ filename: `${directory}/store.sqlite` })),
-                )
-              : Storage.layerJsonl({ filePath: `${directory}/store.jsonl` })
+          const layer = Storage.layerJsonl({ filePath: `${directory}/store.jsonl` })
           const cycle = Effect.gen(function* () {
             const storage = yield* Storage.Storage
             const tasks = yield* Effect.scoped(
@@ -114,11 +106,11 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
                 })
               }),
             )
-            if (backend === 'memory') yield* reopen
+            if (backend === 'temporary') yield* reopen
             else yield* reopen.pipe(Effect.provide(layer))
             assert.isTrue(Option.isSome(yield* storage.task(tasks.legacy.id)))
           })
-          if (backend === 'memory') yield* cycle.pipe(Effect.provide(Storage.layerMemory))
+          if (backend === 'temporary') yield* cycle.pipe(Effect.provide(TemporaryStorage.layer))
           else yield* cycle.pipe(Effect.provide(layer))
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
@@ -218,7 +210,7 @@ describe('persisted task policy invariants', () => {
             'terminal',
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -285,6 +277,6 @@ describe('persisted task policy invariants', () => {
         (yield* storage.commit([{ _tag: 'task', value: task }]).pipe(Effect.flip))._tag,
         'StorageError',
       )
-    }).pipe(Effect.provide(Storage.layerMemory)),
+    }).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
@@ -10,7 +11,7 @@ import * as LanguageModel from 'effect/ai/LanguageModel'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Extension from 'effect-harness/Extension'
 import * as Session from 'effect-harness/Session'
-import * as Storage from 'effect-harness/Storage'
+
 import * as Tool from 'effect-harness/Tool'
 import * as Toolkit from 'effect-harness/Toolkit'
 
@@ -149,7 +150,7 @@ describe('tool declaration resolution', () => {
           }),
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect('a disabled overriding extension cannot expose an earlier same-name handler', () =>
     Effect.scoped(
@@ -212,6 +213,6 @@ describe('tool declaration resolution', () => {
         )
         assert.isFalse(entries.some((entry) => entry.kind === 'tool.result'))
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

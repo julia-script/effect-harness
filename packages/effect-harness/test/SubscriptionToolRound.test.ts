@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -9,7 +10,7 @@ import * as HttpClientResponse from 'effect/http/HttpClientResponse'
 import * as HarnessRuntime from '../src/HarnessRuntime.js'
 import * as Hook from '../src/Hook.js'
 import * as Session from '../src/Session.js'
-import * as Storage from '../src/Storage.js'
+
 import * as Tool from '../src/Tool.js'
 import * as ToolResult from '../src/ToolResult.js'
 import * as Toolkit from '../src/Toolkit.js'
@@ -193,5 +194,5 @@ for (const provider of ['openai-codex', 'anthropic'] as const)
           assert.strictEqual(entries.filter((entry) => entry.kind === 'tool.result').length, 1)
           assert.notInclude(JSON.stringify(entries), 'SECRET')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )

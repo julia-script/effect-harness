@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as StorageFormat from 'effect-harness/StorageFormat'
@@ -131,7 +132,7 @@ describe('scheduler resolution and invocation gates', () => {
           yield* settle
           assert.strictEqual(invoked, 0)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   for (const defect of [false, true])
@@ -183,7 +184,7 @@ describe('scheduler resolution and invocation gates', () => {
             )
             assert.strictEqual((yield* scheduler.inspect(record.id)).record.version, 2)
           }),
-        ).pipe(Effect.provide(Storage.layerMemory)),
+        ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
 
   it.effect(
@@ -308,7 +309,7 @@ describe('scheduler resolution and invocation gates', () => {
             }),
           ).pipe(Effect.provideContext(services))
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -330,8 +331,9 @@ describe('scheduler resolution and invocation gates', () => {
             },
           })
           yield* install(registry, definition)
+          const changes = yield* Stream.toPull(scheduler.changes)
           const ref = yield* scheduler.start(definition, 0, { conversationId: root })
-          yield* settle
+          while (Option.isNone(yield* scheduler.failure)) yield* changes
           assert.strictEqual(calls, 1)
           assert.strictEqual((yield* scheduler.inspect(ref.id)).record.state.status, 'pending')
           assert.isTrue(Option.isSome(yield* scheduler.failure))
@@ -339,7 +341,7 @@ describe('scheduler resolution and invocation gates', () => {
           assert.deepStrictEqual(yield* scheduler.wait(ref), { status: 'completed', result: 8 })
           assert.strictEqual(calls, 2)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -404,7 +406,7 @@ describe('scheduler resolution and invocation gates', () => {
             [],
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -438,6 +440,6 @@ describe('scheduler resolution and invocation gates', () => {
           assert.strictEqual(state.reconciliations.size, 1)
           assert.strictEqual(state.subscribers.size, 0)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

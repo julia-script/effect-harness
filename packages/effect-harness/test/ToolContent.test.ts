@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ResultEntry from '../src/internal/ToolResultEntry.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
@@ -9,7 +10,7 @@ import * as Prompt from 'effect/ai/Prompt'
 import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Hook from 'effect-harness/Hook'
 import * as Session from 'effect-harness/Session'
-import * as Storage from 'effect-harness/Storage'
+
 import * as Tool from 'effect-harness/Tool'
 import * as ToolResult from 'effect-harness/ToolResult'
 import * as Toolkit from 'effect-harness/Toolkit'
@@ -36,7 +37,7 @@ const finish = {
   response: undefined,
 }
 const run = <A, E, R>(program: Effect.Effect<A, E, R>) =>
-  Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
+  Effect.scoped(program).pipe(Effect.provide(TemporaryStorage.layer))
 const execute = <Tools extends Record<string, Tool.Any>>(
   toolkit: Toolkit.Toolkit<Tools>,
   hooks: ReadonlyArray<Hook.Hook<'afterTool', unknown, never>>,

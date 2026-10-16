@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -11,7 +12,7 @@ import * as HarnessRuntime from 'effect-harness/HarnessRuntime'
 import * as Graph from 'effect-harness/TaskGraph'
 import * as Record from 'effect-harness/Record'
 import * as Session from 'effect-harness/Session'
-import * as Storage from 'effect-harness/Storage'
+
 import * as Transaction from 'effect-harness/Transaction'
 
 describe('public structural replica', () => {
@@ -106,7 +107,7 @@ describe('public structural replica', () => {
         assert.notStrictEqual(fresh.revision.epoch, epoch)
         assert.deepStrictEqual(fresh.value, replica.value)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect('rejects duplicates, gaps, foreign epoch and invalid wire protocol', () =>

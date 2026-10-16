@@ -1,28 +1,125 @@
 # Storage, sessions, and documents
 
-`Storage` owns durable records and atomic write batches. Choose one implementation:
+Memory, JSONL and SQLite storage use the same state engine.
+For readable files:
 
 ```ts
-Storage.layerMemory
-Storage.layerJournal({ storeId: 'agent' })
 Storage.layerJsonl({ filePath: './agent.jsonl' })
 ```
 
-Memory requires no services. Journal storage requires Effect's `EventJournal`; JSONL requires `FileSystem`. The library does not select a database implementation or host runtime. Initialization and cleanup follow the supplying Layer's lifecycle. JSONL commits require a final newline; incomplete trailing bytes are discarded on reopening.
+Supply Effect's `FileSystem` from the host, for example `NodeServices.layer`.
+For SQLite, supply an Effect SQL client from the host:
 
-For SQLite, compose `Storage.layerJournal()` with `SqlEventJournal.layer()` from `effect/eventlog/SqlEventJournal`, then provide the application's SQLite client. Effect's memory journal can be supplied for ephemeral storage. `storeId` defaults to `default` and must remain stable across restarts. Different store IDs have independent records and allocation counters.
+```ts
+import { SqliteClient } from '@effect/sql-sqlite-node'
+import * as Layer from 'effect/Layer'
+import * as Storage from 'effect-harness/Storage'
 
-One runtime owns each journal store, including across processes and browser tabs. Duplicate owners of the same injected journal service and store ID are rejected. Separate journal instances pointing at the same backing store require application-level ownership. External writes and event replication into an active store are unsupported; reopen to rebuild its projection.
+const StorageLive = Storage.layerSql({ storeId: 'demo' }).pipe(
+  Layer.provide(SqliteClient.layer({ filename: './agent-spike.sqlite' })),
+)
+```
 
-Every atomic batch, ID reservation and format upgrade is one journal event. Events carry an explicit revision and predecessor, so replay does not depend on timestamps or backend ordering. Reopening validates the chain, reader requirements and counters before serving state. Reads use the in-memory projection. Startup currently reads the full journal, with no checkpointing or compaction; memory use grows with retained records and document history. Old journal events retain superseded payloads, including retired current-only documents and task checkpoints; this adapter does not reclaim those durable bytes. JSONL retains its separate sidecar reclamation behavior.
+`storeId` defaults to `default`; distinct IDs select independent stores in one database.
+The SQL adapter currently supports SQLite only, using the Node or Bun Effect driver.
+For volatile state, use `Storage.layerMemory` (a Layer value, with no arguments).
+It requires no platform services and stores opaque commits and payload streams
+in Effect `Chunk` and `HashMap` values held by a `Ref`. Each fresh Layer construction
+starts empty. Reusing the built context keeps state across harness restarts while
+its storage scope remains open; closing that scope ends access. Page reloads and
+process restarts lose all memory state. No filesystem or database is involved.
 
-The supplied journal must acknowledge writes independently of application transactions. With `SqlEventJournal`, use a dedicated client and construct and invoke storage outside `SqlClient.withTransaction`. Storage cannot detect backend-specific ambient transactions through the generic journal interface.
+The EventJournal storage Layer has been removed.
+The provider-configuration and credential services are separate from conversation storage.
 
-Effect 4.0.1's stock IndexedDB journal is unsuitable for durable storage here: it acknowledges the object-store request before the transaction completes, so a later abort can lose an acknowledged commit. An IndexedDB implementation must wait for transaction completion and report aborts before it can satisfy this adapter's contract.
+## Responsibility boundary
 
-Append failures report an `uncertain` StorageError and seal that Storage instance. Close its scope and reopen it before retrying: the failed append may already be durable. Session also seals itself on an uncertain commit. Scope cleanup settles an admitted append before releasing ownership.
+`Kernel` applies record operations and enforces the Storage API's atomic batches.
+`Projection` holds the current rows in an Effect `HashMap` inside a `Ref`.
+`Store` owns the commit codec, format checks, replay and retention decisions.
+`Memory`, `Jsonl` and `Sql` implement the opaque persistence port: read a log, read named payload
+streams, durably append a batch, and replace superseded payloads. None imports
+conversation, task, document or record schemas.
 
-This replaces `Storage.layerSql` and its custom tables. Existing SQL containers are not automatically imported. JSONL remains an independent format and adapter.
+The SQL adapter stores the same opaque JSON strings in two tables:
+
+| Table                        | Key                              | Value          |
+| ---------------------------- | -------------------------------- | -------------- |
+| `effect_harness_commits_v1`  | `store_id`, `position`           | Commit `frame` |
+| `effect_harness_payloads_v1` | `store_id`, `stream`, `position` | Payload `line` |
+
+Keys are non-null, positions are positive integers, and primary keys prevent duplicates.
+A batch appends its payloads and commit frame in one SQL transaction. Reclamation
+replaces a stream in a separate transaction after the commit; a failed replacement
+rolls back its deletes and is retried on reopening. The host owns database configuration
+and backup policy. There are no domain tables or SQL-specific replay rules.
+
+Persistent adapters replay into memory on opening; memory storage starts empty. SQL does not yet add indexed domain
+queries, incremental loading, or distributed coordination.
+
+## Files you can inspect
+
+`agent.jsonl` has one complete JSON object per line:
+
+```json
+{
+  "format": 1,
+  "type": "commit",
+  "seq": 1,
+  "metadata": { "format": 1, "nextId": 2, "nextSeq": 2 },
+  "writes": [{ "type": "conversation", "value": { "id": 1 } }]
+}
+```
+
+Messages, submissions, conversations and completed tasks are inline under `writes`.
+`agent.jsonl.parts/doc-<id>.jsonl` holds document revisions;
+`task-<id>.jsonl` holds active-task checkpoints. A payload's `seq` and `ordinal`
+identify the commit operation that published it. `document.create`,
+`document.change` and `task.sidecar` in the main log refer to these payloads.
+This follows Pi Durable's layout, but it is not a compatible interchange format:
+our record schemas and document content codecs remain different.
+
+New document revisions are written once. Current-only documents discard replaced
+bases after a durable commit. Rewindable history is retained. Completed tasks move
+inline and their old checkpoint streams are deleted. Document retirement keeps
+its metadata; current-only content is reclaimed. Reclamation failures are retried
+on reopening and do not turn an already committed batch into a failure.
+
+The main log still grows with commits; this spike does not add whole-store
+snapshots or main-log compaction. Reads scan the local projection; secondary
+indexes remain future work.
+
+## Recovery and ownership
+
+SQL also requires one active writer per database/store ID. A head check rejects stale
+writers before append or reclamation; it does not coordinate multiple harnesses.
+Use storage outside application SQL transactions, including during construction and
+ID allocation. Those contexts are rejected so a harness write can only be acknowledged
+after its own database commit, never while an outer transaction could still roll back.
+Failed or unacknowledged appends seal the writer until it is closed and reopened.
+Existing legacy SQL or EventJournal tables are left untouched, with no automatic migration.
+
+For JSONL:
+
+Own one writer per path across processes and runtime instances. Ownership is
+the host application's responsibility; the adapter does not provide a lease or lock. Keep the main
+log and its `.parts` directory together when backing up a closed store.
+
+The adapter syncs appended payloads and their directory before appending and
+syncing the commit marker. The state engine publishes the in-memory update only
+after that succeeds. An uncertain append seals the writer; close and reopen it
+before retrying. Scope closure drains admitted writes before closing the persistence scope.
+
+Recovery validates all commit headers and live payloads before truncating torn
+tails or reclaiming orphan data. An incomplete trailing line is not a commit.
+Missing committed payloads and corrupt committed lines fail recovery.
+
+ID allocation alone performs no I/O. IDs become durable in a commit's metadata;
+an allocation made after the last successful commit may be reused after restart.
+Never use an uncommitted ID as a durable external identity.
+
+This format intentionally rejects the previous `sidecars-v1` files. Keep existing
+stores separately; there is no migration in this spike.
 
 `Session` is a scoped instance over Storage, shared by all conversations in that local runtime. It captures the storage service, caches decoded documents, serializes transactions, and publishes committed changes. A session can be used independently of an agent runtime:
 

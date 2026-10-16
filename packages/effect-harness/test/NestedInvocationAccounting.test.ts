@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
@@ -12,7 +13,7 @@ import * as HarnessRuntime from '../src/HarnessRuntime.js'
 import * as Hook from '../src/Hook.js'
 import * as Registry from '../src/Registry.js'
 import * as Session from '../src/Session.js'
-import * as Storage from '../src/Storage.js'
+
 import * as StorageFormat from '../src/StorageFormat.js'
 import { StorageError } from '../src/StorageError.js'
 import { SessionError } from '../src/SessionError.js'
@@ -115,7 +116,7 @@ describe('nested result and no-entry accounting', () => {
             0,
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
   it.live(
     'all native fallback shapes stay distinct from file-shaped structured JSON and controls stay inert',
@@ -254,7 +255,7 @@ describe('nested result and no-entry accounting', () => {
           )
           assert.lengthOf((yield* Session.usage(runtime.session, root)).costs, 0)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.live(
     'final-only flood remains bounded and UTF8 counters survive report overflow without running commits',
@@ -340,7 +341,7 @@ describe('nested result and no-entry accounting', () => {
           assert.deepStrictEqual(progress.details, { local: 'last' })
           assert.lengthOf(progress.diagnostics, 1)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   for (const mode of ['replace', 'block', 'invalid-arguments', 'invalid-output'] as const)
@@ -479,7 +480,7 @@ describe('nested result and no-entry accounting', () => {
           } else assert.isUndefined(usage)
           assert.isTrue(Option.isNone(yield* runtime.scheduler.failure))
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
     )
 
   it.live(
@@ -569,7 +570,7 @@ describe('nested result and no-entry accounting', () => {
           assert.strictEqual(allowed, 4)
           assert.strictEqual(forbidden, 0)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.live(
@@ -703,7 +704,7 @@ describe('nested result and no-entry accounting', () => {
             0,
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.live(
@@ -862,6 +863,6 @@ describe('nested result and no-entry accounting', () => {
           )
           assert.isTrue(Option.isNone(yield* runtime.scheduler.failure))
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

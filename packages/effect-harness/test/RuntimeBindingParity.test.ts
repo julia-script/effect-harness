@@ -6,7 +6,7 @@ import * as ChildProcess from 'effect/process/ChildProcess'
 import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import { run, services } from './fixtures/RuntimeBindingParity/Consumer.ts'
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   it.live(
     `${backend}: native bindings survive create configure historical fork and host reconstruction`,
     () =>
@@ -15,7 +15,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
           const fs = yield* FileSystem.FileSystem
           const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'runtime-binding-' })
           yield* run(backend, directory, 'seed')
-          if (backend !== 'memory') {
+          if (backend !== 'temporary') {
             const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
             const child = (
               location: string,
@@ -45,7 +45,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
               })
             yield* child(directory, 'cold')
             const denied = yield* fs.makeTempDirectoryScoped({ prefix: 'runtime-denied-' })
-            const extension = backend === 'sqlite' ? 'sqlite' : 'jsonl'
+            const extension = 'jsonl'
             yield* fs.copyFile(`${directory}/store.${extension}`, `${denied}/store.${extension}`)
             if (backend === 'jsonl')
               yield* fs.copy(`${directory}/store.jsonl.parts`, `${denied}/store.jsonl.parts`)

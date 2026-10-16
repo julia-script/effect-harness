@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
@@ -9,7 +10,7 @@ import * as Stream from 'effect/Stream'
 import * as Record from '../src/Record.js'
 import * as Registry from '../src/Registry.js'
 import * as Session from '../src/Session.js'
-import * as Storage from '../src/Storage.js'
+
 import * as TaskSupervision from '../src/TaskSupervision.js'
 import * as Transaction from '../src/Transaction.js'
 
@@ -98,7 +99,7 @@ describe('native ownership graph observation', () => {
           )
           assert.deepStrictEqual(yield* scheduler.graph, terminal.snapshot)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -138,7 +139,7 @@ describe('native ownership graph observation', () => {
             200,
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect('unknown task inspection is typed and does not write records', () =>
@@ -149,6 +150,6 @@ describe('native ownership graph observation', () => {
         assert.strictEqual((yield* scheduler.inspect(id).pipe(Effect.flip))._tag, 'TaskError')
         assert.deepStrictEqual(yield* Session.scanTasks(session).pipe(Stream.runCollect), [])
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

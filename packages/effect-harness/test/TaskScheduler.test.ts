@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
@@ -138,7 +139,7 @@ describe('standalone custom task scheduler', () => {
             minimumReaderVersion: 2,
           })
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -181,7 +182,7 @@ describe('standalone custom task scheduler', () => {
               assert.include(outcome.error.message, 'mixed-defect')
           }
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -267,7 +268,7 @@ describe('standalone custom task scheduler', () => {
           assert.isTrue(Option.isSome(record))
           if (Option.isSome(record)) assert.isUndefined(record.value.memos)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -297,7 +298,7 @@ describe('standalone custom task scheduler', () => {
           assert.strictEqual(resume._tag, 'StorageFormatError')
           assert.deepStrictEqual(yield* Session.scanTasks(session).pipe(Stream.runCollect), [])
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect('a refused future format cannot initialize, migrate or invoke custom work', () =>
     Effect.scoped(
@@ -374,6 +375,6 @@ describe('standalone custom task scheduler', () => {
           Effect.provideService(StorageFormat.StorageFormat, capability),
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

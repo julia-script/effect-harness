@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Prompt from 'effect/ai/Prompt'
@@ -9,7 +10,7 @@ import * as Record from 'effect-harness/Record'
 import * as Session from 'effect-harness/Session'
 import * as Storage from 'effect-harness/Storage'
 import * as Transaction from 'effect-harness/Transaction'
-import * as Memory from '../src/internal/Memory.js'
+import * as RowProjection from '../src/internal/Projection.js'
 import * as Kernel from '../src/internal/Kernel.js'
 import * as SessionRuntime from '../src/internal/SessionRuntime.js'
 
@@ -42,7 +43,7 @@ describe('bounded canonical context projection', () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const access = yield* Memory.makeAccess
+          const access = yield* RowProjection.makeAccess
           let saves = 0
           let commits = 0
           let reservations = 0
@@ -730,7 +731,7 @@ describe('bounded canonical context projection', () => {
           assert.strictEqual(absent._tag, 'Failure')
           assert.strictEqual(writes, count)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })
 

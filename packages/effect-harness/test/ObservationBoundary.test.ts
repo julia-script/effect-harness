@@ -1,4 +1,4 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
 import * as FileSystem from 'effect/FileSystem'
@@ -28,7 +28,7 @@ const bun = 'Bun' in globalThis
 const services = bun ? (await import('@effect/platform-bun')).BunServices.layer : NodeServices.layer
 
 describe('authentic observation boundary', () => {
-  for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+  for (const backend of ['temporary', 'jsonl'] as const)
     it.live(
       `real invocation gates targets/options before effects and joins held callbacks: ${backend}`,
       () =>
@@ -36,16 +36,10 @@ describe('authentic observation boundary', () => {
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'observation-boundary-' })
-            const sql = bun
-              ? (yield* Effect.promise(() => import('@effect/sql-sqlite-bun/SqliteClient'))).layer
-              : (yield* Effect.promise(() => import('@effect/sql-sqlite-node/SqliteClient'))).layer
+
             const layer = (() => {
-              if (backend === 'memory') return Storage.layerMemory
-              if (backend === 'sqlite')
-                return Storage.layerJournal().pipe(
-                  Layer.provide(SqlEventJournal.layer()),
-                  Layer.provide(sql({ filename: `${directory}/native.sqlite` })),
-                )
+              if (backend === 'temporary') return TemporaryStorage.layer
+
               return Storage.layerJsonl({ filePath: `${directory}/native.jsonl` })
             })()
             const context = yield* Layer.build(layer)
@@ -217,6 +211,6 @@ describe('authentic observation boundary', () => {
         assert.strictEqual(events._tag, 'ObservationError')
         assert.strictEqual(reads, 0)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

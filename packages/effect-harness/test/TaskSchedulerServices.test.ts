@@ -1,3 +1,4 @@
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
@@ -13,7 +14,7 @@ import * as Document from 'effect-harness/Document'
 import * as Record from 'effect-harness/Record'
 import * as Registry from 'effect-harness/Registry'
 import * as Session from 'effect-harness/Session'
-import * as Storage from 'effect-harness/Storage'
+
 import * as Task from 'effect-harness/Task'
 import { TaskError } from 'effect-harness/TaskError'
 import { TaskExecution } from 'effect-harness/TaskExecution'
@@ -138,7 +139,7 @@ describe('scheduler captured services and supplied boundaries', () => {
           yield* registry.uninstall('backend')
           assert.deepStrictEqual(released, [7, 8])
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -191,7 +192,7 @@ describe('scheduler captured services and supplied boundaries', () => {
           assert.deepStrictEqual(stored.input, { count: '13' })
           assert.deepStrictEqual(stored.state.outcome, { status: 'completed', result: '14' })
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect('encodes a typed domain failure through its captured serviceful codec', () =>
@@ -231,7 +232,7 @@ describe('scheduler captured services and supplied boundaries', () => {
         assert.strictEqual(stored.status, 'failed')
         if (stored.status === 'failed') assert.strictEqual(stored.result, '14')
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -274,7 +275,7 @@ describe('scheduler captured services and supplied boundaries', () => {
           yield* Deferred.succeed(release, undefined)
           assert.strictEqual((yield* scheduler.wait(ref)).status, 'completed')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -355,7 +356,7 @@ describe('scheduler captured services and supplied boundaries', () => {
             ),
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -408,7 +409,7 @@ describe('scheduler captured services and supplied boundaries', () => {
           assert.isTrue(Option.isNone(yield* scheduler.failure))
           assert.strictEqual((yield* SessionRuntime.get(session)).reconciliations.size, 1)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -461,7 +462,7 @@ describe('scheduler captured services and supplied boundaries', () => {
           const ref = yield* scheduler.start(definition, 0, { conversationId: root })
           assert.strictEqual((yield* scheduler.wait(ref)).status, 'completed')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect('native ordinary abort leaves conversation-owned background work independent', () =>
     Effect.scoped(
@@ -532,7 +533,7 @@ describe('scheduler captured services and supplied boundaries', () => {
         assert.isFalse((yield* scheduler.inspect(created.id)).record.abortRequested)
         assert.strictEqual((yield* Session.scanTasks(session).pipe(Stream.runCollect)).length, 3)
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect(
@@ -576,8 +577,7 @@ describe('scheduler captured services and supplied boundaries', () => {
               },
             }),
           )
-          yield* scheduler.resume
-          yield* settle
+          yield* scheduler.waitForTask(record.id).pipe(Effect.flip)
           const failure = yield* scheduler.failure
           assert.isTrue(Option.isSome(failure))
           if (Option.isSome(failure)) {
@@ -588,7 +588,7 @@ describe('scheduler captured services and supplied boundaries', () => {
           // Native reconciliation releases an empty wait before the supplied boundary runs.
           assert.strictEqual((yield* scheduler.inspect(record.id)).record.state.status, 'pending')
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
   it.effect('rolls back domain drafts when the typed terminal codec refuses a result', () =>
@@ -632,7 +632,7 @@ describe('scheduler captured services and supplied boundaries', () => {
           [],
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect(
     'rejects progress through a different codec under the same kind/version without domain writes',
@@ -681,7 +681,7 @@ describe('scheduler captured services and supplied boundaries', () => {
             [],
           )
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
   it.effect(
     'normalizes failures inside the fresh invocation Scope and releases codec finalizers there',
@@ -742,6 +742,6 @@ describe('scheduler captured services and supplied boundaries', () => {
           assert.strictEqual(finalizers, 1)
           assert.strictEqual(phaseFinalizers, 1)
         }),
-      ).pipe(Effect.provide(Storage.layerMemory)),
+      ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 })

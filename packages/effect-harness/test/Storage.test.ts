@@ -1,10 +1,8 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
-import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Path from 'effect/Path'
 import type * as Scope from 'effect/Scope'
@@ -42,16 +40,12 @@ const entry = (id: number, conversationId = root): Domain.Entry => ({
   kind: 'user',
   data: { text: `entry ${id}` },
 })
-type Backend = 'memory' | 'sqlite' | 'jsonl'
+type Backend = 'temporary' | 'jsonl'
 const layerFor = (backend: Backend, filename: string) => {
   switch (backend) {
-    case 'memory':
-      return Storage.layerMemory
-    case 'sqlite':
-      return Storage.layerJournal().pipe(
-        Layer.provide(SqlEventJournal.layer()),
-        Layer.provide(SqliteClient.layer({ filename })),
-      )
+    case 'temporary':
+      return TemporaryStorage.layer
+
     case 'jsonl':
       return Storage.layerJsonl({ filePath: filename })
   }
@@ -77,7 +71,7 @@ const expectSome = <A>(value: Option.Option<A>): A => {
   return Option.getOrThrow(value)
 }
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   describe(`storage: ${backend}`, () => {
     it.live(
       'commits atomically and rejects identity conflicts without advancing the sequence',

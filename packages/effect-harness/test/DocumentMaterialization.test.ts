@@ -1,8 +1,7 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import * as ScriptedStream from './fixtures/ScriptedStream.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -59,7 +58,7 @@ const current = Document.define({
 })
 const some = Option.getOrThrow
 const withMemory = <A, E, R>(program: Effect.Effect<A, E, R>) =>
-  Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
+  Effect.scoped(program).pipe(Effect.provide(TemporaryStorage.layer))
 const initialize = (session: Session.Session) =>
   Session.commit(session, (tx) =>
     Effect.gen(function* () {
@@ -330,9 +329,8 @@ describe('Document materialization', () => {
             const layer =
               backend === 'JSONL'
                 ? Storage.layerJsonl({ filePath: `${dir}/storage.jsonl` })
-                : Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(SqliteClient.layer({ filename: `${dir}/storage.sqlite` })),
+                : Storage.layerJsonl({ filePath: `${dir}/storage.sqlite` }).pipe(
+                    Layer.provide(NodeServices.layer),
                   )
             const cutoff = yield* Effect.scoped(
               Effect.gen(function* () {

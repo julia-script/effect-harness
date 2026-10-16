@@ -1,6 +1,5 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { NodeServices } from '@effect/platform-node'
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient'
 import { assert, describe, it } from '@effect/vitest'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
@@ -81,8 +80,8 @@ const nested = (taskId: Record.TaskId, conversationId = root): Usage.Receipt => 
   },
 })
 const emptyModels = (summary: Usage.Summary) => assert.deepEqual(summary.models, [])
-const memory = <A, E, R>(program: Effect.Effect<A, E, R>) =>
-  Effect.scoped(program).pipe(Effect.provide(Storage.layerMemory))
+const withStorage = <A, E, R>(program: Effect.Effect<A, E, R>) =>
+  Effect.scoped(program).pipe(Effect.provide(TemporaryStorage.layer))
 const assertConflict = (failure: Session.Failure) => {
   assert.strictEqual(failure._tag, 'SessionError')
   if (failure._tag === 'SessionError') {
@@ -91,7 +90,7 @@ const assertConflict = (failure: Session.Failure) => {
   }
 }
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
+for (const backend of ['temporary', 'jsonl'] as const) {
   describe(`usage receipts: ${backend}`, () => {
     it.effect(
       'persists failed and nested receipts through retirement, reset, projection, fork and cold reopen',
@@ -100,16 +99,10 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem
             const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'usage-receipts-' })
-            const disk =
-              backend === 'sqlite'
-                ? Storage.layerJournal().pipe(
-                    Layer.provide(SqlEventJournal.layer()),
-                    Layer.provide(SqliteClient.layer({ filename: `${directory}/state.sqlite` })),
-                  )
-                : Storage.layerJsonl({ filePath: `${directory}/state.jsonl` })
+            const disk = Storage.layerJsonl({ filePath: `${directory}/state.jsonl` })
             const open = Effect.gen(function* () {
               const storage =
-                backend === 'memory'
+                backend === 'temporary'
                   ? yield* Storage.Storage
                   : Context.get(yield* Layer.build(Layer.fresh(disk)), Storage.Storage)
               return yield* Session.make().pipe(Effect.provideService(Storage.Storage, storage))
@@ -224,7 +217,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               'terminal',
             )
           }),
-        ).pipe(Effect.provide(Layer.merge(NodeServices.layer, Storage.layerMemory))),
+        ).pipe(Effect.provide(Layer.merge(NodeServices.layer, TemporaryStorage.layer))),
     )
 
     it.effect(
@@ -240,12 +233,8 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
               Storage.Storage | import('effect-harness/StorageFormat').StorageFormat,
               StorageError | import('effect/sql/SqlError').SqlError,
               FileSystem.FileSystem
-            > = Storage.layerMemory
-            if (backend === 'sqlite')
-              layer = Storage.layerJournal().pipe(
-                Layer.provide(SqlEventJournal.layer()),
-                Layer.provide(SqliteClient.layer({ filename: `${directory}/state.sqlite` })),
-              )
+            > = TemporaryStorage.layer
+
             if (backend === 'jsonl')
               layer = Storage.layerJsonl({ filePath: `${directory}/state.jsonl` })
             const storage = Context.get(yield* Layer.build(layer), Storage.Storage)
@@ -298,7 +287,7 @@ for (const backend of ['memory', 'sqlite', 'jsonl'] as const) {
 
 describe('usage receipt transaction boundaries', () => {
   it.effect('publishes entry and no-entry charge domains under one atomic session query', () =>
-    memory(
+    withStorage(
       Effect.gen(function* () {
         const session = yield* Session.make()
         yield* Session.commit(session, Transaction.ensureRoot)
@@ -334,7 +323,7 @@ describe('usage receipt transaction boundaries', () => {
   it.effect(
     'caught callback failure preserves earlier drafts and discards new entries, receipt, task replacement and retirement',
     () =>
-      memory(
+      withStorage(
         Effect.gen(function* () {
           const session = yield* Session.make()
           let escaped: Transaction.Transaction | undefined
@@ -394,7 +383,7 @@ describe('usage receipt transaction boundaries', () => {
   it.effect(
     'interrupted and defective callbacks leave no accounting or outcome drafts even when the exit is caught',
     () =>
-      memory(
+      withStorage(
         Effect.gen(function* () {
           const session = yield* Session.make()
           yield* Session.commit(session, Transaction.ensureRoot)
@@ -435,7 +424,7 @@ describe('usage receipt transaction boundaries', () => {
   it.effect(
     'serializes duplicate writers and rejects changed usage, outcome and linked identity',
     () =>
-      memory(
+      withStorage(
         Effect.gen(function* () {
           const session = yield* Session.make()
           yield* Session.commit(session, Transaction.ensureRoot)
@@ -472,7 +461,7 @@ describe('usage receipt transaction boundaries', () => {
   it.effect(
     'counts entry-backed usage once and rejects aliases, differing charges and inherited links',
     () =>
-      memory(
+      withStorage(
         Effect.gen(function* () {
           const session = yield* Session.make()
           yield* Session.commit(session, Transaction.ensureRoot)
@@ -511,7 +500,7 @@ describe('usage receipt transaction boundaries', () => {
   it.effect(
     'supplies a legacy entry missing its accounting field without retaining an unknown duplicate',
     () =>
-      memory(
+      withStorage(
         Effect.gen(function* () {
           const session = yield* Session.make()
           yield* Session.commit(session, Transaction.ensureRoot)
@@ -532,7 +521,7 @@ describe('usage receipt transaction boundaries', () => {
   it.effect(
     'keeps missing external charges unknown, retains zero counters and copies caller values',
     () =>
-      memory(
+      withStorage(
         Effect.gen(function* () {
           const session = yield* Session.make()
           yield* Session.commit(session, Transaction.ensureRoot)
@@ -562,7 +551,7 @@ describe('usage receipt transaction boundaries', () => {
   )
 
   it.effect('rejects invalid receipt payloads before creating any durable member', () =>
-    memory(
+    withStorage(
       Effect.gen(function* () {
         const session = yield* Session.make()
         yield* Session.commit(session, Transaction.ensureRoot)

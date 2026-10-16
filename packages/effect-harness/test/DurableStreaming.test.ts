@@ -1,7 +1,7 @@
-import * as SqlEventJournal from 'effect/eventlog/SqlEventJournal'
+import * as TemporaryStorage from './fixtures/Storage.js'
 import { assert, describe, it } from '@effect/vitest'
 import { NodeServices } from '@effect/platform-node'
-import { SqliteClient } from '@effect/sql-sqlite-node'
+
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -55,19 +55,14 @@ const partial = (runtime: HarnessRuntime.HarnessRuntimeService, knownUsage = fal
   )
 const fixture = Effect.gen(function* () {
   const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped()
-  const memory = yield* Layer.build(Storage.layerMemory)
-  const sqlite = Storage.layerJournal().pipe(
-    Layer.provide(SqlEventJournal.layer()),
-    Layer.provide(SqliteClient.layer({ filename: `${directory}/stream.sqlite` })),
-  )
+  const temporary = yield* Layer.build(TemporaryStorage.layer)
+
   const jsonl = Storage.layerJsonl({ filePath: `${directory}/stream.jsonl` })
-  return (backend: 'memory' | 'sqlite' | 'jsonl') =>
-    backend === 'memory'
-      ? Effect.succeed(memory)
-      : Layer.build(Layer.fresh(backend === 'sqlite' ? sqlite : jsonl))
+  return (backend: 'temporary' | 'jsonl') =>
+    backend === 'temporary' ? Effect.succeed(temporary) : Layer.build(Layer.fresh(jsonl))
 })
 
-for (const backend of ['memory', 'sqlite', 'jsonl'] as const)
+for (const backend of ['temporary', 'jsonl'] as const)
   describe(`${backend} native durable streaming`, () => {
     for (const committed of [false, true, 'known'] as const) {
       const location = committed ? 'after partial' : 'before partial'
@@ -297,7 +292,7 @@ it.effect('TestClock throttles partials and flushes trailing text before termina
         1,
       )
     }),
-  ).pipe(Effect.provide(Storage.layerMemory)),
+  ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 for (const parts of [
@@ -333,7 +328,7 @@ for (const parts of [
           0,
         )
       }),
-    ).pipe(Effect.provide(Storage.layerMemory)),
+    ).pipe(Effect.provide(TemporaryStorage.layer)),
   )
 
 it.effect('abort releases the native stream and fences trailing progress and terminal output', () =>
@@ -396,7 +391,7 @@ it.effect('abort releases the native stream and fences trailing progress and ter
       assert.strictEqual(calls, 1)
       assert.strictEqual(before.filter((entry) => entry.kind === 'assistant').length, 0)
     }),
-  ).pipe(Effect.provide(Storage.layerMemory)),
+  ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
 
 it.effect('throttle intervals beyond host timer bounds do not publish early', () =>
@@ -441,5 +436,5 @@ it.effect('throttle intervals beyond host timer bounds do not publish early', ()
       yield* Deferred.succeed(end, undefined)
       yield* runtime.backend.wait(job.id)
     }),
-  ).pipe(Effect.provide(Storage.layerMemory)),
+  ).pipe(Effect.provide(TemporaryStorage.layer)),
 )
