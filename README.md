@@ -82,7 +82,7 @@ await Effect.runPromise(Effect.scoped(program))
 
 `Storage.layerMemory` is volatile. For local persistence, replace it with `Storage.layerJsonl('./agent-data')` and provide Effect `FileSystem` and `Path` services from your platform adapter. The argument is a directory, not a JSONL filename. `Storage.layerSql()` accepts a host-provided Effect SQL `SqlClient` using SQLite or PostgreSQL; its optional `prefix` separates tables in a shared database. A Session must be the only writer of its store.
 
-The 0.6 cutover changes built-in kinds and keys from `pi.*` to `$*` (for example, `$user`, `$assistant`, `$agent`, and `$tool-output`). Custom input-entry kinds cannot start with `$`. Existing `pi.*` stores are not migrated automatically: use a fresh store or migrate it explicitly before opening it with this release. Update any consumers that inspect transcript kinds, task names, document keys, or tool-output discriminants.
+Built-in kinds and keys use the reserved `$` prefix (for example, `$user`, `$assistant`, `$agent`, and `$tool-output`). Custom input-entry kinds cannot start with `$`. Consumers that inspect transcript kinds, task names, document keys, or tool-output discriminants should use these identifiers.
 
 `HarnessTransport.layerMemory` connects client and server in one process. For a separate server, use `HarnessTransport.layerWebSocketServer(path)` with an Effect HTTP router and platform HTTP server; clients use `HarnessTransport.layerWebSocket(url)`.
 
@@ -131,7 +131,7 @@ Inspired by [Pi Durable](https://github.com/earendil-works/pi)'s durable convers
 
 ## Maintainer release workflow
 
-Releases use Changesets and npm trusted publishing, with Node 24 and Bun 1.4.2. The package stays at the published base version until the automated version PR is merged; the pending minor changeset prepares the breaking pre-1.0 release from `0.5.0` to `0.6.0`, including the built-in persisted kind/key prefix change from `pi.` to `$`.
+Releases use Changesets and npm trusted publishing, with Node 24 and Bun 1.4.2. The package stays at the published base version until the automated version PR is merged; the pending minor changeset prepares the breaking pre-1.0 release from `0.5.0` to `0.6.0`.
 
 1. Include a changeset in each PR with `bun run changeset`; use `bun run changeset --empty` for changes that intentionally do not release the package. `bun run check:changesets` checks additions against `origin/main`. CI requires this except for the same-repository `changeset-release/main` version branch, whose changesets have already been consumed.
 2. Merge the change into protected `main`. After its push-triggered `CI` succeeds, `.github/workflows/release.yml` runs `changesets/action` to create or update the `changeset-release/main` version PR. Its `bun run version:packages` command updates the version and changelog, refreshes the Bun lockfile without install scripts, and formats the result.
