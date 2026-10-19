@@ -1,0 +1,529 @@
+/** Isolated transaction values. Operations stage changes; Session alone commits them. */
+import * as Effect from 'effect/Effect'
+import { dual } from 'effect/Function'
+import type * as Option from 'effect/Option'
+import type * as Pipeable from 'effect/Pipeable'
+import * as Predicate from 'effect/Predicate'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
+import * as Struct from 'effect/Struct'
+import type * as Identity from './Identity.js'
+import * as Record from './Record.js'
+import type * as Document from './Document.js'
+import type * as DocumentRetirement from './DocumentRetirement.js'
+import type * as StorageRecord from './Record.js'
+import type { Failure } from './SessionError.js'
+import * as Runtime from './internal/TransactionRuntime.js'
+
+export const TypeId = '~effect-harness/Transaction'
+
+/** Temporary capability valid only during its Session.commit callback. */
+export interface Transaction extends Pipeable.Pipeable {
+  readonly [TypeId]: typeof TypeId
+}
+
+export const isTransaction = (value: unknown): value is Transaction =>
+  Predicate.hasProperty(value, TypeId)
+
+export const ConversationOptionsSchema = Schema.Struct({
+  ownership: Schema.Union([
+    Schema.TaggedStruct('ownerless', {}),
+    Schema.TaggedStruct('task', { taskId: Record.TaskId }),
+  ]),
+})
+export type ConversationOptions = typeof ConversationOptionsSchema.Type
+
+/** Session assigns identity and task attribution before validating the complete record. */
+export const EntryDraftSchema = Record.Entry.mapFields((fields) => ({
+  ...Struct.omit(fields, ['id', 'conversationId', 'byTaskId', 'head']),
+  head: Schema.optionalKey(Schema.Union([Record.EntryId, Schema.Literal('self')])),
+}))
+export type EntryDraft = typeof EntryDraftSchema.Type
+
+export const TaskCreateSchema = Record.Task.mapFields(Struct.omit(['id']))
+export type TaskCreate = typeof TaskCreateSchema.Type
+
+export const SubmissionCreateSchema = Schema.Union([
+  Record.InputQueued.mapFields(Struct.omit(['id'])),
+  Record.InputPlaced.mapFields(Struct.omit(['id'])),
+  Record.InputDone.mapFields(Struct.omit(['id'])),
+  Record.InputUnanswered.mapFields(Struct.omit(['id'])),
+  Record.WriteQueued.mapFields(Struct.omit(['id'])),
+  Record.WriteDone.mapFields(Struct.omit(['id'])),
+  Record.WriteUnanswered.mapFields(Struct.omit(['id'])),
+])
+export type SubmissionCreate = typeof SubmissionCreateSchema.Type
+
+/** Reads include changes already staged in this transaction. */
+export const conversation: {
+  (
+    id: Record.ConversationId,
+  ): (self: Transaction) => Effect.Effect<Option.Option<Record.Conversation>, Failure>
+  (
+    self: Transaction,
+    id: Record.ConversationId,
+  ): Effect.Effect<Option.Option<Record.Conversation>, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, id: Record.ConversationId) =>
+    Runtime.use(self, (state) => Runtime.conversation(state, id)),
+)
+
+export const entry: {
+  (
+    id: Record.EntryId,
+    options?: { readonly conversationId: Record.ConversationId },
+  ): (self: Transaction) => Effect.Effect<Option.Option<Record.Entry>, Failure>
+  (
+    self: Transaction,
+    id: Record.EntryId,
+    options?: { readonly conversationId: Record.ConversationId },
+  ): Effect.Effect<Option.Option<Record.Entry>, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (
+    self: Transaction,
+    id: Record.EntryId,
+    options?: { readonly conversationId: Record.ConversationId },
+  ) => Runtime.use(self, (state) => Runtime.entry(state, id, options)),
+)
+
+export const task: {
+  (id: Record.TaskId): (self: Transaction) => Effect.Effect<Option.Option<Record.Task>, Failure>
+  (self: Transaction, id: Record.TaskId): Effect.Effect<Option.Option<Record.Task>, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, id: Record.TaskId) => Runtime.use(self, (state) => Runtime.task(state, id)),
+)
+
+export const submission: {
+  (
+    id: Record.SubmissionId,
+  ): (self: Transaction) => Effect.Effect<Option.Option<Record.Submission>, Failure>
+  (
+    self: Transaction,
+    id: Record.SubmissionId,
+  ): Effect.Effect<Option.Option<Record.Submission>, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, id: Record.SubmissionId) =>
+    Runtime.use(self, (state) => Runtime.submission(state, id)),
+)
+
+export const submissionByRequest: {
+  (
+    conversationId: Record.ConversationId,
+    requestId: Identity.RequestId,
+  ): (self: Transaction) => Effect.Effect<Option.Option<Record.Submission>, Failure>
+  (
+    self: Transaction,
+    conversationId: Record.ConversationId,
+    requestId: Identity.RequestId,
+  ): Effect.Effect<Option.Option<Record.Submission>, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, conversationId: Record.ConversationId, requestId: Identity.RequestId) =>
+    Runtime.use(self, (state) => Runtime.submissionByRequest(state, conversationId, requestId)),
+)
+
+export const scanConversations: {
+  (
+    query?: StorageRecord.ConversationQuery,
+  ): (self: Transaction) => Stream.Stream<Record.Conversation, Failure>
+  (
+    self: Transaction,
+    query?: StorageRecord.ConversationQuery,
+  ): Stream.Stream<Record.Conversation, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, query?: StorageRecord.ConversationQuery) =>
+    Stream.unwrap(
+      Runtime.use(self, (state) => Runtime.scanConversations(state, query)).pipe(
+        Effect.map(Stream.fromArray),
+      ),
+    ).pipe(Stream.mapEffect((value) => Runtime.use(self, () => Effect.succeed(value)))),
+)
+
+export const scanEntries: {
+  (query: StorageRecord.EntryQuery): (self: Transaction) => Stream.Stream<Record.Entry, Failure>
+  (self: Transaction, query: StorageRecord.EntryQuery): Stream.Stream<Record.Entry, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, query: StorageRecord.EntryQuery) =>
+    Stream.unwrap(
+      Runtime.use(self, (state) => Runtime.scanEntries(state, query)).pipe(
+        Effect.map(Stream.fromArray),
+      ),
+    ).pipe(Stream.mapEffect((value) => Runtime.use(self, () => Effect.succeed(value)))),
+)
+
+export const scanTasks: {
+  (query?: StorageRecord.TaskQuery): (self: Transaction) => Stream.Stream<Record.Task, Failure>
+  (self: Transaction, query?: StorageRecord.TaskQuery): Stream.Stream<Record.Task, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, query?: StorageRecord.TaskQuery) =>
+    Stream.unwrap(
+      Runtime.use(self, (state) => Runtime.scanTasks(state, query)).pipe(
+        Effect.map(Stream.fromArray),
+      ),
+    ).pipe(Stream.mapEffect((value) => Runtime.use(self, () => Effect.succeed(value)))),
+)
+
+export const scanSubmissions: {
+  (
+    query?: StorageRecord.SubmissionQuery,
+  ): (self: Transaction) => Stream.Stream<Record.Submission, Failure>
+  (
+    self: Transaction,
+    query?: StorageRecord.SubmissionQuery,
+  ): Stream.Stream<Record.Submission, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, query?: StorageRecord.SubmissionQuery) =>
+    Stream.unwrap(
+      Runtime.use(self, (state) => Runtime.scanSubmissions(state, query)).pipe(
+        Effect.map(Stream.fromArray),
+      ),
+    ).pipe(Stream.mapEffect((value) => Runtime.use(self, () => Effect.succeed(value)))),
+)
+
+export const scanDocuments: {
+  (
+    query: StorageRecord.DocumentQuery,
+  ): (self: Transaction) => Stream.Stream<StorageRecord.DocumentRecord, Failure>
+  (
+    self: Transaction,
+    query: StorageRecord.DocumentQuery,
+  ): Stream.Stream<StorageRecord.DocumentRecord, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, query: StorageRecord.DocumentQuery) =>
+    Stream.unwrap(
+      Runtime.use(self, (state) => Runtime.scanDocuments(state, query)).pipe(
+        Effect.map(Stream.fromArray),
+      ),
+    ).pipe(Stream.mapEffect((value) => Runtime.use(self, () => Effect.succeed(value)))),
+)
+
+/** Stages an absent root with configured Session initializers; existing roots skip them. */
+export const ensureRoot: {
+  (): (self: Transaction) => Effect.Effect<Record.Conversation, Failure>
+  (self: Transaction): Effect.Effect<Record.Conversation, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction) => Runtime.use(self, (state) => Runtime.ensureRoot(state)),
+)
+
+/** Creates and initializes atomically. Caught initializer failure leaves prior drafts intact. */
+export const createConversation: {
+  (options: ConversationOptions): (self: Transaction) => Effect.Effect<Record.Conversation, Failure>
+  (self: Transaction, options: ConversationOptions): Effect.Effect<Record.Conversation, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, options: ConversationOptions) =>
+    Runtime.use(self, (state) => Runtime.createConversation(state, options)),
+)
+
+/**
+ * Inherits history and documents by source fork policies, then runs configured
+ * Session initializers in order. Failure stages neither fork copies nor callback writes.
+ */
+export const forkConversation: {
+  (
+    parent: Record.ConversationId,
+    at: Record.EntryId,
+    options: ConversationOptions,
+  ): (self: Transaction) => Effect.Effect<Record.Conversation, Failure>
+  (
+    self: Transaction,
+    parent: Record.ConversationId,
+    at: Record.EntryId,
+    options: ConversationOptions,
+  ): Effect.Effect<Record.Conversation, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (
+    self: Transaction,
+    parent: Record.ConversationId,
+    at: Record.EntryId,
+    options: ConversationOptions,
+  ) => Runtime.use(self, (state) => Runtime.forkConversation(state, parent, at, options)),
+)
+
+export const appendEntry: {
+  (
+    conversationId: Record.ConversationId,
+    draft: EntryDraft,
+  ): (self: Transaction) => Effect.Effect<Record.Entry, Failure>
+  (
+    self: Transaction,
+    conversationId: Record.ConversationId,
+    draft: EntryDraft,
+  ): Effect.Effect<Record.Entry, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, conversationId: Record.ConversationId, draft: EntryDraft) =>
+    Runtime.use(self, (state) => Runtime.appendEntry(state, conversationId, draft)),
+)
+
+/** Stages task data and optional restart policy; omission retains legacy resume behavior. Does not schedule or execute it. */
+export const createTask: {
+  (value: TaskCreate): (self: Transaction) => Effect.Effect<Record.Task, Failure>
+  (self: Transaction, value: TaskCreate): Effect.Effect<Record.Task, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, value: TaskCreate) =>
+    Runtime.use(self, (state) => Runtime.createTask(state, value)),
+)
+
+/**
+ * Stages a task replacement. Becoming terminal retires all active task documents
+ * in the same commit, including drafts created earlier in this callback.
+ * Cleanup of unstaged documents requires Storage.documentMetadata, supplied by built-in
+ * adapters. A custom adapter without it fails with SessionError(invalid), without reading bodies.
+ * Retirement preparation failure stages neither replacement nor retirement, even if caught.
+ * Terminal receipts remain immutable; this does not sweep legacy terminal tasks.
+ */
+export const putTask: {
+  (value: Record.Task): (self: Transaction) => Effect.Effect<void, Failure>
+  (self: Transaction, value: Record.Task): Effect.Effect<void, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, value: Record.Task) =>
+    Runtime.use(self, (state) => Runtime.putTask(state, value)),
+)
+
+/** Persist an ordinary abort request/reason. Does not interrupt fibers or run cleanup. */
+export const requestTaskAbort: {
+  (id: Record.TaskId, reason?: string): (self: Transaction) => Effect.Effect<void, Failure>
+  (self: Transaction, id: Record.TaskId, reason?: string): Effect.Effect<void, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, id: Record.TaskId, reason?: string) =>
+    Runtime.use(self, (state) => Runtime.requestTaskAbort(state, id, reason)),
+)
+
+export const createSubmission: {
+  (value: SubmissionCreate): (self: Transaction) => Effect.Effect<Record.Submission, Failure>
+  (self: Transaction, value: SubmissionCreate): Effect.Effect<Record.Submission, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, value: SubmissionCreate) =>
+    Runtime.use(self, (state) => Runtime.createSubmission(state, value)),
+)
+
+export const putSubmission: {
+  (value: Record.Submission): (self: Transaction) => Effect.Effect<void, Failure>
+  (self: Transaction, value: Record.Submission): Effect.Effect<void, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, value: Record.Submission) =>
+    Runtime.use(self, (state) => Runtime.putSubmission(state, value)),
+)
+
+/** Reads a detached staged or committed value; does not create a missing document. */
+export const snapshot: {
+  <S extends Document.Codec>(
+    document: Document.Document<S>,
+    target: Document.Target,
+  ): (
+    self: Transaction,
+  ) => Effect.Effect<Option.Option<Document.Snapshot<S>>, Failure, S['DecodingServices']>
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+  ): Effect.Effect<Option.Option<Document.Snapshot<S>>, Failure, S['DecodingServices']>
+} = dual(
+  (args) => isTransaction(args[0]),
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+  ) => Runtime.use(self, (state) => Runtime.snapshot(state, document, target)),
+)
+
+/**
+ * Stages the initial value when missing. Seeds apply only to a new incarnation.
+ * Existing older versions upgrade through a declared direct migration, atomically
+ * with this commit. Failed migrations stage no replacement, even when caught.
+ * New drafts have createdAt = 0 until commit assigns their persisted sequence.
+ * Returned snapshots remain detached values; read the Session for committed metadata.
+ * Task owners must exist and be nonterminal, even for existing legacy documents.
+ * Terminal owners fail with SessionError(reason: 'conflict', operation: 'document.scope')
+ * before initialization or migration. Settlement cannot be undone by reusing a target.
+ */
+export const ensureDocument: {
+  <S extends Document.Codec>(
+    document: Document.Document<S>,
+    target: Document.Target,
+    options?: { readonly seed?: Schema.Json },
+  ): (
+    self: Transaction,
+  ) => Effect.Effect<Document.Snapshot<S>, Failure, S['DecodingServices'] | S['EncodingServices']>
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+    options?: { readonly seed?: Schema.Json },
+  ): Effect.Effect<Document.Snapshot<S>, Failure, S['DecodingServices'] | S['EncodingServices']>
+} = dual(
+  (args) => isTransaction(args[0]),
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+    options?: { readonly seed?: Schema.Json },
+  ) => Runtime.use(self, (state) => Runtime.ensureDocument(state, document, target, options)),
+)
+
+/**
+ * Replaces an existing document with a value encoded through its definition's schema.
+ * Terminal task owners fail with SessionError(reason: 'conflict', operation: 'document.scope').
+ */
+export const setDocument: {
+  <S extends Document.Codec>(
+    document: Document.Document<S>,
+    target: Document.Target,
+    value: S['Type'],
+  ): (self: Transaction) => Effect.Effect<void, Failure, S['EncodingServices']>
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+    value: S['Type'],
+  ): Effect.Effect<void, Failure, S['EncodingServices']>
+} = dual(
+  (args) => isTransaction(args[0]),
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+    value: S['Type'],
+  ) => Runtime.use(self, (state) => Runtime.setDocument(state, document, target, value)),
+)
+
+/**
+ * Applies a pure replacement function to a detached value of an existing document.
+ * Declared migrations upgrade older values before calling the replacement function.
+ * Migrations and updates validate together; version upgrades persist one current-version base.
+ * Compatible ordinary updates derive validated encoded JSON operations, including compact
+ * splices for inserted/removed array spans. Equal values avoid a write; setDocument and
+ * explicit replace operations select bases. checkpointWhen may select a base at preparation.
+ * Terminal task owners conflict before migration or replacement callbacks run.
+ */
+export const updateDocument: {
+  <S extends Document.Codec>(
+    document: Document.Document<S>,
+    target: Document.Target,
+    update: (value: S['Type']) => S['Type'],
+  ): (
+    self: Transaction,
+  ) => Effect.Effect<void, Failure, S['DecodingServices'] | S['EncodingServices']>
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+    update: (value: S['Type']) => S['Type'],
+  ): Effect.Effect<void, Failure, S['DecodingServices'] | S['EncodingServices']>
+} = dual(
+  (args) => isTransaction(args[0]),
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+    update: (value: S['Type']) => S['Type'],
+  ) => Runtime.use(self, (state) => Runtime.updateDocument(state, document, target, update)),
+)
+
+/**
+ * Applies ordered operations to the encoded JSON representation of an existing document.
+ * Paths refer to encoded fields, even for transformed codecs. Both codec directions validate
+ * before adoption; caught failures leave earlier drafts intact. Repeated calls combine once
+ * per incarnation/batch. Explicit replace selects a base; other changes write deltas unless
+ * checkpointWhen elects a base. Splices activate storage format3 before persistence, after
+ * preparation succeeds; custom storage must supply the matching StorageFormat capability.
+ */
+export const patchDocument: {
+  <S extends Document.Codec>(
+    document: Document.Document<S>,
+    target: Document.Target,
+    operations: ReadonlyArray<Record.Op>,
+  ): (
+    self: Transaction,
+  ) => Effect.Effect<void, Failure, S['DecodingServices'] | S['EncodingServices']>
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+    operations: ReadonlyArray<Record.Op>,
+  ): Effect.Effect<void, Failure, S['DecodingServices'] | S['EncodingServices']>
+} = dual(
+  (args) => isTransaction(args[0]),
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+    operations: ReadonlyArray<Record.Op>,
+  ) => Runtime.use(self, (state) => Runtime.patchDocument(state, document, target, operations)),
+)
+
+/**
+ * Retires the current incarnation; a later ensureDocument allocates a fresh identity
+ * when its owner is still nonterminal. May explicitly clean up legacy terminal documents.
+ * A new draft retired in its creation transaction is omitted from persistence.
+ * Unstaged documents require Storage.documentMetadata, supplied by built-in adapters.
+ * A custom adapter without it fails with SessionError(invalid); retirement does not
+ * decode the body or fall back to a content read.
+ */
+export const retireDocument: {
+  <S extends Document.Codec>(
+    document: Document.Document<S>,
+    target: Document.Target,
+  ): (self: Transaction) => Effect.Effect<void, Failure>
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+  ): Effect.Effect<void, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  <S extends Document.Codec>(
+    self: Transaction,
+    document: Document.Document<S>,
+    target: Document.Target,
+  ) => Runtime.use(self, (state) => Runtime.retireDocument(state, document, target)),
+)
+
+/**
+ * Retires an explicitly selected incarnation using metadata only. Supply the current
+ * kind/scope/history/fork policy and a DocumentRetirement.target from a trusted snapshot.
+ * Live versions through policy.version are accepted; future versions, wrong
+ * addresses, changed incarnations and policy mismatches fail with SessionError(conflict,
+ * document.retireMetadata). Invalid metadata fails Schema validation. Absent/already
+ * retired targets are no-ops. Legacy terminal owners may be cleaned up explicitly.
+ *
+ * Does not read content or run codecs, migrations or initializers. An unloaded target
+ * requires Storage.documentMetadata; an adapter without that capability fails with
+ * SessionError(invalid, document.retireMetadata), without a content-read fallback.
+ * Missing/invalid version metadata fails rather than guessing. This operation uses
+ * Session transaction coordination; it does not add CAS against foreign raw writers.
+ * Failure stages no retirement, and prior drafts survive caught errors. Publication and
+ * watch termination occur only after storage success.
+ */
+export const retireDocumentMetadata: {
+  (
+    policy: Document.Metadata,
+    target: DocumentRetirement.Target,
+  ): (self: Transaction) => Effect.Effect<void, Failure>
+  (
+    self: Transaction,
+    policy: Document.Metadata,
+    target: DocumentRetirement.Target,
+  ): Effect.Effect<void, Failure>
+} = dual(
+  (args) => isTransaction(args[0]),
+  (self: Transaction, policy: Document.Metadata, target: DocumentRetirement.Target) =>
+    Runtime.use(self, (state) => Runtime.retireDocumentMetadata(state, policy, target)),
+)

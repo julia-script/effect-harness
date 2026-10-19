@@ -1,0 +1,1260 @@
+import * as ProviderState from './ProviderState.js'
+/** Isolated record overlays and schema-encoded document replacements for one commit. */
+import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
+import { pipeArguments } from 'effect/Pipeable'
+import * as Schema from 'effect/Schema'
+import * as Semaphore from 'effect/Semaphore'
+import * as Stream from 'effect/Stream'
+import * as Struct from 'effect/Struct'
+import type * as Identity from '../Identity.js'
+import * as Domain from '../Record.js'
+import type * as Document from '../Document.js'
+import { MetadataSchema } from '../Document.js'
+import * as DocumentRetirement from '../DocumentRetirement.js'
+import * as Record from '../Record.js'
+import * as Sequence from '../Sequence.js'
+import type * as Session from '../Session.js'
+import type * as Storage from '../Storage.js'
+import { SessionError, type Failure } from '../SessionError.js'
+import * as Transaction from '../Transaction.js'
+import * as TaskPolicy from '../TaskPolicy.js'
+import * as TaskTransitions from './TaskTransitions.js'
+import * as Value from './DocumentValue.js'
+import * as Runtime from './SessionRuntime.js'
+import * as Records from './records.js'
+import * as Patch from './DocumentPatch.js'
+import * as Json from '../Json.js'
+
+interface Draft {
+  readonly key: string
+  readonly original: Option.Option<Record.StoredDocument>
+  readonly record: Domain.DocumentCreate | undefined
+  readonly source: { readonly id: Domain.DocumentId; readonly at: Record.DocumentPoint } | undefined
+  value: Record.StoredDocument
+  changed: boolean
+  retired: boolean
+  /** Undefined selects a base; immutable arrays keep initializer savepoints isolated. */
+  operations?: ReadonlyArray<Record.Op>
+  checkpoint?: (
+    operations: ReadonlyArray<Record.Op>,
+    priorCount: number,
+  ) => Effect.Effect<boolean, SessionError>
+}
+
+interface Retirement {
+  readonly key: string
+  readonly record: Record.DocumentRecord
+}
+
+export interface State {
+  readonly runtime: Runtime.State
+  readonly options: Session.CommitOptions
+  readonly semaphore: Semaphore.Semaphore
+  readonly conversations: Map<Domain.ConversationId, Domain.Conversation>
+  readonly entries: Map<Domain.EntryId, Domain.Entry>
+  readonly tasks: Map<Domain.TaskId, Domain.Task>
+  readonly submissions: Map<Domain.SubmissionId, Domain.Submission>
+  readonly documents: Map<string, Draft>
+  readonly incarnations: Map<Domain.DocumentId, Draft>
+  readonly retirements: Map<Domain.DocumentId, Retirement>
+  readonly copiedSources: Set<Domain.DocumentId>
+  active: boolean
+}
+
+const states = new WeakMap<object, State>()
+export const register = (self: object, state: State): void => {
+  states.set(self, state)
+}
+const error = (reason: SessionError['reason'], operation: string, message: string) =>
+  new SessionError({ reason, operation, message })
+
+export const active = Effect.fnUntraced(function* (state: State) {
+  if (!state.active)
+    return yield* error('revoked', 'transaction.access', 'Transaction callback has ended')
+})
+
+export const use = Effect.fnUntraced(function* <A, E, R>(
+  self: object,
+  run: (state: State) => Effect.Effect<A, E, R>,
+): Effect.fn.Return<A, E | Failure, R> {
+  const state = states.get(self)
+  if (state === undefined)
+    return yield* error('invalid', 'transaction.access', 'Invalid Transaction instance')
+  yield* active(state)
+  return yield* state.semaphore.withPermit(
+    Effect.gen(function* () {
+      yield* active(state)
+      const value = yield* run(state)
+      yield* active(state)
+      return value
+    }),
+  )
+})
+
+export const make = Effect.fnUntraced(function* (
+  runtime: Runtime.State,
+  options: Session.CommitOptions,
+): Effect.fn.Return<State> {
+  return {
+    runtime,
+    options,
+    semaphore: yield* Semaphore.make(1),
+    conversations: new Map(),
+    entries: new Map(),
+    tasks: new Map(),
+    submissions: new Map(),
+    documents: new Map(),
+    incarnations: new Map(),
+    retirements: new Map(),
+    copiedSources: new Set(),
+    active: true,
+  } satisfies State
+})
+
+export const conversation = Effect.fnUntraced(function* (state: State, id: Domain.ConversationId) {
+  const staged = state.conversations.get(id)
+  if (staged !== undefined) return Option.some(yield* Value.copy(Domain.Conversation, staged))
+  return yield* state.runtime.storage.conversation(id)
+})
+
+export const task = Effect.fnUntraced(function* (state: State, id: Domain.TaskId) {
+  const staged = state.tasks.get(id)
+  if (staged !== undefined) return Option.some(yield* Value.copy(Domain.Task, staged))
+  return yield* state.runtime.storage.task(id)
+})
+
+export const submission = Effect.fnUntraced(function* (state: State, id: Domain.SubmissionId) {
+  const staged = state.submissions.get(id)
+  if (staged !== undefined) return Option.some(yield* Value.copy(Domain.Submission, staged))
+  return yield* state.runtime.storage.submission(id)
+})
+
+const ancestry = Effect.fnUntraced(function* (
+  state: State,
+  id: Domain.ConversationId,
+  max: number,
+) {
+  const result: Array<{ readonly id: Domain.ConversationId; readonly max: number }> = []
+  const seen = new Set<Domain.ConversationId>()
+  let current = id
+  let cap = max
+  while (true) {
+    if (seen.has(current))
+      return yield* error('invalid', 'conversation.history', 'Cyclic conversation ancestry')
+    seen.add(current)
+    const record = yield* conversation(state, current)
+    if (Option.isNone(record))
+      return yield* error('notFound', 'conversation.history', 'Conversation is absent')
+    result.push({ id: current, max: cap })
+    if (record.value.parent === undefined) return result
+    current = record.value.parent.conversationId
+    cap = Math.min(cap, record.value.parent.at)
+  }
+})
+
+export const entry = Effect.fnUntraced(function* (
+  state: State,
+  id: Domain.EntryId,
+  options?: { readonly conversationId: Domain.ConversationId },
+) {
+  const staged = state.entries.get(id)
+  const stored = staged === undefined ? yield* state.runtime.storage.entry(id) : Option.none()
+  const value = staged ?? (Option.isSome(stored) ? stored.value.entry : undefined)
+  if (value === undefined) return Option.none()
+  if (options !== undefined) {
+    const ancestors = yield* ancestry(state, options.conversationId, id)
+    if (!ancestors.some((ancestor) => ancestor.id === value.conversationId && id <= ancestor.max))
+      return Option.none()
+  }
+  return Option.some(yield* Value.copy(Domain.Entry, value))
+})
+
+export const scanEntries = Effect.fnUntraced(function* (state: State, input: Record.EntryQuery) {
+  const query = yield* Schema.decodeEffect(Record.EntryQuerySchema)(input)
+  const ancestors = yield* ancestry(
+    state,
+    query.conversationId,
+    query.maxEntryId ?? Number.MAX_SAFE_INTEGER,
+  )
+  const committed = ancestors.find((ancestor) => !state.conversations.has(ancestor.id))
+  const stored =
+    committed === undefined
+      ? []
+      : yield* state.runtime.storage
+          .scanEntries({
+            ...query,
+            conversationId: committed.id,
+            maxEntryId: yield* Schema.decodeEffect(Domain.EntryId)(committed.max),
+          })
+          .pipe(Stream.runCollect)
+  const staged = Array.from(state.entries.values()).filter(
+    (value) =>
+      value.id >= (query.minEntryId ?? 0) &&
+      ancestors.some(
+        (ancestor) => ancestor.id === value.conversationId && value.id <= ancestor.max,
+      ),
+  )
+  return yield* Value.copy(
+    Schema.Array(Domain.Entry),
+    [...stored, ...staged].sort((a, b) =>
+      query.order === 'ascending' ? a.id - b.id : b.id - a.id,
+    ),
+  )
+})
+
+export const scanConversations = Effect.fnUntraced(function* (
+  state: State,
+  input: Record.ConversationQuery = {},
+) {
+  const query = yield* Schema.decodeEffect(Record.ConversationQuerySchema)(input)
+  const stored = yield* state.runtime.storage.scanConversations(query).pipe(Stream.runCollect)
+  const staged = Array.from(state.conversations.values()).filter(
+    (value) =>
+      (query.ownerConversationId === undefined ||
+        value.owner?.conversationId === query.ownerConversationId) &&
+      (query.ownerTaskId === undefined || value.owner?.taskId === query.ownerTaskId),
+  )
+  return yield* Value.copy(
+    Schema.Array(Domain.Conversation),
+    [...stored, ...staged].sort((a, b) =>
+      query.order === 'descending' ? b.id - a.id : a.id - b.id,
+    ),
+  )
+})
+
+export const scanTasks = Effect.fnUntraced(function* (state: State, input: Record.TaskQuery = {}) {
+  const query = yield* Schema.decodeEffect(Record.TaskQuerySchema)(input)
+  const stored = yield* state.runtime.storage.scanTasks(query).pipe(Stream.runCollect)
+  const staged = Array.from(state.tasks.values()).filter(
+    (value) =>
+      (query.conversationId === undefined || value.conversationId === query.conversationId) &&
+      (query.kind === undefined || value.kind === query.kind) &&
+      (query.status === undefined || value.state.status === query.status) &&
+      (query.background === undefined || value.background === query.background) &&
+      (query.abortRequested === undefined || value.abortRequested === query.abortRequested),
+  )
+  return yield* Value.copy(
+    Schema.Array(Domain.Task),
+    [...stored.filter((value) => !state.tasks.has(value.id)), ...staged].sort((a, b) =>
+      query.order === 'descending' ? b.id - a.id : a.id - b.id,
+    ),
+  )
+})
+
+export const scanSubmissions = Effect.fnUntraced(function* (
+  state: State,
+  input: Record.SubmissionQuery = {},
+) {
+  const query = yield* Schema.decodeEffect(Record.SubmissionQuerySchema)(input)
+  const stored = yield* state.runtime.storage.scanSubmissions(query).pipe(Stream.runCollect)
+  const staged = Array.from(state.submissions.values()).filter(
+    (value) =>
+      (query.conversationId === undefined || value.conversationId === query.conversationId) &&
+      (query.status === undefined || value.status === query.status),
+  )
+  return yield* Value.copy(
+    Schema.Array(Domain.Submission),
+    [...stored.filter((value) => !state.submissions.has(value.id)), ...staged].sort((a, b) =>
+      query.order === 'descending' ? b.id - a.id : a.id - b.id,
+    ),
+  )
+})
+
+export const submissionByRequest = Effect.fnUntraced(function* (
+  state: State,
+  conversationId: Domain.ConversationId,
+  requestId: Identity.RequestId,
+) {
+  const staged = Array.from(state.submissions.values()).find(
+    (value) => value.conversationId === conversationId && value.requestId === requestId,
+  )
+  if (staged !== undefined) return Option.some(yield* Value.copy(Domain.Submission, staged))
+  return yield* state.runtime.storage.submissionByRequest(conversationId, requestId)
+})
+
+const requireConversation = Effect.fnUntraced(function* (state: State, id: Domain.ConversationId) {
+  if (Option.isNone(yield* conversation(state, id)))
+    return yield* error('notFound', 'conversation.access', 'Conversation is absent')
+})
+
+const liveTask = Effect.fnUntraced(function* (
+  state: State,
+  id: Domain.TaskId,
+  mode: 'admission' | 'settlement' = 'admission',
+) {
+  const found = yield* task(state, id)
+  if (Option.isNone(found)) return yield* error('notFound', 'task.owner', 'Task is absent')
+  if (
+    found.value.abortRequested ||
+    found.value.state.status === 'terminal' ||
+    (mode === 'admission' && found.value.state.status === 'completing')
+  )
+    return yield* error('conflict', 'task.owner', 'Task cannot accept owned work')
+  return found.value
+})
+
+const ownership = Effect.fnUntraced(function* (
+  state: State,
+  input: Transaction.ConversationOptions,
+) {
+  const options = yield* Schema.decodeEffect(Transaction.ConversationOptionsSchema)(input)
+  if (options.ownership._tag === 'ownerless') return undefined
+  const owner = yield* liveTask(state, options.ownership.taskId)
+  return { conversationId: owner.conversationId, taskId: owner.id }
+})
+
+const stageRoot = Effect.fnUntraced(function* (state: State) {
+  const found = yield* conversation(state, Domain.ROOT_CONVERSATION_ID)
+  if (Option.isSome(found)) return found.value
+  const value = Domain.Conversation.make({ id: Domain.ROOT_CONVERSATION_ID })
+  yield* active(state)
+  state.conversations.set(value.id, value)
+  return yield* Value.copy(Domain.Conversation, value)
+})
+
+const stageConversation = Effect.fnUntraced(function* (
+  state: State,
+  options: Transaction.ConversationOptions,
+) {
+  const owner = yield* ownership(state, options)
+  const value = yield* Value.copy(Domain.Conversation, {
+    id: yield* state.runtime.storage.mintId<Domain.ConversationId>(),
+    ...(owner === undefined ? {} : { owner }),
+  })
+  yield* active(state)
+  state.conversations.set(value.id, value)
+  return yield* Value.copy(Domain.Conversation, value)
+})
+
+export const appendEntry = Effect.fnUntraced(function* (
+  state: State,
+  conversationId: Domain.ConversationId,
+  input: Transaction.EntryDraft,
+) {
+  yield* requireConversation(state, conversationId)
+  const draft = yield* Value.copy(Transaction.EntryDraftSchema, input)
+  const id = yield* state.runtime.storage.mintId<Domain.EntryId>()
+  if (
+    draft.head !== undefined &&
+    draft.head !== 'self' &&
+    Option.isNone(yield* entry(state, draft.head, { conversationId }))
+  )
+    return yield* error('notFound', 'entry.append', 'Context head is not visible')
+  for (const edit of draft.edits ?? [])
+    if (Option.isNone(yield* entry(state, edit.target, { conversationId })))
+      return yield* error('notFound', 'entry.append', 'Context edit target is not visible')
+  if (state.options.conversationId !== undefined && state.options.conversationId !== conversationId)
+    return yield* error(
+      'invalid',
+      'entry.append',
+      'Entry does not belong to the attributed conversation',
+    )
+  if (state.options.taskId !== undefined) {
+    const author = yield* liveTask(state, state.options.taskId)
+    if (author.conversationId !== conversationId)
+      return yield* error(
+        'invalid',
+        'entry.append',
+        'Attributed task belongs to another conversation',
+      )
+  }
+  const value = yield* Value.copy(Domain.Entry, {
+    ...Struct.omit(draft, ['head']),
+    id,
+    conversationId,
+    ...(draft.head === undefined ? {} : { head: draft.head === 'self' ? id : draft.head }),
+    ...(state.options.taskId === undefined ? {} : { byTaskId: state.options.taskId }),
+  })
+  yield* active(state)
+  state.entries.set(id, value)
+  return yield* Value.copy(Domain.Entry, value)
+})
+
+const validateTask = Effect.fnUntraced(function* (
+  state: State,
+  value: Domain.Task,
+  creating = false,
+) {
+  yield* requireConversation(state, value.conversationId)
+  if (value.owner !== undefined) {
+    const found = yield* task(state, value.owner)
+    if (Option.isNone(found)) return yield* error('notFound', 'task.write', 'Task owner is absent')
+    const owner = creating ? yield* liveTask(state, value.owner) : found.value
+    if (
+      owner.conversationId !== value.conversationId ||
+      value.background ||
+      value.owner === value.id
+    )
+      return yield* error('invalid', 'task.write', 'Invalid task ownership')
+  }
+  for (const id of value.state.on ?? []) {
+    if (id === value.id || Option.isNone(yield* task(state, id)))
+      return yield* error('invalid', 'task.write', 'Task wait references an absent task or itself')
+  }
+})
+
+export const createTask = Effect.fnUntraced(function* (
+  state: State,
+  input: Transaction.TaskCreate,
+) {
+  const value = yield* Value.copy(Domain.Task, {
+    ...input,
+    id: yield* state.runtime.storage.mintId<Domain.TaskId>(),
+  })
+  yield* validateTask(state, value, true)
+  yield* active(state)
+  state.tasks.set(value.id, value)
+  return yield* Value.copy(Domain.Task, value)
+})
+
+const TaskIdentity = Domain.Task.mapFields(
+  Struct.pick(['id', 'conversationId', 'kind', 'version', 'input', 'owner', 'background']),
+)
+const sameTaskIdentity = Schema.toEquivalence(TaskIdentity)
+const sameTask = Schema.toEquivalence(Domain.Task)
+export const putTask = Effect.fnUntraced(function* (state: State, input: Domain.Task) {
+  const value = yield* Value.copy(Domain.Task, input)
+  const previous = yield* task(state, value.id)
+  if (Option.isNone(previous)) return yield* error('notFound', 'task.write', 'Task is absent')
+  if (
+    !sameTaskIdentity(previous.value, value) ||
+    !TaskTransitions.canReplace(previous.value, value)
+  )
+    return yield* error(
+      'conflict',
+      'task.write',
+      'Task identity and terminal receipts are immutable',
+    )
+  if (sameTask(previous.value, value)) return
+  yield* validateTask(state, value)
+  const retiring =
+    value.state.status === 'terminal'
+      ? yield* taskDocuments(state, value.id)
+      : { drafts: [], metadata: [] }
+  yield* active(state)
+  // Prepare every retirement before staging anything: callers may catch storage errors.
+  for (const draft of retiring.drafts) {
+    draft.retired = true
+    if (!state.documents.has(draft.key)) state.documents.set(draft.key, draft)
+    state.incarnations.set(draft.value.record.id, draft)
+  }
+  for (const retirement of retiring.metadata)
+    state.retirements.set(retirement.record.id, retirement)
+  state.tasks.set(value.id, value)
+})
+
+export const requestTaskAbort = Effect.fnUntraced(function* (
+  state: State,
+  id: Domain.TaskId,
+  reason?: string,
+) {
+  const previous = yield* task(state, id)
+  if (Option.isNone(previous)) return yield* error('notFound', 'task.abort', 'Task is absent')
+  yield* putTask(state, TaskPolicy.requestAbort(previous.value, reason))
+})
+
+const validateSubmission = Effect.fnUntraced(function* (state: State, value: Domain.Submission) {
+  yield* requireConversation(state, value.conversationId)
+  for (const id of [value.entry, value.answer])
+    if (
+      id !== undefined &&
+      Option.isNone(yield* entry(state, id, { conversationId: value.conversationId }))
+    )
+      return yield* error('notFound', 'submission.write', 'Submission entry is not visible')
+  if (value.requestId !== undefined) {
+    const previous = yield* submissionByRequest(state, value.conversationId, value.requestId)
+    if (Option.isSome(previous) && previous.value.id !== value.id)
+      return yield* error('conflict', 'submission.write', 'Request is already admitted')
+  }
+})
+
+export const createSubmission = Effect.fnUntraced(function* (
+  state: State,
+  input: Transaction.SubmissionCreate,
+) {
+  const value = yield* Value.copy(Domain.Submission, {
+    ...input,
+    id: yield* state.runtime.storage.mintId<Domain.SubmissionId>(),
+  })
+  yield* validateSubmission(state, value)
+  yield* active(state)
+  state.submissions.set(value.id, value)
+  return yield* Value.copy(Domain.Submission, value)
+})
+
+const sameSubmission = Schema.toEquivalence(Domain.Submission)
+export const putSubmission = Effect.fnUntraced(function* (state: State, input: Domain.Submission) {
+  const value = yield* Value.copy(Domain.Submission, input)
+  const previous = yield* submission(state, value.id)
+  if (Option.isNone(previous))
+    return yield* error('notFound', 'submission.write', 'Submission is absent')
+  const current = previous.value
+  if (sameSubmission(current, value)) return
+  if (
+    current.conversationId !== value.conversationId ||
+    current.type !== value.type ||
+    current.requestId !== value.requestId ||
+    current.status === 'done' ||
+    current.status === 'unanswered' ||
+    (current.status === 'placed' && (value.status === 'queued' || value.status === 'placed')) ||
+    (current.entry !== undefined && current.entry !== value.entry)
+  )
+    return yield* error(
+      'conflict',
+      'submission.write',
+      'Invalid submission transition or changed identity',
+    )
+  yield* validateSubmission(state, value)
+  yield* active(state)
+  state.submissions.set(value.id, value)
+})
+
+const checkScope = Effect.fnUntraced(function* (state: State, scope: Domain.Scope) {
+  if (scope._tag === 'conversation') yield* requireConversation(state, scope.conversationId)
+  if (scope._tag === 'task') {
+    const owner = yield* task(state, scope.taskId)
+    if (Option.isNone(owner))
+      return yield* error('notFound', 'document.scope', 'Document task is absent')
+    if (owner.value.state.status === 'terminal')
+      return yield* error('conflict', 'document.scope', 'Document task is terminal')
+  }
+})
+
+const retirementMetadata = Effect.fnUntraced(function* (
+  state: State,
+  expected: Record.DocumentRecord,
+  operation: string,
+) {
+  const read = state.runtime.storage.documentMetadata
+  if (read === undefined)
+    return yield* error('invalid', operation, 'Storage does not support document metadata reads')
+  const found = yield* read(expected.id)
+  if (Option.isNone(found))
+    return yield* error('invalid', operation, 'Live document version metadata is absent')
+  const metadata = yield* Value.copy(
+    Schema.Struct({
+      record: Record.DocumentRecordSchema,
+      version: Record.Content.members[0].fields.version,
+    }),
+    found.value,
+  )
+  if (
+    metadata.record.id !== expected.id ||
+    !sameAddress(metadata.record, expected) ||
+    metadata.record.retiredAt !== undefined
+  )
+    return yield* error('conflict', operation, 'Document retirement metadata does not match')
+  return metadata
+})
+
+const taskDocuments = Effect.fnUntraced(function* (state: State, taskId: Domain.TaskId) {
+  const drafts = Array.from(state.incarnations.values()).filter(
+    (draft) =>
+      draft.value.record.scope._tag === 'task' && draft.value.record.scope.taskId === taskId,
+  )
+  const metadata: Array<Retirement> = []
+  const records = yield* state.runtime.storage
+    .scanDocuments({ scope: { _tag: 'task', taskId } })
+    .pipe(Stream.runCollect)
+  for (const record of records) {
+    if (state.incarnations.has(record.id) || state.retirements.has(record.id)) continue
+    const stored = yield* retirementMetadata(state, record, 'task.write')
+    if (stored.record.scope._tag !== 'task' || stored.record.scope.taskId !== taskId)
+      return yield* error('conflict', 'task.write', 'Document belongs to another task')
+    metadata.push({ key: yield* Value.key(stored.record), record: stored.record })
+  }
+  return { drafts, metadata }
+})
+
+const load = Effect.fnUntraced(function* (state: State, address: Record.DocumentAddress) {
+  const key = yield* Value.key(address)
+  const previous = state.documents.get(key)
+  if (previous !== undefined) {
+    Runtime.touchDocument(state.runtime, key)
+    return previous.retired ? Option.none<Draft>() : Option.some(previous)
+  }
+  // Metadata retirement can replace a malformed body without materializing it.
+  if (state.retirements.size > 0) {
+    const record = yield* state.runtime.storage.findDocument(address)
+    if (Option.isSome(record) && state.retirements.has(record.value.id)) return Option.none<Draft>()
+  }
+  const stored = yield* Runtime.load(state.runtime, address)
+  if (Option.isNone(stored) || state.retirements.has(stored.value.record.id))
+    return Option.none<Draft>()
+  const draft: Draft = {
+    key,
+    original: stored,
+    record: undefined,
+    source: undefined,
+    value: stored.value,
+    operations: [],
+    changed: false,
+    retired: false,
+  }
+  yield* active(state)
+  state.documents.set(key, draft)
+  state.incarnations.set(stored.value.record.id, draft)
+  return Option.some(draft)
+})
+
+export const snapshot = Effect.fnUntraced(function* <S extends Document.Codec>(
+  state: State,
+  document: Document.Document<S>,
+  target: Document.Target,
+) {
+  const address = yield* Value.address(document, target)
+  const draft = yield* load(state, address)
+  if (Option.isNone(draft)) return Option.none<Document.Snapshot<S>>()
+  return Option.some(yield* Value.snapshot(document, draft.value.value))
+})
+
+export const ensureDocument = Effect.fnUntraced(function* <S extends Document.Codec>(
+  state: State,
+  document: Document.Document<S>,
+  target: Document.Target,
+  options?: { readonly seed?: Schema.Json },
+) {
+  const address = yield* Value.address(document, target)
+  yield* checkScope(state, address.scope)
+  const found = yield* load(state, address)
+  if (Option.isSome(found)) {
+    const previous = found.value.value
+    if (
+      previous.version !== document.definition.version &&
+      state.copiedSources.has(previous.record.id)
+    )
+      return yield* error(
+        'conflict',
+        'document.migrate',
+        'A fork source cannot change in the copying transaction',
+      )
+    const migrated = yield* Value.migrate(document, previous)
+    const result = yield* Value.snapshot(document, migrated)
+    if (migrated.version !== previous.version) {
+      yield* active(state)
+      found.value.value = migrated
+      found.value.changed = true
+      delete found.value.operations
+      delete found.value.checkpoint
+    }
+    return result
+  }
+  const seed =
+    options?.seed === undefined ? undefined : yield* Value.copy(Schema.Json, options.seed)
+  const initial = yield* Effect.try({
+    try: () => document.definition.initial(seed),
+    catch: (cause) =>
+      new SessionError({
+        reason: 'invalid',
+        operation: 'document.initialize',
+        message: 'Document initializer failed',
+        cause,
+      }),
+  })
+  const value = yield* Value.encode(document, initial)
+  const record: Domain.DocumentCreate = {
+    ...address,
+    id: yield* state.runtime.storage.mintId<Domain.DocumentId>(),
+    ...(document.definition.scope === 'conversation'
+      ? { history: document.definition.history, fork: document.definition.fork }
+      : {}),
+  }
+  const stored = yield* Schema.decodeEffect(Record.StoredDocumentSchema)({
+    record: { ...record, createdAt: Sequence.make(0) },
+    version: document.definition.version,
+    value,
+    deltasSinceBase: 0,
+  })
+  const key = yield* Value.key(address)
+  const draft: Draft = {
+    key,
+    original: Option.none(),
+    record,
+    source: undefined,
+    value: stored,
+    changed: true,
+    retired: false,
+  }
+  yield* active(state)
+  state.documents.set(key, draft)
+  state.incarnations.set(record.id, draft)
+  return yield* Value.snapshot(document, stored)
+})
+
+export const setDocument = Effect.fnUntraced(function* <S extends Document.Codec>(
+  state: State,
+  document: Document.Document<S>,
+  target: Document.Target,
+  value: S['Type'],
+) {
+  const address = yield* Value.address(document, target)
+  yield* checkScope(state, address.scope)
+  const found = yield* load(state, address)
+  if (Option.isNone(found)) return yield* error('notFound', 'document.update', 'Document is absent')
+  yield* Value.compatible(document, found.value.value)
+  if (state.copiedSources.has(found.value.value.record.id))
+    return yield* error(
+      'conflict',
+      'document.update',
+      'A fork source cannot change in the copying transaction',
+    )
+  const encoded = yield* Value.encode(document, value)
+  yield* active(state)
+  found.value.value = { ...found.value.value, value: encoded, deltasSinceBase: 0 }
+  found.value.changed = true
+  delete found.value.operations
+  delete found.value.checkpoint
+})
+
+export const updateDocument = Effect.fnUntraced(function* <S extends Document.Codec>(
+  state: State,
+  document: Document.Document<S>,
+  target: Document.Target,
+  update: (value: S['Type']) => S['Type'],
+) {
+  const address = yield* Value.address(document, target)
+  yield* checkScope(state, address.scope)
+  const found = yield* load(state, address)
+  if (Option.isNone(found)) return yield* error('notFound', 'document.update', 'Document is absent')
+  if (state.copiedSources.has(found.value.value.record.id))
+    return yield* error(
+      'conflict',
+      'document.update',
+      'A fork source cannot change in the copying transaction',
+    )
+  const migrated = yield* Value.migrate(document, found.value.value)
+  const current = yield* Value.snapshot(document, migrated)
+  const value = yield* Effect.try({
+    try: () => update(current.value),
+    catch: (cause) =>
+      new SessionError({
+        reason: 'invalid',
+        operation: 'document.update',
+        message: 'Document replacement function failed',
+        cause,
+      }),
+  })
+  const encoded = yield* Value.encode(document, value)
+  const candidate = yield* Value.snapshot(document, { ...migrated, value: encoded })
+  const draft = found.value
+  let operations: ReadonlyArray<Record.Op> | undefined
+  if (migrated.version === draft.value.version && draft.operations !== undefined) {
+    operations = yield* Value.copy(Schema.Array(Record.Op), Patch.diff(migrated.value, encoded))
+    const replayed = yield* Records.applyOps(migrated.value, operations)
+    if (!Json.equals(replayed, encoded))
+      return yield* error(
+        'invalid',
+        'document.update',
+        'Derived document operations do not reproduce the candidate',
+      )
+    if (operations.length === 0) return
+  }
+  yield* active(state)
+  draft.value = { ...migrated, value: encoded }
+  draft.changed = true
+  if (operations === undefined) {
+    delete draft.operations
+    delete draft.checkpoint
+    draft.value = { ...draft.value, deltasSinceBase: 0 }
+  } else {
+    draft.operations = [...(draft.operations ?? []), ...operations]
+    draft.checkpoint = checkpoint(document, candidate.value)
+  }
+})
+
+/** Capture the detached, validated decoded candidate without retaining codec services. */
+const checkpoint =
+  <S extends Document.Codec>(document: Document.Document<S>, value: S['Type']) =>
+  (
+    operations: ReadonlyArray<Record.Op>,
+    priorCount: number,
+  ): Effect.Effect<boolean, SessionError> =>
+    Effect.try({
+      try: () =>
+        document.definition.checkpointWhen?.(value, operations, { deltasSinceBase: priorCount }) ??
+        false,
+      catch: (cause) =>
+        new SessionError({
+          reason: 'invalid',
+          operation: 'document.checkpoint',
+          message: 'Document checkpoint predicate failed',
+          cause,
+        }),
+    })
+
+export const patchDocument = Effect.fnUntraced(function* <S extends Document.Codec>(
+  state: State,
+  document: Document.Document<S>,
+  target: Document.Target,
+  input: ReadonlyArray<Record.Op>,
+) {
+  const address = yield* Value.address(document, target)
+  yield* checkScope(state, address.scope)
+  const found = yield* load(state, address)
+  if (Option.isNone(found)) return yield* error('notFound', 'document.patch', 'Document is absent')
+  const draft = found.value
+  yield* Value.compatible(document, draft.value)
+  if (state.copiedSources.has(draft.value.record.id))
+    return yield* error(
+      'conflict',
+      'document.patch',
+      'A fork source cannot change in the copying transaction',
+    )
+  const operations = yield* Value.copy(Schema.Array(Record.Op), input)
+  const encoded = yield* Records.applyOps(draft.value.value, operations).pipe(
+    Effect.mapError(
+      (cause) =>
+        new SessionError({
+          reason: 'invalid',
+          operation: 'document.patch',
+          message: 'Invalid document patch',
+          cause,
+        }),
+    ),
+  )
+  const candidate = yield* Value.snapshot(document, { ...draft.value, value: encoded })
+  // Validate both directions of transformed/serviceful codecs before adopting the overlay.
+  yield* Value.encode(document, candidate.value)
+  if (operations.length === 0) return
+  yield* active(state)
+  draft.value = { ...draft.value, value: encoded }
+  draft.changed = true
+  if (draft.operations === undefined || operations.some((op) => op[0] === 'replace')) {
+    delete draft.operations
+    delete draft.checkpoint
+    draft.value = { ...draft.value, deltasSinceBase: 0 }
+  } else {
+    draft.operations = [...draft.operations, ...operations]
+    draft.checkpoint = checkpoint(document, candidate.value)
+  }
+})
+
+export const retireDocument = Effect.fnUntraced(function* <S extends Document.Codec>(
+  state: State,
+  document: Document.Document<S>,
+  target: Document.Target,
+) {
+  const address = yield* Value.address(document, target)
+  const key = yield* Value.key(address)
+  const draft = state.documents.get(key)
+  if (draft?.retired) return
+  let metadata: Storage.DocumentMetadata
+  if (draft !== undefined) metadata = draft.value
+  else {
+    const found = yield* state.runtime.storage.findDocument(address)
+    if (Option.isNone(found) || state.retirements.has(found.value.id)) return
+    metadata = yield* retirementMetadata(state, found.value, 'document.retire')
+    if (!sameAddress(metadata.record, address))
+      return yield* error(
+        'conflict',
+        'document.retire',
+        'Document retirement metadata does not match',
+      )
+  }
+  yield* Value.compatible(document, metadata)
+  if (state.copiedSources.has(metadata.record.id))
+    return yield* error(
+      'conflict',
+      'document.retire',
+      'A fork source cannot retire in the copying transaction',
+    )
+  yield* active(state)
+  if (draft === undefined)
+    state.retirements.set(metadata.record.id, { key, record: metadata.record })
+  else draft.retired = true
+})
+
+const sameAddress = Schema.toEquivalence(Record.DocumentAddressSchema)
+export const retireDocumentMetadata = Effect.fnUntraced(function* (
+  state: State,
+  input: Document.Metadata,
+  target: DocumentRetirement.Target,
+): Effect.fn.Return<void, Failure> {
+  const policy = yield* Value.copy(MetadataSchema, input)
+  const expected = yield* Value.copy(DocumentRetirement.TargetSchema, target)
+  const conflict = () =>
+    error('conflict', 'document.retireMetadata', 'Document retirement metadata does not match')
+  if (expected.address.kind !== policy.kind || expected.address.scope._tag !== policy.scope)
+    return yield* conflict()
+  const key = yield* Value.key(expected.address)
+  const draft = state.documents.get(key)
+  const found =
+    draft === undefined
+      ? yield* state.runtime.storage.findDocument(expected.address)
+      : Option.some(draft.value.record)
+  if (Option.isSome(found) && found.value.id !== expected.id) return yield* conflict()
+  let metadata: Storage.DocumentMetadata
+  if (draft !== undefined) metadata = draft.value
+  else {
+    const read = state.runtime.storage.documentMetadata
+    if (read === undefined)
+      return yield* error(
+        'invalid',
+        'document.retireMetadata',
+        'Storage does not support document metadata reads',
+      )
+    const stored = yield* read(expected.id)
+    if (Option.isNone(stored)) {
+      if (Option.isNone(found)) return
+      return yield* error(
+        'invalid',
+        'document.retireMetadata',
+        'Live document version metadata is absent',
+      )
+    }
+    metadata = stored.value
+  }
+  const { record, version } = yield* Value.copy(
+    Schema.Struct({
+      record: Record.DocumentRecordSchema,
+      version: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+    }),
+    metadata,
+  )
+  if (
+    Option.isNone(found) ||
+    record.id !== expected.id ||
+    !sameAddress(record, expected.address) ||
+    (policy.scope === 'conversation' &&
+      (record.history !== policy.history || record.fork !== policy.fork)) ||
+    version > policy.version ||
+    record.retiredAt !== undefined
+  )
+    return yield* conflict()
+  if (draft?.retired || state.retirements.has(record.id)) return
+  if (state.copiedSources.has(record.id))
+    return yield* error(
+      'conflict',
+      'document.retireMetadata',
+      'A fork source cannot retire in the copying transaction',
+    )
+  yield* active(state)
+  if (draft === undefined) state.retirements.set(record.id, { key, record })
+  else draft.retired = true
+})
+
+const sameScope = Schema.toEquivalence(Domain.Scope)
+export const scanDocuments = Effect.fnUntraced(function* (
+  state: State,
+  input: Record.DocumentQuery,
+) {
+  const query = yield* Schema.decodeEffect(Record.DocumentQuerySchema)(input)
+  const stored = yield* state.runtime.storage.scanDocuments(query).pipe(Stream.runCollect)
+  if (query.at !== undefined && query.at !== 'current') return stored
+  const staged = Array.from(state.incarnations.values())
+    .filter(
+      (draft) =>
+        !draft.retired &&
+        sameScope(draft.value.record.scope, query.scope) &&
+        (query.kind === undefined || draft.value.record.kind === query.kind),
+    )
+    .map((draft) => draft.value.record)
+  return yield* Value.copy(
+    Schema.Array(Record.DocumentRecordSchema),
+    [
+      ...stored.filter(
+        (record) => !state.incarnations.has(record.id) && !state.retirements.has(record.id),
+      ),
+      ...staged,
+    ].sort((a, b) => (query.order === 'descending' ? b.id - a.id : a.id - b.id)),
+  )
+})
+
+const stageFork = Effect.fnUntraced(function* (
+  state: State,
+  parent: Domain.ConversationId,
+  at: Domain.EntryId,
+  options: Transaction.ConversationOptions,
+) {
+  yield* requireConversation(state, parent)
+  const visible = yield* entry(state, at, { conversationId: parent })
+  const cutoff = yield* state.runtime.storage.entry(at)
+  if (Option.isNone(visible) || Option.isNone(cutoff))
+    return yield* error(
+      'notFound',
+      'conversation.fork',
+      'Fork cutoff must be a committed visible entry',
+    )
+  const owner = yield* ownership(state, options)
+  const id = yield* state.runtime.storage.mintId<Domain.ConversationId>()
+  const historical = yield* state.runtime.storage
+    .scanDocuments({
+      scope: { _tag: 'conversation', conversationId: visible.value.conversationId },
+      at: cutoff.value.commitSeq,
+    })
+    .pipe(Stream.runCollect)
+  const current = yield* scanDocuments(state, {
+    scope: { _tag: 'conversation', conversationId: parent },
+  })
+  const selected = new Map<
+    string,
+    { readonly record: Record.DocumentRecord; readonly at: Record.DocumentPoint }
+  >()
+  for (const record of historical)
+    if (record.fork === 'asOf') {
+      const key = yield* Value.key({
+        ...record,
+        scope: { _tag: 'conversation', conversationId: id },
+      })
+      selected.set(key, { record, at: cutoff.value.commitSeq })
+    }
+  for (const record of current)
+    if (record.fork === 'current') {
+      const key = yield* Value.key({
+        ...record,
+        scope: { _tag: 'conversation', conversationId: id },
+      })
+      if (selected.has(key))
+        return yield* error('conflict', 'conversation.fork', 'Ambiguous document fork source')
+      selected.set(key, { record, at: 'current' })
+    }
+  const copies: Array<{ readonly draft: Draft; readonly sourceId: Domain.DocumentId }> = []
+  for (const [key, source] of selected) {
+    const pending = state.incarnations.get(source.record.id)
+    if (
+      state.retirements.has(source.record.id) ||
+      (pending !== undefined &&
+        (pending.changed || pending.retired || pending.record !== undefined))
+    )
+      return yield* error(
+        'conflict',
+        'conversation.fork',
+        'Fork source changes in this transaction',
+      )
+    const stored = yield* state.runtime.storage.document(source.record.id, source.at)
+    if (Option.isNone(stored))
+      return yield* error('notFound', 'conversation.fork', 'Fork document is absent')
+    const metadata = Struct.omit(source.record, ['createdAt', 'retiredAt'])
+    const record = {
+      ...metadata,
+      id: yield* state.runtime.storage.mintId<Domain.DocumentId>(),
+      scope: { _tag: 'conversation' as const, conversationId: id },
+    }
+    const value = yield* Schema.decodeEffect(Record.StoredDocumentSchema)({
+      ...stored.value,
+      deltasSinceBase: 0,
+      record: { ...record, createdAt: Sequence.make(0) },
+    })
+    const draft: Draft = {
+      key,
+      original: Option.none(),
+      record,
+      source: { id: source.record.id, at: source.at },
+      value,
+      changed: false,
+      retired: false,
+    }
+    copies.push({ draft, sourceId: source.record.id })
+  }
+  const value = yield* Value.copy(Domain.Conversation, {
+    id,
+    parent: { conversationId: parent, at },
+    ...(owner === undefined ? {} : { owner }),
+  })
+  const result = yield* Value.copy(Domain.Conversation, value)
+  yield* active(state)
+  // Prepare the complete fork before changing the overlay: callers may catch an operation error.
+  for (const { draft, sourceId } of copies) {
+    state.documents.set(draft.key, draft)
+    state.incarnations.set(draft.value.record.id, draft)
+    state.copiedSources.add(sourceId)
+  }
+  state.conversations.set(id, value)
+  return result
+})
+
+/** A savepoint owns mutable Draft copies, including aliases in both document maps. */
+const initialize = Effect.fnUntraced(function* (
+  state: State,
+  stage: (draft: State) => Effect.Effect<Domain.Conversation, Failure>,
+) {
+  const clones = new Map<Draft, Draft>()
+  const clone = (draft: Draft): Draft => {
+    let copy = clones.get(draft)
+    if (copy === undefined) {
+      copy = { ...draft }
+      clones.set(draft, copy)
+    }
+    return copy
+  }
+  const child: State = {
+    ...state,
+    semaphore: yield* Semaphore.make(1),
+    conversations: new Map(state.conversations),
+    entries: new Map(state.entries),
+    tasks: new Map(state.tasks),
+    submissions: new Map(state.submissions),
+    documents: new Map(Array.from(state.documents, ([key, draft]) => [key, clone(draft)])),
+    incarnations: new Map(Array.from(state.incarnations, ([id, draft]) => [id, clone(draft)])),
+    retirements: new Map(state.retirements),
+    copiedSources: new Set(state.copiedSources),
+  }
+  const tx: Transaction.Transaction = {
+    [Transaction.TypeId]: Transaction.TypeId,
+    pipe() {
+      return pipeArguments(this, arguments)
+    },
+  }
+  register(tx, child)
+  // Parent use holds its permit. Callbacks use a separate capability/permit so
+  // Transaction operations can reenter without exposing partial creation drafts.
+  const result = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const record = yield* stage(child)
+      yield* ensureDocument(child, ProviderState.document, ProviderState.target(record.id), {
+        seed: yield* ProviderState.fresh,
+      })
+      for (const run of state.runtime.initializers)
+        yield* run(tx, yield* Value.copy(Domain.Conversation, record))
+      return record
+    }),
+  ).pipe(
+    Effect.ensuring(
+      Effect.sync(() => {
+        child.active = false
+      }),
+    ),
+  )
+  yield* active(state)
+  const adoptMap = <K, V>(target: Map<K, V>, source: Map<K, V>) => {
+    target.clear()
+    for (const [key, value] of source) target.set(key, value)
+  }
+  adoptMap(state.conversations, child.conversations)
+  adoptMap(state.entries, child.entries)
+  adoptMap(state.tasks, child.tasks)
+  adoptMap(state.submissions, child.submissions)
+  adoptMap(state.documents, child.documents)
+  adoptMap(state.incarnations, child.incarnations)
+  adoptMap(state.retirements, child.retirements)
+  state.copiedSources.clear()
+  for (const id of child.copiedSources) state.copiedSources.add(id)
+  return result
+})
+
+export const ensureRoot = Effect.fnUntraced(function* (state: State) {
+  const found = yield* conversation(state, Domain.ROOT_CONVERSATION_ID)
+  if (Option.isSome(found)) return found.value
+  return yield* initialize(state, stageRoot)
+})
+
+export const createConversation = (state: State, options: Transaction.ConversationOptions) =>
+  initialize(state, (child) => stageConversation(child, options))
+
+export const forkConversation = (
+  state: State,
+  parent: Domain.ConversationId,
+  at: Domain.EntryId,
+  options: Transaction.ConversationOptions,
+) => initialize(state, (child) => stageFork(child, parent, at, options))
+
+export const writes = Effect.fnUntraced(function* (state: State) {
+  const result: Array<Record.StorageWrite> = []
+  const candidates: Array<{ readonly draft: Draft; readonly index: number }> = []
+  for (const value of state.conversations.values()) {
+    // Creation already checked admission. A held completion preserves that owned work;
+    // terminal owners and abort requests still reject the entire prepared batch.
+    if (value.owner !== undefined) yield* liveTask(state, value.owner.taskId, 'settlement')
+    result.push({ _tag: 'conversation', value })
+  }
+  for (const value of state.entries.values()) result.push({ _tag: 'entry', value })
+  for (const value of state.tasks.values()) result.push({ _tag: 'task', value })
+  for (const value of state.submissions.values()) result.push({ _tag: 'submission', value })
+  for (const id of state.retirements.keys()) result.push({ _tag: 'document.retire', id })
+  for (const draft of state.incarnations.values()) {
+    if (draft.record !== undefined) {
+      if (draft.retired) continue
+      if (draft.source !== undefined && !draft.changed)
+        result.push({ _tag: 'document.copy', record: draft.record, source: draft.source })
+      else
+        result.push({
+          _tag: 'document.create',
+          record: draft.record,
+          content: { _tag: 'base', version: draft.value.version, value: draft.value.value },
+        })
+    } else if (draft.changed) {
+      candidates.push({ draft, index: result.length })
+      result.push({
+        _tag: 'document.change',
+        id: draft.value.record.id,
+        content:
+          draft.operations === undefined
+            ? { _tag: 'base', version: draft.value.version, value: draft.value.value }
+            : { _tag: 'delta', version: draft.value.version, ops: draft.operations },
+      })
+    }
+    if (draft.retired) result.push({ _tag: 'document.retire', id: draft.value.record.id })
+  }
+  const validated = [...(yield* Value.copy(Schema.Array(Record.StorageWriteSchema), result))]
+  const counts = new Map<Draft, number>()
+  for (const { draft, index } of candidates) {
+    const write = validated[index]
+    if (write?._tag !== 'document.change' || write.content._tag !== 'delta') {
+      counts.set(draft, 0)
+      continue
+    }
+    const priorCount = Option.isSome(draft.original) ? draft.original.value.deltasSinceBase : 0
+    const operations = write.content.ops
+    const checkpointOps = yield* Value.copy(Schema.Array(Record.Op), operations)
+    const chooseBase =
+      draft.checkpoint === undefined ? false : yield* draft.checkpoint(checkpointOps, priorCount)
+    if (chooseBase) {
+      validated[index] = {
+        ...write,
+        content: { _tag: 'base', version: draft.value.version, value: draft.value.value },
+        publicationOps: operations,
+      }
+      counts.set(draft, 0)
+    } else counts.set(draft, priorCount + 1)
+  }
+  // Activation follows all patch/schema/predicate preparation; no opcode can precede it.
+  if (Patch.requiresFormat3(validated)) {
+    yield* state.runtime.requireDocumentPatchFormat.pipe(
+      Effect.mapError((cause) =>
+        cause._tag === 'StorageFormatError'
+          ? new SessionError({
+              reason: 'invalid',
+              operation: 'document.format',
+              message: cause.message,
+              cause,
+            })
+          : cause,
+      ),
+      Effect.tapError((cause) =>
+        cause._tag === 'StorageError' && cause.reason === 'uncertain'
+          ? Runtime.stop(state.runtime, cause)
+          : Effect.void,
+      ),
+    )
+  }
+  for (const [draft, deltasSinceBase] of counts) draft.value = { ...draft.value, deltasSinceBase }
+  return validated
+})
+
+/** Adopts values without another storage read after the atomic batch has succeeded. */
+export const adopt = Effect.fnUntraced(function* (state: State, seq: Sequence.Sequence) {
+  const documents = new Map<Domain.DocumentId, Record.StoredDocument | null>()
+  for (const [id, retirement] of state.retirements) {
+    Runtime.dropDocument(state.runtime, retirement.key)
+    documents.set(id, null)
+  }
+  for (const draft of state.incarnations.values()) {
+    if (draft.record === undefined && !draft.changed && !draft.retired) continue
+    if (draft.retired) {
+      Runtime.dropDocument(state.runtime, draft.key)
+      if (draft.record === undefined) documents.set(draft.value.record.id, null)
+    } else {
+      const stored = yield* Schema.decodeEffect(Record.StoredDocumentSchema)({
+        ...draft.value,
+        record: {
+          ...draft.value.record,
+          createdAt: draft.record === undefined ? draft.value.record.createdAt : seq,
+        },
+      })
+      Runtime.cacheDocument(state.runtime, draft.key, Option.some(stored))
+      documents.set(stored.record.id, stored)
+    }
+  }
+  return documents
+})
