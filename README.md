@@ -1,30 +1,109 @@
-# Effect Harness
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="effect-harness: durable AI agents, composed from Effect layers" width="100%">
+</p>
 
-An Effect-based runtime for durable AI conversations, schema-backed application state, and resumable tasks. TypeScript applications compose storage, model providers, and tool implementations through Layers; clients talk to the running harness over RPC.
+<p align="center">
+  <a href="https://www.npmjs.com/package/effect-harness"><img alt="npm" src="https://img.shields.io/npm/v/effect-harness?color=7c9cff&label=npm"></a>
+  <a href="https://github.com/julia-script/effect-harness/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/julia-script/effect-harness/ci.yml?branch=main&label=CI"></a>
+  <img alt="Effect 4" src="https://img.shields.io/badge/effect-4.0.5-b47cff">
+  <img alt="Runtimes" src="https://img.shields.io/badge/runs%20on-Bun%20%C2%B7%20Node%20%C2%B7%20Workers-ff7ab6">
+</p>
 
-The library lives in `src/` and is published as `effect-harness`. The lowercase subpaths documented here are the breaking 0.6 release API; the previously published 0.5 API uses different imports.
+<p align="center">
+  <b><a href="docs/getting-started.md">Get started</a></b> ·
+  <a href="docs/concepts.md">Concepts</a> ·
+  <a href="docs/tools.md">Tools</a> ·
+  <a href="docs/extensions.md">Extensions</a> ·
+  <a href="docs/providers.md">Providers</a> ·
+  <a href="docs/deployment.md">Deploy</a> ·
+  <a href="docs/reference.md">Reference</a>
+</p>
+
+---
+
+**effect-harness** is an agent loop you can kill at any moment. Every conversation, tool call and model response is committed to storage as it happens, so a crash, a deploy or a Cloudflare eviction picks up exactly where it stopped. It is built on [Effect](https://effect.website): tools are Schemas, implementations are Layers, and the client talks to the loop over typed RPC, in the same process or across the internet.
+
+<!-- prettier-ignore -->
+```ts
+const client = yield* HarnessClient.HarnessClient
+const root = yield* client.root()
+
+const submission = yield* root.submit({ type: 'input', content: 'Fix the flaky login test' })
+const settled = yield* submission.wait // survives restarts: reacquire it by ID later
+```
+
+## Why effect-harness?
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+### 💾 Durable by default
+
+Runs are durable tasks with checkpoints. Restart the process and unfinished generations, tool calls and compactions resume from storage. Memory, JSONL, SQLite and Postgres backends share one engine.
+
+</td>
+<td width="33%" valign="top">
+
+### 🧩 Schemas all the way down
+
+Declare tools with Effect Schemas and implement them as Layers. Arguments are validated, results encoded, failures typed, and a missing implementation is a type error, not a runtime surprise.
+
+</td>
+<td width="33%" valign="top">
+
+### 🔌 Client and loop, split
+
+`HarnessClient` speaks RPC to `HarnessServer`. Keep both in one process, put the loop behind a WebSocket, or host it in a Cloudflare Durable Object, and your calling code stays the same.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🤖 Real providers, real accounts
+
+OpenAI, Anthropic, Codex through a ChatGPT sign-in, Claude subscriptions and any OpenAI-compatible server. Let people add accounts at run time, each with its own credentials.
+
+</td>
+<td valign="top">
+
+### 🧠 A loop that manages itself
+
+Steering and follow-up queues, automatic retries with backoff, context compaction before the window fills, deferred tool loading with `tool_search`, and per-conversation usage ledgers.
+
+</td>
+<td valign="top">
+
+### 🛠️ Batteries included
+
+`read`, `write`, `edit` and `bash` coding tools, a durable code mode that replays QuickJS scripts after a crash, image fitting for vision models, and a scripted `Faux` model for tests.
+
+</td>
+</tr>
+</table>
 
 ## Install
 
-After the 0.6 release is published, install it with its required Effect peer:
-
 ```sh
-bun add effect-harness@^0.6.0 effect@4.0.5
+bun add effect-harness effect@4.0.5
 ```
 
-Until then, use a repository checkout and the build instructions below. Install optional peers only for the integrations you use: `@effect/ai-openai@4.0.5` for `openai`, `@effect/ai-anthropic@4.0.5` for `anthropic`, `sharp@0.34.5` for `coding/sharp`, and `alchemy@2.0.0-beta.83` plus `@effect/sql-sqlite-do@4.0.5` for `cloudflare`. Bun-specific subpaths require Bun; the portable core can also run under Node.
+Add optional peers only for the integrations you use:
 
-## Run a local conversation
+| You want                      | Also install                                          |
+| ----------------------------- | ----------------------------------------------------- |
+| `effect-harness/openai`       | `@effect/ai-openai@4.0.5`                             |
+| `effect-harness/anthropic`    | `@effect/ai-anthropic@4.0.5`                          |
+| `effect-harness/coding/sharp` | `sharp@0.34.5`                                        |
+| `effect-harness/cloudflare`   | `alchemy@2.0.0-beta.83` `@effect/sql-sqlite-do@4.0.5` |
 
-Install dependencies and build the package exports:
+> [!NOTE]
+> These docs describe the 0.6 API (lowercase subpaths such as `effect-harness/client`). Until 0.6 is on npm, build from a checkout: `bun install && bun run setup && bun run build`.
 
-```sh
-bun install
-bun run setup
-bun run build
-```
+## Your first agent in 60 seconds
 
-Save the following as `local.ts` at the repository root, then run `bun local.ts`. It uses the built-in scripted `Faux` model, so it requires no API key or network access. The model requests a real tool handler and then supplies a scripted answer; it is not an inference model.
+This runs offline. `Faux` is a scripted model: it asks for the tool, then answers.
 
 ```ts
 import { Console, Effect, Layer, Schema } from 'effect'
@@ -34,30 +113,34 @@ import { Faux, Model } from 'effect-harness/model'
 import { Storage } from 'effect-harness/storage'
 import { Tool, Toolkit } from 'effect-harness/tool'
 
-const uppercase = Tool.make('uppercase', {
+// 1. Declare a tool: a name, a description, and Schemas. No code yet.
+const Uppercase = Tool.make('uppercase', {
   description: 'Convert text to uppercase.',
   parameters: Schema.Struct({ text: Schema.String }),
   success: Schema.String,
 })
-const toolkit = Toolkit.make(uppercase)
-const tools = Extension.make('text', { toolkit })
+const toolkit = Toolkit.make(Uppercase)
+
+// 2. Implement it, as a Layer, where the loop runs.
 const ToolsLive = toolkit.toLayer({
   uppercase: ({ text }) => Effect.succeed(text.toUpperCase()),
 })
 
 const program = Effect.gen(function* () {
+  // 3. A scripted model: call the tool, then answer. Swap in a real provider later.
   const faux = yield* Faux.make()
   yield* faux.setResponses([
     Faux.message(Faux.toolCall('uppercase', { text: 'hello' }), { stopReason: 'toolUse' }),
-    Faux.message('HELLO'),
+    Faux.message('It says HELLO.'),
   ])
 
+  // 4. The loop: extensions, settings, storage and a model.
   const ServerLive = HarnessServer.layer({
-    extensions: [tools],
+    extensions: [Extension.make('text', { toolkit })],
     settings: { model: faux.ref() },
   }).pipe(Layer.provide([ToolsLive, Model.layer([faux.provider]), Storage.layerMemory]))
 
-  // Both sides must share the same transport instance.
+  // 5. Loop and client share one in-memory transport.
   const AppLive = Layer.merge(ServerLive, HarnessClient.layer).pipe(
     Layer.provide(HarnessTransport.layerMemory),
   )
@@ -65,81 +148,82 @@ const program = Effect.gen(function* () {
   yield* Effect.gen(function* () {
     const client = yield* HarnessClient.HarnessClient
     const root = yield* client.root()
-    const submission = yield* root.submit({ type: 'input', content: 'Uppercase hello.' })
+    const submission = yield* root.submit({ type: 'input', content: 'Shout "hello" for me.' })
     const settled = yield* submission.wait
-    yield* Console.log(settled)
+    yield* Console.log(`status: ${settled.status}`)
+
     const { items } = yield* root.entries({ order: 'ascending' }, 50)
-    yield* Console.log(items)
+    for (const entry of items) yield* Console.log(entry.kind)
   }).pipe(Effect.provide(AppLive))
 })
 
-await Effect.runPromise(Effect.scoped(program))
+Effect.runPromise(Effect.scoped(program))
 ```
 
-`submission.wait` returns a settled record whose `status` can be `done` or `unanswered`; inspect that result rather than assuming a model answered. The entry page contains the committed conversation, including tool calls and results. Closing the scope releases the client, server, and storage resources.
+```text
+status: done
+$user
+$system
+$assistant
+$tool-result
+$assistant
+```
 
-## Persistence and deployment
+That transcript is the whole story: your message, the system prompt, the model asking for `uppercase`, the tool's result, and the final answer. [Getting started](docs/getting-started.md) walks through it line by line and then swaps in a real model and a database.
 
-`Storage.layerMemory` is volatile. For local persistence, replace it with `Storage.layerJsonl('./agent-data')` and provide Effect `FileSystem` and `Path` services from your platform adapter. The argument is a directory, not a JSONL filename. `Storage.layerSql()` accepts a host-provided Effect SQL `SqlClient` using SQLite or PostgreSQL; its optional `prefix` separates tables in a shared database. A Session must be the only writer of its store.
+## How it fits together
 
-Built-in kinds and keys use the reserved `$` prefix (for example, `$user`, `$assistant`, `$agent`, and `$tool-output`). Custom input-entry kinds cannot start with `$`. Consumers that inspect transcript kinds, task names, document keys, or tool-output discriminants should use these identifiers.
+```mermaid
+flowchart LR
+  subgraph app["Your app (anywhere)"]
+    C["HarnessClient"]
+  end
+  subgraph loop["The loop (HarnessServer)"]
+    H["Harness<br/>conversations · submissions · runs"]
+    S["Scheduler<br/>durable tasks"]
+    X["Extensions<br/>tools · sections · hooks"]
+  end
+  C <-- "RPC: memory · WebSocket · Durable Object" --> H
+  H --> S
+  S -- "$generation" --> M(["Model<br/>OpenAI · Anthropic · Codex · Faux"])
+  S -- "$tool" --> T["Tool handlers<br/>(your Layers)"]
+  X -. selected per conversation .-> S
+  H --> ST[("Storage<br/>memory · JSONL · SQL")]
+```
 
-`HarnessTransport.layerMemory` connects client and server in one process. For a separate server, use `HarnessTransport.layerWebSocketServer(path)` with an Effect HTTP router and platform HTTP server; clients use `HarnessTransport.layerWebSocket(url)`.
+A **tool declaration** holds Schemas only, so the client can import it. `Toolkit.toLayer` supplies the implementation where the loop runs. An **extension** bundles tools with system-prompt sections and hooks, and each conversation picks which extensions it uses. `HarnessServer.layer` builds the loop and serves it; `HarnessClient.layer` is what your code calls. Read [Concepts](docs/concepts.md) for the full picture.
 
-The [Cloudflare example](examples/cloudflare/README.md) runs the harness in a Durable Object with SQLite persistence, account management, and a WebSocket command-line client. It supports OpenAI, ChatGPT/Codex sign-in, and Anthropic accounts without changing the client/server boundary.
+## Documentation
 
-## Architecture and public imports
+| Guide                                         | What you'll learn                                                                    |
+| --------------------------------------------- | ------------------------------------------------------------------------------------ |
+| 🚀 [Getting started](docs/getting-started.md) | Run a conversation, then switch to a real model and persistent storage.              |
+| 🧭 [Concepts](docs/concepts.md)               | Conversations, submissions, runs, entries, documents and tasks, and how they relate. |
+| 💬 [Conversations](docs/conversations.md)     | Submitting, steering, forking, resetting, compacting and watching live events.       |
+| 🛠️ [Tools](docs/tools.md)                     | Declaring tools, config, replay safety, rich results, nested calls, stock tools.     |
+| 🧩 [Extensions](docs/extensions.md)           | System-prompt sections, hooks, wrappers and per-conversation selection.              |
+| 🤖 [Providers & accounts](docs/providers.md)  | OpenAI, Anthropic, Codex and Claude sign-in, credentials and run-time accounts.      |
+| 💾 [Persistence](docs/persistence.md)         | Storage backends, recovery, your own durable documents and named inits.              |
+| 🌍 [Deployment](docs/deployment.md)           | WebSocket servers, browsers, and Cloudflare Durable Objects.                         |
+| 📚 [Reference](docs/reference.md)             | Every subpath, settings and their defaults, built-in kinds.                          |
 
-Import concept namespaces from the lowercase subpaths below. Package exports resolve to `dist/`, so rebuild after source changes.
+## Examples
 
-The root import exposes `Accounts`, `Client`, `Credentials`, `Delta`, `Harness`, `Model`, `Session`, `Storage`, `Task`, and `Tool` namespaces without loading optional provider or platform integrations.
+- **[Cloudflare](examples/cloudflare/README.md)**: one harness per Durable Object, with accounts added at run time and a command-line chat client over WebSockets.
 
-| Subpath (`effect-harness/…`)                       | Responsibility                                                                                       |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `client`                                           | `HarnessClient`, RPC contracts, named initialization, and memory/WebSocket transports.               |
-| `harness`                                          | `Harness` loop, `HarnessServer`, conversations, submissions, extensions, generation, and compaction. |
-| `model`                                            | Model/provider contracts, messages, transcripts, and the scripted `Faux` model.                      |
-| `tool`                                             | Schema-backed `Tool` declarations, `Toolkit` handler Layers, tool results, and execution tasks.      |
-| `storage`, `storage/schema`                        | Memory/JSONL/SQL persistence and stored record schemas.                                              |
-| `session`, `delta`, `task`                         | Transactional session state, document changes, and durable task scheduling.                          |
-| `credentials`, `credentials/bun`                   | Credential services and Bun-specific persistence.                                                    |
-| `openai`, `anthropic`                              | Provider integrations; `openai/adapter` and `anthropic/adapter` expose account adapters.             |
-| `accounts`                                         | Account management and its RPC boundary.                                                             |
-| `coding`, `coding/bun`, `coding/sharp`, `codemode` | Coding tools and optional platform/image/code-mode integrations.                                     |
-| `cloudflare`                                       | Durable Object hosting and routing.                                                                  |
-
-A tool declaration defines its schema; `Toolkit.toLayer` supplies implementations; an `Extension` installs tools into the harness. `HarnessServer.layer` composes the default loop and serves its RPC contract, while `HarnessClient.layer` supplies the application-facing client. The client can run independently of the loop.
-
-## Develop and verify
-
-From the repository root:
+## Develop
 
 ```sh
 bun install --frozen-lockfile
-bun run setup
+bun run setup        # patch the local compiler and linter for Effect diagnostics
 bun run build
-bun run check
+bun run check        # format, lint, typecheck
 bun run test
-bun run test:package
+bun run test:package # pack, install into an isolated consumer, run under Node 24+
 ```
 
-`setup` patches the local compiler and linter for Effect diagnostics; it is a developer command, not an install hook run in consumers' projects. `check` checks formatting, lint, and TypeScript. Tests live alongside the implementation under `src/`. `test:package` requires Node 24 or later, builds a real npm archive, installs it into an isolated consumer, checks its declarations, and runs a tool round under Node. CI exercises Node 24. The Cloudflare example lives under `examples/cloudflare/`.
+Tests live next to the code under `src/`. Every PR carries a changeset (`bun run changeset`); see [Releasing](docs/releasing.md) for the publishing workflow.
 
 ## Thanks
 
 Inspired by [Pi Durable](https://github.com/earendil-works/pi)'s durable conversation design. Source module comments identify the Pi components this implementation models or ports; code mode uses `@earendil-works/pi-codemode`. The distributed [NOTICE](NOTICE) retains the upstream attribution and MIT license.
-
-## Maintainer release workflow
-
-Releases use Changesets and npm trusted publishing, with Node 24 and Bun 1.4.2. The package stays at the published base version until the automated version PR is merged; the pending minor changeset prepares the breaking pre-1.0 release from `0.5.0` to `0.6.0`.
-
-1. Include a changeset in each PR with `bun run changeset`; use `bun run changeset --empty` for changes that intentionally do not release the package. `bun run check:changesets` checks additions against `origin/main`. CI requires this except for the same-repository `changeset-release/main` version branch, whose changesets have already been consumed.
-2. Merge the change into protected `main`. After its push-triggered `CI` succeeds, `.github/workflows/release.yml` runs `changesets/action` to create or update the `changeset-release/main` version PR. Its `bun run version:packages` command updates the version and changelog, refreshes the Bun lockfile without install scripts, and formats the result.
-3. Review the version PR before merging. PRs created or updated with `GITHUB_TOKEN` do not automatically trigger other workflows; a maintainer can close and reopen the PR to trigger PR CI on its latest revision. CI builds, checks, tests, and runs `bun run test:package` against a real installed tarball.
-4. Merge the version PR. After the resulting main commit passes `CI`, the release workflow runs `bun run release` (`changeset publish`). The package's `prepack` script builds the distribution before npm packs it. Publication uses OIDC, requests provenance, and creates the release tag and GitHub release; no long-lived npm token is needed.
-
-Release jobs accept only successful, same-repository `push` runs of `CI` on `main`. The tested SHA must also equal the release event's `github.sha`, because Changesets uses that SHA when resetting its version branch. Immediately before running Changesets, the workflow checks that remote `main` still matches and skips superseded runs. The checkout and Changesets base remain pinned to the tested commit, so a later branch update cannot silently substitute untested code. Release jobs are serialized.
-
-In the npm settings for `effect-harness`, keep the GitHub Actions trusted publisher configured for repository **`julia-script/effect-harness`**, workflow filename **`release.yml`**, and environment **`npm-production`**. GitHub must have that environment configured, allow Actions to create pull requests, and protect `main` with the CI checks. These repository/npm settings are external prerequisites, not settings this checkout can provision.
-
-This publishing-readiness change has not published anything to npm. `bun run release` performs a real publication and is reserved for the approved release workflow.

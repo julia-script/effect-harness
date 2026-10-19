@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="effect-harness: durable AI agents, composed from Effect layers">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="0.55" stop-color="#141a3a"/>
+      <stop offset="1" stop-color="#2a1145"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7c9cff"/>
+      <stop offset="0.5" stop-color="#b47cff"/>
+      <stop offset="1" stop-color="#ff7ab6"/>
+    </linearGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#cfd8ff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#8b7cff" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#8b7cff" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#ffffff" stroke-opacity="0.04"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="360" rx="24" fill="url(#bg)"/>
+  <rect width="1280" height="360" rx="24" fill="url(#grid)"/>
+  <circle cx="1030" cy="180" r="190" fill="url(#glow)"/>
+
+  <!-- the loop -->
+  <g fill="none" stroke="url(#ring)" stroke-width="3">
+    <circle cx="1030" cy="180" r="112" stroke-dasharray="10 9" opacity="0.9"/>
+    <circle cx="1030" cy="180" r="62" opacity="0.5"/>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" text-anchor="middle">
+    <g>
+      <circle cx="1030" cy="68" r="30" fill="#141a3a" stroke="#7c9cff" stroke-width="2"/>
+      <text x="1030" y="73" fill="#cfd8ff">model</text>
+    </g>
+    <g>
+      <circle cx="1127" cy="236" r="30" fill="#141a3a" stroke="#ff7ab6" stroke-width="2"/>
+      <text x="1127" y="241" fill="#ffd3e6">tools</text>
+    </g>
+    <g>
+      <circle cx="933" cy="236" r="30" fill="#141a3a" stroke="#b47cff" stroke-width="2"/>
+      <text x="933" y="241" fill="#e6d6ff">store</text>
+    </g>
+    <text x="1030" y="176" fill="#ffffff" font-size="13" opacity="0.75">run</text>
+    <text x="1030" y="196" fill="#ffffff" font-size="13" opacity="0.75">loop</text>
+  </g>
+
+  <!-- copy -->
+  <text x="72" y="150" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="68" font-weight="800" fill="url(#title)" letter-spacing="-1.5">effect-harness</text>
+  <text x="74" y="204" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="26" fill="#aeb8e6">Durable AI agents, composed from Effect layers.</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15">
+    <rect x="74" y="246" width="176" height="34" rx="17" fill="#7c9cff" fill-opacity="0.14" stroke="#7c9cff" stroke-opacity="0.5"/>
+    <text x="162" y="268" text-anchor="middle" fill="#cfd8ff">survives crashes</text>
+    <rect x="262" y="246" width="192" height="34" rx="17" fill="#b47cff" fill-opacity="0.14" stroke="#b47cff" stroke-opacity="0.5"/>
+    <text x="358" y="268" text-anchor="middle" fill="#e6d6ff">schema-typed tools</text>
+    <rect x="466" y="246" width="172" height="34" rx="17" fill="#ff7ab6" fill-opacity="0.14" stroke="#ff7ab6" stroke-opacity="0.5"/>
+    <text x="552" y="268" text-anchor="middle" fill="#ffd3e6">client over RPC</text>
+  </g>
+</svg>
