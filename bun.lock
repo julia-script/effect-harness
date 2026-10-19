@@ -52,7 +52,7 @@
     },
     "packages/effect-harness": {
       "name": "effect-harness",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@effect/ai-anthropic": "4.0.1",
         "@effect/ai-openai": "4.0.1",
