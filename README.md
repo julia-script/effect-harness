@@ -86,7 +86,7 @@ Steering and follow-up queues, automatic retries with backoff, context compactio
 ## Install
 
 ```sh
-bun add effect-harness effect@4.0.5
+bun add effect-harness@^0.7.0 effect@4.0.5
 ```
 
 Add optional peers only for the integrations you use:
@@ -99,7 +99,7 @@ Add optional peers only for the integrations you use:
 | `effect-harness/cloudflare`   | `alchemy@2.0.0-beta.83` `@effect/sql-sqlite-do@4.0.5` |
 
 > [!NOTE]
-> These docs describe the 0.6 API (lowercase subpaths such as `effect-harness/client`). Until 0.6 is on npm, build from a checkout: `bun install && bun run setup && bun run build`.
+> These docs describe the 0.7 API (lowercase subpaths such as `effect-harness/client`). 0.6 and earlier use a different layout. Until 0.7 is on npm, build from a checkout: `bun install && bun run setup && bun run build`.
 
 ## Your first agent in 60 seconds
 

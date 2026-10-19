@@ -2,7 +2,7 @@
 
 This page is for maintainers.
 
-Releases use Changesets and npm trusted publishing, with Node 24 and Bun 1.4.2. The package stays at the published base version until the automated version PR is merged; the pending minor changeset prepares the breaking pre-1.0 release from `0.5.0` to `0.6.0`.
+Releases use Changesets and npm trusted publishing, with Node 24 and Bun 1.4.2. The package stays at the published base version until the automated version PR is merged; the pending minor changeset prepares the breaking pre-1.0 release from `0.6.0` to `0.7.0`.
 
 1. Include a changeset in each PR with `bun run changeset`; use `bun run changeset --empty` for changes that intentionally do not release the package. `bun run check:changesets` checks additions against `origin/main`. CI requires this except for the same-repository `changeset-release/main` version branch, whose changesets have already been consumed.
 2. Merge the change into protected `main`. After its push-triggered `CI` succeeds, `.github/workflows/release.yml` runs `changesets/action` to create or update the `changeset-release/main` version PR. Its `bun run version:packages` command updates the version and changelog, refreshes the Bun lockfile without install scripts, and formats the result.

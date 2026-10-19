@@ -13,7 +13,7 @@ By the end of this page you'll have a conversation that calls a tool, talks to a
 ## 1. Install
 
 ```sh
-bun add effect-harness effect@4.0.5
+bun add effect-harness@^0.7.0 effect@4.0.5
 ```
 
 effect-harness runs on Bun and on Node 24+. Provider and platform integrations are optional peers, so install `@effect/ai-anthropic@4.0.5` or `@effect/ai-openai@4.0.5` when you get to step 4.
