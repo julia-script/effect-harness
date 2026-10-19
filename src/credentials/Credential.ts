@@ -1,0 +1,40 @@
+/**
+ * Stored credentials, modeled on pi's `auth/types.ts`: one per provider, an API key or OAuth
+ * tokens. Secrets decode to `Redacted`, so they stay out of logs and inspection; they encode back
+ * to strings, for a store or a transport.
+ */
+import { Schema } from 'effect'
+import { JsonObject } from '../storage/schema/Json.ts'
+
+/** A secret string: `Redacted` once decoded. */
+export const Secret = Schema.RedactedFromValue(Schema.String)
+export type Secret = typeof Secret.Type
+
+/** An API key, with provider-scoped settings such as an account or gateway ID. */
+export const ApiKey = Schema.Struct({
+  type: Schema.Literal('api_key'),
+  key: Secret,
+  env: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+})
+export type ApiKey = typeof ApiKey.Type
+
+/** OAuth tokens; `expires` is when `access` expires, in epoch milliseconds. */
+export const OAuth = Schema.Struct({
+  type: Schema.Literal('oauth'),
+  access: Secret,
+  refresh: Secret,
+  expires: Schema.Finite,
+  /** Provider-specific token data, such as an account ID. */
+  extra: Schema.optionalKey(JsonObject),
+})
+export type OAuth = typeof OAuth.Type
+
+export const Credential = Schema.Union([ApiKey, OAuth])
+export type Credential = typeof Credential.Type
+
+/** What a credential is, without its secrets, for status and account lists. */
+export const Info = Schema.Struct({
+  provider: Schema.String,
+  type: Schema.Literals(['api_key', 'oauth']),
+})
+export type Info = typeof Info.Type

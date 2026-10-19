@@ -15,10 +15,14 @@ permissions:
 
 jobs:
   release:
+    # Changesets resets its version branch to github.sha, not the checkout ref.
+    # Only accept events for which both identify the same CI-tested commit.
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_sha == github.sha
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: npm-production
@@ -31,20 +35,34 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_sha }}
-      - name: Verify gated commit
-        env:
-          GATED_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: test "$(git rev-parse HEAD)" = "$GATED_SHA"
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           package-manager-cache: false
           registry-url: https://registry.npmjs.org
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
       - name: Install npm with trusted-publishing support
         run: npm install --global npm@11.5.1
       - run: bun install --frozen-lockfile
+      - run: bun run setup
+      - name: Skip superseded main commits
+        id: gate
+        env:
+          GATED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GATED_SHA"
+          test "$GITHUB_SHA" = "$GATED_SHA"
+          git fetch --no-tags origin main
+          if [ "$(git rev-parse FETCH_HEAD)" = "$GATED_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Skipping release because main has advanced beyond the CI-tested commit."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Create version PR or publish the tested package
+        if: steps.gate.outputs.current == 'true'
         uses: changesets/action@v1
         with:
           version: bun run version:packages

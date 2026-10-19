@@ -1,31 +1,7 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "noEmit": true,
-    "paths": {
-      "effect-harness": ["./packages/effect-harness/src/index.ts"],
-      "effect-harness/*": ["./packages/effect-harness/src/*.ts"],
-      "effect-harness/provider-openai": ["./packages/effect-harness/src/provider-openai/index.ts"],
-      "effect-harness/provider-anthropic": [
-        "./packages/effect-harness/src/provider-anthropic/index.ts"
-      ],
-      "effect-harness/provider-auth": ["./packages/effect-harness/src/provider-auth/index.ts"],
-      "effect-harness/provider-auth-bun": [
-        "./packages/effect-harness/src/provider-auth-bun/index.ts"
-      ],
-      "effect-harness/provider-auth-node": [
-        "./packages/effect-harness/src/provider-auth-node/index.ts"
-      ],
-      "effect-harness/provider-openai-compatible": [
-        "./packages/effect-harness/src/provider-openai-compatible/index.ts"
-      ],
-      "effect-harness/provider-openrouter": [
-        "./packages/effect-harness/src/provider-openrouter/index.ts"
-      ],
-      "effect-harness/provider-openai-codex": [
-        "./packages/effect-harness/src/provider-openai-codex/index.ts"
-      ]
-    }
+    "noEmit": true
   },
-  "include": ["packages/effect-harness/test/**/*.ts", "apps/*/test/**/*.ts", "vitest.config.ts"]
+  "include": ["src/**/*.ts"]
 }
