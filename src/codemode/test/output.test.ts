@@ -20,7 +20,7 @@ const run = (code: string, options: Options = {}) =>
       current.block = false
       const { harness, conversation, result } = yield* runScript(storage, current, code, options)
       const entries = yield* entriesOf(harness, conversation.id)
-      const message = entries.find((entry) => entry.kind === 'pi.tool-result')?.model?.[0] ?? {}
+      const message = entries.find((entry) => entry.kind === '$tool-result')?.model?.[0] ?? {}
       const content: unknown = message['content']
       const blocks: ReadonlyArray<{ readonly type: string; readonly text?: string }> =
         Array.isArray(content) ? content : []

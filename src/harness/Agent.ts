@@ -1,5 +1,5 @@
 /**
- * The built-in `pi.agent` document, ported from pi's `harness/agent.ts`: what one conversation asks
+ * The built-in `$agent` document, ported from pi's `harness/agent.ts`: what one conversation asks
  * with, and the agent resolved from it.
  *
  * A conversation stores its model, reasoning level, extension selection, tool filter,
@@ -42,7 +42,7 @@ import type { Settings } from './Settings.ts'
 
 /** One per conversation; a fork starts from the agent at its fork entry. */
 export const document = Document.make<State>({
-  kind: 'pi.agent',
+  kind: '$agent',
   version: 1,
   scope: 'conversation',
   history: 'rewindable',
@@ -61,7 +61,7 @@ const FIELDS = [
   'config',
 ] as const
 
-/** Apply `change` to the conversation's `pi.agent`. */
+/** Apply `change` to the conversation's `$agent`. */
 export const configure = (tx: Tx, conversationId: ConversationId, change: Change) =>
   Effect.map(tx.doc(document, conversationId), (state) => {
     for (const key of FIELDS) {

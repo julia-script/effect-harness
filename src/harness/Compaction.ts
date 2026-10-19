@@ -1,6 +1,6 @@
 /**
  * The built-in compaction task, ported from pi's `CompactionTask` (`harness/compaction.ts`, spec
- * §8.7): select an old prefix of the model context, summarize it, and place a `pi.compaction`
+ * §8.7): select an old prefix of the model context, summarize it, and place a `$compaction`
  * entry whose `head` is the first entry kept, so the context starts at the summary.
  *
  * - A generation compacts first when its request would leave less than `reserveTokens` of the
@@ -11,7 +11,7 @@
  *   are admitted as write submissions: placed at once when idle, else at the next boundary.
  * - `beforeCompact` hooks may decline a compaction or supply its summary.
  * - Summarization retries `Retryable` failures as generations do. Each attempt's usage is
- *   recorded in `pi.usage`; a failure is kept in `pi.live.compactionFailure`.
+ *   recorded in `$usage`; a failure is kept in `$live.compactionFailure`.
  */
 import { Effect, Schema } from 'effect'
 import * as Model from '../model/Model.ts'

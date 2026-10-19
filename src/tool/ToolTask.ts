@@ -4,7 +4,7 @@
  *
  * Its `call` phase reads the call from its assistant entry, resolves the tool, validates the
  * arguments against the tool's parameters Schema, records intent (the arguments it runs with and
- * the replay policy), runs the handler, and settles: a `pi.tool-result` entry and the task's
+ * the replay policy), runs the handler, and settles: a `$tool-result` entry and the task's
  * outcome in one commit. Every way a call can go wrong still answers it with a result entry, so
  * the model always sees one:
  *
@@ -94,8 +94,7 @@ export const Result = Schema.Union([ModelResult, NestedResult])
 export type Result = typeof Result.Type
 
 /** One nested call of a running tool: its task, and once it ended, its outcome. */
-export interface NestedCallState {
-  [key: string]: Schema.Json
+export type NestedCallState = {
   /** Absent only inside the commit that creates the call. */
   taskId?: number
   result?: Outcome
@@ -107,7 +106,7 @@ export interface NestedCallState {
  * outcome.
  */
 export const NestedCalls = Document.makeFamily<NestedCallState, null>({
-  kind: 'pi.tool.nested-call',
+  kind: '$tool.nested-call',
   version: 1,
   family: true,
   scope: 'task',

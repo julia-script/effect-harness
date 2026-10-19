@@ -44,7 +44,7 @@ for (const [name, transport] of transports) {
           yield* submission.wait
           const now = yield* root.context()
           expect(now.head).toBeUndefined()
-          expect(now.entries.map(({ kind }) => kind)).toEqual(['pi.user', 'pi.assistant'])
+          expect(now.entries.map(({ kind }) => kind)).toEqual(['$user', '$assistant'])
           // The stand-in's assistant message is not a whole model message: it contributes nothing.
           expect(now.contributions.map((messages) => messages.length)).toEqual([1, 0])
           expect(now.messages).toEqual(now.contributions[0]!)

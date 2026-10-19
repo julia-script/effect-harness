@@ -5,8 +5,8 @@ import type { MessageChange } from '../../AgentEvent.ts'
 
 type Path = ReadonlyArray<string | number>
 
-/** Where `pi.live` holds the partial in a conversation view. */
-const PARTIAL_PATH: Path = ['docs', 'pi.live', 'generation', 'message']
+/** Where `$live` holds the partial in a conversation view. */
+const PARTIAL_PATH: Path = ['docs', '$live', 'generation', 'message']
 
 export const startsWith = (path: Path, prefix: Path): boolean =>
   prefix.length <= path.length && prefix.every((segment, index) => path[index] === segment)

@@ -1,6 +1,6 @@
 /* oxlint-disable max-lines-per-function, effecttsgo/any-unknown-in-error-context -- describe blocks; sections may fail with anything */
 /**
- * The extension registry, agent resolution, and `pi.agent` through whole runs. Ported in spirit
+ * The extension registry, agent resolution, and `$agent` through whole runs. Ported in spirit
  * from pi's `harness-extensions.test.ts`.
  */
 import { describe as group, expect, test } from 'bun:test'
@@ -81,7 +81,7 @@ group('Extensions', () => {
     ))
 })
 
-group('pi.agent', () => {
+group('$agent', () => {
   test('configures a conversation: its model, instructions and tools reach the request', () =>
     runTest((storage) =>
       Effect.gen(function* () {
@@ -135,12 +135,12 @@ group('pi.agent', () => {
         yield* ask('second')
         const entries = yield* entriesOf(harness, conversation.id)
         expect(entries.map((entry) => describe(entry))).toEqual([
-          'pi.user: first',
-          'pi.system',
-          'pi.assistant: a',
-          'pi.user: second',
-          'pi.system',
-          'pi.assistant: b',
+          '$user: first',
+          '$system',
+          '$assistant: a',
+          '$user: second',
+          '$system',
+          '$assistant: b',
         ])
         expect(messageOf(entries[4]!)).toMatchObject({
           sections: { rules: '<rules>\ntwo\n</rules>' },

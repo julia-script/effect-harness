@@ -33,7 +33,7 @@ const modes = (harness: Harness.Service, conversation: Conversation) =>
 
 const answers = (conversation: Conversation) =>
   Effect.map(conversation.entries({ order: 'ascending' }, 100), (page) =>
-    page.items.filter((entry) => entry.kind === 'pi.assistant').map((entry) => entry.id),
+    page.items.filter((entry) => entry.kind === '$assistant').map((entry) => entry.id),
   )
 
 const idle = (harness: Harness.Service, conversation: Conversation) =>
@@ -57,20 +57,20 @@ describe('inbox', () => {
           [write.id, 'write'],
           [f2.id, 'followUp'],
         ])
-        expect(yield* transcript(root)).toEqual(['pi.user: a'])
+        expect(yield* transcript(root)).toEqual(['$user: a'])
 
         yield* answer('first')
         yield* answer('second')
         yield* answer('third')
         yield* f2.wait
         expect(yield* transcript(root)).toEqual([
-          'pi.user: a',
-          'pi.assistant: first',
+          '$user: a',
+          '$assistant: first',
           'note: w',
-          'pi.user: f1',
-          'pi.assistant: second',
-          'pi.user: f2',
-          'pi.assistant: third',
+          '$user: f1',
+          '$assistant: second',
+          '$user: f2',
+          '$assistant: third',
         ])
         const [first, second, third] = yield* answers(root)
         expect(yield* statusOf(input)).toMatchObject({ status: 'done', answer: first })
@@ -96,11 +96,11 @@ describe('inbox', () => {
         const settled = yield* f2.wait
         expect(yield* statusOf(f1)).toEqual(placedAs({ ...settled, id: f1.id }))
         expect(yield* transcript(root)).toEqual([
-          'pi.user: a',
-          'pi.assistant: first',
-          'pi.user: f1',
-          'pi.user: f2',
-          'pi.assistant: both',
+          '$user: a',
+          '$assistant: first',
+          '$user: f1',
+          '$user: f2',
+          '$assistant: both',
         ])
       }),
     ))
@@ -136,12 +136,12 @@ describe('inbox', () => {
         yield* answer('follow-up')
         yield* followUp.wait
         expect(yield* transcript(root)).toEqual([
-          'pi.user: a',
-          'pi.assistant: calling',
-          'pi.user: s',
-          'pi.assistant: after tools',
-          'pi.user: f',
-          'pi.assistant: follow-up',
+          '$user: a',
+          '$assistant: calling',
+          '$user: s',
+          '$assistant: after tools',
+          '$user: f',
+          '$assistant: follow-up',
         ])
         const [, afterTools, last] = yield* answers(root)
         expect(yield* statusOf(input)).toMatchObject({ status: 'done', answer: afterTools })
@@ -166,11 +166,11 @@ describe('inbox', () => {
         expect(yield* statusOf(s1)).toMatchObject({ status: 'done', answer: answerOf(settled) })
         expect(yield* statusOf(s2)).toMatchObject({ status: 'done', answer: answerOf(settled) })
         expect(yield* transcript(root)).toEqual([
-          'pi.user: a',
-          'pi.assistant: calling',
-          'pi.user: s1',
-          'pi.user: s2',
-          'pi.assistant: done',
+          '$user: a',
+          '$assistant: calling',
+          '$user: s1',
+          '$user: s2',
+          '$assistant: done',
         ])
       }),
     ))
@@ -188,14 +188,14 @@ describe('inbox', () => {
         yield* followUp.wait
         expect(yield* statusOf(input)).toMatchObject({ status: 'unanswered', reason: 'reset' })
         expect(yield* transcript(root)).toEqual([
-          'pi.user: a',
-          'pi.assistant: calling',
-          'pi.reset: ',
-          'pi.user: f',
-          'pi.assistant: fresh',
+          '$user: a',
+          '$assistant: calling',
+          '$reset: ',
+          '$user: f',
+          '$assistant: fresh',
         ])
         const page = yield* root.entries({}, 100)
-        const reset = page.items.find((entry) => entry.kind === 'pi.reset')!
+        const reset = page.items.find((entry) => entry.kind === '$reset')!
         expect(reset.head).toBe(reset.id)
       }),
     ))
@@ -211,9 +211,9 @@ describe('inbox', () => {
         expect((yield* input.wait).status).toBe('done')
         yield* root.waitForIdle
         expect(yield* transcript(root)).toEqual([
-          'pi.user: a',
-          'pi.assistant: first',
-          'pi.reset: handoff',
+          '$user: a',
+          '$assistant: first',
+          '$reset: handoff',
         ])
       }),
     ))
@@ -226,7 +226,7 @@ describe('inbox', () => {
         yield* root.reset()
         yield* root.reset('carry on')
         const page = yield* root.entries({ order: 'ascending' }, 10)
-        expect(page.items.map((entry) => entry.kind)).toEqual(['pi.reset', 'pi.reset'])
+        expect(page.items.map((entry) => entry.kind)).toEqual(['$reset', '$reset'])
         const [plain, handoff] = page.items
         expect(plain?.model).toBeUndefined()
         expect(handoff?.head).toBe(handoff?.id)
@@ -263,7 +263,7 @@ describe('inbox', () => {
         // The fresh summary starts the range at the reset: a target inside the range is not stale,
         // even when it is older than the marker itself.
         const page = yield* root.entries({ order: 'ascending' }, 100)
-        const inside = page.items.find((entry) => entry.kind === 'pi.user')!
+        const inside = page.items.find((entry) => entry.kind === '$user')!
         const second = yield* root.submit({ type: 'input', content: 'b' })
         const kept = yield* root.submit({
           type: 'write',
@@ -353,10 +353,10 @@ describe('inbox', () => {
         yield* g.wait
         expect(yield* statusOf(f)).toMatchObject({ status: 'done' })
         expect((yield* transcript(root)).slice(-4)).toEqual([
-          'pi.user: f',
-          'pi.assistant: for f',
-          'pi.user: g',
-          'pi.assistant: for g',
+          '$user: f',
+          '$assistant: for f',
+          '$user: g',
+          '$assistant: for g',
         ])
       }),
     ))
@@ -375,9 +375,9 @@ describe('inbox', () => {
         const settled = yield* steer.wait
         expect(yield* statusOf(f)).toEqual(placedAs({ ...settled, id: f.id }))
         expect((yield* transcript(root)).slice(-3)).toEqual([
-          'pi.user: f',
-          'pi.user: s',
-          'pi.assistant: both',
+          '$user: f',
+          '$user: s',
+          '$assistant: both',
         ])
       }),
     ))
@@ -426,7 +426,7 @@ describe('inbox', () => {
         const settled = yield* (yield* second.harness.submission(id))!.wait
         expect(settled).toMatchObject({ status: 'done' })
         const reopened = yield* second.harness.root()
-        expect((yield* transcript(reopened)).slice(-2)).toEqual(['pi.user: f', 'pi.assistant: f'])
+        expect((yield* transcript(reopened)).slice(-2)).toEqual(['$user: f', '$assistant: f'])
         yield* second.close
       }),
     ))
@@ -489,7 +489,7 @@ describe('data-only writes', () => {
         expect(yield* note.wait).toMatchObject({ status: 'done' })
         yield* answer('first')
         yield* input.wait
-        expect(yield* transcript(root)).toEqual(['pi.user: a', 'note: ', 'pi.assistant: first'])
+        expect(yield* transcript(root)).toEqual(['$user: a', 'note: ', '$assistant: first'])
       }),
     ))
 
@@ -506,9 +506,9 @@ describe('data-only writes', () => {
         yield* input.wait
         yield* note.wait
         expect(yield* transcript(root)).toEqual([
-          'pi.user: a',
-          'pi.assistant: first',
-          'pi.reset: ',
+          '$user: a',
+          '$assistant: first',
+          '$reset: ',
           'note: ',
         ])
       }),

@@ -114,7 +114,7 @@ describe('conversations', () => {
         expect(yield* queued.wait).toMatchObject({ status: 'unanswered' })
         yield* eventually(Effect.map(liveOf(harness, root.id), (live) => live.run === undefined))
         expect((yield* inboxOf(harness, root.id)).map((item) => item.id)).toEqual([write.id])
-        expect(yield* transcript(root)).toEqual(['pi.user: a'])
+        expect(yield* transcript(root)).toEqual(['$user: a'])
       }),
     ))
 

@@ -15,7 +15,7 @@ test('entries keep pi field names', () => {
   const entry = {
     id: 3,
     conversationId: 1,
-    kind: 'pi.user',
+    kind: '$user',
     model: [{ role: 'user', content: 'hi', timestamp: 0 }],
     edits: [{ target: 2, action: 'omit' }],
   }

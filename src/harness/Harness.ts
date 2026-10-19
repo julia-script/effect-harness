@@ -1,11 +1,11 @@
 /**
  * The `Harness` service, ported from pi's `harness/harness.ts`: conversations, the admission of
- * submissions, the `pi.inbox` boundaries, and run control in `pi.live`, over one Session and its
+ * submissions, the `$inbox` boundaries, and run control in `$live`, over one Session and its
  * task Scheduler.
  *
  * Every conversation gets the built-in documents in the commit that creates or forks it. Input to
- * an idle conversation starts a run: a `pi.generation` task that holds `pi.live.run` until it
- * settles the run's inputs. While the run is live, submissions queue in `pi.inbox`, and the run
+ * an idle conversation starts a run: a `$generation` task that holds `$live.run` until it
+ * settles the run's inputs. While the run is live, submissions queue in `$inbox`, and the run
  * places them at its boundaries. Aborting a conversation, or a cascade that reaches one, withdraws
  * its queued inputs; a run task the scheduler faults or orphans ends its run `unanswered`.
  *
@@ -89,7 +89,7 @@ export interface Service {
   /** The committed record of a task, live or terminal. Wait on it or abort it with `scheduler`. */
   readonly task: (id: TaskId) => Effect.Effect<TaskRecord | undefined, CommitError>
   /**
-   * Every conversation's committed `pi.usage`, summed. Each ledger is read at its own point;
+   * Every conversation's committed `$usage`, summed. Each ledger is read at its own point;
    * totals only grow.
    */
   readonly usage: Effect.Effect<Usage.State, CommitError | SnapshotError>

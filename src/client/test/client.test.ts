@@ -45,7 +45,7 @@ for (const [name, transport] of transports) {
           yield* answer('hello')
           const settled = yield* submission.wait
           expect(settled).toMatchObject({ id: submission.id, type: 'input', status: 'done' })
-          expect(yield* kinds(root)).toEqual(['pi.user', 'pi.assistant'])
+          expect(yield* kinds(root)).toEqual(['$user', '$assistant'])
           expect(yield* submission.status).toEqual(settled)
         }),
       ))
@@ -84,7 +84,7 @@ for (const [name, transport] of transports) {
           ).toMatchObject({ _tag: 'ConversationBusy', conversationId: root.id })
           expect(
             yield* Effect.flip(
-              root.submit({ type: 'input', content: 'x', entry: { kind: 'pi.custom' } }),
+              root.submit({ type: 'input', content: 'x', entry: { kind: '$custom' } }),
             ),
           ).toMatchObject({ _tag: 'InvalidSubmission' })
           const unknown = SubmissionId.make(999_999)

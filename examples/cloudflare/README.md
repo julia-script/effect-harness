@@ -21,6 +21,7 @@ chat.ts ──wss /agents/<name>?token──▶ Api (Worker) ──▶ Agent (Du
 
 ```bash
 bun install
+bun run setup
 bun run build
 HARNESS_TOKEN=dev-token bun run example:cloudflare   # serves http://localhost:1337
 ```

@@ -9,7 +9,7 @@
  * When the caller settles, its calls still running are aborted.
  *
  * A nested call's result is not a transcript entry: it is stored with its caller, in the
- * `pi.tool.nested-call` family, and retires with it.
+ * `$tool.nested-call` family, and retires with it.
  */
 import { Context, Effect, Schema } from 'effect'
 import type { Tx } from '../session/Session.ts'

@@ -1,5 +1,5 @@
 /**
- * Compaction tasks and their status in `pi.live` (spec §8.7).
+ * Compaction tasks and their status in `$live` (spec §8.7).
  */
 import { Effect } from 'effect'
 import type { Draft } from '../../../delta/Tracker.ts'
@@ -7,7 +7,7 @@ import type { TaskKind, Tx } from '../../../session/Session.ts'
 import type { ConversationId, TaskId } from '../../../storage/schema/Ids.ts'
 import * as Live from '../../Live.ts'
 
-export const COMPACTION_KIND = 'pi.compaction'
+export const COMPACTION_KIND = '$compaction'
 
 /** What starts a compaction: why, and what the summary should focus on. */
 export interface Input {

@@ -69,12 +69,12 @@ describe('submissions', () => {
         const record = yield* submission.status
         if (record.status !== 'placed') throw new Error(`Unexpected ${record.status}`)
         const entry = yield* conversation.commit((tx) => tx.entry(record.entry))
-        expect(entry?.kind).toBe('pi.user')
+        expect(entry?.kind).toBe('$user')
         expect(entry?.model).toEqual([{ role: 'user', content: 'hi', timestamp: anyNumber }])
         const live = yield* liveOf(harness, conversation.id)
         expect(live.run?.inputs).toEqual([submission.id])
         const runTask = yield* harness.session.commit((tx) => tx.task(live.run!.taskId))
-        expect(runTask?.kind).toBe('pi.generation')
+        expect(runTask?.kind).toBe('$generation')
 
         yield* settle
         const before = commits()
@@ -186,7 +186,7 @@ describe('submissions', () => {
         expect(yield* (yield* third.harness.submission(id))!.wait).toEqual(settled)
         const reopened = (yield* third.harness.conversation(conversation.id))!
         expect((yield* reopened.submit(draft)).id).toBe(id)
-        expect(yield* transcript(reopened)).toEqual(['pi.user: hi', 'pi.assistant: after reopen'])
+        expect(yield* transcript(reopened)).toEqual(['$user: hi', '$assistant: after reopen'])
         yield* third.close
       }),
     ))
@@ -243,14 +243,14 @@ describe('input entries', () => {
       }),
     ))
 
-  test('rejects an input entry whose kind is empty or starts with pi., writing nothing', () =>
+  test('rejects an input entry whose kind is empty or starts with $, writing nothing', () =>
     runTest((backend) =>
       Effect.gen(function* () {
         const { storage, commits } = counting(backend)
         const { harness } = yield* open(storage)
         const conversation = yield* ownerless(harness)
         const before = commits()
-        for (const kind of ['', 'pi.user']) {
+        for (const kind of ['', '$user']) {
           const error = yield* Effect.flip(
             conversation.submit({ type: 'input', content: 'hi', entry: { kind } }),
           )
@@ -277,10 +277,10 @@ describe('input entries', () => {
         yield* answer('two')
         expect((yield* queued.wait).status).toBe('done')
         expect(yield* transcript(conversation)).toEqual([
-          'pi.user: first',
-          'pi.assistant: one',
+          '$user: first',
+          '$assistant: one',
           'app.chat: second',
-          'pi.assistant: two',
+          '$assistant: two',
         ])
       }),
     ))

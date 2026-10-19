@@ -56,11 +56,11 @@ describe('HarnessServer.layer', () => {
         expect(yield* submission.wait).toMatchObject({ status: 'done' })
         const { items } = yield* root.entries({ order: 'ascending' }, 50)
         expect(items.map((entry) => entry.kind)).toEqual([
-          'pi.user',
-          'pi.system',
-          'pi.assistant',
-          'pi.tool-result',
-          'pi.assistant',
+          '$user',
+          '$system',
+          '$assistant',
+          '$tool-result',
+          '$assistant',
         ])
       }),
     ))

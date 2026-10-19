@@ -1,6 +1,6 @@
 /* oxlint-disable effecttsgo/any-unknown-in-error-context -- extension code may fail with anything; a failure is reported or answers the call */
 /**
- * The positional system prompt, ported from pi's `harness/prompt.ts`: which `pi.system` entries
+ * The positional system prompt, ported from pi's `harness/prompt.ts`: which `$system` entries
  * make the sections and tools the model sees equal the ones the agent wants.
  */
 import { Cause, Effect } from 'effect'
@@ -141,11 +141,11 @@ const systemEntry = (
 const isSystem = (entry: { readonly kind: string }) => entry.kind === SYSTEM_KIND
 
 /**
- * The `pi.system` entries that make the replayed sections and tools of `view` equal `desired` and
+ * The `$system` entries that make the replayed sections and tools of `view` equal `desired` and
  * `tools`, in values and order:
  *
- * - After a head marker with no later `pi.system` entry: one complete baseline that omits every
- *   retained earlier `pi.system` entry, even when it restates what is shown.
+ * - After a head marker with no later `$system` entry: one complete baseline that omits every
+ *   retained earlier `$system` entry, even when it restates what is shown.
  * - Otherwise the minimal section patch, or a remove-all/re-add-all pair when the patch would
  *   leave another order, or nothing.
  *

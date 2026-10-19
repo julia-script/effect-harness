@@ -72,10 +72,10 @@ test(
           const change = yield* Fiber.join(grown)
           const kinds = Option.map(change, ({ value }) => value.entries.map((entry) => entry.kind))
           expect(Option.getOrUndefined(kinds)).toEqual([
-            'pi.user',
-            'pi.assistant',
-            'pi.user',
-            'pi.assistant',
+            '$user',
+            '$assistant',
+            '$user',
+            '$assistant',
           ])
         }),
       ),

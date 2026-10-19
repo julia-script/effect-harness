@@ -1,5 +1,5 @@
 /**
- * The built-in `pi.inbox` document, ported from pi's `harness/inbox.ts`: the submissions of one
+ * The built-in `$inbox` document, ported from pi's `harness/inbox.ts`: the submissions of one
  * conversation that wait for a boundary, in ID order. A boundary places them: every write, the
  * first or all steers, and at the final boundary the first or all follow-ups.
  */
@@ -9,7 +9,7 @@ import { EntryDraft } from '../storage/schema/Entry.ts'
 import { SubmissionId } from '../storage/schema/Ids.ts'
 import { InputEntry, UserInput } from './Submission.ts'
 
-/** Queued user input, with the entry it is placed as when not `pi.user`. */
+/** Queued user input, with the entry it is placed as when not `$user`. */
 export const InputItem = Schema.Struct({
   id: SubmissionId,
   mode: Schema.Literals(['steer', 'followUp']),
@@ -34,7 +34,7 @@ export type State = typeof State.Type
 
 /** One per conversation; every fork starts empty. Stored as a complete base whenever empty. */
 export const document = Document.make<State>({
-  kind: 'pi.inbox',
+  kind: '$inbox',
   version: 1,
   scope: 'conversation',
   history: 'latest',

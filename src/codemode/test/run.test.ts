@@ -22,7 +22,7 @@ const DONE = Faux.message('done')
 const results = (harness: Harness.Service, conversationId: ConversationId) =>
   Effect.map(entriesOf(harness, conversationId), (entries) =>
     entries
-      .filter((entry) => entry.kind === 'pi.tool-result')
+      .filter((entry) => entry.kind === '$tool-result')
       .map((entry) => {
         const content: unknown = entry.model?.[0]?.['content']
         const block: unknown = Array.isArray(content) ? content[1] : undefined
@@ -209,7 +209,7 @@ describe('durable code mode', () => {
           )
         yield* ask(root, 'first')
         const firstUser = (yield* entriesOf(harness, root.id)).find(
-          (entry) => entry.kind === 'pi.user',
+          (entry) => entry.kind === '$user',
         )
         yield* ask(root, 'second')
         expect(yield* results(harness, root.id)).toEqual(['1', '[1]'])
@@ -242,7 +242,7 @@ describe('durable code mode', () => {
         yield* opened.harness.session.observeCommits((publication) =>
           Effect.sync(() => {
             for (const change of publication.changes)
-              if (change.type === 'document' && change.record.kind === 'pi.codemode.journal')
+              if (change.type === 'document' && change.record.kind === '$codemode.journal')
                 commits += 1
           }),
         )

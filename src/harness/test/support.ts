@@ -1,7 +1,7 @@
 /**
  * Test support: a Harness over memory storage, with a scripted stand-in for the generation task.
  *
- * The stand-in takes `pi.generation` runs where a test scripts the run itself rather than a model
+ * The stand-in takes `$generation` runs where a test scripts the run itself rather than a model
  * (`generationSupport.ts` runs the built-in task). Each run task waits for the next scripted step: an answer ends the run at the final boundary, a tool
  * round passes the `postTools` boundary and hands the run to a fresh task, and a failure faults
  * the task. Its abort handler ends the run `unanswered` with reason `aborted`.
@@ -26,7 +26,7 @@ import type { Settled } from '../Submission.ts'
 import { prepareBoundary } from '../internal/inbox.ts'
 import { continueRun, endRun, finishRun, RUN_KIND } from '../internal/run.ts'
 
-export const ASSISTANT_KIND = 'pi.assistant'
+export const ASSISTANT_KIND = '$assistant'
 
 /** What the next run task does. */
 export type Step =
@@ -43,7 +43,7 @@ const assistant = (text: string) => ({
   model: [{ role: 'assistant', content: [{ type: 'text', text }] }],
 })
 
-/** The scripted stand-in for `pi.generation`. */
+/** The scripted stand-in for `$generation`. */
 export const standIn = (steps: Queue.Queue<Step>, settings: Effect.Effect<Settings.Settings>) =>
   Task.make<Record<string, never>, Checkpoint, Result>({
     name: RUN_KIND,
@@ -152,21 +152,21 @@ export const transcript = (conversation: Conversation) =>
     page.items.map((entry) => `${entry.kind}: ${textOf(entry)}`),
   )
 
-/** The committed `pi.inbox` items of a conversation. */
+/** The committed `$inbox` items of a conversation. */
 export const inboxOf = (harness: Harness.Service, id: ConversationId) =>
   Effect.map(
     Effect.orDie(harness.session.snapshot(Inbox.document, id)),
     (state) => state?.items ?? [],
   )
 
-/** The committed `pi.live` of a conversation. */
+/** The committed `$live` of a conversation. */
 export const liveOf = (harness: Harness.Service, id: ConversationId) =>
   Effect.map(Effect.orDie(harness.session.snapshot(Live.document, id)), (state) => state ?? {})
 
 /** Retry `check` on a short interval until it holds. */
 export { eventually, runTest, settle } from '../../task/test/support.ts'
 
-/** The op batches of `pi.inbox` changes, collected from every later commit in the scope. */
+/** The op batches of `$inbox` changes, collected from every later commit in the scope. */
 export const inboxOps = (harness: Harness.Service) =>
   Effect.gen(function* () {
     const batches: Array<ReadonlyArray<Op>> = []

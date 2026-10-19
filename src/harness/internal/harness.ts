@@ -60,7 +60,7 @@ const conversationIds = (session: Session.Service) =>
     ),
   )
 
-/** Every conversation's `pi.usage`, summed. */
+/** Every conversation's `$usage`, summed. */
 const usage = (session: Session.Service) =>
   Effect.gen(function* () {
     const states: Array<Usage.State> = []

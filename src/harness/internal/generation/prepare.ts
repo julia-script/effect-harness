@@ -72,7 +72,7 @@ const compactFirst = (runtime: GenerationRuntime, attempt: number) =>
 type RequestCheckpoint = Extract<Checkpoint, { readonly phase: 'request' }>
 
 /**
- * Append the planned `pi.system` entries and fix the request through the newest entry; start a
+ * Append the planned `$system` entries and fix the request through the newest entry; start a
  * background compaction when one is due and none is live, checked in this commit.
  */
 const fixRequest = (
@@ -99,7 +99,7 @@ const fixRequest = (
   )
 
 /**
- * Render the system prompt and tool declarations, plan the `pi.system` entries they need, and fix
+ * Render the system prompt and tool declarations, plan the `$system` entries they need, and fix
  * the request, or compact first above the blocking threshold. Only the Harness writes model
  * context to a busy conversation, so the context read here is still current at the commit.
  */

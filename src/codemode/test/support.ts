@@ -206,7 +206,7 @@ export const openChat = (storage: StorageService, current: World, options: Optio
 /** The code mode call's result: its text without the header, and whether it is an error. */
 export const resultOf = (harness: Harness.Service, conversationId: ConversationId) =>
   Effect.map(entriesOf(harness, conversationId), (entries) => {
-    const entry = entries.find((each) => each.kind === 'pi.tool-result')
+    const entry = entries.find((each) => each.kind === '$tool-result')
     const message = entry?.model?.[0] ?? {}
     const content: unknown = message['content']
     const blocks = Array.isArray(content) ? content : []

@@ -16,7 +16,7 @@ import type { ModelMessage } from '../../storage/schema/Json.ts'
 import type { Cursor } from '../../storage/schema/Scan.ts'
 import type { ContextView } from '../ViewState.ts'
 
-export const SYSTEM_KIND = 'pi.system'
+export const SYSTEM_KIND = '$system'
 
 const SCAN_PAGE_SIZE = 256
 const EXCLUDED: ReadonlySet<AssistantMessage['stopReason']> = new Set([
@@ -146,7 +146,7 @@ type Baseline = Message | null | undefined
 const isSystem = (message: { readonly role?: unknown }) => message.role === 'system'
 
 /**
- * The system message of the first `pi.system` entry after the head marker, or of the transcript
+ * The system message of the first `$system` entry after the head marker, or of the transcript
  * without one, when generation wrote it with every section and tool in effect: after a head
  * marker it always does; without one, unless an earlier entry carries a system message.
  */

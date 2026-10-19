@@ -49,7 +49,7 @@ export const MessageChange = Schema.Union([
 ])
 export type MessageChange = typeof MessageChange.Type
 
-/** A queued submission, as `pi.inbox` holds it. */
+/** A queued submission, as `$inbox` holds it. */
 export const QueuedItem = Schema.Struct({
   id: SubmissionId,
   mode: Schema.Literals(['steer', 'followUp', 'write']),
@@ -67,7 +67,7 @@ export const Snapshot = Schema.Struct({
   compactions: Schema.Array(CompactionStatus),
   compactionFailure: Schema.optionalKey(CompactionFailure),
   inbox: Schema.Array(QueuedItem),
-  /** `pi.agent`; `{}` when absent. */
+  /** `$agent`; `{}` when absent. */
   agent: AgentState,
   usage: UsageState,
 })

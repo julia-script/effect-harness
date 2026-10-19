@@ -26,7 +26,7 @@ const text = (message: AssistantMessage) =>
   message.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('')
 
 const results = (entries: ReadonlyArray<EntryRecord>) =>
-  entries.filter((entry) => entry.kind === 'pi.tool-result')
+  entries.filter((entry) => entry.kind === '$tool-result')
 
 group('generation hooks', () => {
   test('beforeRequest replaces the messages of one request', () =>
@@ -53,7 +53,7 @@ group('generation hooks', () => {
         // The transcript is left as it was.
         expect(
           (yield* entriesOf(harness, conversation.id)).map((entry) => describe(entry)),
-        ).toEqual(['pi.user: hi', 'pi.assistant: ok'])
+        ).toEqual(['$user: hi', '$assistant: ok'])
       }),
     ))
 
@@ -78,10 +78,10 @@ group('generation hooks', () => {
         const settled = yield* ask(conversation, 'write')
         const entries = yield* entriesOf(harness, conversation.id)
         expect(entries.map((entry) => describe(entry))).toEqual([
-          'pi.user: write',
-          'pi.assistant: draft',
-          'pi.user: check it',
-          'pi.assistant: final',
+          '$user: write',
+          '$assistant: draft',
+          '$user: check it',
+          '$assistant: final',
         ])
         expect(settled).toMatchObject({ status: 'done', answer: entries[3]?.id })
         expect(yield* Ref.get(seen)).toEqual(['draft', 'final'])
@@ -125,7 +125,7 @@ group('generation hooks', () => {
         const conversation = yield* ownerless(harness)
         yield* ask(conversation, 'go')
         const entries = yield* entriesOf(harness, conversation.id)
-        const ids = entries.filter((entry) => entry.kind === 'pi.tool-result').map(({ id }) => id)
+        const ids = entries.filter((entry) => entry.kind === '$tool-result').map(({ id }) => id)
         expect(yield* Ref.get(rounds)).toEqual([ids])
       }),
     ))
@@ -163,7 +163,7 @@ group('tool hooks', () => {
         const conversation = yield* ownerless(harness)
         yield* ask(conversation, 'go')
         const entries = results(yield* entriesOf(harness, conversation.id))
-        expect(describe(entries[0]!)).toBe('pi.tool-result: contents of safe/"a"')
+        expect(describe(entries[0]!)).toBe('$tool-result: contents of safe/"a"')
         expect(entries.map((entry) => entry.data)).toMatchObject([
           { diagnostics: [] },
           { diagnostics: [{ code: 'blocked', message: 'Tool call blocked: Needs approval' }] },
@@ -189,7 +189,7 @@ group('tool hooks', () => {
         const conversation = yield* ownerless(harness)
         yield* ask(conversation, 'go')
         const entries = yield* entriesOf(harness, conversation.id)
-        expect(entries.map((entry) => describe(entry))).toContain('pi.tool-result: redacted')
+        expect(entries.map((entry) => describe(entry))).toContain('$tool-result: redacted')
       }),
     ))
 
@@ -216,7 +216,7 @@ group('tool hooks', () => {
         yield* ask(conversation, 'go')
         const entries = yield* entriesOf(harness, conversation.id)
         expect(entries.map((entry) => describe(entry))).toContain(
-          'pi.tool-result: contents of a (timed)',
+          '$tool-result: contents of a (timed)',
         )
       }),
     ))
@@ -257,7 +257,7 @@ group('compaction hooks', () => {
       return Effect.succeed({ summary: 'from the hook' })
     })
     expect(requests).toBe(2)
-    expect(kinds.at(-1)).toBe('pi.compaction')
+    expect(kinds.at(-1)).toBe('$compaction')
     expect(describe(entries.at(-1)!)).toContain('from the hook')
     expect(seen[0]).toMatchObject({ reason: 'manual', firstKept: entries[3]?.id })
   })
@@ -266,6 +266,6 @@ group('compaction hooks', () => {
     const { outcome, kinds, requests } = await compact(() => Effect.succeed({ decline: true }))
     expect(outcome).toEqual({ status: 'completed', result: {} })
     expect(requests).toBe(2)
-    expect(kinds).not.toContain('pi.compaction')
+    expect(kinds).not.toContain('$compaction')
   })
 })

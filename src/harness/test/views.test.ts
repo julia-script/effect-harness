@@ -44,17 +44,13 @@ group('Conversation.view', () => {
           const watch = yield* Effect.orDie(conversation.view)
           expect(watch.value.conversation.id).toBe(conversation.id)
           expect(watch.value.entries).toEqual([])
-          expect(Object.keys(watch.value.docs).toSorted()).toEqual([
-            'pi.agent',
-            'pi.inbox',
-            'pi.live',
-          ])
+          expect(Object.keys(watch.value.docs).toSorted()).toEqual(['$agent', '$inbox', '$live'])
           const changes = yield* Effect.forkChild(
             watch.changes.pipe(
               Stream.takeUntil(
                 (change: Change<typeof watch.value>) =>
                   change.value.entries.length === 2 &&
-                  change.value.docs['pi.live']?.['run'] === undefined,
+                  change.value.docs['$live']?.['run'] === undefined,
               ),
               Stream.runCollect,
               Effect.orDie,
@@ -68,8 +64,8 @@ group('Conversation.view', () => {
             expect(value).toEqual(change.value)
           }
           const last = all.at(-1)!.value
-          expect(last.entries.map((entry) => entry.kind)).toEqual(['pi.user', 'pi.assistant'])
-          expect(Object.keys(last.docs)).toContain('pi.usage')
+          expect(last.entries.map((entry) => entry.kind)).toEqual(['$user', '$assistant'])
+          expect(Object.keys(last.docs)).toContain('$usage')
         }),
       ),
     ))
@@ -130,7 +126,7 @@ group('Conversation.events', () => {
             toolName: 'read',
             args: { path: 'a' },
           })
-          expect(all[end]).toMatchObject({ toolCallId: 'c1', entry: { kind: 'pi.tool-result' } })
+          expect(all[end]).toMatchObject({ toolCallId: 'c1', entry: { kind: '$tool-result' } })
           expect(all[end + 1]?.type).toBe('message_start')
           expect(start).toBeLessThan(end)
         }),
@@ -159,7 +155,7 @@ group('Harness.taskGraph', () => {
           yield* ask(conversation, 'hi')
           const states = yield* Fiber.join(changes)
           expect(states[0]?.[0]).toMatchObject({
-            kind: 'pi.generation',
+            kind: '$generation',
             conversationId: conversation.id,
             background: false,
             abortRequested: false,

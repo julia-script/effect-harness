@@ -43,7 +43,7 @@ const connect = (name: string) =>
 /** The text of the conversation's last answer. */
 const lastAnswer = (conversation: Client.Conversation) =>
   Effect.map(conversation.entries({ order: 'descending' }, 10), (page) => {
-    const answer = page.items.find((entry) => entry.kind === 'pi.assistant')
+    const answer = page.items.find((entry) => entry.kind === '$assistant')
     const content: unknown = answer?.model?.[0]?.['content']
     return Array.isArray(content)
       ? content.map((block: { text?: string }) => block.text).join('')

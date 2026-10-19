@@ -118,7 +118,7 @@ describe('nested calls', () => {
         const entries = yield* Effect.orDie(
           session.commit((tx) => tx.scanEntries({ conversationId, order: 'ascending' }, 100)),
         )
-        expect(entries.items.map((entry) => entry.kind)).toEqual(['pi.assistant', 'pi.tool-result'])
+        expect(entries.items.map((entry) => entry.kind)).toEqual(['$assistant', '$tool-result'])
       }),
     ))
 

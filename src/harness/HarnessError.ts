@@ -15,7 +15,7 @@ export class ConversationBusy extends Schema.TaggedError<
 
 /**
  * A submission was refused before anything was written: its input entry's kind is empty or
- * starts with `pi.`, or its request ID already names a submission of another type.
+ * starts with `$`, or its request ID already names a submission of another type.
  */
 export class InvalidSubmission extends Schema.TaggedError<
   InvalidSubmission,

@@ -1,6 +1,6 @@
 /* oxlint-disable max-lines-per-function -- describe blocks */
 /**
- * The coding tools as the `pi.tool` task runs them: output limits, diagnostics and details reach
+ * The coding tools as the `$tool` task runs them: output limits, diagnostics and details reach
  * the result entry.
  */
 import { BunServices } from '@effect/platform-bun'

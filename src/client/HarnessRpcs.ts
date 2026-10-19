@@ -159,7 +159,7 @@ export class HarnessRpcs extends RpcGroup.make(
     success: Schema.Literals(['marked', 'terminal']),
     error: Schema.Union([CommitError, TaskNotFound, StorageError]),
   }),
-  /** Every conversation's `pi.usage`, summed. */
+  /** Every conversation's `$usage`, summed. */
   Rpc.make('Usage', { success: UsageState, error: CommitError }),
   /** Whether the submission exists. */
   Rpc.make('HasSubmission', { payload: submission, success: Schema.Boolean, error: CommitError }),

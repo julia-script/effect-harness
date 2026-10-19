@@ -2,7 +2,7 @@
  * Extensions, ported from pi's `defineExtension` (spec §7.1): a named bundle of tools, system
  * prompt sections, hooks, wrappers of other extensions' tools and sections, and task definitions.
  * The `Extensions` registry installs them in the loop, and each conversation selects them by name
- * in its `pi.agent` document.
+ * in its `$agent` document.
  *
  * An extension holds tool declarations, not handlers: installing it reads their implementations
  * from the Effect context, where `toolkit.toLayer(handlers)` provides them. Two extensions may
@@ -81,7 +81,7 @@ export interface Extension<Names extends string = string> {
   readonly [TypeId]: { readonly names: Names | undefined }
   readonly name: string
   readonly tools: ReadonlyArray<Tool.Any>
-  /** Each tool's config, encoded, by name; a conversation's `pi.agent` config overrides it. */
+  /** Each tool's config, encoded, by name; a conversation's `$agent` config overrides it. */
   readonly config: Readonly<Record<string, unknown>>
   readonly sections: ReadonlyArray<Section>
   readonly hooks: ReadonlyArray<Hook.Registration>

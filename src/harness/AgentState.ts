@@ -1,6 +1,6 @@
 /**
  * What a conversation's agent is made of, as Schemas both the client and the loop use: the stored
- * `pi.agent` state, a change to it, and the resolved agent by name. `Agent` holds the document
+ * `$agent` state, a change to it, and the resolved agent by name. `Agent` holds the document
  * and the resolution, on the loop side.
  */
 import { Schema } from 'effect'
@@ -51,7 +51,7 @@ export const State = Schema.Struct({
 })
 export type State = typeof State.Type
 
-/** A change to `pi.agent`: a given field replaces the stored one, and `null` clears it. */
+/** A change to `$agent`: a given field replaces the stored one, and `null` clears it. */
 export const Change = Schema.Struct({
   model: Schema.optionalKey(Schema.NullOr(ModelRef)),
   reasoning: Schema.optionalKey(Schema.NullOr(ModelThinkingLevel)),

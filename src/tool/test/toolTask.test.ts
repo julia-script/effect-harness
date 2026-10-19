@@ -1,6 +1,6 @@
 /* oxlint-disable max-lines-per-function -- describe blocks */
 /**
- * The `pi.tool` task over scripted handlers: results, the ways a call is refused or breaks, and
+ * The `$tool` task over scripted handlers: results, the ways a call is refused or breaks, and
  * recovery and abort. pi covers these through whole runs (`harness-tools.test.ts`,
  * `harness-tools-recovery.test.ts`); here the tests create the calls a tool round would.
  */

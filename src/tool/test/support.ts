@@ -1,6 +1,6 @@
 /**
  * Test support: declared tools with scripted handlers, and calls made the way a generation's tool
- * round makes them, an assistant entry holding the call and a `pi.tool` task for it.
+ * round makes them, an assistant entry holding the call and a `$tool` task for it.
  */
 import { Deferred, Effect, Exit, Layer, Schema } from 'effect'
 import type { Scope } from 'effect'
@@ -97,7 +97,7 @@ export const call = (
           stopReason: 'toolUse',
         })
         const entry = yield* tx.appendEntry(conversationId, {
-          kind: 'pi.assistant',
+          kind: '$assistant',
           model: [{ ...response }],
         })
         return yield* tx.createTask(

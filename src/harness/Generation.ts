@@ -4,16 +4,16 @@
  *
  * - `prepare` resolves the conversation's agent (see `Agent`), renders its system prompt sections
  *   and tool declarations, and appends the
- *   positional `pi.system` entries the context needs, then fixes the request: the model, the
+ *   positional `$system` entries the context needs, then fixes the request: the model, the
  *   request options, and the newest entry it includes.
- * - `request` streams the response. Partials commit to `pi.live.generation`, throttled; a partial
- *   an interruption leaves becomes an aborted `pi.assistant` entry. The response is classified:
+ * - `request` streams the response. Partials commit to `$live.generation`, throttled; a partial
+ *   an interruption leaves becomes an aborted `$assistant` entry. The response is classified:
  *   a deferred one is polled (`poll`), a `Retryable` failure waits durably (`retry`) and prepares
  *   again, other failures end the run `unanswered` with `model_error`, and an unknown model with
  *   `no_model`.
  * - An answer (`stop`, `length`) ends the run at the final boundary.
  * - Tool calls start a tool round in the commit that appends the answer: each offered call gets a
- *   `pi.tool` task the generation owns, all at once or one after another (`toolExecution`); a call
+ *   `$tool` task the generation owns, all at once or one after another (`toolExecution`); a call
  *   to a tool the request did not offer is answered `tool_unavailable` at once. `tools` waits for
  *   them, then passes the `postTools` boundary and hands the run to a fresh generation.
  * - Hooks (`Hooks`): `beforeRequest` may replace a request's messages, `afterResponse` sees every

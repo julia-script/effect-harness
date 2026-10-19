@@ -114,7 +114,7 @@ const send = ({ harness }: Clients, content: string) =>
     const settled = yield* Effect.flatMap(root.submit({ type: 'input', content }), (s) => s.wait)
     if (settled.status === 'unanswered') return yield* Console.error(`No answer: ${settled.reason}`)
     const page = yield* root.entries({ order: 'descending' }, 10)
-    const answer = page.items.find((entry) => entry.kind === 'pi.assistant')
+    const answer = page.items.find((entry) => entry.kind === '$assistant')
     const text: unknown = answer?.model?.[0]?.['content']
     const blocks: ReadonlyArray<{ readonly text?: string }> = Array.isArray(text) ? text : []
     return yield* Console.log(blocks.map((block) => block.text ?? '').join(''))

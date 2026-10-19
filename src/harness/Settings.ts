@@ -70,9 +70,9 @@ export const Settings = Schema.Struct({
   compaction: CompactionSettings,
   /** The default extension selection, by name; absent, every installed extension. */
   extensions: Schema.optionalKey(Schema.Array(Schema.String)),
-  /** The model of a conversation whose `pi.agent` sets none; absent, such a run ends `no_model`. */
+  /** The model of a conversation whose `$agent` sets none; absent, such a run ends `no_model`. */
   model: Schema.optionalKey(Model.Ref),
-  /** The reasoning level of a conversation whose `pi.agent` sets none. Default: `off`. */
+  /** The reasoning level of a conversation whose `$agent` sets none. Default: `off`. */
   reasoning: Schema.optionalKey(ModelThinkingLevel),
 })
 export type Settings = typeof Settings.Type

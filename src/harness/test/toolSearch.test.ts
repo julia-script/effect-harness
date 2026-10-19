@@ -97,10 +97,10 @@ const textsOf = (entries: ReadonlyArray<EntryRecord>, kind: string) =>
         : ''
     })
 
-/** The tools each `pi.system` entry declares added, oldest first. */
+/** The tools each `$system` entry declares added, oldest first. */
 const toolsAdded = (entries: ReadonlyArray<EntryRecord>) =>
   entries
-    .filter((entry) => entry.kind === 'pi.system')
+    .filter((entry) => entry.kind === '$system')
     .map((entry) => {
       const added: unknown = entry.model?.[0]?.['toolsAdded']
       return Array.isArray(added) ? added.map((tool: { readonly name: string }) => tool.name) : []
@@ -129,7 +129,7 @@ group('deferred tools and tool_search', () => {
         ])
         yield* ask(conversation, 'go')
         const entries = yield* entriesOf(harness, conversation.id)
-        expect(textsOf(entries, 'pi.tool-result')).toEqual([
+        expect(textsOf(entries, '$tool-result')).toEqual([
           'Loaded 1 tool. They are available from your next call:\n- github_get_issue: Get a GitHub issue by number',
           'github_get_issue ran',
         ])
@@ -241,7 +241,7 @@ group('deferred tools and tool_search', () => {
         yield* faux.setResponses([call('tool_search', { query: 'weather forecast' }), DONE])
         yield* ask(conversation, 'go')
         const entries = yield* entriesOf(harness, conversation.id)
-        expect(textsOf(entries, 'pi.tool-result')).toEqual(['No matching tools found.'])
+        expect(textsOf(entries, '$tool-result')).toEqual(['No matching tools found.'])
         expect(yield* modelToolsOf(harness, conversation)).toBeUndefined()
       }),
     ))

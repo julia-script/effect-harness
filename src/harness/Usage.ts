@@ -1,5 +1,5 @@
 /**
- * The built-in `pi.usage` document, ported from pi's `harness/usage.ts`: the ledger of one
+ * The built-in `$usage` document, ported from pi's `harness/usage.ts`: the ledger of one
  * conversation's own spend. Every built-in writer of assistant entries, and every summarization
  * attempt of a compaction, adds its usage in the commit that records it.
  */
@@ -17,7 +17,7 @@ export { UsageState as State } from './ViewState.ts'
 
 /** One per conversation; every fork starts empty. */
 export const document = Document.make<State>({
-  kind: 'pi.usage',
+  kind: '$usage',
   version: 1,
   scope: 'conversation',
   history: 'latest',

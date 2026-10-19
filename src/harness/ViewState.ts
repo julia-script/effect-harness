@@ -1,6 +1,6 @@
 /**
  * What a client sees of the loop, as Schemas both sides share: the states of the built-in
- * `pi.live` and `pi.usage` documents, one conversation's view and model context, and the task graph, ported from
+ * `$live` and `$usage` documents, one conversation's view and model context, and the task graph, ported from
  * pi's `harness/view.ts` and `harness/task-graph.ts` (spec §9.3, §9.5).
  *
  * A view is watched: its value when the watch began, then each commit's change of it with the
@@ -87,7 +87,7 @@ export const LiveState = Schema.Struct({
 })
 export type LiveState = typeof LiveState.Type
 
-/** The `pi.usage` ledger of one conversation's own spend. */
+/** The `$usage` ledger of one conversation's own spend. */
 export const UsageState = Schema.Struct({
   /** Assistant entries and summarization attempts, keyed `provider/modelId`. */
   models: Schema.Record(Schema.String, Usage),
@@ -97,7 +97,7 @@ export const UsageState = Schema.Struct({
 export type UsageState = typeof UsageState.Type
 
 /** The built-in conversation documents a view shows, by kind. */
-export const VIEW_KINDS = ['pi.agent', 'pi.live', 'pi.inbox', 'pi.usage'] as const
+export const VIEW_KINDS = ['$agent', '$live', '$inbox', '$usage'] as const
 
 /** One conversation's active transcript and built-in documents (spec §9.3). */
 export const ConversationView = Schema.Struct({

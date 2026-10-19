@@ -1,5 +1,5 @@
 /**
- * Boundaries of `pi.inbox` (spec §6): which queued items a run places, and where.
+ * Boundaries of `$inbox` (spec §6): which queued items a run places, and where.
  */
 import { Clock, Effect } from 'effect'
 import type { Draft } from '../../delta/Tracker.ts'
@@ -11,8 +11,8 @@ import type { QueueMode, Settings } from '../Settings.ts'
 import type { InputEntry, UserInput } from '../Submission.ts'
 import { strictJson } from './json.ts'
 
-export const USER_KIND = 'pi.user'
-export const RESET_KIND = 'pi.reset'
+export const USER_KIND = '$user'
+export const RESET_KIND = '$reset'
 
 /** What a boundary reads before the commit's first table write, and the newest head it saw. */
 export interface Boundary {
@@ -70,7 +70,7 @@ export const isStale = (boundary: Boundary, entry: EntryDraft): boolean =>
 export const pickInputEntry = ({ kind, data }: InputEntry): InputEntry =>
   strictJson(data === undefined ? { kind } : { kind, data })
 
-/** Append the entry an input is placed as: `entry`'s kind and data, or `pi.user`. */
+/** Append the entry an input is placed as: `entry`'s kind and data, or `$user`. */
 export const appendInput = Effect.fnUntraced(function* (
   tx: Tx,
   conversationId: ConversationId,

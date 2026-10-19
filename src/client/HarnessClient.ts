@@ -60,7 +60,7 @@ export interface Conversation {
   readonly submit: (
     draft: Draft,
   ) => Effect.Effect<Submission, Failure<ConversationBusy | InvalidSubmission>>
-  /** Start fresh context at a `pi.reset` entry, with optional handoff text. */
+  /** Start fresh context at a `$reset` entry, with optional handoff text. */
   readonly reset: (handoff?: string) => Effect.Effect<Submission, Failure>
   /** Start a manual compaction; its summary is placed at the next boundary, or at once when idle. */
   readonly compact: (instructions?: string) => Effect.Effect<TaskId, Failure>
@@ -118,7 +118,7 @@ export interface Service {
   ) => Effect.Effect<'marked' | 'terminal', Failure<TaskNotFound | StorageError>>
   /** Wait until every ownerless conversation is idle. */
   readonly waitForIdle: Effect.Effect<void, Failure<SchedulerClosed>>
-  /** Every conversation's `pi.usage`, summed. */
+  /** Every conversation's `$usage`, summed. */
   readonly usage: Effect.Effect<UsageState, Failure>
   /** Live tasks and unsettled submissions. */
   readonly inspect: Effect.Effect<Inspection, Failure<StorageError>>

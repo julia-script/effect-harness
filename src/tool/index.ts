@@ -9,10 +9,10 @@ export * as Tool from './Tool.ts'
 /** Sets of tools, and their implementations. */
 export * as Toolkit from './Toolkit.ts'
 
-/** What a call returns to the model, and its `pi.tool-result` entry. */
+/** What a call returns to the model, and its `$tool-result` entry. */
 export * as ToolResult from './ToolResult.ts'
 
-/** The built-in `pi.tool` task. */
+/** The built-in `$tool` task. */
 export * as ToolTask from './ToolTask.ts'
 
 /** Errors of the tool task. */

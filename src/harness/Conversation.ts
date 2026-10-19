@@ -46,7 +46,7 @@ export interface Conversation {
    * its existing submission without writing.
    *
    * An idle conversation places input as its entry and starts a run, and appends a write at once.
-   * A busy one, or one with queued items, queues them in `pi.inbox` for the next boundary; input
+   * A busy one, or one with queued items, queues them in `$inbox` for the next boundary; input
    * with `whenBusy: 'reject'` fails with `ConversationBusy` instead and writes nothing. A write of
    * only `kind` and `data`, which changes nothing the model sees, is appended at once even mid-run,
    * unless a reset is queued: then it lands after the reset.
@@ -55,7 +55,7 @@ export interface Conversation {
     draft: Draft,
   ) => Effect.Effect<Submission, ConversationBusy | InvalidSubmission | CommitError>
   /**
-   * Admit a `pi.reset` write that starts a new context, carrying `handoff` as a user message when
+   * Admit a `$reset` write that starts a new context, carrying `handoff` as a user message when
    * given; while busy, it is placed at the next boundary.
    */
   readonly reset: (handoff?: string) => Effect.Effect<Submission, CommitError>
@@ -66,7 +66,7 @@ export interface Conversation {
    */
   readonly compact: (instructions?: string) => Effect.Effect<TaskId, CommitError>
   /**
-   * Change what the conversation asks with, in its `pi.agent`: a given field replaces the stored
+   * Change what the conversation asks with, in its `$agent`: a given field replaces the stored
    * one, `null` clears it. Its next request resolves the change.
    */
   readonly configure: (change: AgentState.Change) => Effect.Effect<void, CommitError>

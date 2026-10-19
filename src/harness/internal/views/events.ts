@@ -37,14 +37,14 @@ export interface Parts {
 
 export const parts = (view: ConversationView): Parts => {
   const { docs } = view
-  const live = docs['pi.live']
+  const live = docs['$live']
   const typed = isLive(live) ? live : {}
   const partial = typed.generation?.message
   return {
     live: typed,
-    inbox: isInbox(docs['pi.inbox']) ? docs['pi.inbox'] : undefined,
-    agent: isAgent(docs['pi.agent']) ? docs['pi.agent'] : undefined,
-    usage: isUsage(docs['pi.usage']) ? docs['pi.usage'] : undefined,
+    inbox: isInbox(docs['$inbox']) ? docs['$inbox'] : undefined,
+    agent: isAgent(docs['$agent']) ? docs['$agent'] : undefined,
+    usage: isUsage(docs['$usage']) ? docs['$usage'] : undefined,
     partial: isPartial(partial) ? partial : undefined,
     docs,
   }

@@ -5,7 +5,7 @@
  * where the files and commands are. Nothing installs the extension automatically.
  *
  * Each tool's config sets its working directory, `cwd`; relative paths resolve against it, and
- * without it against the process's. A conversation's `pi.agent` config can override it.
+ * without it against the process's. A conversation's `$agent` config can override it.
  */
 import { Schema } from 'effect'
 import * as Extension from '../harness/Extension.ts'

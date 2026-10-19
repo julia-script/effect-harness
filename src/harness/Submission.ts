@@ -19,11 +19,11 @@ export const UserInput = Schema.Union([Schema.String, Schema.Array(JsonObject)])
 export type UserInput = typeof UserInput.Type
 
 /**
- * The entry an input is placed as, instead of `pi.user`: an application kind, and data the
+ * The entry an input is placed as, instead of `$user`: an application kind, and data the
  * transcript shows, such as its author. Its model message is still the input's user message.
  */
 export const InputEntry = Schema.Struct({
-  /** Must be non-empty and must not start with `pi.`. */
+  /** Must be non-empty and must not start with `$`. */
   kind: Schema.String,
   data: Schema.optionalKey(Schema.Json),
 })
@@ -41,7 +41,7 @@ export const InputDraft = Schema.Struct({
   content: UserInput,
   /** Default: `followUp`. */
   whenBusy: Schema.optionalKey(WhenBusy),
-  /** Default: a `pi.user` entry without data. */
+  /** Default: a `$user` entry without data. */
   entry: Schema.optionalKey(InputEntry),
 })
 export type InputDraft = typeof InputDraft.Type

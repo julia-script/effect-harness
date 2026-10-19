@@ -106,7 +106,7 @@ export type StoreState = typeof StoreState.Type
 
 /** The start data and the outcome; scoped to the call's task, gone when it settles. */
 export const run = Document.make<RunState>({
-  kind: 'pi.codemode.run',
+  kind: '$codemode.run',
   version: 1,
   scope: 'task',
   initial: () => Effect.succeed({}),
@@ -114,7 +114,7 @@ export const run = Document.make<RunState>({
 
 /** One entry per delivered result, in delivery order; scoped to the call's task. */
 export const journal = Document.make<JournalState>({
-  kind: 'pi.codemode.journal',
+  kind: '$codemode.journal',
   version: 1,
   scope: 'task',
   initial: () => Effect.succeed({ entries: [] }),
@@ -125,7 +125,7 @@ export const journal = Document.make<JournalState>({
  * copied as of the fork point, so a fork sees the values as they were at its entry.
  */
 export const store = Document.make<StoreState>({
-  kind: 'pi.codemode.store',
+  kind: '$codemode.store',
   version: 1,
   scope: 'conversation',
   history: 'rewindable',

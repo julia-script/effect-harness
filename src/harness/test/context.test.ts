@@ -61,7 +61,7 @@ describe('context', () => {
   test('leads with the system prompt written after the input', () => {
     const view = derive(undefined, [
       entry(1, { model: [user('hi')] }),
-      entry(2, { kind: 'pi.system', model: [system({ a: 'A' })] }),
+      entry(2, { kind: '$system', model: [system({ a: 'A' })] }),
     ])
     expect(view.messages.map((message) => message.role)).toEqual(['system', 'user'])
   })
@@ -110,18 +110,18 @@ describe('system prompt planning', () => {
     const desired = new Map([['a', 'A']])
     const empty = derive(undefined, [entry(1, { model: [user('hi')] })])
     expect(planSystemEntries(empty, desired, [tool], 0)).toMatchObject([
-      { kind: 'pi.system', model: [{ sections: { a: 'A' }, toolsAdded: [{ name: 'read' }] }] },
+      { kind: '$system', model: [{ sections: { a: 'A' }, toolsAdded: [{ name: 'read' }] }] },
     ])
     const shown = derive(undefined, [
       entry(1, { model: [user('hi')] }),
-      entry(2, { kind: 'pi.system', model: [system({ a: 'A' }, ['read'])] }),
+      entry(2, { kind: '$system', model: [system({ a: 'A' }, ['read'])] }),
     ])
     expect(planSystemEntries(shown, desired, [tool], 0)).toEqual([])
   })
 
   test('patches changed sections, and re-adds them all when the order changes', () => {
     const shown = derive(undefined, [
-      entry(1, { kind: 'pi.system', model: [system({ a: 'A', b: 'B' })] }),
+      entry(1, { kind: '$system', model: [system({ a: 'A', b: 'B' })] }),
     ])
     const patch = new Map([
       ['a', 'A2'],
@@ -143,7 +143,7 @@ describe('system prompt planning', () => {
   test('after a head marker, writes a complete baseline omitting older system entries', () => {
     const marker = { ...entry(3, { model: [user('summary')] }), head: EntryId.make(1) }
     const view = derive(marker, [
-      entry(1, { kind: 'pi.system', model: [system({ a: 'A' })] }),
+      entry(1, { kind: '$system', model: [system({ a: 'A' })] }),
       entry(2, { model: [user('kept')] }),
       marker,
     ])

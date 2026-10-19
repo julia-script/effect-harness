@@ -48,9 +48,9 @@ group('generation', () => {
         )
         const entries = yield* entriesOf(harness, conversation.id)
         expect(entries.map((entry) => describe(entry))).toEqual([
-          'pi.user: hi',
-          'pi.system',
-          'pi.assistant: hello',
+          '$user: hi',
+          '$system',
+          '$assistant: hello',
         ])
         expect(settled).toMatchObject({ status: 'done', answer: entries[2]?.id })
         expect(messageOf(entries[1] ?? entries[0]!)).toMatchObject({
@@ -85,14 +85,14 @@ group('generation', () => {
         yield* ask('3')
         const entries = yield* entriesOf(harness, conversation.id)
         expect(entries.map((entry) => describe(entry))).toEqual([
-          'pi.user: 1',
-          'pi.system',
-          'pi.assistant: a',
-          'pi.user: 2',
-          'pi.assistant: b',
-          'pi.user: 3',
-          'pi.system',
-          'pi.assistant: c',
+          '$user: 1',
+          '$system',
+          '$assistant: a',
+          '$user: 2',
+          '$assistant: b',
+          '$user: 3',
+          '$system',
+          '$assistant: c',
         ])
         expect(messageOf(entries[6]!)).toMatchObject({ sections: { s: 'two' } })
       }),
@@ -112,12 +112,12 @@ group('generation', () => {
         )
         const entries = yield* entriesOf(harness, conversation.id)
         expect(entries.map((entry) => describe(entry))).toEqual([
-          'pi.user: go',
-          'pi.system',
-          'pi.assistant: call read | call read (toolUse)',
-          'pi.tool-result: contents of a.txt',
-          'pi.tool-result: contents of b.txt',
-          'pi.assistant: done',
+          '$user: go',
+          '$system',
+          '$assistant: call read | call read (toolUse)',
+          '$tool-result: contents of a.txt',
+          '$tool-result: contents of b.txt',
+          '$assistant: done',
         ])
         expect(settled).toMatchObject({ status: 'done', answer: entries[5]?.id })
         const second = (yield* faux.requests)[1]
@@ -147,9 +147,9 @@ group('generation', () => {
           Effect.flatMap(conversation.submit({ type: 'input', content: 'go' }), (s) => s.wait),
         )
         const entries = yield* entriesOf(harness, conversation.id)
-        const results = entries.filter((entry) => entry.kind === 'pi.tool-result')
+        const results = entries.filter((entry) => entry.kind === '$tool-result')
         // The generation answers them itself, in the commit that appends the calls.
-        const generation = entries.find((entry) => entry.kind === 'pi.assistant')?.byTaskId
+        const generation = entries.find((entry) => entry.kind === '$assistant')?.byTaskId
         expect(results.map((entry) => entry.byTaskId)).toEqual([generation, generation])
         expect(results.map((entry) => entry.data)).toMatchObject([
           { diagnostics: [{ code: 'tool_unavailable', message: 'Tool lines is not available' }] },
@@ -184,9 +184,9 @@ group('generation', () => {
         yield* Effect.orDie(submission.wait)
         const entries = yield* entriesOf(harness, conversation.id)
         expect(entries.map((entry) => describe(entry)).slice(3)).toEqual([
-          'pi.tool-result: slow done',
-          'pi.tool-result: contents of a.txt',
-          'pi.assistant: done',
+          '$tool-result: slow done',
+          '$tool-result: contents of a.txt',
+          '$assistant: done',
         ])
       }),
     ))
@@ -204,9 +204,9 @@ group('generation', () => {
         expect((yield* faux.state).callCount).toBe(3)
         const entries = yield* entriesOf(harness, conversation.id)
         expect(entries.map((entry) => describe(entry))).toEqual([
-          'pi.user: hi',
-          'pi.system',
-          'pi.assistant: third time',
+          '$user: hi',
+          '$system',
+          '$assistant: third time',
         ])
       }),
     ))
@@ -234,7 +234,7 @@ group('generation', () => {
         const second = yield* ask
         expect(second).toMatchObject({ status: 'unanswered', reason: 'model_error' })
         const entries = yield* entriesOf(harness, conversation.id)
-        expect(entries.map((entry) => describe(entry)).at(-1)).toBe('pi.assistant (error)')
+        expect(entries.map((entry) => describe(entry)).at(-1)).toBe('$assistant (error)')
         // The failed response is kept, but the next request does not see it.
         yield* faux.setResponses([Faux.message('ok')])
         yield* ask
@@ -275,7 +275,7 @@ group('generation', () => {
         expect(settled.status).toBe('done')
         expect((yield* faux.state).deferredFetchCount).toBe(2)
         const entries = yield* entriesOf(harness, conversation.id)
-        expect(entries.map((entry) => describe(entry)).at(-1)).toBe('pi.assistant: later')
+        expect(entries.map((entry) => describe(entry)).at(-1)).toBe('$assistant: later')
       }),
     ))
 })
@@ -303,7 +303,7 @@ group('generation abort', () => {
         expect(reasonOf(yield* Effect.orDie(submission.wait))).toBe('aborted')
         const entries = yield* entriesOf(harness, conversation.id)
         const last = entries.at(-1)
-        expect(last === undefined ? '' : describe(last)).toStartWith('pi.assistant: a')
+        expect(last === undefined ? '' : describe(last)).toStartWith('$assistant: a')
         expect(last === undefined ? '' : describe(last)).toEndWith('(aborted)')
         expect(yield* liveOf(harness, conversation.id)).toEqual({})
       }),
@@ -324,7 +324,7 @@ group('generation abort', () => {
         yield* Effect.orDie(conversation.abort())
         expect(reasonOf(yield* Effect.orDie(submission.wait))).toBe('aborted')
         const results = (yield* entriesOf(harness, conversation.id)).filter(
-          (entry) => entry.kind === 'pi.tool-result',
+          (entry) => entry.kind === '$tool-result',
         )
         expect(results.map((entry) => entry.data)).toMatchObject([
           { diagnostics: [{ code: 'aborted', message: 'Tool slow was aborted' }] },

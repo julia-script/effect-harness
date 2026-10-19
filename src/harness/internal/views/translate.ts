@@ -54,12 +54,12 @@ const began = (step: Step): ReadonlyArray<AgentEvent> => {
   const { was, now } = step
   const events: Array<AgentEvent> = []
   for (const record of step.written.submissions) events.push({ type: 'submission', record })
-  if (now.docs['pi.inbox'] !== was.docs['pi.inbox'])
+  if (now.docs['$inbox'] !== was.docs['$inbox'])
     events.push({ type: 'inbox_update', items: queued(now.inbox) })
   // A retired document reads as its initial value, as in a snapshot.
-  if (now.docs['pi.agent'] !== was.docs['pi.agent'])
+  if (now.docs['$agent'] !== was.docs['$agent'])
     events.push({ type: 'agent_changed', agent: now.agent ?? {} })
-  if (now.docs['pi.usage'] !== was.docs['pi.usage'])
+  if (now.docs['$usage'] !== was.docs['$usage'])
     events.push({ type: 'usage_changed', usage: now.usage ?? EMPTY_USAGE })
   const before = was.live.compactions ?? []
   for (const { taskId, reason, blocking } of now.live.compactions ?? []) {

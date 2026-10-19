@@ -51,9 +51,9 @@ for (const [name, transport] of transports) {
             const submission = yield* root.submit({ type: 'input', content: 'hi' })
             yield* answer('hello')
             yield* submission.wait
-            expect(yield* Fiber.join(entries)).toMatchObject({ value: ['pi.user', 'pi.assistant'] })
+            expect(yield* Fiber.join(entries)).toMatchObject({ value: ['$user', '$assistant'] })
             expect(yield* Fiber.join(types)).toContain('run_start')
-            expect((yield* Fiber.join(tasks))[0]).toEqual(['pi.generation'])
+            expect((yield* Fiber.join(tasks))[0]).toEqual(['$generation'])
             // The replayed view is the loop's view.
             const fresh = yield* root.view
             expect(fresh.value.entries.length).toBe(2)

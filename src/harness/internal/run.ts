@@ -1,5 +1,5 @@
 /**
- * Run control in `pi.live` (spec §6, §8): a run is the task holding `pi.live.run`, which settles
+ * Run control in `$live` (spec §6, §8): a run is the task holding `$live.run`, which settles
  * the run's inputs when it ends. The built-in generation task drives it through these helpers.
  */
 import { Effect } from 'effect'
@@ -18,10 +18,10 @@ import { appendInput, applyBoundary } from './inbox.ts'
 import type { Boundary } from './inbox.ts'
 import { strictJson } from './json.ts'
 
-export const ASSISTANT_KIND = 'pi.assistant'
+export const ASSISTANT_KIND = '$assistant'
 
-/** The task kind that takes `pi.live.run`: the built-in generation task. */
-export const RUN_KIND = 'pi.generation'
+/** The task kind that takes `$live.run`: the built-in generation task. */
+export const RUN_KIND = '$generation'
 
 /** What `Tx.createTask()` needs of the run task: the generation's first checkpoint. */
 export const runTask: TaskKind<Record<string, never>> = {
@@ -34,7 +34,7 @@ export const runTask: TaskKind<Record<string, never>> = {
 const createRunTask = (tx: Tx, conversationId: ConversationId) =>
   tx.createTask(runTask, {}, { ownership: { kind: 'conversation' }, conversationId })
 
-/** Start a run for placed input submissions: a new run task takes `pi.live.run`. */
+/** Start a run for placed input submissions: a new run task takes `$live.run`. */
 export const startRun = Effect.fnUntraced(function* (
   tx: Tx,
   conversationId: ConversationId,
@@ -63,7 +63,7 @@ export const endRun = Effect.fnUntraced(function* (
 })
 
 /**
- * Append a model response as a `pi.assistant` entry, and add its usage to `pi.usage`.
+ * Append a model response as a `$assistant` entry, and add its usage to `$usage`.
  * REMINDER: every built-in writer of assistant entries goes through here, so the ledger stays
  * complete.
  */
@@ -180,7 +180,7 @@ export const continueRun = Effect.fnUntraced(function* (
  * Cleanup for an outcome the scheduler writes itself (spec §5.4): a faulted or orphaned run task
  * ends its run `unanswered`, keeping its partial as an aborted entry; a tool task's slot is done
  * without an entry, and context derivation synthesizes the missing result; a compaction's status
- * is removed and its failure recorded. Other kinds are left alone, so it never creates `pi.live` elsewhere.
+ * is removed and its failure recorded. Other kinds are left alone, so it never creates `$live` elsewhere.
  */
 export const settleOutcome = Effect.fnUntraced(function* (
   tx: Tx,

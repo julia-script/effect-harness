@@ -1,6 +1,6 @@
 /**
  * Tool results, ported from pi's `ToolExecutionResult` and `appendToolResult`: what a call
- * returns to the model, and the `pi.tool-result` entry that records it.
+ * returns to the model, and the `$tool-result` entry that records it.
  *
  * Diagnostics are remarks about a call for the model and the UI, such as truncation or why a call
  * was refused; they are never part of the tool's own result. The entry's message ends with them
@@ -17,7 +17,7 @@ import type { ConversationId } from '../storage/schema/Ids.ts'
 import type { Content } from './Tool.ts'
 
 /** The entry kind of a tool result. */
-export const kind = 'pi.tool-result'
+export const kind = '$tool-result'
 
 export const Diagnostic = Schema.Struct({
   severity: Schema.Literals(['info', 'warn', 'error']),
@@ -55,7 +55,7 @@ export interface Result {
  * Any other value is shown as text, or as JSON.
  */
 export const Output = Schema.Struct({
-  type: Schema.Literal('pi.tool-output'),
+  type: Schema.Literal('$tool-output'),
   content: Schema.Array(Schema.Union([TextContent, ImageContent])),
   diagnostics: Schema.optionalKey(Schema.Array(Diagnostic)),
   details: Schema.optionalKey(Schema.Json),
@@ -72,7 +72,7 @@ export interface Options {
 
 /** An `Output` with `content`. */
 export const output = (content: Content, options: Options = {}): Output => ({
-  type: 'pi.tool-output',
+  type: '$tool-output',
   content,
   ...options,
 })
@@ -117,7 +117,7 @@ export const message = (
   ...(timing.durationMs === undefined ? {} : { durationMs: timing.durationMs }),
 })
 
-/** Append the `pi.tool-result` entry of `result`. */
+/** Append the `$tool-result` entry of `result`. */
 export const append = (
   tx: Tx,
   conversationId: ConversationId,

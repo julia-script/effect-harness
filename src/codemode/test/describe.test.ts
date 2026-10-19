@@ -79,7 +79,7 @@ describe('code mode description and section', () => {
           (submission) => submission.wait,
         )
         const system = (yield* entriesOf(harness, conversation.id)).find(
-          (entry) => entry.kind === 'pi.system',
+          (entry) => entry.kind === '$system',
         )
         const sections: unknown = system?.model?.[0]?.['sections']
         const shown = JSON.stringify(sections)

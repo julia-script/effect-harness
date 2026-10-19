@@ -170,7 +170,7 @@ export const resolve = (state: State | undefined, snapshot: Snapshot, settings: 
     return resolved
   })
 
-/** The agent of conversation `conversationId` now: its committed `pi.agent`, resolved. */
+/** The agent of conversation `conversationId` now: its committed `$agent`, resolved. */
 export const current = (
   read: Pick<Session.Service, 'snapshot'>,
   conversationId: ConversationId,

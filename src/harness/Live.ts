@@ -1,5 +1,5 @@
 /**
- * The built-in `pi.live` document, ported from pi's `harness/live.ts`: run control of one
+ * The built-in `$live` document, ported from pi's `harness/live.ts`: run control of one
  * conversation, and the presentation of its running generation and tool round. Its Schemas live
  * in `ViewState`, which a client shares.
  */
@@ -19,7 +19,7 @@ export {
 
 /** One per conversation; every fork starts idle. */
 export const document = Document.make<State>({
-  kind: 'pi.live',
+  kind: '$live',
   version: 1,
   scope: 'conversation',
   history: 'latest',

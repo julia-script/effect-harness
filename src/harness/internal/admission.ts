@@ -24,15 +24,15 @@ import type { Boundary } from './inbox.ts'
 import { strictJson } from './json.ts'
 import { startRun } from './run.ts'
 
-/** An input entry's kind must be a non-empty string outside the `pi.` prefix. */
+/** An input entry's kind must be a non-empty string outside the `$` prefix. */
 const checkInputEntry = (draft: Draft) => {
   if (draft.type !== 'input' || draft.entry === undefined) return Effect.void
   const { kind } = draft.entry
-  return typeof kind === 'string' && kind.length > 0 && !kind.startsWith('pi.')
+  return typeof kind === 'string' && kind.length > 0 && !kind.startsWith('$')
     ? Effect.void
     : Effect.fail(
         new InvalidSubmission({
-          message: `An input entry's kind must be a non-empty string not starting with "pi.", got ${kind}`,
+          message: `An input entry's kind must be a non-empty string not starting with "$", got ${kind}`,
         }),
       )
 }
@@ -87,7 +87,7 @@ const placeWrite = Effect.fnUntraced(function* (
   return record.id
 })
 
-/** Queue a submission in `pi.inbox` behind the items already there. */
+/** Queue a submission in `$inbox` behind the items already there. */
 const enqueue = Effect.fnUntraced(function* (
   tx: Tx,
   conversationId: ConversationId,

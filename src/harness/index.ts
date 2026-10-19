@@ -18,7 +18,7 @@ export * as Conversation from './Conversation.ts'
 /** Submissions: drafts, handles, and settled records. */
 export * as Submission from './Submission.ts'
 
-/** The built-in `pi.inbox` document. */
+/** The built-in `$inbox` document. */
 export * as Inbox from './Inbox.ts'
 
 /** The built-in generation task: one model request of a run, and its tool round. */
@@ -30,10 +30,10 @@ export * as GenerationError from './GenerationError.ts'
 /** The built-in compaction task: summaries that start the context anew. */
 export * as Compaction from './Compaction.ts'
 
-/** The built-in `pi.usage` document: a conversation's spend. */
+/** The built-in `$usage` document: a conversation's spend. */
 export * as Usage from './Usage.ts'
 
-/** The built-in `pi.live` document. */
+/** The built-in `$live` document. */
 export * as Live from './Live.ts'
 
 /** Harness-wide run policy. */
@@ -48,7 +48,7 @@ export * as Extension from './Extension.ts'
 /** The registry of installed extensions. */
 export * as Extensions from './Extensions.ts'
 
-/** The built-in `pi.agent` document, and the agent resolved from it. */
+/** The built-in `$agent` document, and the agent resolved from it. */
 export * as Agent from './Agent.ts'
 
 /** What an agent is made of, as Schemas the client shares. */

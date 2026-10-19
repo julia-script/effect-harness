@@ -33,7 +33,7 @@ type ToolRuntime = Runtime<Input, Checkpoint, TaskResult>
 /** Who made the call: the model, or a running tool. */
 const callerOf = (input: Input): Caller => (isNested(input) ? 'tools' : 'model')
 
-export const NAME = 'pi.tool'
+export const NAME = '$tool'
 
 const decodeAssistant = Schema.decodeUnknownOption(AssistantMessage)
 

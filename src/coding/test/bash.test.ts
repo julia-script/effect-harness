@@ -108,7 +108,7 @@ describe('CodingHandlers.layer', () => {
           const outcome = yield* runner.run({ command: 'echo hi' }, { callId: 'c1', config: {} })
           expect(outcome).toMatchObject({
             type: 'success',
-            value: { type: 'pi.tool-output', content: [{ type: 'text', text: 'hi\n' }] },
+            value: { type: '$tool-output', content: [{ type: 'text', text: 'hi\n' }] },
           })
           const invalid = yield* runner.run({}, { callId: 'c2', config: {} })
           expect(invalid.type).toBe('invalidArguments')

@@ -93,9 +93,9 @@ group('compaction', () => {
         expect(JSON.stringify(summarizer?.messages[1])).toContain('Additional focus: keep names')
         yield* ask(conversation, 'three')
         const entries = yield* entriesOf(harness, conversation.id)
-        const summary = entries.find((entry) => entry.kind === 'pi.compaction')
+        const summary = entries.find((entry) => entry.kind === '$compaction')
         expect(summary?.head).toBe(entries[4]?.id)
-        expect(describe(entries[4]!)).toBe('pi.assistant: second answer')
+        expect(describe(entries[4]!)).toBe('$assistant: second answer')
         const last = (yield* faux.requests)[3]
         // The new baseline, the summary, the kept answer, and the new input.
         expect(roles(last?.messages ?? [])).toEqual(['system', 'user', 'assistant', 'user'])
@@ -120,12 +120,12 @@ group('compaction', () => {
         const kinds = (yield* entriesOf(harness, conversation.id)).map((entry) => entry.kind)
         // Without sections or tools nothing needs a system entry, until the summary's baseline.
         expect(kinds).toEqual([
-          'pi.user',
-          'pi.assistant',
-          'pi.user',
-          'pi.compaction',
-          'pi.system',
-          'pi.assistant',
+          '$user',
+          '$assistant',
+          '$user',
+          '$compaction',
+          '$system',
+          '$assistant',
         ])
         expect(yield* liveOf(harness, conversation.id)).toEqual({})
       }),
@@ -146,7 +146,7 @@ group('compaction', () => {
         expect((yield* ask(conversation, 'x'.repeat(400))).status).toBe('done')
         yield* eventually(
           Effect.map(entriesOf(harness, conversation.id), (entries) =>
-            entries.some((entry) => entry.kind === 'pi.compaction'),
+            entries.some((entry) => entry.kind === '$compaction'),
           ),
         )
         yield* eventually(
@@ -177,10 +177,10 @@ group('compaction', () => {
         expect(settled.status).toBe('done')
         const entries = yield* entriesOf(harness, conversation.id)
         expect(entries.map((entry) => describe(entry)).slice(3)).toEqual([
-          'pi.user: two',
-          'pi.compaction: The conversation history before this point was compacted into the following summary:\n\n<summary>\nthe summary\n</summary>',
-          'pi.system',
-          'pi.assistant: second answer',
+          '$user: two',
+          '$compaction: The conversation history before this point was compacted into the following summary:\n\n<summary>\nthe summary\n</summary>',
+          '$system',
+          '$assistant: second answer',
         ])
       }),
     ))
@@ -199,7 +199,7 @@ group('compaction', () => {
       }),
     ))
 
-  test('keeps a failed summarization in pi.live, and ends the overflowed run', () =>
+  test('keeps a failed summarization in $live, and ends the overflowed run', () =>
     runTest((storage) =>
       Effect.gen(function* () {
         const { harness, faux } = yield* open(storage, {
