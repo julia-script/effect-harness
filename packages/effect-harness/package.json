@@ -1,0 +1,159 @@
+{
+  "name": "effect-harness",
+  "version": "0.5.0",
+  "description": "Durable AI conversations with Effect services, schema-backed state, and scoped local execution.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/julia-script/effect-harness.git",
+    "directory": "packages/effect-harness"
+  },
+  "files": [
+    "dist",
+    "NOTICE"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./internal/*": null,
+    "./internal": null,
+    "./provider-openai": {
+      "types": "./dist/provider-openai/index.d.ts",
+      "default": "./dist/provider-openai/index.js"
+    },
+    "./provider-openai/*": {
+      "types": "./dist/provider-openai/*.d.ts",
+      "default": "./dist/provider-openai/*.js"
+    },
+    "./provider-anthropic": {
+      "types": "./dist/provider-anthropic/index.d.ts",
+      "default": "./dist/provider-anthropic/index.js"
+    },
+    "./provider-anthropic/*": {
+      "types": "./dist/provider-anthropic/*.d.ts",
+      "default": "./dist/provider-anthropic/*.js"
+    },
+    "./workflow": null,
+    "./workflow/*": null,
+    "./images-bun": {
+      "types": "./dist/images-bun/index.d.ts",
+      "default": "./dist/images-bun/index.js"
+    },
+    "./images-bun/*": null,
+    "./images-node": {
+      "types": "./dist/images-node/index.d.ts",
+      "default": "./dist/images-node/index.js"
+    },
+    "./images-node/*": null,
+    "./images-wasm": {
+      "types": "./dist/images-wasm/index.d.ts",
+      "default": "./dist/images-wasm/index.js"
+    },
+    "./images-wasm/*": null,
+    "./coding": {
+      "types": "./dist/coding/index.d.ts",
+      "default": "./dist/coding/index.js"
+    },
+    "./testing/*": null,
+    "./testing/FileSystem": {
+      "types": "./dist/testing/FileSystem.d.ts",
+      "default": "./dist/testing/FileSystem.js"
+    },
+    "./testing/Process": {
+      "types": "./dist/testing/Process.d.ts",
+      "default": "./dist/testing/Process.js"
+    },
+    "./testing/Images": {
+      "types": "./dist/testing/Images.d.ts",
+      "default": "./dist/testing/Images.js"
+    },
+    "./testing/ToolkitIsolation": {
+      "types": "./dist/testing/ToolkitIsolation.d.ts",
+      "default": "./dist/testing/ToolkitIsolation.js"
+    },
+    "./provider-auth": {
+      "types": "./dist/provider-auth/index.d.ts",
+      "default": "./dist/provider-auth/index.js"
+    },
+    "./provider-auth/*": {
+      "types": "./dist/provider-auth/*.d.ts",
+      "default": "./dist/provider-auth/*.js"
+    },
+    "./provider-auth-bun": {
+      "types": "./dist/provider-auth-bun/index.d.ts",
+      "default": "./dist/provider-auth-bun/index.js"
+    },
+    "./provider-auth-bun/*": {
+      "types": "./dist/provider-auth-bun/*.d.ts",
+      "default": "./dist/provider-auth-bun/*.js"
+    },
+    "./provider-auth-node": {
+      "types": "./dist/provider-auth-node/index.d.ts",
+      "default": "./dist/provider-auth-node/index.js"
+    },
+    "./provider-auth-node/*": {
+      "types": "./dist/provider-auth-node/*.d.ts",
+      "default": "./dist/provider-auth-node/*.js"
+    },
+    "./provider-openai-codex": {
+      "types": "./dist/provider-openai-codex/index.d.ts",
+      "default": "./dist/provider-openai-codex/index.js"
+    },
+    "./provider-openai-codex/*": {
+      "types": "./dist/provider-openai-codex/*.d.ts",
+      "default": "./dist/provider-openai-codex/*.js"
+    },
+    "./provider-openai-compatible": {
+      "types": "./dist/provider-openai-compatible/index.d.ts",
+      "default": "./dist/provider-openai-compatible/index.js"
+    },
+    "./provider-openai-compatible/*": {
+      "types": "./dist/provider-openai-compatible/*.d.ts",
+      "default": "./dist/provider-openai-compatible/*.js"
+    },
+    "./provider-openrouter": {
+      "types": "./dist/provider-openrouter/index.d.ts",
+      "default": "./dist/provider-openrouter/index.js"
+    },
+    "./provider-openrouter/*": {
+      "types": "./dist/provider-openrouter/*.d.ts",
+      "default": "./dist/provider-openrouter/*.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "dev": "tsc --watch --preserveWatchOutput",
+    "typecheck": "tsc --noEmit",
+    "test": "cd ../.. && vitest run packages/effect-harness/test",
+    "typetest": "cd ../.. && tstyche packages/effect-harness/typetest",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@effect/ai-anthropic": "4.0.1",
+    "@effect/ai-openai": "4.0.1",
+    "@effect/ai-openai-compat": "4.0.1"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "4.0.1",
+    "@effect/sql-sqlite-node": "4.0.1",
+    "effect": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "^4.0.1"
+  },
+  "optionalDependencies": {
+    "@cf-wasm/photon": "0.4.0",
+    "jpeg-js": "0.4.4",
+    "sharp": "0.35.5"
+  }
+}

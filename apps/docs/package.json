@@ -1,0 +1,27 @@
+{
+  "name": "@effect-harness/docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "deploy": "alchemy deploy --stage prod",
+    "test": "vitest run --root ../.. apps/docs/test"
+  },
+  "dependencies": {
+    "@effect/platform-browser": "4.0.1",
+    "effect": "catalog:",
+    "effect-harness": "workspace:*",
+    "foldkit": "0.168.0",
+    "marked": "17.0.5"
+  },
+  "devDependencies": {
+    "@foldkit/vite-plugin": "0.27.1",
+    "@tailwindcss/vite": "^4.1.0",
+    "alchemy": "2.0.0-beta.83",
+    "tailwindcss": "^4.1.0",
+    "vite": "^8.0.0"
+  }
+}

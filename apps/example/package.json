@@ -1,0 +1,20 @@
+{
+  "name": "@effect-harness/example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node dist/main.js",
+    "tour": "node dist/Tour.js",
+    "recovery": "node dist/tour/Recovery.js",
+    "portable": "node dist/PortableMain.js",
+    "typecheck": "tsc --noEmit",
+    "build": "rm -rf dist && tsc",
+    "test": "vitest run --config vitest.config.ts --root ../.. apps/example/test"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.1",
+    "@effect/sql-sqlite-node": "4.0.1",
+    "effect": "catalog:",
+    "effect-harness": "workspace:*"
+  }
+}
