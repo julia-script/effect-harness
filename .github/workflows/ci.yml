@@ -25,25 +25,21 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
       - run: bun install --frozen-lockfile
-      - name: Build libraries and example
+      - run: bun run setup
+      - name: Require a changeset for pull requests
+        if: >-
+          github.event_name == 'pull_request' &&
+          !(github.event.pull_request.head.repo.full_name == github.repository &&
+            github.head_ref == 'changeset-release/main')
+        run: bun run check:changesets
+      - name: Build root package
         run: bun run build
       - name: Format, strict lint and type checks
         run: bun run check
-      - name: Require changesets for package changes
-        if: >-
-          github.event_name == 'pull_request' &&
-          !(github.head_ref == 'changeset-release/main' &&
-            github.event.pull_request.head.repo.full_name == github.repository)
-        run: bun run check:changesets
       - name: Unit, integration and process recovery tests
         run: bun run test
-      - name: Verify npm package preparation
-        run: npm pack --dry-run --workspace packages/effect-harness
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-      - name: Verify portable example under Deno
-        run: |
-          bun build --target=browser --outfile=/tmp/harness-portable.js apps/example/dist/PortableMain.js
-          deno run --no-config --no-prompt /tmp/harness-portable.js
+      - name: Verify installed package consumers
+        run: bun run test:package
