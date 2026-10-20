@@ -7,7 +7,7 @@
  * The protocols carry any RPC group, so a credential store served remotely (`Credentials.
  * layerServer`, `Credentials.layerRpc`) uses the same transports at its own path.
  */
-import { Context, Effect, Layer, Queue, Schema } from 'effect'
+import { Context, Effect, Layer, Queue, Schema, SubscriptionRef } from 'effect'
 import type { Scope } from 'effect'
 import type { HttpRouter } from 'effect/http'
 import { RpcClient, RpcSerialization, RpcServer } from 'effect/rpc'
@@ -86,15 +86,36 @@ export const makeMemoryEncoded: Effect.Effect<
 export const layerMemory: Layer.Layer<Protocols> = Layer.effectContext(makeMemory)
 
 /**
+ * How many times a client's connection has opened. `layerWebSocket` counts its socket's, so a
+ * watch that dropped with the connection opens again as soon as it is back, instead of waiting
+ * out its own backoff.
+ */
+export class Connections extends Context.Service<
+  Connections,
+  SubscriptionRef.SubscriptionRef<number>
+>()('effect-harness/client/HarnessTransport/Connections') {}
+
+/**
  * A client protocol over a WebSocket to `url`, such as `ws://localhost:3000/harness`, with JSON
  * frames. It uses the global `WebSocket`, so it runs in browsers, Bun and Deno alike, and
- * reconnects after transient failures.
+ * reconnects after transient failures, counting each connection in `Connections`.
  */
-export const layerWebSocket = (url: string): Layer.Layer<RpcClient.Protocol> =>
-  RpcClient.layerProtocolSocket({ retryTransientErrors: true }).pipe(
-    Layer.provide(Socket.layerWebSocket(url)),
-    Layer.provide(Socket.layerWebSocketConstructorGlobal),
-    Layer.provide(RpcSerialization.layerJson),
+export const layerWebSocket = (url: string): Layer.Layer<RpcClient.Protocol | Connections> =>
+  Layer.unwrap(
+    Effect.map(SubscriptionRef.make(0), (opened) =>
+      RpcClient.layerProtocolSocket({ retryTransientErrors: true }).pipe(
+        Layer.provide(Socket.layerWebSocket(url)),
+        Layer.provide(Socket.layerWebSocketConstructorGlobal),
+        Layer.provide(RpcSerialization.layerJson),
+        Layer.provide(
+          Layer.succeed(RpcClient.ConnectionHooks, {
+            onConnect: SubscriptionRef.update(opened, (count) => count + 1),
+            onDisconnect: Effect.void,
+          }),
+        ),
+        Layer.merge(Layer.succeed(Connections, opened)),
+      ),
+    ),
   )
 
 /**

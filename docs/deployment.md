@@ -65,7 +65,7 @@ const ClientLive = HarnessClient.layer.pipe(
 )
 ```
 
-`layerWebSocket` uses the global `WebSocket`, so it runs in browsers, Bun and Deno, and reconnects after transient failures. Watches such as `conversation.events` resubscribe on their own.
+`layerWebSocket` uses the global `WebSocket`, so it runs in browsers, Bun and Deno, and reconnects after transient failures. Watches such as `conversation.events` resubscribe on their own, as soon as the connection is back, and start again from the loop's state then: the events of the gap arrive in the new snapshot.
 
 `effect-harness/client` imports nothing the loop runs, so it's safe to bundle for the browser. Share your tool declarations, extension declarations and `Init`s with it freely; keep handlers on the server.
 

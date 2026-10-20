@@ -82,3 +82,50 @@ test(
     ),
   30_000,
 )
+
+test(
+  'a watch opens again as soon as the connection is back, not on its own backoff',
+  () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const storage = yield* Storage.makeMemory
+          const faux = yield* Faux.make()
+          yield* faux.setResponses([Faux.message('before'), Faux.message('after')])
+          const first = yield* Scope.make()
+          const port = yield* serve(storage, faux, 0, first)
+          const transport = yield* Layer.build(
+            HarnessTransport.layerWebSocket(`ws://127.0.0.1:${port}/harness`),
+          )
+          const client = yield* Effect.provideContext(HarnessClient.make, transport)
+          const root = yield* client.root()
+          const ask = (content: string) =>
+            Effect.flatMap(root.submit({ type: 'input', content }), (submission) => submission.wait)
+          yield* ask('one')
+          const view = yield* root.view
+          const grown = yield* Effect.forkChild(
+            view.changes.pipe(
+              Stream.filter((change) => change.value.entries.length >= 4),
+              Stream.runHead,
+              Effect.map(() => Date.now()),
+            ),
+          )
+
+          // Down long enough for the watch's backoff to reach its longest wait.
+          yield* Scope.close(first, Exit.void)
+          yield* Effect.sleep('8 seconds')
+          yield* serve(storage, faux, port, yield* Effect.scope)
+          yield* ask('two').pipe(
+            Effect.retry(
+              Schedule.spaced('100 millis').pipe(Schedule.upTo({ duration: '10 seconds' })),
+            ),
+          )
+          const answered = Date.now()
+
+          const seen = yield* Fiber.join(grown)
+          expect(seen - answered).toBeLessThan(1_000)
+        }),
+      ),
+    ),
+  40_000,
+)
