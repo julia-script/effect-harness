@@ -112,6 +112,7 @@ const configure = (model: Info, request: Request, options: Options) => {
   if (level === 'low' || level === 'medium') effort = level
   if (level === 'minimal') effort = 'low'
   return {
+    strictJsonSchema: configured.strictJsonSchema,
     max_tokens: configured.max_tokens,
     thinking: { type: 'adaptive' as const },
     ...(level === undefined ? {} : { output_config: { effort } }),

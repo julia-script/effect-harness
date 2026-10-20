@@ -30,7 +30,7 @@ test('subscription inference sends Claude headers and prefix, normalizes tool na
               { type: 'text', text: "You are Claude Code, Anthropic's official CLI for Claude." },
               { type: 'text', text: 'Keep my instructions.' },
             ],
-            tools: [{ name: 'Read' }],
+            tools: [{ name: 'Read', strict: false }],
             thinking: {
               type: 'adaptive',
               display: 'summarized',
@@ -201,5 +201,7 @@ test('discovered adaptive models send effort rather than a budget outside the st
         })
         expect(api.requests[0]?.body).not.toHaveProperty('thinking.budget_tokens')
         expect(api.requests[0]?.body).not.toHaveProperty('temperature')
+        // Tool schemas stay non-strict for adaptive models too.
+        expect(api.requests[0]?.body).toMatchObject({ tools: [{ name: 'Read', strict: false }] })
       }),
   ))
