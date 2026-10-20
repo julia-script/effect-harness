@@ -1,6 +1,6 @@
 {
   "name": "effect-harness",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Durable AI conversations with Effect services, schema-backed state, and scoped local execution.",
   "homepage": "https://github.com/julia-script/effect-harness#readme",
   "bugs": {
