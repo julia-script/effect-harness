@@ -39,6 +39,7 @@ import * as Agent from './Agent.ts'
 import * as Compaction from './Compaction.ts'
 import { Extensions } from './Extensions.ts'
 import { current as currentAgent } from './internal/agent.ts'
+import { provide as provideHarness } from './internal/current.ts'
 import * as internal from './internal/generation/task.ts'
 import { RUN_KIND, toolLifecycle } from './internal/run.ts'
 import * as Settings from './Settings.ts'
@@ -140,7 +141,7 @@ export const make: Effect.Effect<Generation, never, Model.Model | Extensions> = 
   },
 )
 
-/** `installed` with its handler running under `Agent.Current`. */
+/** `installed` with its handler running under `Agent.Current` and the Harness. */
 const withAgent = (
   agent: Agent.Resolved,
   installed: ToolTask.Installed | undefined,
@@ -152,7 +153,7 @@ const withAgent = (
         runner: Option.map(installed.runner, (runner) => ({
           ...runner,
           run: (args, context) =>
-            Effect.provideService(runner.run(args, context), Agent.Current, agent),
+            provideHarness(Effect.provideService(runner.run(args, context), Agent.Current, agent)),
         })),
       }
 

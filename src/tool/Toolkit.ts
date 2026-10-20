@@ -6,13 +6,14 @@
  * A handler gets the decoded arguments and a context with the call's ID and the tool's decoded
  * config, and returns the tool's success or fails with its declared failure. Anything else it
  * does, a defect or an interruption, is not a result: the tool task reports a defect as a broken
- * tool. Handlers need no services of their own: build them in an Effect that reads the services
- * they use, as `toLayer` accepts.
+ * tool. Handlers may require the `Provided` services, which the tool task provides to each call;
+ * for any other service, build them in an Effect that reads it, as `toLayer` accepts.
  */
 import { Context, Effect, Layer } from 'effect'
 import type { Scope } from 'effect'
 import { implement } from './internal/runner.ts'
 import type * as runner from './internal/runner.ts'
+import type { Harness } from '../harness/Harness.ts'
 import type * as Tool from './Tool.ts'
 
 /** What running a call came to, with the tool's values encoded. */
@@ -31,11 +32,18 @@ export interface HandlerContext<Config> {
   readonly config: Config
 }
 
+/**
+ * The services the tool task provides to every handler, as an HTTP router provides the request:
+ * the Harness it runs under. A tool task outside a Harness has none of them, and a handler that
+ * reads one there fails as broken.
+ */
+export type Provided = Harness
+
 /** The implementation of `T`. */
 export type Handler<T extends Tool.Any> = (
   params: Tool.Parameters<T>,
   context: HandlerContext<Tool.Config<T>>,
-) => Effect.Effect<Tool.Success<T>, Tool.Failure<T>>
+) => Effect.Effect<Tool.Success<T>, Tool.Failure<T>, Provided>
 
 /** One handler per tool, by name. */
 export type Handlers<Tools extends Record<string, Tool.Any>> = {

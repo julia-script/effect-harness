@@ -1,4 +1,4 @@
-import { Effect } from 'effect'
+import { Deferred, Effect } from 'effect'
 import * as Session from '../../session/Session.ts'
 import type { CommitError } from '../../session/SessionError.ts'
 import { SubmissionId } from '../../storage/schema/Ids.ts'
@@ -15,6 +15,7 @@ import * as Live from '../Live.ts'
 import * as Settings from '../Settings.ts'
 import * as Usage from '../Usage.ts'
 import { conversation, create } from './conversation.ts'
+import { Opening } from './current.ts'
 import type { Host } from './conversation.ts'
 import { withdrawQueuedInputs } from './inbox.ts'
 import { settleOutcome } from './run.ts'
@@ -91,8 +92,11 @@ const unsettled = (storage: Storage['Service'], session: Session.Service) =>
 export const make = Effect.fnUntraced(function* (options: Options) {
   const storage = yield* Storage
   const session = yield* Session.makeWith(sessionOptions(options))
+  const opening = yield* Deferred.make<Service>()
+  // Invocations are forked from the Scheduler's drive fiber, so they inherit this context.
   const scheduler: Scheduler.Service = yield* Scheduler.makeWith(schedulerOptions).pipe(
     Effect.provideService(Session.Session, session),
+    Effect.provideService(Opening, opening),
   )
   const submissions = yield* Submissions.make(session, yield* Settings.Current)
   const extensions = yield* Extensions
@@ -125,5 +129,6 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       return { scheduling, tasks, submissions: pending }
     }),
   }
+  yield* Deferred.succeed(opening, service)
   return service
 }) satisfies (options: Options) => Effect.Effect<Service, CommitError, unknown>

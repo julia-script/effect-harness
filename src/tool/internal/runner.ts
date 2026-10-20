@@ -4,8 +4,9 @@
  * happen here, where the tool's types are known.
  */
 import { Cause, Effect, Exit, Option, Result, Schema } from 'effect'
+import { cast } from 'effect/Function'
 import type * as Tool from '../Tool.ts'
-import type { Handler } from '../Toolkit.ts'
+import type { Handler, Provided } from '../Toolkit.ts'
 
 /** What running a call came to. */
 export type Outcome =
@@ -57,6 +58,13 @@ const outcome = <T extends Tool.Any>(
   return Effect.succeed({ type: 'broken', message: Cause.pretty(exit.cause) })
 }
 
+/**
+ * A handler's run with its `Provided` services left to the caller: the Harness provides them to
+ * the runners it resolves, and outside a Harness a handler that reads one fails as broken.
+ */
+const withProvided = <A, E>(effect: Effect.Effect<A, E, Provided>) =>
+  cast<Effect.Effect<A, E, Provided>, Effect.Effect<A, E>>(effect)
+
 /** `handler` behind the encoded signature. */
 export const implement = <T extends Tool.Any>(tool: T, handler: Handler<T>): Runner => ({
   tool,
@@ -68,7 +76,9 @@ export const implement = <T extends Tool.Any>(tool: T, handler: Handler<T>): Run
       const decoded = yield* Effect.result(Schema.decodeUnknownEffect(tool.config)(config))
       if (Result.isFailure(decoded))
         return { type: 'invalidConfig', message: decoded.failure.message } as const
-      const exit = yield* Effect.exit(handler(params.success, { callId, config: decoded.success }))
+      const exit = yield* Effect.exit(
+        withProvided(handler(params.success, { callId, config: decoded.success })),
+      )
       return yield* outcome(tool, exit)
     }),
 })
