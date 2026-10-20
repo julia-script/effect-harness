@@ -1,15 +1,22 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="effect-harness" width="100%">
+</p>
+
 # Documentation
 
-The [docs app](../apps/docs/README.md) provides a Foldkit site with a guided tutorial, practical guides, reference pages, and a controlled-model conversation lab. Its [content plan](../apps/docs/CONTENT_PLAN.md) records audiences and Diátaxis scope.
+New here? Start with **[Getting started](getting-started.md)**, then read **[Concepts](concepts.md)**. The rest can be read in any order.
 
-Start with the [README examples](../README.md) or run the [offline application](../apps/example/README.md).
+|     | Guide                                 | Read it when you want to…                                                   |
+| :-: | ------------------------------------- | --------------------------------------------------------------------------- |
+| 🚀  | [Getting started](getting-started.md) | run a first conversation, then add a real model and storage                 |
+| 🧭  | [Concepts](concepts.md)               | understand loops, clients, runs, entries, tasks and documents               |
+| 💬  | [Conversations](conversations.md)     | submit, steer, fork, reset, compact and stream live events                  |
+| 🛠️  | [Tools](tools.md)                     | declare tools, make them crash-safe, return images, use the stock tools     |
+| 🧩  | [Extensions](extensions.md)           | shape the system prompt, hook into the loop, mix and match per conversation |
+| 🤖  | [Providers & accounts](providers.md)  | connect OpenAI, Anthropic, Codex or Claude, or let users add accounts       |
+| 💾  | [Persistence](persistence.md)         | pick a storage backend, know what recovery covers, keep your own state      |
+| 🌍  | [Deployment](deployment.md)           | split client and loop, serve WebSockets, run on Cloudflare                  |
+| 📚  | [Reference](reference.md)             | look up a subpath, a setting or a built-in name                             |
+| 📦  | [Releasing](releasing.md)             | publish a new version (maintainers)                                         |
 
-- [Tools](tools.md): schema declarations, handler Layers, dependencies, progress, and replay.
-- [Providers](providers.md): native Effect AI models and explicit model descriptors.
-- [Persistence](persistence.md): Storage, Session, documents, and atomic transactions.
-- [Tracing](tracing.md): durable span names, correlation attributes, and Effect tracer setup.
-- [Observations](observations.md): committed entries, document streams, and submission settlement.
-- [Composition](explanation/composition.md): the client, backend, local runtime, and service requirements.
-- [Recovery](explanation/recovery.md): restart, request identity, and interrupted actions.
-
-The [example tour](../apps/example/TOUR.md) links complete programs for recovery, forks, documents, and extensions. All examples use the public package imports.
+Every module also documents itself: the comment at the top of each file under [`src/`](../src) explains what it is for and which part of [Pi](https://github.com/earendil-works/pi) it ports.

@@ -1,43 +1,230 @@
-# Tools
+# 🛠️ Tools
 
-`Tool.make` declares a tool's name, description, parameter schema, success schema, failure schema, and replay policy. `Toolkit.make` combines declarations; `Toolkit.merge` combines toolkits.
+A tool has two halves that live in different places:
+
+```mermaid
+flowchart LR
+  D["<b>Declaration</b><br/>Tool.make(name, Schemas)<br/><i>shared: client + loop</i>"] --> TK["Toolkit.make(...)"]
+  TK --> IMPL["<b>Implementation</b><br/>toolkit.toLayer(handlers)<br/><i>loop only</i>"]
+  TK --> EXT["Extension.make(name, { toolkit })"]
+```
+
+The declaration is data: Schemas, a description, and how the loop should treat the tool. The implementation is a Layer, so it can depend on anything else in your app.
+
+- [Declaring a tool](#declaring-a-tool)
+- [Implementing it](#implementing-it)
+- [Config](#config)
+- [Replay safety](#replay-safety)
+- [What the model sees](#what-the-model-sees)
+- [Deferred tools and `tool_search`](#deferred-tools-and-tool_search)
+- [Calling tools from tools](#calling-tools-from-tools)
+- [Stock tools](#stock-tools)
+
+## Declaring a tool
 
 ```ts
-const tools = Toolkit.make(
-  Tool.make('search_issues', {
-    description: 'Search the issue tracker',
-    parameters: Schema.Struct({ query: Schema.String }),
-    success: Schema.Array(Schema.Struct({ id: Schema.String, title: Schema.String })),
-    replay: 'safe',
-  }),
-)
+import { Schema } from 'effect'
+import { Tool, Toolkit } from 'effect-harness/tool'
 
-const ToolsLive = tools.toLayer(
+const Deploy = Tool.make('deploy', {
+  description: 'Deploy a service to an environment.',
+  parameters: Schema.Struct({
+    service: Schema.String,
+    env: Schema.Literals(['staging', 'prod']),
+  }),
+  success: Schema.String,
+  failure: Schema.Struct({ reason: Schema.String }),
+})
+
+const toolkit = Toolkit.make(Deploy)
+```
+
+| Option         | Default                    | What it does                                                                                  |
+| -------------- | -------------------------- | --------------------------------------------------------------------------------------------- |
+| `description`  | required                   | What the model reads to decide when to call it.                                               |
+| `parameters`   | required                   | Arguments Schema; sent to the model as JSON Schema and validated on every call.               |
+| `success`      | `Schema.Void`              | What the handler returns.                                                                     |
+| `failure`      | `Schema.Never`             | A typed failure. The model sees it as an error result.                                        |
+| `config`       | `{}`                       | Settings set by whoever installs the tool, never by the model. [More](#config)                |
+| `replay`       | `'unsafe'`                 | Whether an interrupted call may run again after a crash. [More](#replay-safety)               |
+| `outputLimits` | 50 KB · 2,000 lines · head | How much of the result the model sees, and whether to keep the start or the end.              |
+| `deferred`     | `false`                    | Hide it from the model until a conversation loads it. [More](#deferred-tools-and-tool_search) |
+| `callers`      | `['model', 'tools']`       | Who may call it: the model, other tools' handlers, or both.                                   |
+
+## Implementing it
+
+`toolkit.toLayer` takes one handler per tool. Each handler gets the decoded arguments and a context with the call's ID and the tool's decoded config, and returns the success value or fails with the declared failure:
+
+```ts
+const DeployLive = toolkit.toLayer({
+  deploy: ({ service, env }) =>
+    env === 'prod'
+      ? Effect.fail({ reason: 'Production deploys go through the release train.' })
+      : Effect.succeed(`${service} is live on ${env}`),
+})
+```
+
+Handlers need services? Build them in an Effect. The Layer then requires whatever that Effect does:
+
+```ts
+const DeployLive = toolkit.toLayer(
   Effect.gen(function* () {
-    const tracker = yield* IssueTracker
-    return { search_issues: ({ query }) => tracker.search(query) }
+    const ci = yield* CiClient
+    return {
+      deploy: ({ service, env }) => ci.trigger(service, env),
+    }
   }),
 )
 ```
 
-`IssueTracker` is an application service. Supply its Layer to `ToolsLive`; the builder captures the service for subsequent calls. No registry or environment service is needed. Different handler Effects can provide different Layers for filesystem, network, or other capabilities.
+> [!TIP]
+> A missing implementation is a compile error: `HarnessServer.layer({ extensions })` requires one `Toolkit.Implementation` per tool name of every extension you pass.
 
-Handlers receive decoded parameters. The toolkit encodes their success values and declared domain failures through the schemas. A domain failure becomes a failed tool result visible to the model. Infrastructure failures and defects fail execution rather than pretending to be domain results.
+Anything other than success or the declared failure is not a result. A defect, or a value that won't encode, ends the call as `tool_error`. Either way, the model always receives a `$tool-result`:
 
-`ToolResult.Result.content` is the model-visible text and media. After-tool hooks can replace this content without deleting `details`: details remain durable application data and do not override the model-visible content. Plain text without provider options remains a string, with multiple parts joined by newlines. Media and text with provider options are encoded in `ToolResult.Envelope`; the provider adapters expand it into native tool-result blocks. Handlers whose success schema is `ToolResult.Envelope` expose that envelope's content to after-tool hooks before projection and retain the tagged protocol even for plain text.
+| Result code         | Why                                                                    |
+| ------------------- | ---------------------------------------------------------------------- |
+| `tool_unavailable`  | No tool of that name is enabled, or it has no implementation.          |
+| `invalid_arguments` | The model's arguments don't decode.                                    |
+| `invalid_config`    | The tool's config doesn't decode.                                      |
+| `blocked`           | A `beforeTool` hook blocked it. See [Extensions](extensions.md#hooks). |
+| `tool_error`        | The handler died, or returned something its Schema can't encode.       |
+| `interrupted`       | A crash stopped an unsafe call after it started.                       |
+| `aborted`           | The conversation or task was aborted.                                  |
 
-Diagnostics are also model-visible: projection appends a `<harness>` text block with `[severity] message` lines after the retained content. The structured diagnostic array remains available to UI and programmatic consumers. Rendering does not modify stored content or duplicate diagnostic text on replay.
+## Config
 
-Use `ToolResultRecord.read(entry)` from `effect-harness/ToolResultRecord` to read a committed `tool.result` entry. It restores canonical storage aliases and native media and returns `Effect<ToolResult.Result, Schema.SchemaError>` without services. It rejects different entry kinds and malformed canonical records. `ToolResult.ResultSchema` describes decoded channels, not the private `entry.data` wrapper. Decode the returned `structuredOutput` separately with your declared success/failure schema when you need transformed values. Use `ContextProjection.messages(entry)` for model messages including rendered diagnostics. The [structured-result example](../apps/example/src/StructuredResult.ts) demonstrates public reading after settlement.
+Config is the tool's own settings, such as a working directory or a region. Whoever installs the tool sets it, and each conversation can override it; the model never can.
 
-Each handler invocation has its own Scope. The runtime supplies `ToolExecution`, which exposes the current conversation, task and call identifiers; durable output and diagnostics; document snapshots and watches; and `commit` for atomic entries/document changes. These capabilities are revoked when the invocation ends.
+<!-- prettier-ignore -->
+```ts
+const Deploy = Tool.make('deploy', {
+  // …
+  config: Schema.Struct({ region: Schema.optionalKey(Schema.String) }),
+})
 
-Tools default to unsafe replay and sequential scheduling metadata. Set `replay: 'safe'` only when repeating the entire handler after a crash is safe. A durable document update alone does not make an arbitrary handler replay safe.
+const DeployLive = toolkit.toLayer({
+  deploy: ({ service }, { config }) => deployTo(service, config.region ?? 'us-east-1'),
+})
 
-The local loop currently executes tool calls in response order. The `executionMode` declaration is metadata; parallel tool scheduling is not implemented.
+// Set by the extension…
+const ops = Extension.make('ops', { toolkit, config: { deploy: { region: 'eu-west-1' } } })
 
-`Extension.make` statically bundles tools, hooks, and prompt sections. `Extension.provide` defers a Layer to runtime construction. Hooks can transform prompts, block tool calls, replace arguments or results, and continue a yielded response. See the [extension example](../apps/example/src/tour/Extensions.ts).
+// …and overridden per conversation.
+yield* conversation.configure({ config: { deploy: { region: 'ap-south-1' } } })
+```
 
-The [uppercase tool](../apps/example/src/Uppercase.ts) is a complete declaration/handler example. The [documents example](../apps/example/src/tour/Documents.ts) writes application state from a handler.
+## Replay safety
 
-See [deferred tool discovery](tool-search.md) for opt-in `tool_search`, initial model offers, programmatic callers, and persistent loading.
+When the process dies during a tool call, the loop can't know how far the handler got. So on restart, it decides by the tool's `replay` policy:
+
+```mermaid
+flowchart LR
+  C[crash during call] --> Q{"replay: 'safe'?"}
+  Q -- yes --> R["run the handler again"]
+  Q -- no --> I["answer 'interrupted'<br/>the model decides what to do"]
+```
+
+Use `replay: 'safe'` only when running the whole handler twice is harmless: reads, idempotent writes, or work keyed by `callId`. Anything that sends an email, charges a card or increments a counter should stay `'unsafe'`, the default.
+
+## What the model sees
+
+A plain `success` value is shown as text, or as JSON. To return images, attach remarks, or hand structured details to your UI, use `ToolResult.Output` as the success (or failure) Schema:
+
+```ts
+import { ToolResult } from 'effect-harness/tool'
+
+const Screenshot = Tool.make('screenshot', {
+  description: 'Capture the screen.',
+  parameters: Schema.Struct({}),
+  success: ToolResult.Output,
+  replay: 'safe',
+})
+
+const ScreenshotLive = Toolkit.make(Screenshot).toLayer({
+  screenshot: () =>
+    Effect.succeed(
+      ToolResult.output([{ type: 'image', data: pngBase64, mimeType: 'image/png' }], {
+        diagnostics: [{ severity: 'info', message: 'Scaled to 50%' }], // the model sees these
+        details: { width: 1280, height: 800 }, // the model doesn't; your UI does
+      }),
+    ),
+})
+```
+
+`ToolResult.text(value, options)` is the one-block shortcut. Results longer than `outputLimits` are cut to whole lines, with a diagnostic telling the model it was truncated.
+
+## Deferred tools and `tool_search`
+
+Big toolsets crowd the context. Mark rarely used tools `deferred: true` and install the `tool_search` extension: the model sees only a search tool, and loading a tool adds it to that conversation's offered tools from the next request on.
+
+```ts
+import { HarnessServer, ToolSearch } from 'effect-harness/harness'
+
+HarnessServer.layer({ extensions: [ops, ToolSearch.extension] }).pipe(
+  Layer.provide([DeployLive, ToolSearch.layer]),
+)
+```
+
+`conversation.agent` lists not-yet-loaded tools under `deferred`. You can also load them yourself with `configure({ modelTools: { add: ['deploy'] } })`.
+
+## Calling tools from tools
+
+A running handler can call another tool with `Call.execute`. The nested call is its own durable task, keyed within its caller, so after a restart a re-run handler finds the calls it already made instead of making them twice.
+
+```ts
+import { Call } from 'effect-harness/tool'
+
+const release = ({ service }) =>
+  Effect.gen(function* () {
+    const staging = yield* Call.execute(
+      'deploy',
+      { service, env: 'staging' },
+      { key: 'staging' },
+    ).pipe(
+      Effect.orDie, // refused only when called outside a tool call
+    )
+    if (staging.isError) return yield* Effect.fail({ reason: 'staging failed' })
+    // …
+  })
+```
+
+Declare a tool with `callers: ['tools']` to make it callable only this way, never by the model.
+
+## Stock tools
+
+### Coding tools: `read`, `write`, `edit`, `bash`
+
+Ported from pi's coding agent and implemented over Effect's `FileSystem`, `Path` and `ChildProcessSpawner`, so whichever implementation you provide decides where files and commands live.
+
+```ts
+import { BunServices } from '@effect/platform-bun'
+import { CodingHandlers, CodingTools } from 'effect-harness/coding'
+import { BunImageProcessor } from 'effect-harness/coding/bun'
+
+HarnessServer.layer({ extensions: [CodingTools.extension] }).pipe(
+  Layer.provide([CodingHandlers.layer, BunImageProcessor.layer]),
+  Layer.provide(BunServices.layer),
+)
+```
+
+Each tool's config takes a `cwd`; `bash` also takes a `commandPrefix`. `read` returns images fitted for vision models when an `ImageProcessor` is in context: `BunImageProcessor` (Bun) or `SharpImageProcessor` from `effect-harness/coding/sharp`.
+
+### Code mode
+
+`codemode` lets the model write JavaScript that calls your tools, run in a QuickJS sandbox. It is durable in an unusual way: the VM is deterministic, so after a restart the script is started again from the same seed and fed the results it already got, in order, from a journal. Its tool calls are nested calls that are never run twice.
+
+```ts
+import { Codemode, CodemodeHandlers } from 'effect-harness/codemode'
+
+HarnessServer.layer({ extensions: [Codemode.extension(), CodingTools.extension] }).pipe(
+  Layer.provide([
+    CodemodeHandlers.layer().pipe(Layer.provide(CodemodeHandlers.layerSandbox())),
+    CodingHandlers.layer,
+  ]),
+  Layer.provide(BunServices.layer),
+)
+```
+
+> [!NOTE]
+> Coding tools and code mode need a file system and processes, so they don't run in a Cloudflare Worker.

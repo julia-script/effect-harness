@@ -1,241 +1,229 @@
-# Effect Harness
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="effect-harness: durable AI agents, composed from Effect layers" width="100%">
+</p>
 
-Durable AI conversations with Effect services, schema-backed state, and scoped local execution.
+<p align="center">
+  <a href="https://www.npmjs.com/package/effect-harness"><img alt="npm" src="https://img.shields.io/npm/v/effect-harness?color=7c9cff&label=npm"></a>
+  <a href="https://github.com/julia-script/effect-harness/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/julia-script/effect-harness/ci.yml?branch=main&label=CI"></a>
+  <img alt="Effect 4" src="https://img.shields.io/badge/effect-4.0.5-b47cff">
+  <img alt="Runtimes" src="https://img.shields.io/badge/runs%20on-Bun%20%C2%B7%20Node%20%C2%B7%20Workers-ff7ab6">
+</p>
 
-[Documentation & interactive lab](https://effect-harness-docs-docs-prod-xywgv64k67qqnujx.juliaortiz-js.workers.dev) · [effect-harness on npm](https://www.npmjs.com/package/effect-harness)
+<p align="center">
+  <b><a href="docs/getting-started.md">Get started</a></b> ·
+  <a href="docs/concepts.md">Concepts</a> ·
+  <a href="docs/tools.md">Tools</a> ·
+  <a href="docs/extensions.md">Extensions</a> ·
+  <a href="docs/providers.md">Providers</a> ·
+  <a href="docs/deployment.md">Deploy</a> ·
+  <a href="docs/reference.md">Reference</a>
+</p>
 
-Define tools with schemas, supply their handlers through Layers, and submit input through a `Harness` client. The local runtime persists conversation history, submissions, tool checkpoints, and application documents through a `Storage` service.
+---
 
-## Submit and recover
+**effect-harness** is an agent loop you can kill at any moment. Every conversation, tool call and model response is committed to storage as it happens, so a crash, a deploy or a Cloudflare eviction picks up exactly where it stopped. It is built on [Effect](https://effect.website): tools are Schemas, implementations are Layers, and the client talks to the loop over typed RPC, in the same process or across the internet.
 
-Your application supplies `tools`, `ToolsLive` (their handlers), and `ModelLive` (a native Effect AI `LanguageModel`). This is the complete client program and local Layer composition:
-
+<!-- prettier-ignore -->
 ```ts
-import { Effect, Layer } from 'effect'
-import { NodeServices } from '@effect/platform-node'
-import * as Harness from 'effect-harness/Harness'
-import * as Conversation from 'effect-harness/Conversation'
-import * as Submission from 'effect-harness/Submission'
-import * as Storage from 'effect-harness/Storage'
+const client = yield* HarnessClient.HarnessClient
+const root = yield* client.root()
 
-const HarnessLive = Harness.layerLocal({ tools }).pipe(
-  Layer.provide(ToolsLive),
-  Layer.provide(ModelLive),
-  Layer.provide(
-    Storage.layerJsonl({ filePath: './agent.jsonl' }).pipe(Layer.provide(NodeServices.layer)),
-  ),
-)
-
-const job = {
-  type: 'input',
-  content: 'Fix the flaky login test',
-  requestId: 'job-42',
-} as const
-
-const program = Effect.gen(function* () {
-  const harness = yield* Harness.Harness
-  const root = yield* harness.root
-  const submission = yield* root.pipe(Conversation.submit(job))
-  return yield* Submission.wait(submission)
-})
-
-const settled = await Effect.runPromise(program.pipe(Effect.provide(HarnessLive)))
+const submission = yield* root.submit({ type: 'input', content: 'Fix the flaky login test' })
+const settled = yield* submission.wait // survives restarts: reacquire it by ID later
 ```
 
-Run the same program after a crash. It opens the same store, resumes unfinished work, and retrieves the same submission by its request ID. `Submission.wait` returns an `InputDone` or `InputUnanswered` record; a completed record identifies the committed answer entry.
+## Why effect-harness?
 
-The [single-file recovery example](apps/example/src/tour/Recovery.ts) supplies an offline model and handlers and runs without an API key.
+<table>
+<tr>
+<td width="33%" valign="top">
 
-## Configure provider instances
+### 💾 Durable by default
 
-Declare each integration once, then let users add any number of instances. Public
-configuration and secrets have separate schemas. `Providers` stores public state
-in `ProviderStore` and passes secrets to `CredentialStore`, retaining only the
-returned credential reference.
+Runs are durable tasks with checkpoints. Restart the process and unfinished generations, tool calls and compactions resume from storage. Memory, JSONL, SQLite and Postgres backends share one engine.
 
-```ts
-import { Effect, Layer } from 'effect'
-import * as Providers from 'effect-harness/Providers'
-import * as ProviderStore from 'effect-harness/ProviderStore'
-import * as MemoryCredentials from 'effect-harness/provider-auth/MemoryCredentialStore'
-import * as Codex from 'effect-harness/provider-openai-codex/Provider'
-import * as Claude from 'effect-harness/provider-anthropic/Provider'
+</td>
+<td width="33%" valign="top">
 
-const program = Effect.gen(function* () {
-  const providers = yield* Providers.make({
-    definitions: { codex: Codex.definition, claude: Claude.definition },
-  })
-  const personal = yield* providers.add({
-    provider: 'claude',
-    label: 'Personal',
-    config: {},
-  })
-  const work = yield* providers.add({
-    provider: 'claude',
-    label: 'Work',
-    config: {},
-  })
-  return { personal, work }
-}).pipe(Effect.provide(Layer.merge(ProviderStore.layerMemory, MemoryCredentials.layer)))
-```
+### 🧩 Schemas all the way down
 
-Instances can exist before authentication. Login helpers return secrets; pass them
-to `providers.update(instance.id, { secrets })`. Configuration, secret, and model
-option types are inferred from the selected definition's schemas. Use persistent
-stores to retain instances between application launches.
+Declare tools with Effect Schemas and implement them as Layers. Arguments are validated, results encoded, failures typed, and a missing implementation is a type error, not a runtime surprise.
 
-`providers.models.list({ instanceId })` fetches summaries;
-`providers.models.get({ instanceId, modelId })` fetches capabilities, pricing,
-limits, and reasoning controls. `resolve` validates selected controls and creates
-a durable model descriptor. Listing and detail lookup are independent and lazy.
-Instance identity follows the model through runtime selection and recovery, so
-two accounts can use the same model without colliding.
+</td>
+<td width="33%" valign="top">
 
-Codex and Claude definitions include live discovery and accept custom metadata
-callbacks through `define`. `provider-openai-compatible/Provider.define` reuses
-Chat Completions transport with consumer-defined configuration and discovery.
-Its default `definition` accepts an endpoint and static model metadata in config.
+### 🔌 Client and loop, split
 
-See [models and providers](docs/providers.md), [credential persistence](docs/provider-auth.md),
-and the [subscription example](apps/example/src/SubscriptionProviders.ts).
-The [offline catalog example](apps/example/src/tour/ModelCatalog.ts) runs with
-`bun apps/example/src/tour/ModelCatalog.ts` after building the library.
+`HarnessClient` speaks RPC to `HarnessServer`. Keep both in one process, put the loop behind a WebSocket, or host it in a Cloudflare Durable Object, and your calling code stays the same.
 
-## Declare tools, then supply handlers
+</td>
+</tr>
+<tr>
+<td valign="top">
 
-Declarations describe the shared contract. Handler Layers resolve the services used by the implementation.
+### 🤖 Real providers, real accounts
 
-```ts
-import { Effect, Schema } from 'effect'
-import * as Tool from 'effect-harness/Tool'
-import * as Toolkit from 'effect-harness/Toolkit'
-import { ToolExecution } from 'effect-harness/ToolExecution'
+OpenAI, Anthropic, Codex through a ChatGPT sign-in, Claude subscriptions and any OpenAI-compatible server. Let people add accounts at run time, each with its own credentials.
 
-const tools = Toolkit.make(
-  Tool.make('uppercase', {
-    description: 'Convert text to uppercase',
-    parameters: Schema.Struct({ text: Schema.String }),
-    success: Schema.String,
-    replay: 'safe',
-  }),
-)
+</td>
+<td valign="top">
 
-const ToolsLive = tools.toLayer({
-  uppercase: Effect.fn('uppercase')(function* ({ text }) {
-    const execution = yield* ToolExecution
-    yield* execution.output('Converting text\n')
-    return text.toUpperCase()
-  }),
-})
-```
+### 🧠 A loop that manages itself
 
-`Toolkit.merge` combines declarations. Handlers receive decoded arguments and return schema-typed values. The runtime validates and encodes results, persists progress, and supplies invocation capabilities. Tools default to unsafe replay: an interrupted action is reported to the model without being repeated. Mark a tool safe only when repeating the whole handler is safe.
+Steering and follow-up queues, automatic retries with backoff, context compaction before the window fills, deferred tool loading with `tool_search`, and per-conversation usage ledgers.
 
-See [tools and dependencies](docs/tools.md) and the [runnable tool definition](apps/example/src/Uppercase.ts).
+</td>
+<td valign="top">
 
-## Fork a conversation
+### 🛠️ Batteries included
 
-A fork creates a conversation with inherited history through the selected entry. Parent and child can process independent submissions concurrently.
+`read`, `write`, `edit` and `bash` coding tools, a durable code mode that replays QuickJS scripts after a crash, image fitting for vision models, and a scripted `Faux` model for tests.
 
-```ts
-const answered =
-  yield *
-  root.pipe(
-    Conversation.submit({ type: 'input', content: 'Investigate the login test' }),
-    Effect.flatMap(Submission.wait),
-  )
+</td>
+</tr>
+</table>
 
-if (answered._tag === 'InputDone') {
-  const fork = yield * root.pipe(Conversation.fork({ at: answered.answer }))
-  yield * fork.pipe(Conversation.configure({ instructions: 'Explore another approach.' }))
-  const next =
-    yield *
-    fork.pipe(
-      Conversation.submit({ type: 'input', content: 'Check the timeout' }),
-      Effect.flatMap(Submission.wait),
-    )
-}
-```
-
-These operations run inside `Effect.gen`. The [forks example](apps/example/src/tour/Forks.ts) runs parent and child in parallel.
-
-## Persist application data
-
-`Document.define` takes a schema, scope, and initial value. `Session.commit` stages document changes and entries in one atomic transaction. Tool handlers access that transaction through `ToolExecution.commit`.
-
-```ts
-const Calls = Document.define({
-  kind: 'app.calls',
-  version: 1,
-  scope: 'session',
-  schema: Schema.Struct({ count: Schema.Natural }),
-  initial: () => ({ count: 0 }),
-})
-
-const target = { scope: { _tag: 'session' } } as const
-
-// Inside a tool handler:
-const execution = yield * ToolExecution
-
-yield *
-  execution.commit((tx) =>
-    Effect.gen(function* () {
-      yield* Transaction.ensureDocument(tx, Calls, target)
-      yield* Transaction.updateDocument(tx, Calls, target, ({ count }) => ({ count: count + 1 }))
-    }),
-  )
-
-// From the application:
-const snapshot = yield * root.pipe(Conversation.snapshot(Calls, target))
-```
-
-Import `Document` and `Transaction` from their `effect-harness/*` subpaths. This handler changes state, so repeating it would increment twice; use the default unsafe replay policy. The [documents example](apps/example/src/tour/Documents.ts) includes the full handler and composition.
-
-## Runtime support
-
-`Storage.layerJsonl({ filePath })` requires Effect's `FileSystem`; `Storage.layerSql({ storeId })` requires a host-supplied SQLite `SqlClient`. `Storage.layerMemory` needs no platform services and starts empty for each fresh Layer construction. All three use one state engine for records, replay and retention. The adapters only persist opaque commit records and named payload streams. Memory storage is volatile; the EventJournal storage Layer has been removed. See [persistence](docs/persistence.md) for the format and recovery boundaries.
-
-Tool dependencies define their environment: a handler can use a local filesystem, an issue-tracker service, or a remote object store supplied through Layers. The library has no Bun or Node runtime imports. The example application chooses Node adapters; the portable example also runs in a browser bundle. Bun is the repository's development tool.
-
-One active local runtime owns a store. Recovery requires the same persisted data and the resources used by the tools. [Recovery](docs/explanation/recovery.md) describes interrupted tool execution and its limits.
-
-## Client and runtime
-
-`Harness` is the application client. `HarnessRuntime` owns the local agent loop and its `Session`. `HarnessBackend` is their schema-backed data boundary. `Harness.layerLocal` composes all three; `Harness.layer` accepts a backend supplied separately. Remote transports can implement that backend contract; this package currently implements local execution.
-
-[Composition](docs/explanation/composition.md) explains the boundaries. [Extensions](apps/example/src/tour/Extensions.ts) shows static bundles of tools, hooks, and prompt sections.
-
-## Run the examples
+## Install
 
 ```sh
-bun install
-bun run build
-bun run --cwd apps/example start
-bun run --cwd apps/example tour
-bun run --cwd apps/example recovery
-bun run --cwd apps/example portable
+bun add effect-harness@^0.7.0 effect@4.0.5
 ```
 
-The examples use an offline native Effect AI model. [Example commands](apps/example/README.md) describe each program. [Documentation](docs/README.md) covers providers, storage, documents, and observation.
+Add optional peers only for the integrations you use:
+
+| You want                      | Also install                                          |
+| ----------------------------- | ----------------------------------------------------- |
+| `effect-harness/openai`       | `@effect/ai-openai@4.0.5`                             |
+| `effect-harness/anthropic`    | `@effect/ai-anthropic@4.0.5`                          |
+| `effect-harness/coding/sharp` | `sharp@0.34.5`                                        |
+| `effect-harness/cloudflare`   | `alchemy@2.0.0-beta.83` `@effect/sql-sqlite-do@4.0.5` |
+
+> [!NOTE]
+> These docs describe the 0.7 API (lowercase subpaths such as `effect-harness/client`). 0.6 and earlier use a different layout. Until 0.7 is on npm, build from a checkout: `bun install && bun run setup && bun run build`.
+
+## Your first agent in 60 seconds
+
+This runs offline. `Faux` is a scripted model: it asks for the tool, then answers.
+
+```ts
+import { Console, Effect, Layer, Schema } from 'effect'
+import { HarnessClient, HarnessTransport } from 'effect-harness/client'
+import { Extension, HarnessServer } from 'effect-harness/harness'
+import { Faux, Model } from 'effect-harness/model'
+import { Storage } from 'effect-harness/storage'
+import { Tool, Toolkit } from 'effect-harness/tool'
+
+// 1. Declare a tool: a name, a description, and Schemas. No code yet.
+const Uppercase = Tool.make('uppercase', {
+  description: 'Convert text to uppercase.',
+  parameters: Schema.Struct({ text: Schema.String }),
+  success: Schema.String,
+})
+const toolkit = Toolkit.make(Uppercase)
+
+// 2. Implement it, as a Layer, where the loop runs.
+const ToolsLive = toolkit.toLayer({
+  uppercase: ({ text }) => Effect.succeed(text.toUpperCase()),
+})
+
+const program = Effect.gen(function* () {
+  // 3. A scripted model: call the tool, then answer. Swap in a real provider later.
+  const faux = yield* Faux.make()
+  yield* faux.setResponses([
+    Faux.message(Faux.toolCall('uppercase', { text: 'hello' }), { stopReason: 'toolUse' }),
+    Faux.message('It says HELLO.'),
+  ])
+
+  // 4. The loop: extensions, settings, storage and a model.
+  const ServerLive = HarnessServer.layer({
+    extensions: [Extension.make('text', { toolkit })],
+    settings: { model: faux.ref() },
+  }).pipe(Layer.provide([ToolsLive, Model.layer([faux.provider]), Storage.layerMemory]))
+
+  // 5. Loop and client share one in-memory transport.
+  const AppLive = Layer.merge(ServerLive, HarnessClient.layer).pipe(
+    Layer.provide(HarnessTransport.layerMemory),
+  )
+
+  yield* Effect.gen(function* () {
+    const client = yield* HarnessClient.HarnessClient
+    const root = yield* client.root()
+    const submission = yield* root.submit({ type: 'input', content: 'Shout "hello" for me.' })
+    const settled = yield* submission.wait
+    yield* Console.log(`status: ${settled.status}`)
+
+    const { items } = yield* root.entries({ order: 'ascending' }, 50)
+    for (const entry of items) yield* Console.log(entry.kind)
+  }).pipe(Effect.provide(AppLive))
+})
+
+Effect.runPromise(Effect.scoped(program))
+```
+
+```text
+status: done
+$user
+$system
+$assistant
+$tool-result
+$assistant
+```
+
+That transcript is the whole story: your message, the system prompt, the model asking for `uppercase`, the tool's result, and the final answer. [Getting started](docs/getting-started.md) walks through it line by line and then swaps in a real model and a database.
+
+## How it fits together
+
+```mermaid
+flowchart LR
+  subgraph app["Your app (anywhere)"]
+    C["HarnessClient"]
+  end
+  subgraph loop["The loop (HarnessServer)"]
+    H["Harness<br/>conversations · submissions · runs"]
+    S["Scheduler<br/>durable tasks"]
+    X["Extensions<br/>tools · sections · hooks"]
+  end
+  C <-- "RPC: memory · WebSocket · Durable Object" --> H
+  H --> S
+  S -- "$generation" --> M(["Model<br/>OpenAI · Anthropic · Codex · Faux"])
+  S -- "$tool" --> T["Tool handlers<br/>(your Layers)"]
+  X -. selected per conversation .-> S
+  H --> ST[("Storage<br/>memory · JSONL · SQL")]
+```
+
+A **tool declaration** holds Schemas only, so the client can import it. `Toolkit.toLayer` supplies the implementation where the loop runs. An **extension** bundles tools with system-prompt sections and hooks, and each conversation picks which extensions it uses. `HarnessServer.layer` builds the loop and serves it; `HarnessClient.layer` is what your code calls. Read [Concepts](docs/concepts.md) for the full picture.
+
+## Documentation
+
+| Guide                                         | What you'll learn                                                                    |
+| --------------------------------------------- | ------------------------------------------------------------------------------------ |
+| 🚀 [Getting started](docs/getting-started.md) | Run a conversation, then switch to a real model and persistent storage.              |
+| 🧭 [Concepts](docs/concepts.md)               | Conversations, submissions, runs, entries, documents and tasks, and how they relate. |
+| 💬 [Conversations](docs/conversations.md)     | Submitting, steering, forking, resetting, compacting and watching live events.       |
+| 🛠️ [Tools](docs/tools.md)                     | Declaring tools, config, replay safety, rich results, nested calls, stock tools.     |
+| 🧩 [Extensions](docs/extensions.md)           | System-prompt sections, hooks, wrappers and per-conversation selection.              |
+| 🤖 [Providers & accounts](docs/providers.md)  | OpenAI, Anthropic, Codex and Claude sign-in, credentials and run-time accounts.      |
+| 💾 [Persistence](docs/persistence.md)         | Storage backends, recovery, your own durable documents and named inits.              |
+| 🌍 [Deployment](docs/deployment.md)           | WebSocket servers, browsers, and Cloudflare Durable Objects.                         |
+| 📚 [Reference](docs/reference.md)             | Every subpath, settings and their defaults, built-in kinds.                          |
+
+## Examples
+
+- **[Cloudflare](examples/cloudflare/README.md)**: one harness per Durable Object, with accounts added at run time and a command-line chat client over WebSockets.
 
 ## Develop
 
 ```sh
-bun run check
-bun run test
+bun install --frozen-lockfile
+bun run setup        # patch the local compiler and linter for Effect diagnostics
 bun run build
+bun run check        # format, lint, typecheck
+bun run test
+bun run test:package # pack, install into an isolated consumer, run under Node 24+
 ```
 
-`StorageConformance.test.ts` owns the shared storage corpus on every backend.
-Assertion fault injections belong in `StorageStructuralConformance.test.ts` on memory;
-the built consumer checks package exports and scoped reopen wiring. Observation tests
-can exercise repeated overflow with small explicit queue capacities, while retaining
-a default-capacity overflow case on memory.
-
-The package root exposes concept namespaces; public leaf imports such as `effect-harness/Harness`, `effect-harness/Storage`, and `effect-harness/Toolkit` select individual modules. Provider adapters use `effect-harness/provider-openai/*` and `effect-harness/provider-anthropic/*`. Internal modules are private.
-
-Package changes use [Changesets](.changeset/README.md).
+Tests live next to the code under `src/`. Every PR carries a changeset (`bun run changeset`); see [Releasing](docs/releasing.md) for the publishing workflow.
 
 ## Thanks
 
-Inspired by [Pi Durable](https://github.com/earendil-works/pi)'s embedded durable conversation design. Upstream attribution is retained in [NOTICE](packages/effect-harness/NOTICE).
+Inspired by [Pi Durable](https://github.com/earendil-works/pi)'s durable conversation design. Source module comments identify the Pi components this implementation models or ports; code mode uses `@earendil-works/pi-codemode`. The distributed [NOTICE](NOTICE) retains the upstream attribution and MIT license.

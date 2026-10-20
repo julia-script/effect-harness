@@ -1,153 +1,135 @@
-# Storage, sessions, and documents
+# 💾 Persistence
 
-Memory, JSONL and SQLite storage use the same state engine.
-For readable files:
+Everything the loop knows lives in one `Storage`: conversations, entries, submissions, task checkpoints and documents. A **Session** is its only writer, and every change is one atomic commit.
+
+- [Storage backends](#storage-backends)
+- [What recovery covers](#what-recovery-covers)
+- [Your own documents](#your-own-documents)
+- [Named inits](#named-inits)
+- [Reserved names](#reserved-names)
+
+## Storage backends
+
+| Layer                           | Needs                                          | Good for                                   |
+| ------------------------------- | ---------------------------------------------- | ------------------------------------------ |
+| `Storage.layerMemory`           | nothing                                        | tests, demos, browser sandboxes            |
+| `Storage.layerJsonl(directory)` | `FileSystem`, `Path`                           | local agents and CLIs                      |
+| `Storage.layerSql({ prefix? })` | an Effect SQL `SqlClient` (SQLite or Postgres) | servers, Durable Objects, shared databases |
+
+All three run the same engine, so behavior is identical; only where the bytes land differs.
 
 ```ts
-Storage.layerJsonl({ filePath: './agent.jsonl' })
-```
+import { BunServices } from '@effect/platform-bun'
+import { SqliteClient } from '@effect/sql-sqlite-bun'
+import { Storage } from 'effect-harness/storage'
 
-Supply Effect's `FileSystem` from the host, for example `NodeServices.layer`.
-For SQLite, supply an Effect SQL client from the host:
+// A directory of JSONL files
+const JsonlLive = Storage.layerJsonl('./agent-data').pipe(Layer.provide(BunServices.layer))
 
-```ts
-import { SqliteClient } from '@effect/sql-sqlite-node'
-import * as Layer from 'effect/Layer'
-import * as Storage from 'effect-harness/Storage'
-
-const StorageLive = Storage.layerSql({ storeId: 'demo' }).pipe(
-  Layer.provide(SqliteClient.layer({ filename: './agent-spike.sqlite' })),
+// SQLite, with prefixed tables so it can share a database
+const SqliteLive = Storage.layerSql({ prefix: 'harness_' }).pipe(
+  Layer.provide(SqliteClient.layer({ filename: './agent.db' })),
 )
 ```
 
-`storeId` defaults to `default`; distinct IDs select independent stores in one database.
-The SQL adapter currently supports SQLite only, using the Node or Bun Effect driver.
-For volatile state, use `Storage.layerMemory` (a Layer value, with no arguments).
-It requires no platform services and stores opaque commits and payload streams
-in Effect `Chunk` and `HashMap` values held by a `Ref`. Each fresh Layer construction
-starts empty. Reusing the built context keeps state across harness restarts while
-its storage scope remains open; closing that scope ends access. Page reloads and
-process restarts lose all memory state. No filesystem or database is involved.
+The SQL store creates and migrates its tables with Effect's `Migrator` and works with `@effect/sql-sqlite-node`, `@effect/sql-sqlite-bun`, `@effect/sql-pg`, `@effect/sql-pglite` and Cloudflare's `@effect/sql-sqlite-do`. Pass `{ fsync: true }` to `layerJsonl` to flush every commit to stable storage before it is published.
 
-The EventJournal storage Layer has been removed.
-The provider-configuration and credential services are separate from conversation storage.
+> [!CAUTION]
+> One loop per store. A Session assumes it is the only writer, so never point two running loops at the same directory or tables.
 
-## Responsibility boundary
+## What recovery covers
 
-`Kernel` applies record operations and enforces the Storage API's atomic batches.
-`Projection` holds the current rows in an Effect `HashMap` inside a `Ref`.
-`Store` owns the commit codec, format checks, replay and retention decisions.
-`Memory`, `Jsonl` and `Sql` implement the opaque persistence port: read a log, read named payload
-streams, durably append a batch, and replace superseded payloads. None imports
-conversation, task, document or record schemas.
+When a loop opens a store that a previous process left mid-run, the Scheduler resumes every live task from its last checkpoint:
 
-The SQL adapter stores the same opaque JSON strings in two tables:
+| Was running                      | On restart                                                                  |
+| -------------------------------- | --------------------------------------------------------------------------- |
+| A model request                  | Resumes from the generation's last checkpoint.                              |
+| A retry backoff or deferred poll | Waits out the remaining time, then continues.                               |
+| A tool call, `replay: 'safe'`    | Runs the handler again.                                                     |
+| A tool call, `replay: 'unsafe'`  | Answers `interrupted`; the model sees it and decides what to do.            |
+| Code mode                        | Replays the script deterministically from its journal, then continues live. |
+| A compaction                     | Resumes from its checkpoint.                                                |
 
-| Table                        | Key                              | Value          |
-| ---------------------------- | -------------------------------- | -------------- |
-| `effect_harness_commits_v1`  | `store_id`, `position`           | Commit `frame` |
-| `effect_harness_payloads_v1` | `store_id`, `stream`, `position` | Payload `line` |
+Submissions keep their IDs and request IDs, so clients reacquire them with `client.submission(id)`, or by submitting the same `requestId` again.
 
-Keys are non-null, positions are positive integers, and primary keys prevent duplicates.
-A batch appends its payloads and commit frame in one SQL transaction. Reclamation
-replaces a stream in a separate transaction after the commit; a failed replacement
-rolls back its deletes and is retried on reopening. The host owns database configuration
-and backup policy. There are no domain tables or SQL-specific replay rules.
+Recovery restores what the store holds. It can't restore what your tools changed outside it: if a handler wrote to a file system or an API, that resource needs to be there when the loop comes back.
 
-Persistent adapters replay into memory on opening; memory storage starts empty. SQL does not yet add indexed domain
-queries, incremental loading, or distributed coordination.
+## Your own documents
 
-## Files you can inspect
-
-`agent.jsonl` has one complete JSON object per line:
-
-```json
-{
-  "format": 1,
-  "type": "commit",
-  "seq": 1,
-  "metadata": { "format": 1, "nextId": 2, "nextSeq": 2 },
-  "writes": [{ "type": "conversation", "value": { "id": 1 } }]
-}
-```
-
-Messages, submissions, conversations and completed tasks are inline under `writes`.
-`agent.jsonl.parts/doc-<id>.jsonl` holds document revisions;
-`task-<id>.jsonl` holds active-task checkpoints. A payload's `seq` and `ordinal`
-identify the commit operation that published it. `document.create`,
-`document.change` and `task.sidecar` in the main log refer to these payloads.
-This follows Pi Durable's layout, but it is not a compatible interchange format:
-our record schemas and document content codecs remain different.
-
-New document revisions are written once. Current-only documents discard replaced
-bases after a durable commit. Rewindable history is retained. Completed tasks move
-inline and their old checkpoint streams are deleted. Document retirement keeps
-its metadata; current-only content is reclaimed. Reclamation failures are retried
-on reopening and do not turn an already committed batch into a failure.
-
-The main log still grows with commits; this spike does not add whole-store
-snapshots or main-log compaction. Reads scan the local projection; secondary
-indexes remain future work.
-
-## Recovery and ownership
-
-SQL also requires one active writer per database/store ID. A head check rejects stale
-writers before append or reclamation; it does not coordinate multiple harnesses.
-Use storage outside application SQL transactions, including during construction and
-ID allocation. Those contexts are rejected so a harness write can only be acknowledged
-after its own database commit, never while an outer transaction could still roll back.
-Failed or unacknowledged appends seal the writer until it is closed and reopened.
-Existing legacy SQL or EventJournal tables are left untouched, with no automatic migration.
-
-For JSONL:
-
-Own one writer per path across processes and runtime instances. Ownership is
-the host application's responsibility; the adapter does not provide a lease or lock. Keep the main
-log and its `.parts` directory together when backing up a closed store.
-
-The adapter syncs appended payloads and their directory before appending and
-syncing the commit marker. The state engine publishes the in-memory update only
-after that succeeds. An uncertain append seals the writer; close and reopen it
-before retrying. Scope closure drains admitted writes before closing the persistence scope.
-
-Recovery validates all commit headers and live payloads before truncating torn
-tails or reclaiming orphan data. An incomplete trailing line is not a commit.
-Missing committed payloads and corrupt committed lines fail recovery.
-
-ID allocation alone performs no I/O. IDs become durable in a commit's metadata;
-an allocation made after the last successful commit may be reused after restart.
-Never use an uncommitted ID as a durable external identity.
-
-This format intentionally rejects the previous `sidecars-v1` files. Keep existing
-stores separately; there is no migration in this spike.
-
-`Session` is a scoped instance over Storage, shared by all conversations in that local runtime. It captures the storage service, caches decoded documents, serializes transactions, and publishes committed changes. A session can be used independently of an agent runtime:
+Documents are typed JSON values committed alongside the transcript. Define one with a kind, a version, an owner and an initial value:
 
 ```ts
-const session = yield * Session.make()
+import { Document } from 'effect-harness/session'
 
-yield *
-  session.pipe(
-    Session.commit((tx) =>
-      Effect.gen(function* () {
-        const conversation = yield* Transaction.ensureRoot(tx)
-        yield* Transaction.appendEntry(tx, conversation.id, {
-          kind: 'app.note',
-          data: { text: 'Created' },
-        })
-      }),
-    ),
-  )
+type Ticket = { title: string; labels: Array<string> }
+
+const TicketDoc = Document.make<Ticket>({
+  kind: 'app.ticket',
+  version: 1,
+  scope: 'conversation',
+  history: 'rewindable',
+  fork: 'asOf',
+  initial: () => Effect.succeed({ title: '', labels: [] }),
+})
 ```
 
-`Session.make()` requires `Storage` and `Scope`; it performs no storage I/O. One active Session coordinates a Storage instance. Scope cleanup seals admission and settles commits before subscriptions end.
+| `scope`          | One per…     | Options                                                                                                                           |
+| ---------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `'session'`      | store        | none                                                                                                                              |
+| `'conversation'` | conversation | `history: 'latest'` or `'rewindable'` (readable as of any entry); `fork`: `'current'`, `'initial'`, or `'asOf'` (rewindable only) |
+| `'task'`         | task         | none; retired with the task                                                                                                       |
 
-`Document.define` declares a singleton document with a bidirectional schema. `Document.family` declares keyed members. A target carries an explicit session, conversation, or task scope and an optional family key.
+Inside a commit, `tx.doc(token, owner)` returns a **draft** you mutate in place; the Session records the change as ops and applies it atomically with whatever else the commit does:
 
-Use `Transaction.ensureDocument`, `setDocument`, or `updateDocument` inside `Session.commit`. Updates produce new values rather than mutating shared objects. Schema encoding and decoding handle the boundary between runtime values and stored JSON. Callback failure discards staged work; successful batches atomically persist entries and document changes.
+<!-- prettier-ignore -->
+```ts
+const ticket = yield* tx.doc(TicketDoc, conversationId)
+ticket.title = 'Login test is flaky'
+ticket.labels.push('triage')
+```
 
-Conversation documents declare history (`latest` or `rewindable`) and fork behavior (`current`, `initial`, or `asOf`). Only rewindable documents support `asOf`. Session and task documents do not declare these conversation policies.
+Read committed values with `session.snapshot(token, owner)`, or `snapshotAsOf` for rewindable ones, from loop-side code such as a section's `read` or a hook's `api`. `Document.makeFamily` defines keyed documents, one per key, each started from a seed. Bump `version` and supply `migrate` when the shape changes.
 
-The local `HarnessRuntime` owns its Session. Tools access transactions through `ToolExecution.commit`. Applications read through `Conversation.snapshot` and observe through `Conversation.watch`; transaction callbacks remain on the runtime side of the backend boundary.
+## Named inits
 
-See the [document example](../apps/example/src/tour/Documents.ts).
+Often a new conversation should start with some state: a ticket, a workspace, a persona. A client can't send a callback across a transport, so it names an **init** instead, and the loop runs the matching **initializer** in the same commit that creates the conversation.
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant L as Loop
+  C->>L: createConversation({ init: Init.call(FromTicket, { title }) })
+  Note over L: one atomic commit
+  L->>L: create conversation + built-in documents
+  L->>L: fromTicket(tx, conversationId, { title })
+  L-->>C: Conversation handle
+```
+
+<!-- prettier-ignore -->
+```ts
+import { Init } from 'effect-harness/client'
+import { Initializer } from 'effect-harness/harness'
+// Shared: the name and the payload Schema.
+const FromTicket = Init.make('from-ticket', Schema.Struct({ title: Schema.String }))
+
+// Loop: what it does.
+const fromTicket = Initializer.make(FromTicket, (tx, conversationId, { title }) =>
+  Effect.gen(function* () {
+    const ticket = yield* tx.doc(TicketDoc, conversationId)
+    ticket.title = title
+  }),
+)
+HarnessServer.layer({ initializers: [fromTicket] })
+
+// Client: call it.
+yield* client.createConversation({
+  ownership: { kind: 'ownerless' },
+  init: Init.call(FromTicket, { title: 'Login test is flaky' }),
+})
+```
+
+`client.root({ init })` and `conversation.fork(at, { ownership, init })` take one too. If the initializer fails, nothing is created and the call fails with `InitFailed`. To run something for **every** new conversation, pass `conversationCreated` to `HarnessServer.layer` instead.
+
+## Reserved names
+
+Built-in kinds and keys start with `$`: entries such as `$user` and `$assistant`, documents such as `$agent` and `$usage`, tasks such as `$generation` and `$tool`, and the `$tool-output` result type. Custom input-entry kinds can't start with `$`; prefix yours with your app's name instead, such as `app.note`.
