@@ -23,6 +23,9 @@
 
 **effect-harness** is an agent loop you can kill at any moment. Every conversation, tool call and model response is committed to storage as it happens, so a crash, a deploy or a Cloudflare eviction picks up exactly where it stopped. It is built on [Effect](https://effect.website): tools are Schemas, implementations are Layers, and the client talks to the loop over typed RPC, in the same process or across the internet.
 
+> [!WARNING]
+> **effect-harness is still very unstable.** I use it in my own projects and adjust it as I go: fixing bugs, reshaping the API, and sometimes breaking things between minor versions. Pin an exact version, and expect to read the changelog when you upgrade.
+
 <!-- prettier-ignore -->
 ```ts
 const client = yield* HarnessClient.HarnessClient
@@ -224,6 +227,10 @@ bun run test:package # pack, install into an isolated consumer, run under Node 2
 
 Tests live next to the code under `src/`. Every PR carries a changeset (`bun run changeset`); see [Releasing](docs/releasing.md) for the publishing workflow.
 
-## Thanks
+## Credits
 
-Inspired by [Pi Durable](https://github.com/earendil-works/pi)'s durable conversation design. Source module comments identify the Pi components this implementation models or ports; code mode uses `@earendil-works/pi-codemode`. The distributed [NOTICE](NOTICE) retains the upstream attribution and MIT license.
+The harness architecture is nearly all [Pi Durable](https://github.com/earendil-works/pi)'s. The durable session and storage model, the task scheduler, conversation turns and recovery, compaction, the coding tools and the provider sign-in flows all follow Pi's design, and many modules are direct ports of it.
+
+My work has mostly been porting it to [Effect](https://effect.website) and making it take advantage of Effect's composability and ecosystem: Schemas for every tool, record and setting; Layers for handlers, storage and providers; typed RPC between client and loop; and Effect's platform, SQL and AI packages underneath.
+
+Source module comments identify the Pi component each one models or ports; code mode uses `@earendil-works/pi-codemode`. The distributed [NOTICE](NOTICE) retains the upstream attribution and MIT license.
