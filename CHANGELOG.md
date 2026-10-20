@@ -1,5 +1,11 @@
 # effect-harness
 
+## 0.8.1
+
+### Patch Changes
+
+- b63aa82: Watches over `HarnessTransport.layerWebSocket` open again as soon as a dropped connection is back, instead of waiting out a backoff of up to 5 seconds. The transport now also provides `HarnessTransport.Connections`, the count of its connections.
+
 ## 0.8.0
 
 ### Minor Changes
