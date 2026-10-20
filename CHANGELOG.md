@@ -1,5 +1,11 @@
 # effect-harness
 
+## 0.9.2
+
+### Patch Changes
+
+- 7e47855: Anthropic OAuth models listed in `adaptiveModels` send tool schemas non-strict again. 0.9.1 moved the non-strict setting into the shared Anthropic config, and the adaptive-model path rebuilt the config without it, so those requests carried `strict: true` tools.
+
 ## 0.9.1
 
 ### Patch Changes
