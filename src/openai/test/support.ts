@@ -67,3 +67,51 @@ export const events = [
     },
   },
 ]
+
+/** A response that calls `name` with `args` as call `callId`. */
+export const toolCallEvents = (callId: string, name: string, args: string) => {
+  const item = (status: string, done: string) => ({
+    type: 'function_call',
+    id: 'fc_1',
+    call_id: callId,
+    name,
+    arguments: done,
+    status,
+  })
+  return [
+    { type: 'response.created', sequence_number: 1, response: response('in_progress') },
+    {
+      type: 'response.output_item.added',
+      sequence_number: 2,
+      output_index: 0,
+      item: item('in_progress', ''),
+    },
+    {
+      type: 'response.function_call_arguments.delta',
+      sequence_number: 3,
+      output_index: 0,
+      item_id: 'fc_1',
+      delta: args,
+    },
+    {
+      type: 'response.output_item.done',
+      sequence_number: 4,
+      output_index: 0,
+      item: item('completed', args),
+    },
+    {
+      type: 'response.completed',
+      sequence_number: 5,
+      response: {
+        ...response('completed'),
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          total_tokens: 15,
+          input_tokens_details: { cached_tokens: 0 },
+          output_tokens_details: { reasoning_tokens: 0 },
+        },
+      },
+    },
+  ]
+}

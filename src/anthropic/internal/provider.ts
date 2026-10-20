@@ -39,7 +39,10 @@ const budget = (level: ThinkingLevel, ceiling: number) => {
   return Math.min(wanted, Math.max(0, ceiling - ANSWER_TOKENS))
 }
 
-/** The request options Anthropic takes, for `model`. */
+/**
+ * The request options Anthropic takes, for `model`. Tool schemas are sent as written, so not
+ * strict: strict mode requires closed objects, which tool arguments are not.
+ */
 export const config = (model: Info, request: Request) => {
   const options = request.options ?? {}
   const entry = find(catalog, model.id)
@@ -56,6 +59,7 @@ export const config = (model: Info, request: Request) => {
     return { thinking: { type: 'enabled' as const, budget_tokens: budget(level, maxTokens) } }
   }
   return {
+    strictJsonSchema: false,
     max_tokens: maxTokens,
     ...(options.temperature === undefined || entry?.temperature === false || level !== undefined
       ? {}
