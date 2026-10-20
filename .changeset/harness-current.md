@@ -2,4 +2,4 @@
 'effect-harness': minor
 ---
 
-Add `Harness.current`: the Harness running the current task, so tool handlers and task phases can create, submit to and wait on conversations without depending on the Harness that installs them.
+Tool handlers can require the `Harness` service: the tool task provides the Harness it runs under to each call (`Toolkit.Provided`), so a tool can create, submit to and wait on conversations without the Harness in its layer.

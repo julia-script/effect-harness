@@ -1,9 +1,9 @@
 /**
- * `Harness.current`: the Harness a task runs under, which a tool handler reaches to delegate to a
- * conversation its call owns.
+ * Tool handlers can require the Harness: the tool task provides the one it runs under, so a tool
+ * delegates to a conversation its call owns without the Harness in its layer.
  */
 import { describe, expect, test } from 'bun:test'
-import { Context, Effect, Layer, Schema } from 'effect'
+import { Context, Effect, Layer, Option, Schema } from 'effect'
 import { Faux, Model } from '../../model/index.ts'
 import * as Storage from '../../storage/Storage.ts'
 import { Call, Tool, Toolkit } from '../../tool/index.ts'
@@ -31,9 +31,9 @@ const answerText = (model: ReadonlyArray<Record<string, unknown>> | undefined) =
 const DelegateLive = toolkit.toLayer({
   delegate: ({ task }) =>
     Effect.gen(function* () {
-      const harness = yield* Harness.current
+      const harness = yield* Harness.Harness
       const call = yield* Call.Current
-      if (harness === undefined || call === undefined) return yield* Effect.die('no harness')
+      if (call === undefined) return yield* Effect.die('not in a tool call')
       const child = yield* harness.createConversation({
         ownership: { kind: 'task', taskId: call.taskId },
       })
@@ -61,11 +61,18 @@ const loop = (faux: Faux.Faux, storage: Storage.Service) =>
     ]),
   )
 
-describe('Harness.current', () => {
-  test('is undefined outside a task', () =>
+describe('the Harness in tool handlers', () => {
+  test('is missing outside a Harness, so the call breaks', () =>
     runTest(() =>
       Effect.gen(function* () {
-        expect(yield* Harness.current).toBeUndefined()
+        const context = yield* Layer.build(DelegateLive)
+        const found = Context.getOption(context, Toolkit.implementation('delegate'))
+        if (Option.isNone(found)) return yield* Effect.die('delegate has no implementation')
+        const outcome = yield* found.value.run(
+          { task: 'Anything.' },
+          { callId: 'call-1', config: {} },
+        )
+        expect(outcome).toMatchObject({ type: 'broken' })
       }),
     ))
 

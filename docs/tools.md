@@ -193,7 +193,7 @@ Declare a tool with `callers: ['tools']` to make it callable only this way, neve
 
 ## Delegating to another conversation
 
-A handler reaches the Harness running it with `Harness.current`, so a tool can start a conversation, submit to it and wait for its answer, as a subagent tool does. Give the conversation to the call's task: aborting the call then aborts it, and the call settles only once its work is done.
+A handler can require the `Harness`, as an HTTP route handler requires the request: the tool task provides the Harness it runs under to every call (`Toolkit.Provided`), so the toolkit layer never needs one, and there is no cycle between the Harness and the tools it installs. A tool can then start a conversation, submit to it and wait for its answer, as a subagent tool does. Give the conversation to the call's task: aborting the call then aborts it, and the call settles only once its work is done.
 
 ```ts
 import { Harness } from 'effect-harness/harness'
@@ -201,9 +201,9 @@ import { Call } from 'effect-harness/tool'
 
 const delegate = ({ task }) =>
   Effect.gen(function* () {
-    const harness = yield* Harness.current
+    const harness = yield* Harness.Harness
     const call = yield* Call.Current
-    if (harness === undefined || call === undefined) return yield* Effect.die('not in a tool call')
+    if (call === undefined) return yield* Effect.die('not in a tool call')
     const child = yield* harness.createConversation({
       ownership: { kind: 'task', taskId: call.taskId },
     })
@@ -213,7 +213,7 @@ const delegate = ({ task }) =>
   })
 ```
 
-The handler does not depend on the Harness that installs it, so the toolkit layer stays free of a cycle. Task phases can read `Harness.current` too.
+A tool task outside a Harness (`ToolTask.layer`) has no Harness to provide: a handler that reads it there fails as a broken tool.
 
 ## Stock tools
 

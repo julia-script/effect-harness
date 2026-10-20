@@ -36,6 +36,7 @@ import type * as Toolkit from '../tool/Toolkit.ts'
 import type { Extension } from './Extension.ts'
 import { Extensions } from './Extensions.ts'
 import type { InvalidExtension } from './HarnessError.ts'
+import * as current from './internal/current.ts'
 import * as defaults from './internal/layer.ts'
 import type * as Settings from './Settings.ts'
 import * as internal from './internal/harness.ts'
@@ -99,17 +100,13 @@ export interface Service {
   readonly inspect: Effect.Effect<Inspection, CommitError | StorageError>
 }
 
-export class Harness extends Context.Service<Harness, Service>()(
-  'effect-harness/harness/Harness',
-) {}
-
 /**
- * The Harness running the current task, for its phases and the tool handlers they run, which read
- * it with `yield* Harness.current`; `undefined` elsewhere. A tool that delegates to another
- * conversation reaches it here, without depending on the Harness that installs the tool. Recovery
- * can run tasks while the Harness opens; they wait until it has opened.
+ * The Harness service. Tool handlers can require it: the tool task provides the Harness it runs
+ * under to each call (see `Toolkit.Provided`), so a tool that delegates to another conversation
+ * needs no Harness when its layer is built.
  */
-export const current: Effect.Effect<Service | undefined> = internal.current
+export const Harness = current.Harness
+export type Harness = current.Harness
 
 /**
  * Open a Harness over the `Storage`, task `Registry` and `Extensions` in context: a Session and a Scheduler
