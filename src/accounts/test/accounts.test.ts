@@ -46,9 +46,9 @@ const Implementations = adapters.toLayer({
   keyed: { provider: (account) => fake(account.name) },
   device: {
     provider: (account) => fake(account.name),
-    login: (account, onCode) =>
+    login: (account, flow) =>
       Effect.gen(function* () {
-        yield* onCode({ url: 'https://example.test/device', code: 'ABCD-1234' })
+        yield* flow.onCode({ url: 'https://example.test/device', code: 'ABCD-1234' })
         const store = yield* Credentials.Credentials
         yield* store.set(account.name, {
           type: 'oauth',
@@ -108,16 +108,19 @@ describe('accounts', () => {
       }),
     ))
 
-  test('signs in with a device code, streaming the code first', () =>
+  test('signs in with a device code, starting before streaming the code', () =>
     run(
       Effect.gen(function* () {
         const accounts = yield* open()
         const events = yield* Stream.runCollect(
           accounts.signIn({ adapter: 'device', name: 'laptop', label: 'Laptop' }),
         )
-        expect(events.map(({ type }) => type)).toEqual(['code', 'done'])
-        expect(events[0]).toMatchObject({ code: 'ABCD-1234' })
-        expect(events[1]).toMatchObject({ account: { name: 'laptop', status: 'ready' } })
+        expect(events.map(({ type }) => type)).toEqual(['started', 'code', 'done'])
+        expect(events[0]).toMatchObject({ name: 'laptop' })
+        expect(events[1]).toMatchObject({ code: 'ABCD-1234' })
+        expect(events[2]).toMatchObject({ account: { name: 'laptop', status: 'ready' } })
+        expect(events[2]).not.toHaveProperty('account.identity')
+        expect(events[2]).not.toHaveProperty('account.revision')
 
         const renewed = yield* Stream.runCollect(accounts.signIn({ name: 'laptop' }))
         expect(renewed.at(-1)).toMatchObject({ account: { label: 'Laptop', status: 'ready' } })

@@ -14,6 +14,7 @@ import type { Message } from '../../model/index.ts'
 import { serve } from '../../model/test/fakeApi.ts'
 import type { Recorded } from '../../model/test/fakeApi.ts'
 import { OpenAiCodex } from '../index.ts'
+import { refresh } from '../internal/codex/auth.ts'
 import { events } from './support.ts'
 
 /** An access token whose claims carry `account`. */
@@ -133,17 +134,36 @@ describe('OpenAiCodex', () => {
     const { value } = await run((url) =>
       Effect.gen(function* () {
         const shown = yield* Ref.make<ReadonlyArray<OpenAiCodex.DeviceCode>>([])
-        yield* OpenAiCodex.login({
+        const login = OpenAiCodex.login({
           authUrl: url,
           onCode: (code) => Ref.update(shown, (all) => [...all, code]),
         })
+        yield* login
         const store = yield* Credentials.Credentials
-        return { shown: yield* Ref.get(shown), credential: yield* store.get('openai-codex') }
+        const first = yield* store.get('openai-codex')
+        yield* login
+        return {
+          shown: yield* Ref.get(shown),
+          first,
+          credential: yield* store.get('openai-codex'),
+        }
       }),
     )
-    expect(value.shown.map(({ code }) => code)).toEqual(['ABCD-1234'])
+    expect(value.shown.map(({ code }) => code)).toEqual(['ABCD-1234', 'ABCD-1234'])
     expect(value.shown[0]?.url.endsWith('/codex/device')).toBe(true)
-    expect(value.credential).toMatchObject({ type: 'oauth', extra: { accountId: 'acct_new' } })
+    expect(value.credential).toMatchObject({
+      type: 'oauth',
+      extra: { accountId: 'acct_new' },
+      identity: { issuer: 'https://auth.openai.com', subject: 'acct_new' },
+    })
+    if (value.first?.type !== 'oauth' || value.credential?.type !== 'oauth')
+      throw new Error('Missing signed-in credentials')
+    expect(value.credential.identity).toEqual(value.first.identity)
+    expect(value.first.revision).toEqual(expect.any(String))
+    expect(value.credential.revision).toEqual(expect.any(String))
+    expect(value.credential.revision).not.toBe(value.first.revision)
+    expect(Redacted.value(value.credential.access)).toBe(Redacted.value(value.first.access))
+    expect(Object.keys(value.credential.identity ?? {}).toSorted()).toEqual(['issuer', 'subject'])
   }, 10_000)
 
   test('sends the stored token, account, instructions and no output limit', async () => {
@@ -184,7 +204,13 @@ describe('OpenAiCodex', () => {
     const { value, requests } = await run((url) =>
       Effect.gen(function* () {
         const store = yield* Credentials.Credentials
-        yield* store.set('openai-codex', stored(Date.now() + 1000))
+        yield* store.set('openai-codex', {
+          ...stored(Date.now() + 1000),
+          access: Redacted.make(jwt('acct_new')),
+          identity: { issuer: 'https://auth.openai.com', subject: 'acct_new' },
+          revision: 'sign-in-one',
+          extra: { accountId: 'acct_new', hostSetting: 'preserved' },
+        })
         yield* ask(url, 'gpt-5.5')
         return yield* store.get('openai-codex')
       }),
@@ -195,7 +221,45 @@ describe('OpenAiCodex', () => {
       refresh_token: 'refresh_1',
     })
     expect(requests[1]?.headers['chatgpt-account-id']).toBe('acct_new')
-    expect(value).toMatchObject({ type: 'oauth', extra: { accountId: 'acct_new' } })
+    expect(value).toMatchObject({
+      type: 'oauth',
+      identity: { issuer: 'https://auth.openai.com', subject: 'acct_new' },
+      revision: 'sign-in-one',
+      extra: { accountId: 'acct_new', hostSetting: 'preserved' },
+    })
+  })
+
+  test('refresh rejects another account before persisting tokens or sending inference', async () => {
+    const { value, requests } = await run((url) =>
+      Effect.gen(function* () {
+        const store = yield* Credentials.Credentials
+        const expired = {
+          ...stored(0),
+          identity: { issuer: 'https://auth.openai.com', subject: 'acct_1' },
+          revision: 'original-sign-in',
+        }
+        yield* store.set('openai-codex', expired)
+        const result = yield* Effect.result(ask(url, 'gpt-5.5'))
+        expect(result).toMatchObject({ _tag: 'Failure' })
+        expect(yield* store.get('openai-codex')).toEqual(expired)
+      }),
+    )
+    expect(value).toBeUndefined()
+    expect(requests.map((request) => request.path)).toEqual(['/oauth/token'])
+  })
+
+  test('legacy refresh preserves absent identity and revision, and rejects account changes', async () => {
+    const { value } = await run((url) =>
+      Effect.gen(function* () {
+        const legacy = { ...stored(0), access: Redacted.make(jwt('acct_new')) }
+        const next = yield* refresh(url, legacy)
+        expect(next.identity).toBeUndefined()
+        expect(next.revision).toBeUndefined()
+        expect(Redacted.value(next.refresh)).toBe('refresh_new')
+        return yield* Effect.result(refresh(url, stored(0)))
+      }),
+    )
+    expect(value).toMatchObject({ _tag: 'Failure', failure: { _tag: 'LoginError' } })
   })
 
   test('two accounts sign in and answer under their own names', async () => {

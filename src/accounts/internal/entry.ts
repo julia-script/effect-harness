@@ -3,6 +3,7 @@
  * A record whose adapter or settings no longer decode is kept, with the problem, and serves nothing.
  */
 import { Context, Effect, Option, Schema } from 'effect'
+import type { Credential } from '../../credentials/Credential.ts'
 import type { Listable } from '../../model/Model.ts'
 import { JsonObject } from '../../storage/schema/Json.ts'
 import * as AccountError from '../AccountError.ts'
@@ -110,6 +111,7 @@ export const status = (
   entry: Entry,
   stored: ReadonlySet<string>,
   refused: ReadonlyMap<string, string>,
+  credential?: Credential,
 ): Status => {
   const { saved } = entry
   const base = {
@@ -118,6 +120,12 @@ export const status = (
     label: saved.label,
     settings: saved.settings,
     removable: !entry.fixed,
+    ...(credential?.type === 'oauth' && credential.identity !== undefined
+      ? { identity: credential.identity }
+      : {}),
+    ...(credential?.type === 'oauth' && credential.revision !== undefined
+      ? { revision: credential.revision }
+      : {}),
   }
   if (entry.problem !== undefined) {
     return { ...base, status: 'error', error: entry.problem.message }

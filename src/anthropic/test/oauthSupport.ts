@@ -13,7 +13,9 @@ export const existing = {
   access: Redacted.make('access-old'),
   refresh: Redacted.make('refresh-old'),
   expires: Number.MAX_SAFE_INTEGER,
-  extra: { identity: 'existing-account' },
+  identity: { issuer: 'https://platform.claude.com', subject: 'existing-account' },
+  revision: 'existing-sign-in',
+  extra: { hostSetting: 'preserved' },
 }
 export const usage = {
   cache_creation: null,

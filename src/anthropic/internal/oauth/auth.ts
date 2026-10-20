@@ -2,7 +2,7 @@
 import { Clock, Effect, Redacted, Schema } from 'effect'
 import { Base64Url } from 'effect/encoding'
 import { HttpClient, HttpClientRequest } from 'effect/http'
-import type { OAuth } from '../../../credentials/Credential.ts'
+import type { Identity, OAuth } from '../../../credentials/Credential.ts'
 import { Credentials } from '../../../credentials/Credentials.ts'
 import { LoginError } from '../../AnthropicOAuth.ts'
 import type { Authorization, BeginOptions, LoginOptions, Options } from '../../AnthropicOAuth.ts'
@@ -20,6 +20,16 @@ const Token = Schema.Struct({
   access_token: Schema.NonEmptyString,
   refresh_token: Schema.NonEmptyString,
   expires_in: Schema.Finite.check(Schema.isGreaterThan(0)),
+  // Claude's successful token response can include account.uuid and email_address.
+  // No profile request or additional scopes are needed; omission means unknown identity.
+  account: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        uuid: Schema.optionalKey(Schema.NullOr(Schema.String)),
+        email_address: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      }),
+    ),
+  ),
 })
 
 const validateRedirect = (redirectUri: string) =>
@@ -143,11 +153,23 @@ const exchange = Effect.fnUntraced(function* (authUrl: string, fields: Record<st
   const expires = (yield* Clock.currentTimeMillis) + Math.floor(token.expires_in * 1000)
   if (!Number.isSafeInteger(expires))
     return yield* failure('InvalidResponse', 'Claude returned an invalid token expiry')
+  const account = token.account
+  let identity: Identity | undefined
+  if (account?.uuid !== undefined && account.uuid !== null && account.uuid !== '') {
+    identity = {
+      issuer: AUTH_URL,
+      subject: account.uuid,
+      ...(account.email_address === undefined || account.email_address === null
+        ? {}
+        : { email: account.email_address }),
+    }
+  }
   return {
     type: 'oauth',
     access: Redacted.make(token.access_token),
     refresh: Redacted.make(token.refresh_token),
     expires,
+    ...(identity === undefined ? {} : { identity }),
   } satisfies OAuth
 })
 
@@ -166,12 +188,12 @@ export const complete = Effect.fnUntraced(function* (
     state: authorization.state,
     redirect_uri: authorization.redirectUri,
   })
-  const identity = yield* Effect.try({
+  const revision = yield* Effect.try({
     try: () => crypto.randomUUID(),
-    catch: () => failure('InvalidConfiguration', 'Unable to generate credential identity'),
+    catch: () => failure('InvalidConfiguration', 'Unable to generate credential revision'),
   })
   const store = yield* Credentials
-  return yield* store.set(authorization.name, { ...tokens, extra: { identity } })
+  return yield* store.set(authorization.name, { ...tokens, revision })
 })
 
 export const refresh = Effect.fnUntraced(function* (authUrl: string, stored: OAuth) {
@@ -179,9 +201,18 @@ export const refresh = Effect.fnUntraced(function* (authUrl: string, stored: OAu
     grant_type: 'refresh_token',
     refresh_token: Redacted.value(stored.refresh),
   })
+  if (
+    stored.identity !== undefined &&
+    tokens.identity !== undefined &&
+    (stored.identity.issuer !== tokens.identity.issuer ||
+      stored.identity.subject !== tokens.identity.subject)
+  )
+    return yield* failure('InvalidResponse', 'Claude token refresh returned a different account')
   return {
-    ...tokens,
-    ...(stored.extra === undefined ? {} : { extra: stored.extra }),
+    ...stored,
+    access: tokens.access,
+    refresh: tokens.refresh,
+    expires: tokens.expires,
   } satisfies OAuth
 })
 

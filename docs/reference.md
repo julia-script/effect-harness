@@ -27,7 +27,7 @@ import { Extension, HarnessServer, Initializer } from 'effect-harness/harness'
 | `credentials`, `credentials/bun`       | `Credentials` stores; `BunCredentials` (OS keychain)                                                                                              | both          |
 | `accounts`                             | `Adapter`, `Account`, `Accounts`, `AccountsRpcs`                                                                                                  | both          |
 | `openai`, `openai/adapter`             | `OpenAi`, `OpenAiCodex`; their adapter declarations                                                                                               | loop · client |
-| `anthropic`, `anthropic/adapter`       | `Anthropic`, `AnthropicOAuth`; the adapter declaration                                                                                            | loop · client |
+| `anthropic`, `anthropic/adapter`       | `Anthropic`, `AnthropicOAuth`; their adapter declarations                                                                                         | loop · client |
 | `coding`, `coding/bun`, `coding/sharp` | `CodingTools`, `CodingHandlers`, `ImageProcessor`; Bun and sharp image codecs                                                                     | loop          |
 | `codemode`                             | `Codemode`, `CodemodeHandlers`                                                                                                                    | loop          |
 | `cloudflare`                           | `HarnessObject`                                                                                                                                   | Workers       |

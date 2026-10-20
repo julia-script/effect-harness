@@ -4,7 +4,7 @@
  * client can use it to draw a form. Accounts are its instances, added while the host runs.
  *
  * The implementation turns an account into a `Model` provider, and signs it in when the adapter
- * takes a device code. It runs where the loop runs, as a layer: `layer` for one adapter, or
+ * takes OAuth. It runs where the loop runs, as a layer: `layer` for one adapter, or
  * `Group.toLayer` for several, the way tool handlers are given to `Toolkit.toLayer`. The registry
  * needs one for every adapter of its group, so a missing one is a type error.
  */
@@ -22,10 +22,12 @@ export type Settings = Schema.ConstraintCodec<unknown>
 export const apiKey = 'apiKey' as const
 /** The account signs in with a device code and holds OAuth tokens. */
 export const deviceCode = 'deviceCode' as const
+/** The account signs in through a browser and returns an authorization callback or pasted code. */
+export const browserOAuth = 'browserOAuth' as const
 /** The account needs no credential, such as a local server. */
 export const none = 'none' as const
 
-export type Auth = typeof apiKey | typeof deviceCode | typeof none
+export type Auth = typeof apiKey | typeof deviceCode | typeof browserOAuth | typeof none
 
 export const TypeId = '~effect-harness/accounts/Adapter'
 export type TypeId = typeof TypeId
@@ -85,18 +87,28 @@ export interface LoginFailure {
   readonly message: string
 }
 
-/** The implementation of `A`: its provider, and its sign-in when it takes a device code. */
+/** The host-facing callbacks and completion of a scoped OAuth sign-in. */
+export interface LoginFlow {
+  readonly onCode: (code: DeviceCode) => Effect.Effect<void>
+  readonly onAuthorize: (url: string) => Effect.Effect<void>
+  readonly completion: Effect.Effect<string>
+  readonly redirectUri?: string
+}
+
+/** The implementation of `A`: its provider, and its sign-in when it takes OAuth. */
 export interface Base<A extends Any> {
   /** The account's provider, named after the account. Build it once; the registry keeps it. */
   readonly provider: (account: Account<A>) => Listable<Requires>
-  /** Sign in with a device code, storing the tokens in `Credentials` under the account's name. */
+  /** Sign in, staging tokens in `Credentials` under the account's name until success. */
   readonly login?: (
     account: Account<A>,
-    onCode: (code: DeviceCode) => Effect.Effect<void>,
+    flow: LoginFlow,
   ) => Effect.Effect<void, LoginFailure, Requires>
 }
 
-export type Implementation<A extends Any> = A['auth'] extends typeof deviceCode
+export type Implementation<A extends Any> = A['auth'] extends
+  | typeof deviceCode
+  | typeof browserOAuth
   ? Base<A> & { readonly login: NonNullable<Base<A>['login']> }
   : Base<A>
 

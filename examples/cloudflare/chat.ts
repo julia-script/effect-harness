@@ -62,15 +62,20 @@ const show = (account: {
   )
 
 const signIn = ({ accounts }: Clients) =>
-  accounts
-    .SignIn({ name: 'codex', adapter: 'openai-codex', label: 'ChatGPT' })
-    .pipe(
-      Stream.runForEach((event) =>
-        event.type === 'code'
-          ? Console.log(`Open ${event.url} and enter ${event.code}`)
-          : show(event.account),
-      ),
-    )
+  accounts.SignIn({ name: 'codex', adapter: 'openai-codex', label: 'ChatGPT' }).pipe(
+    Stream.runForEach((event) => {
+      switch (event.type) {
+        case 'started':
+          return Effect.void
+        case 'code':
+          return Console.log(`Open ${event.url} and enter ${event.code}`)
+        case 'authorization':
+          return Console.log(`Open ${event.url}`)
+        case 'done':
+          return show(event.account)
+      }
+    }),
+  )
 
 /** The keyed accounts this client adds: the adapter, and where its key and URL come from. */
 const keyed = {
