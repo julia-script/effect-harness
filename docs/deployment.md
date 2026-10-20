@@ -22,6 +22,7 @@ flowchart TB
 - [A WebSocket server](#a-websocket-server)
 - [Clients anywhere](#clients-anywhere)
 - [Cloudflare Durable Objects](#cloudflare-durable-objects)
+- [Cloudflare Workflows](#cloudflare-workflows)
 
 ## One process
 
@@ -120,3 +121,29 @@ HARNESS_TOKEN=dev-token bun run example:cloudflare
 
 > [!NOTE]
 > Workers have no file system or processes, so the coding tools and code mode aren't available there.
+
+## Cloudflare Workflows
+
+`HarnessWorkflow` runs one-off jobs as durable steps of a [Cloudflare Workflow](https://developers.cloudflare.com/workflows/), deployed with Alchemy. Each step answers its input on a fresh loop over memory storage; Cloudflare retries a failed step and replays its answer once it has one, so a finished turn never asks the model again.
+
+```ts
+// src/Summarize.ts: the Workflow, hosted by the Worker that yields it
+export default class Summarize extends Cloudflare.Workflow<Summarize>()(
+  'Summarize',
+  Effect.succeed((input: HarnessWorkflow.Input) =>
+    HarnessWorkflow.make({
+      settings: { model: Anthropic.ref('claude-sonnet-5-5') },
+      step: { retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' } },
+    })(input).pipe(Effect.provide(ModelLive)),
+  ),
+) {}
+
+// In the Worker: start a run, then read its status
+const summarize = yield * Summarize
+const instance = yield * summarize.create({ params: { content: 'Summarize this thread: …' } })
+const { status, output } = yield * instance.status() // output: HarnessWorkflow.Result
+```
+
+`HarnessWorkflow.turn(name, content, options)` is the same step on its own, for bodies of several steps with `Cloudflare.Workflows.sleep` or `waitForEvent` between them. Steps share nothing, so pass what a step needs from an earlier one in its content. An unanswered run is a result with its `reason`, not a failure; a failure of the loop fails the attempt for Cloudflare to retry.
+
+Use a Durable Object for conversations people come back to, and a Workflow for jobs that run to an answer and stop.

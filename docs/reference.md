@@ -30,7 +30,7 @@ import { Extension, HarnessServer, Initializer } from 'effect-harness/harness'
 | `anthropic`, `anthropic/adapter`       | `Anthropic`, `AnthropicOAuth`; their adapter declarations                                                                                         | loop · client |
 | `coding`, `coding/bun`, `coding/sharp` | `CodingTools`, `CodingHandlers`, `ImageProcessor`; Bun and sharp image codecs                                                                     | loop          |
 | `codemode`                             | `Codemode`, `CodemodeHandlers`                                                                                                                    | loop          |
-| `cloudflare`                           | `HarnessObject`                                                                                                                                   | Workers       |
+| `cloudflare`                           | `HarnessObject`, `HarnessWorkflow`                                                                                                                | Workers       |
 
 The root import, `effect-harness`, groups the portable core as `Accounts`, `Client`, `Credentials`, `Delta`, `Harness`, `Model`, `Session`, `Storage`, `Task` and `Tool`.
 

@@ -2,7 +2,8 @@
 /**
  * The harness in a Durable Object, run by Alchemy in a local workerd: the Worker checks the token,
  * a client adds an account and chats over WebSockets, and a reset in the middle of a turn ends
- * with the answer, once the object has started again and resumed the turn from its SQLite.
+ * with the answer, once the object has started again and resumed the turn from its SQLite. A
+ * Workflow run answers its input in a durable step.
  */
 import { expect } from 'bun:test'
 import * as Cloudflare from 'alchemy/Cloudflare'
@@ -125,4 +126,37 @@ test(
     }),
   ),
   { timeout: 90_000 },
+)
+
+test(
+  'answers in a workflow step',
+  Effect.scoped(
+    Effect.gen(function* () {
+      const model = yield* serveModel
+      const { url } = yield* stack
+      const started = yield* Effect.promise(() =>
+        fetch(`${String(url)}/ask`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'Hi', apiUrl: `${model.url}/v1` }),
+        }).then((response) => response.json() as Promise<{ id: string }>),
+      )
+      const status = yield* Effect.promise(() =>
+        fetch(`${String(url)}/ask/${started.id}`).then(
+          (response) => response.json() as Promise<{ status: string; output?: unknown }>,
+        ),
+      ).pipe(
+        Effect.repeat({
+          schedule: Schedule.spaced('500 millis'),
+          until: ({ status }) => status === 'complete' || status === 'errored',
+          times: 60,
+        }),
+      )
+      expect(status).toMatchObject({
+        status: 'complete',
+        output: { status: 'done', answer: 'Hello' },
+      })
+      expect(yield* model.responses).toBe(1)
+    }),
+  ),
+  { timeout: 60_000 },
 )
