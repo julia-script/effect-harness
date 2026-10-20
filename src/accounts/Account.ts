@@ -5,7 +5,7 @@
  * decode with the adapter's Schema. Secrets only travel inward: nothing here carries one out.
  */
 import { Schema } from 'effect'
-import { Secret } from '../credentials/Credential.ts'
+import { Identity, Secret } from '../credentials/Credential.ts'
 import { Listed } from '../model/Model.ts'
 import { JsonObject } from '../storage/schema/Json.ts'
 
@@ -43,6 +43,10 @@ export const Status = Schema.Struct({
   removable: Schema.Boolean,
   /** Why the account is not `ready`, when known. */
   error: Schema.optionalKey(Schema.String),
+  /** Provider-asserted identity, absent when the provider did not identify the account. */
+  identity: Schema.optionalKey(Identity),
+  /** Opaque sign-in generation; refreshing credentials preserves it. */
+  revision: Schema.optionalKey(Schema.NonEmptyString),
 })
 export type Status = typeof Status.Type
 
@@ -59,7 +63,7 @@ export const Add = Schema.Struct({
 export type Add = typeof Add.Type
 
 /**
- * Sign in with a device code. Naming an existing account renews its tokens; a new name needs
+ * Sign in with OAuth. Naming an existing account renews its tokens; a new name needs
  * `adapter`, and takes `label` and `settings` as `Add` does.
  */
 export const SignIn = Schema.Struct({
@@ -67,6 +71,8 @@ export const SignIn = Schema.Struct({
   adapter: Schema.optionalKey(Schema.String),
   label: Schema.optionalKey(Schema.String),
   settings: Schema.optionalKey(JsonObject),
+  /** Host-owned callback URI, used for this attempt only; never saved as account settings. */
+  redirectUri: Schema.optionalKey(Schema.String),
 })
 export type SignIn = typeof SignIn.Type
 
@@ -74,10 +80,12 @@ export type SignIn = typeof SignIn.Type
 export const DeviceCode = Schema.Struct({ url: Schema.String, code: Schema.String })
 export type DeviceCode = typeof DeviceCode.Type
 
-/** What a sign-in streams: the code to enter, then the account once approved. */
+/** An attempt starts, requests authorization, then finishes only after credentials are committed. */
 export const SignInEvent = Schema.Union([
-  Schema.Struct({ type: Schema.Literal('code'), ...DeviceCode.fields }),
-  Schema.Struct({ type: Schema.Literal('done'), account: Status }),
+  Schema.Struct({ type: Schema.Literal('started'), id: Schema.String, name: Name }),
+  Schema.Struct({ type: Schema.Literal('code'), id: Schema.String, ...DeviceCode.fields }),
+  Schema.Struct({ type: Schema.Literal('authorization'), id: Schema.String, url: Schema.String }),
+  Schema.Struct({ type: Schema.Literal('done'), id: Schema.String, account: Status }),
 ])
 export type SignInEvent = typeof SignInEvent.Type
 

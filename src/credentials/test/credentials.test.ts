@@ -4,15 +4,24 @@
  * memory behind `CredentialsRpcs` across the memory transport, a `KeyValueStore`, and a keychain.
  */
 import { describe, expect, test } from 'bun:test'
-import { Clock, ConfigProvider, Deferred, Effect, Exit, Fiber, Layer, Redacted } from 'effect'
+import {
+  Clock,
+  ConfigProvider,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Redacted,
+  Schema,
+} from 'effect'
 import type { Scope } from 'effect'
 import { KeyValueStore } from 'effect/persistence'
 import { HarnessTransport } from '../../client/index.ts'
 import { runTest } from '../../task/test/support.ts'
-import { Credentials } from '../index.ts'
+import { Credential, Credentials } from '../index.ts'
 import * as keychain from '../internal/keychain.ts'
 import { makeFakeKeychain } from './fakeKeychain.ts'
-import type { Credential } from '../index.ts'
 
 const apiKey = (key: string): Credential.Credential => ({
   type: 'api_key',
@@ -94,6 +103,31 @@ for (const [name, open] of stores) {
           const lost = yield* Effect.flip(store.update('openai', first, oauth('c', 2)))
           expect(lost).toMatchObject({ _tag: 'CredentialChanged', provider: 'openai' })
           expect(accessOf(yield* store.get('openai'))).toBe('b')
+        }),
+      ))
+
+    test('preserves identity and sign-in revision across storage and compare-and-set', () =>
+      runTest(() =>
+        Effect.gen(function* () {
+          const store = yield* open
+          const first: Credential.OAuth = {
+            ...oauth('same-token', 0),
+            identity: {
+              issuer: 'https://provider.example',
+              subject: 'account-one',
+              email: 'person@example.com',
+              name: 'Person',
+            },
+            revision: 'sign-in-one',
+          }
+          yield* store.set('work', first)
+          expect(yield* store.get('work')).toEqual(first)
+          const reauthenticated = { ...first, revision: 'sign-in-two' }
+          yield* store.update('work', first, reauthenticated)
+          expect(yield* store.get('work')).toEqual(reauthenticated)
+          const stale = yield* Effect.flip(store.update('work', first, oauth('stale', 1)))
+          expect(stale).toMatchObject({ _tag: 'CredentialChanged', provider: 'work' })
+          expect(yield* store.get('work')).toEqual(reauthenticated)
         }),
       ))
   })
@@ -224,6 +258,37 @@ describe('resolver', () => {
 })
 
 describe('credential', () => {
+  test('decodes old serialized OAuth without inventing identity or revision', () => {
+    const legacy = Schema.decodeSync(Credential.OAuth)({
+      type: 'oauth',
+      access: 'legacy-access',
+      refresh: 'legacy-refresh',
+      expires: 1234,
+      extra: { identity: 'old-random-id', accountId: 'routing-id' },
+    })
+    expect(Redacted.value(legacy.access)).toBe('legacy-access')
+    expect(Redacted.value(legacy.refresh)).toBe('legacy-refresh')
+    expect(legacy.identity).toBeUndefined()
+    expect(legacy.revision).toBeUndefined()
+    expect(legacy.extra).toEqual({ identity: 'old-random-id', accountId: 'routing-id' })
+  })
+
+  test.each([
+    { identity: { issuer: '', subject: 'account' } },
+    { identity: { issuer: 'provider', subject: '' } },
+    { revision: '' },
+  ])('rejects empty identity coordinates or revision (%j)', (metadata) => {
+    expect(() =>
+      Schema.decodeSync(Credential.OAuth)({
+        type: 'oauth',
+        access: 'a',
+        refresh: 'r',
+        expires: 0,
+        ...metadata,
+      }),
+    ).toThrow()
+  })
+
   test('keeps secrets out of logs and inspection', () => {
     const credential = oauth('secret-access', 0)
     expect(JSON.stringify(credential)).not.toContain('secret')

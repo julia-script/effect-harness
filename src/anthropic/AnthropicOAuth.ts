@@ -1,13 +1,15 @@
 /** Explicit Claude subscription OAuth. API keys continue to use `Anthropic`. */
 import { Schema } from 'effect'
-import type { Duration, Effect, Redacted } from 'effect'
+import type { Duration, Effect, Layer, Redacted } from 'effect'
 import type { HttpClient } from 'effect/http'
+import * as Adapter from '../accounts/Adapter.ts'
 import type { Credentials } from '../credentials/Credentials.ts'
 import type { CredentialsError, ReadOnly } from '../credentials/CredentialsError.ts'
 import type { Definition, Listable, Ref } from '../model/Model.ts'
 import { models as catalog } from './internal/catalog.ts'
 import * as auth from './internal/oauth/auth.ts'
 import * as internal from './internal/oauth/provider.ts'
+import * as declaration from './adapter/AnthropicOAuth.ts'
 
 export const name = 'anthropic-oauth'
 export const api = 'anthropic-messages'
@@ -58,7 +60,17 @@ export interface BeginOptions {
 export const begin: (options?: BeginOptions) => Effect.Effect<Authorization, LoginError> =
   auth.begin
 
-/** Validate a callback URL, query string, or `code#state`, exchange it, and store the tokens. */
+/**
+ * Validate a callback URL, query string, or `code#state`, exchange it, and store the tokens.
+ *
+ * **Details**
+ *
+ * Each success creates a fresh credential revision. Identity is retained only when the
+ * token response supplies account.uuid (and optionally account.email_address); otherwise
+ * it stays absent. Identity's issuer is always https://platform.claude.com, even with authUrl.
+ *
+ * @category authentication
+ */
 export const complete: (
   authorization: Authorization,
   completion: string,
@@ -86,7 +98,15 @@ export const login: (
   HttpClient.HttpClient | Credentials
 > = auth.login
 
-/** A subscription provider; credentials are refreshed with compare-and-set persistence. */
+/**
+ * A subscription provider; credentials are refreshed with compare-and-set persistence.
+ *
+ * **Details**
+ *
+ * Refresh preserves identity, revision, and host extras, and rejects a different known account.
+ *
+ * @category constructors
+ */
 export const provider = (options: Options = {}): Listable<HttpClient.HttpClient | Credentials> =>
   internal.make(options)
 
@@ -94,3 +114,22 @@ export const ref = (modelId: string, providerName: string = name): Ref => ({
   provider: providerName,
   modelId,
 })
+
+/** The browser OAuth declaration, safe for clients via `effect-harness/anthropic/adapter`. */
+export const adapter = declaration.adapter
+
+/** Native Claude subscription accounts; callback listeners remain owned by the host. */
+export const layerAdapter = (
+  options: Omit<Options, 'name'> = {},
+): Layer.Layer<Adapter.Implemented<typeof adapter.id>> =>
+  Adapter.layer(adapter, {
+    provider: (account) => provider({ ...options, name: account.name }),
+    login: (account, flow) =>
+      login({
+        name: account.name,
+        onAuthorize: flow.onAuthorize,
+        completion: flow.completion,
+        ...(flow.redirectUri === undefined ? {} : { redirectUri: flow.redirectUri }),
+        ...(options.authUrl === undefined ? {} : { authUrl: options.authUrl }),
+      }),
+  })

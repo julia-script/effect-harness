@@ -3,6 +3,7 @@ import { expect, test } from 'bun:test'
 import { Effect, Redacted } from 'effect'
 import { Credentials } from '../../credentials/index.ts'
 import { AnthropicOAuth } from '../index.ts'
+import { refresh } from '../internal/oauth/auth.ts'
 import { existing, run, token } from './oauthSupport.ts'
 
 test('PKCE binds the callback and stores credentials only after the JSON exchange', () =>
@@ -45,9 +46,113 @@ test('PKCE binds the callback and stores credentials only after the JSON exchang
         if (saved?.type !== 'oauth') return yield* Effect.die('Missing saved tokens')
         expect(Redacted.value(saved.access)).toBe('access-new')
         expect(Redacted.value(saved.refresh)).toBe('refresh-new')
-        expect(typeof saved.extra?.identity).toBe('string')
+        expect(saved.identity).toBeUndefined()
+        expect(saved.extra).toBeUndefined()
+        expect(saved.revision).toEqual(expect.any(String))
         expect(saved.expires).toBeGreaterThan(Date.now())
         return yield* Effect.void
+      }),
+  ))
+
+test('reauthentication keeps provider identity but changes revision even when tokens repeat', () =>
+  run(
+    () => ({
+      json: {
+        ...token,
+        account: {
+          uuid: 'account-one',
+          email_address: 'person@example.com',
+          access_token: 'must-not-be-identity',
+        },
+      },
+    }),
+    (api) =>
+      Effect.gen(function* () {
+        const store = yield* Credentials.Credentials
+        const signIn = Effect.gen(function* () {
+          const authorization = yield* AnthropicOAuth.begin({ name: 'work' })
+          yield* AnthropicOAuth.complete(authorization, `code#${authorization.state}`, {
+            authUrl: api.url,
+          })
+          const saved = yield* store.get('work')
+          if (saved?.type !== 'oauth') return yield* Effect.die('Missing saved tokens')
+          return saved
+        })
+        const first = yield* signIn
+        const second = yield* signIn
+        expect(first.identity).toEqual({
+          issuer: 'https://platform.claude.com',
+          subject: 'account-one',
+          email: 'person@example.com',
+        })
+        expect(second.identity).toEqual(first.identity)
+        expect(first.revision).toEqual(expect.any(String))
+        expect(second.revision).toEqual(expect.any(String))
+        expect(second.revision).not.toBe(first.revision)
+        expect(Redacted.value(second.access)).toBe(Redacted.value(first.access))
+        expect(JSON.stringify(second.identity)).not.toContain('must-not-be-identity')
+      }),
+  ))
+
+test.each([
+  undefined,
+  null,
+  {},
+  { email_address: 'person@example.com' },
+  { uuid: '' },
+  { uuid: null },
+])('missing stable account metadata remains unknown through sign-in and refresh (%j)', (account) =>
+  run(
+    () => ({ json: { ...token, ...(account === undefined ? {} : { account }) } }),
+    (api) =>
+      Effect.gen(function* () {
+        const authorization = yield* AnthropicOAuth.begin()
+        yield* AnthropicOAuth.complete(authorization, `code#${authorization.state}`, {
+          authUrl: api.url,
+        })
+        const store = yield* Credentials.Credentials
+        const saved = yield* store.get(AnthropicOAuth.name)
+        if (saved?.type !== 'oauth') return yield* Effect.die('Missing saved tokens')
+        expect(saved.identity).toBeUndefined()
+        const next = yield* refresh(api.url, saved)
+        expect(next.identity).toBeUndefined()
+        expect(next.revision).toBe(saved.revision)
+      }),
+  ),
+)
+
+test('refresh retains bound identity metadata and opaque host extras', () =>
+  run(
+    () => ({
+      json: { ...token, account: { uuid: 'existing-account', email_address: 'new@example.com' } },
+    }),
+    (api) =>
+      Effect.gen(function* () {
+        const next = yield* refresh(api.url, existing)
+        expect(next.identity).toEqual(existing.identity)
+        expect(next.revision).toBe(existing.revision)
+        expect(next.extra).toEqual(existing.extra)
+        expect(Redacted.value(next.access)).toBe('access-new')
+      }),
+  ))
+
+test('legacy refresh does not turn old random IDs or new token metadata into a bound identity', () =>
+  run(
+    () => ({ json: { ...token, account: { uuid: 'returned-account' } } }),
+    (api) =>
+      Effect.gen(function* () {
+        const legacy = {
+          type: 'oauth' as const,
+          access: Redacted.make('legacy-access'),
+          refresh: Redacted.make('legacy-refresh'),
+          expires: 0,
+          extra: { identity: 'old-random-id', hostSetting: 'preserved' },
+        }
+        const next = yield* refresh(api.url, legacy)
+        expect(next.identity).toBeUndefined()
+        expect(next.revision).toBeUndefined()
+        expect(next.extra).toEqual(legacy.extra)
+        expect(Redacted.value(next.access)).toBe('access-new')
       }),
   ))
 

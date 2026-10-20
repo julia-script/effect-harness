@@ -18,12 +18,33 @@ export const ApiKey = Schema.Struct({
 })
 export type ApiKey = typeof ApiKey.Type
 
+/**
+ * Provider-asserted account identity, scoped by a canonical issuer namespace.
+ *
+ * **Details**
+ *
+ * Never populated from credential IDs, user labels, or token secrets.
+ *
+ * @category schemas
+ */
+export const Identity = Schema.Struct({
+  issuer: Schema.NonEmptyString,
+  subject: Schema.NonEmptyString,
+  email: Schema.optionalKey(Schema.String),
+  name: Schema.optionalKey(Schema.String),
+})
+export type Identity = typeof Identity.Type
+
 /** OAuth tokens; `expires` is when `access` expires, in epoch milliseconds. */
 export const OAuth = Schema.Struct({
   type: Schema.Literal('oauth'),
   access: Secret,
   refresh: Secret,
   expires: Schema.Finite,
+  /** Absent when the provider has not supplied a stable account identity. */
+  identity: Schema.optionalKey(Identity),
+  /** Opaque sign-in generation; changes on reauthentication, not token refresh. */
+  revision: Schema.optionalKey(Schema.NonEmptyString),
   /** Provider-specific token data, such as an account ID. */
   extra: Schema.optionalKey(JsonObject),
 })

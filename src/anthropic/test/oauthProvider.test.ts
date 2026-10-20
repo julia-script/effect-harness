@@ -78,7 +78,9 @@ test('concurrent discovery refreshes once, persists token rotation, and retains 
         })
         const saved = yield* store.get(AnthropicOAuth.name)
         if (saved?.type !== 'oauth') return yield* Effect.die('Missing refreshed credential')
-        expect(saved.extra?.identity).toBe('existing-account')
+        expect(saved.identity).toEqual(existing.identity)
+        expect(saved.revision).toBe(existing.revision)
+        expect(saved.extra).toEqual(existing.extra)
         expect(Redacted.value(saved.refresh)).toBe('refresh-new')
         for (const request of api.requests.filter((recorded) => recorded.path === '/v1/models')) {
           expect(request.headers.authorization).toBe('Bearer access-new')
@@ -112,6 +114,21 @@ test('failed token refresh preserves stored credentials and never sends inferenc
         const result = yield* Effect.result(ask(api))
         expect(result).toMatchObject({ _tag: 'Failure' })
         expect(JSON.stringify(result)).not.toContain('must-not-be-in-error')
+        expect(yield* store.get(AnthropicOAuth.name)).toEqual(expired)
+        expect(api.requests.map((request) => request.path)).toEqual(['/v1/oauth/token'])
+      }),
+  ))
+
+test('refresh rejects a different known account without replacing credentials or sending inference', () =>
+  run(
+    () => ({ json: { ...token, account: { uuid: 'different-account' } } }),
+    (api) =>
+      Effect.gen(function* () {
+        const store = yield* Credentials.Credentials
+        const expired = { ...existing, expires: 0 }
+        yield* store.set(AnthropicOAuth.name, expired)
+        const result = yield* Effect.result(ask(api))
+        expect(result).toMatchObject({ _tag: 'Failure' })
         expect(yield* store.get(AnthropicOAuth.name)).toEqual(expired)
         expect(api.requests.map((request) => request.path)).toEqual(['/v1/oauth/token'])
       }),

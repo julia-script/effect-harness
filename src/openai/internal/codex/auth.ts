@@ -73,6 +73,8 @@ const credential = (token: typeof Token.Type) =>
       access: Redacted.make(token.access_token),
       refresh: Redacted.make(token.refresh_token),
       expires: now + token.expires_in * 1000,
+      // These claims come from the successful token exchange, not a caller-supplied JWT.
+      identity: { issuer: AUTH_URL, subject: id },
       extra: { accountId: id },
     }
     return stored
@@ -94,13 +96,32 @@ const tokens = (authUrl: string, params: Record<string, string>, operation: stri
       ),
   )
 
-/** New tokens for `stored`. */
-export const refresh = (authUrl: string, stored: OAuth) =>
-  tokens(
+/** Refresh tokens without changing the bound account or sign-in generation. */
+export const refresh = Effect.fnUntraced(function* (authUrl: string, stored: OAuth) {
+  const next = yield* tokens(
     authUrl,
     { grant_type: 'refresh_token', refresh_token: Redacted.value(stored.refresh) },
     'refresh',
   )
+  const previousId =
+    typeof stored.extra?.accountId === 'string'
+      ? stored.extra.accountId
+      : accountId(Redacted.value(stored.access))
+  if (
+    (stored.identity !== undefined &&
+      (stored.identity.issuer !== next.identity?.issuer ||
+        stored.identity.subject !== next.identity?.subject)) ||
+    (previousId !== undefined && previousId !== next.extra?.accountId)
+  )
+    return yield* new LoginError({ message: 'Codex token refresh returned a different account' })
+  return {
+    ...stored,
+    access: next.access,
+    refresh: next.refresh,
+    expires: next.expires,
+    extra: { ...stored.extra, ...next.extra },
+  } satisfies OAuth
+})
 
 const postJson = (url: string, body: Record<string, string>) =>
   Effect.flatMap(HttpClient.HttpClient, (client) =>
@@ -165,7 +186,7 @@ export const login = (authUrl: string, onCode: (code: DeviceCode) => Effect.Effe
         orElse: () => Effect.fail(new LoginError({ message: 'Codex device login timed out' })),
       }),
     )
-    return yield* tokens(
+    const stored = yield* tokens(
       authUrl,
       {
         grant_type: 'authorization_code',
@@ -175,6 +196,11 @@ export const login = (authUrl: string, onCode: (code: DeviceCode) => Effect.Effe
       },
       'exchange',
     )
+    const revision = yield* Effect.try({
+      try: () => crypto.randomUUID(),
+      catch: fail('Unable to generate credential revision'),
+    })
+    return { ...stored, revision } satisfies OAuth
   })
 
 /** `login`, storing the tokens under `name`. */

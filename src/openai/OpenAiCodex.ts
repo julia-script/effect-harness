@@ -59,6 +59,12 @@ export interface Options {
 /**
  * The Codex provider over the tokens `login` stored. Its `listModels` lists the account's models
  * with their efforts and service tiers, over the same tokens.
+ *
+ * **Details**
+ *
+ * Refresh retains the original identity and revision and rejects a changed account ID.
+ *
+ * @category constructors
  */
 export const provider = (options: Options = {}): Listable<HttpClient.HttpClient | Credentials> =>
   internal.make(options)
@@ -72,7 +78,17 @@ export interface LoginOptions {
   readonly authUrl?: string
 }
 
-/** Sign in with a ChatGPT device code and store the tokens in `Credentials`. */
+/**
+ * Sign in with a ChatGPT device code and store the tokens in `Credentials`.
+ *
+ * **Details**
+ *
+ * Every success creates a fresh revision, even for unchanged tokens or the same account.
+ * Identity uses the exchanged token's ChatGPT account ID and the canonical issuer
+ * https://auth.openai.com, independent of a custom authUrl.
+ *
+ * @category authentication
+ */
 export const login = (
   options: LoginOptions,
 ): Effect.Effect<
@@ -99,10 +115,10 @@ export const layerAdapter = (
 ): Layer.Layer<Adapter.Implemented<typeof adapter.id>> =>
   Adapter.layer(adapter, {
     provider: (account) => provider({ ...options, name: account.name }),
-    login: (account, onCode) =>
+    login: (account, flow) =>
       login({
         name: account.name,
-        onCode,
+        onCode: flow.onCode,
         ...(options.authUrl === undefined ? {} : { authUrl: options.authUrl }),
       }),
   })

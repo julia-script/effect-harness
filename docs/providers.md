@@ -101,6 +101,8 @@ Model.layer([OpenAiCodex.provider()])
 
 **Claude** subscriptions use a browser sign-in with a code to paste back: `AnthropicOAuth.login({ onAuthorize, completion })`, or `begin` and `complete` when the two halves happen in different requests.
 
+Native sign-ins store an optional `Credential.Identity` (`issuer`, `subject`, optional `email` and `name`) and a fresh `revision`. Identity comes from provider account metadata, never from a random credential ID or a user label. Codex uses its ChatGPT account ID; Claude retains `account.uuid` and `account.email_address` when the token response supplies them. Missing identity stays missing. The revision identifies a sign-in generation, not a person: it changes on reauthentication even if the tokens repeat. Refresh preserves both fields and rejects a known account mismatch. Older credentials without these fields remain readable.
+
 ## Accounts added at run time
 
 For apps where _people_ connect their own providers, declare **adapters** (the provider types you support) and let the `Accounts` registry manage their **accounts**. Each account becomes a provider named after it, and `Accounts.layerModel` routes to whichever are ready, live.
@@ -109,11 +111,21 @@ For apps where _people_ connect their own providers, declare **adapters** (the p
 import { Accounts, Adapter } from 'effect-harness/accounts'
 
 // Declarations only: a client can import this to draw an "add account" form.
-const adapters = Adapter.group(OpenAiCodex.adapter, OpenAi.adapter, Anthropic.adapter)
+const adapters = Adapter.group(
+  OpenAiCodex.adapter,
+  AnthropicOAuth.adapter,
+  OpenAi.adapter,
+  Anthropic.adapter,
+)
 
 // Where the loop runs: an implementation per adapter, and somewhere to keep accounts.
 const AccountsLive = Accounts.layer(adapters).pipe(
-  Layer.provide([OpenAiCodex.layerAdapter(), OpenAi.layerAdapter, Anthropic.layerAdapter]),
+  Layer.provide([
+    OpenAiCodex.layerAdapter(),
+    AnthropicOAuth.layerAdapter(),
+    OpenAi.layerAdapter,
+    Anthropic.layerAdapter,
+  ]),
   Layer.provideMerge(Credentials.layerKeyValueStore()),
   Layer.provide(KeyValueStore.layerFileSystem('./data/accounts')),
   Layer.provide([FetchHttpClient.layer, BunServices.layer]),
@@ -143,11 +155,18 @@ yield* accounts.add({
 yield* accounts
   .signIn({ name: 'codex', adapter: 'openai-codex', label: 'ChatGPT' })
   .pipe(
-    Stream.runForEach((event) =>
-      event.type === 'code'
-        ? Console.log(`Open ${event.url} and enter ${event.code}`)
-        : Console.log(`${event.account.name} is ${event.account.status}`),
-    ),
+    Stream.runForEach((event) => {
+      switch (event.type) {
+        case 'started':
+          return Effect.void // retain event.id to cancel this attempt
+        case 'code':
+          return Console.log(`Open ${event.url} and enter ${event.code}`)
+        case 'authorization':
+          return Console.log(`Open ${event.url}`)
+        case 'done':
+          return Console.log(`${event.account.name} is ${event.account.status}`)
+      }
+    }),
   )
 
 for (const { account, models } of yield* accounts.models) {
@@ -156,6 +175,16 @@ for (const { account, models } of yield* accounts.models) {
 ```
 
 Serve the registry to remote clients with `Accounts.layerServer` and call it with `AccountsRpcs`; the [Cloudflare example](../examples/cloudflare/README.md) does exactly this.
+
+For Claude, use `signIn({ name: 'claude-work', adapter: 'anthropic-oauth', label: 'Work' })`. Each stream starts with `{ type: 'started', id, name }`, then emits a device `code` or browser `authorization` URL, and finishes with `done`. Every event carries the attempt ID. Browser hosts submit the pasted `code#state` or full callback URL with `completeSignIn(id, Redacted.make(completion))`. A host-owned loopback listener can pass its URL as `SignIn.redirectUri`; that URL belongs only to the attempt and is not stored in account settings. The library does not start a callback server.
+
+Use `cancelSignIn(id)` to cancel explicitly. Unsubscribing or interrupting the stream also releases the attempt. Credentials are staged until login succeeds; failed, cancelled, stale, or removed targets cannot commit the staged tokens. A second attempt for the same account fails with `SignInActive`; different accounts can sign in concurrently. Completion is browser-only and single-use; past, duplicate, device-code, or unknown attempts fail with `InvalidSignIn`. Explicit cancellation fails the sign-in stream with `SignInCancelled`. `AccountsRpcs` exposes the same operations as `CompleteSignIn` and `CancelSignIn`.
+
+Account status includes optional `identity` and `revision`, never tokens or arbitrary credential extras. Account names distinguish saved connections; compare the provider's `issuer` and `subject` to establish an identity match, not the display label or revision. Keeping an active default and pinning conversations to an account remain host policy.
+
+Custom OAuth adapters now implement `login(account, flow)` instead of receiving an `onCode` callback directly. Use `flow.onCode`, or `flow.onAuthorize` and `flow.completion` for `Adapter.browserOAuth`; write the completed OAuth credential under `account.name` in the supplied `Credentials` service. The service is isolated to that account for the attempt.
+
+The registry serializes its own mutations in one process. It does not turn two independent metadata and credential stores into a cross-process transaction. Hosts sharing storage with a CLI must supply their own coordination; the built-in key-value credential store must not be shared by two processes.
 
 ## Bring your own model
 

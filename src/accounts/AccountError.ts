@@ -40,6 +40,30 @@ export class SignInFailed extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >('effect-harness/accounts/AccountError/SignInFailed')('SignInFailed', {}) {}
 
+/** Another stream already owns a sign-in for this account name. */
+export class SignInActive extends Schema.TaggedError<
+  SignInActive,
+  { readonly brand: unique symbol }
+>('effect-harness/accounts/AccountError/SignInActive')('SignInActive', {}) {}
+
+/** The owning stream or host cancelled the attempt. */
+export class SignInCancelled extends Schema.TaggedError<
+  SignInCancelled,
+  { readonly brand: unique symbol }
+>('effect-harness/accounts/AccountError/SignInCancelled')('SignInCancelled', {}) {}
+
+/** The attempt is unknown, finished, or does not accept this operation. */
+export class InvalidSignIn extends Schema.TaggedError<
+  InvalidSignIn,
+  { readonly brand: unique symbol }
+>('effect-harness/accounts/AccountError/InvalidSignIn')('InvalidSignIn', {}) {}
+
+/** The target account or its credential changed while sign-in was in progress. */
+export class SignInChanged extends Schema.TaggedError<
+  SignInChanged,
+  { readonly brand: unique symbol }
+>('effect-harness/accounts/AccountError/SignInChanged')('SignInChanged', {}) {}
+
 /** No account has the name. */
 export class NotFound extends Schema.TaggedError<NotFound, { readonly brand: unique symbol }>(
   'effect-harness/accounts/AccountError/NotFound',
@@ -57,6 +81,10 @@ export const Reason = Schema.Union([
   Unsupported,
   VerifyFailed,
   SignInFailed,
+  SignInActive,
+  SignInCancelled,
+  InvalidSignIn,
+  SignInChanged,
   NotFound,
   StoreFailed,
 ])

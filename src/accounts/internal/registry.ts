@@ -10,10 +10,10 @@ import type { Service as Store } from '../../credentials/Credentials.ts'
 import type { Credential } from '../../credentials/Credential.ts'
 import * as AccountError from '../AccountError.ts'
 import { Saved } from '../Account.ts'
-import type { Status } from '../Account.ts'
 import type { AccountOf, Any, Requires } from '../Adapter.ts'
 import * as entries from './entry.ts'
 import type { Entry, Lookup } from './entry.ts'
+import type { Attempt } from './signIn.ts'
 
 const Stored = Schema.Array(Saved)
 
@@ -34,6 +34,8 @@ export interface State {
   /** Names whose credential a provider refused, and why; cleared when it is replaced. */
   readonly refused: SubscriptionRef.SubscriptionRef<ReadonlyMap<string, string>>
   readonly line: Semaphore.Semaphore
+  /** Reservations owned by active sign-in streams, keyed by account name. */
+  readonly attempts: Map<string, Attempt>
 }
 
 export const storeFailed = (what: string) => (cause: { readonly message: string }) =>
@@ -75,6 +77,7 @@ export const open = Effect.fnUntraced(function* (group: Lookup, options: Options
     context: yield* Effect.context<Requires>(),
     refused: yield* SubscriptionRef.make<ReadonlyMap<string, string>>(new Map()),
     line: yield* Semaphore.make(1),
+    attempts: new Map<string, Attempt>(),
   }
   const fixed = yield* Effect.forEach(options.accounts ?? [], (account) => declared(base, account))
   const names = new Set(fixed.map(({ saved: { name } }) => name))
@@ -151,7 +154,14 @@ export const statuses = (state: State, all: ReadonlyArray<Entry>) =>
   Effect.gen(function* () {
     const names = yield* stored(state)
     const refused = yield* SubscriptionRef.get(state.refused)
-    return all.map((entry): Status => entries.status(entry, names, refused))
+    return yield* Effect.forEach(all, (entry) =>
+      Effect.map(
+        state.credentials
+          .get(entry.saved.name)
+          .pipe(Effect.mapError(storeFailed('The credential could not be read'))),
+        (credential) => entries.status(entry, names, refused, credential),
+      ),
+    )
   })
 
 export const statusOf = (state: State, entry: Entry) =>

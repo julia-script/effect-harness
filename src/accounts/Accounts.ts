@@ -20,6 +20,7 @@ import { AccountsRpcs } from './AccountsRpcs.ts'
 import type { AccountOf, Any, Group, Ids, Implemented, Requires } from './Adapter.ts'
 import * as operations from './internal/operations.ts'
 import * as registry from './internal/registry.ts'
+import * as signIn from './internal/signIn.ts'
 
 export interface Service {
   readonly list: Effect.Effect<ReadonlyArray<Status>, AccountError>
@@ -29,8 +30,15 @@ export interface Service {
   readonly add: (input: Add) => Effect.Effect<Status, AccountError>
   /** Replace an account's API key, once listing models with the new one works. */
   readonly setKey: (name: string, apiKey: Redacted.Redacted) => Effect.Effect<Status, AccountError>
-  /** Sign in with a device code, adding the account or renewing an existing one. */
+  /** OAuth sign-in, owned by this stream's subscription and cancelled when it closes. */
   readonly signIn: (input: SignIn) => Stream.Stream<SignInEvent, AccountError>
+  /** Submit a pasted code or callback URL once to the matching active browser attempt. */
+  readonly completeSignIn: (
+    id: string,
+    completion: Redacted.Redacted,
+  ) => Effect.Effect<void, AccountError>
+  /** Cancel an active attempt; its stream fails with `SignInCancelled`. */
+  readonly cancelSignIn: (id: string) => Effect.Effect<void, AccountError>
   readonly relabel: (name: string, label: string) => Effect.Effect<Status, AccountError>
   /** Forget the account and its credential. */
   readonly remove: (name: string) => Effect.Effect<void, AccountError>
@@ -70,7 +78,9 @@ export const make = <Adapters extends Record<string, Any>>(
       ).pipe(Stream.mapEffect(() => statuses)),
       add: operations.add(state),
       setKey: operations.setKey(state),
-      signIn: operations.signIn(state),
+      signIn: signIn.stream(state),
+      completeSignIn: signIn.complete(state),
+      cancelSignIn: signIn.cancel(state),
       relabel: operations.relabel(state),
       remove: operations.remove(state),
       models: operations.models(state),
@@ -108,6 +118,8 @@ export const layerHandlers: Layer.Layer<
       Add: (input) => accounts.add(input),
       SetKey: ({ name, apiKey }) => accounts.setKey(name, apiKey),
       SignIn: (input) => accounts.signIn(input),
+      CompleteSignIn: ({ id, completion }) => accounts.completeSignIn(id, completion),
+      CancelSignIn: ({ id }) => accounts.cancelSignIn(id),
       Relabel: ({ name, label }) => accounts.relabel(name, label),
       Remove: ({ name }) => accounts.remove(name),
       Models: () => accounts.models,

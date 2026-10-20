@@ -20,8 +20,13 @@ export class AccountsRpcs extends RpcGroup.make(
     success: Status,
     error: AccountError,
   }),
-  /** Sign in with a device code: the code to show, then the account. */
+  /** Scoped OAuth sign-in; authorization events carry the ID used to complete or cancel it. */
   Rpc.make('SignIn', { payload: SignIn, success: SignInEvent, error: AccountError, stream: true }),
+  Rpc.make('CompleteSignIn', {
+    payload: { id: Schema.String, completion: Secret },
+    error: AccountError,
+  }),
+  Rpc.make('CancelSignIn', { payload: { id: Schema.String }, error: AccountError }),
   Rpc.make('Relabel', {
     payload: { name: Name, label: Schema.String },
     success: Status,

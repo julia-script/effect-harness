@@ -1,18 +1,19 @@
 /**
- * What the registry does: add an account after checking its credential, replace a key, sign in
- * with a device code, relabel, remove, and list every account's models.
+ * What the registry does besides OAuth: add an account after checking its credential, replace a
+ * key, relabel, remove, and list every account's models.
  */
-import { Effect, Queue, Stream } from 'effect'
-import type { Cause, Redacted } from 'effect'
+import { Effect } from 'effect'
+import type { Redacted } from 'effect'
 import type { Listable, Listed } from '../../model/Model.ts'
 import { Rejected } from '../../model/ModelError.ts'
 import * as AccountError from '../AccountError.ts'
-import type { Add, Models, Saved, SignIn, SignInEvent } from '../Account.ts'
+import type { Add, Models, Saved } from '../Account.ts'
 import type { Account, Any, Base, Requires } from '../Adapter.ts'
 import * as entries from './entry.ts'
 import type { Entry } from './entry.ts'
 import * as registry from './registry.ts'
 import type { State } from './registry.ts'
+import { cancelAttempt } from './signIn.ts'
 
 const unsupported = (message: string) => entries.fail(new AccountError.Unsupported(), message)
 
@@ -69,8 +70,8 @@ export const add = (state: State) =>
       Effect.gen(function* () {
         yield* taken(all, input.name)
         const found = yield* entries.adapterOf(state.group, state.implementations, input.adapter)
-        if (found.adapter.auth === 'deviceCode') {
-          return yield* unsupported(`${found.adapter.label} accounts sign in with a device code`)
+        if (found.adapter.auth === 'deviceCode' || found.adapter.auth === 'browserOAuth') {
+          return yield* unsupported(`${found.adapter.label} accounts sign in with OAuth`)
         }
         if (found.adapter.auth === 'apiKey' && input.apiKey === undefined) {
           return yield* unsupported(`${found.adapter.label} accounts need an API key`)
@@ -105,80 +106,6 @@ export const setKey = (state: State) =>
     return yield* registry.statusOf(state, entry)
   })
 
-/** The account a sign-in is for: the existing one named, or a new one from `input`. */
-const signInTarget = Effect.fnUntraced(function* (state: State, input: SignIn) {
-  const existing = yield* registry.lookup(state, input.name)
-  if (existing?.problem !== undefined) return yield* existing.problem
-  const id = existing?.saved.adapter ?? input.adapter
-  if (id === undefined) return yield* entries.notFound(input.name)
-  const found = yield* entries.adapterOf(state.group, state.implementations, id)
-  if (found.implementation.login === undefined || found.adapter.auth !== 'deviceCode') {
-    return yield* unsupported(`${found.adapter.label} accounts do not sign in with a device code`)
-  }
-  const account: Account = existing?.account ?? {
-    adapter: id,
-    name: input.name,
-    label: input.label ?? found.adapter.label,
-    settings: yield* entries.decode(found.adapter, input.settings ?? {}),
-  }
-  return { found, account, login: found.implementation.login, isNew: existing === undefined }
-})
-
-/** Add the account a sign-in made, unless its name was taken meanwhile. */
-const added = (
-  state: State,
-  found: { readonly adapter: Any; readonly implementation: Base<Any> },
-  account: Account,
-) =>
-  registry.change(state, (all) =>
-    Effect.gen(function* () {
-      yield* taken(all, account.name)
-      const saved: Saved = {
-        adapter: account.adapter,
-        name: account.name,
-        label: account.label,
-        settings: yield* entries.encode(found.adapter, account.settings),
-      }
-      const entry = entries.ready(found.adapter, found.implementation, account, saved, false)
-      return [entry, [...all, entry]] as const
-    }),
-  )
-
-/** The entry named `name`, publishing a change: its status follows its new credential. */
-const touched = (state: State, name: string) =>
-  registry.change(state, (all) =>
-    Effect.map(registry.existingIn(all, name), (entry) => [entry, all] as const),
-  )
-
-const signInto = Effect.fnUntraced(function* (
-  state: State,
-  input: SignIn,
-  queue: Queue.Queue<SignInEvent, AccountError.AccountError | Cause.Done>,
-) {
-  const { found, account, login, isNew } = yield* signInTarget(state, input)
-  yield* login(account, (code) =>
-    Effect.asVoid(Queue.offer(queue, { type: 'code', ...code })),
-  ).pipe(
-    Effect.provideContext(state.context),
-    Effect.mapError((error) =>
-      entries.fail(new AccountError.SignInFailed(), `Signing in failed: ${error.message}`, error),
-    ),
-  )
-  const entry = isNew ? yield* added(state, found, account) : yield* touched(state, account.name)
-  yield* registry.accept(state, account.name)
-  yield* Queue.offer(queue, { type: 'done', account: yield* registry.statusOf(state, entry) })
-})
-
-export const signIn =
-  (state: State) =>
-  (input: SignIn): Stream.Stream<SignInEvent, AccountError.AccountError> =>
-    Stream.callback<SignInEvent, AccountError.AccountError>((queue) =>
-      signInto(state, input, queue).pipe(
-        Effect.andThen(Queue.end(queue)),
-        Effect.catch((error) => Queue.fail(queue, error)),
-      ),
-    )
-
 /** The entry named `name`, if it may be changed. */
 const removable = (all: ReadonlyArray<Entry>, name: string) => {
   const found = all.find(({ saved }) => saved.name === name)
@@ -205,19 +132,21 @@ export const relabel = (state: State) => (name: string, label: string) =>
 export const remove = (state: State) => (name: string) =>
   registry
     .change(state, (all) =>
-      Effect.map(
-        removable(all, name),
-        () => [name, all.filter(({ saved }) => saved.name !== name)] as const,
-      ),
+      Effect.gen(function* () {
+        const attempt = state.attempts.get(name)
+        if (attempt !== undefined) yield* cancelAttempt(attempt)
+        const found = all.find(({ saved }) => saved.name === name)
+        if (found === undefined && attempt === undefined) return yield* entries.notFound(name)
+        if (found !== undefined) yield* removable(all, name)
+        if (found !== undefined) {
+          yield* state.credentials
+            .remove(name)
+            .pipe(Effect.mapError(registry.storeFailed('The credential could not be removed')))
+        }
+        return [undefined, all.filter(({ saved }) => saved.name !== name)] as const
+      }),
     )
-    .pipe(
-      Effect.andThen(registry.accept(state, name)),
-      Effect.andThen(
-        state.credentials
-          .remove(name)
-          .pipe(Effect.mapError(registry.storeFailed('The credential could not be removed'))),
-      ),
-    )
+    .pipe(Effect.andThen(registry.accept(state, name)))
 
 /** The models `provider` serves, as a listing shows them. */
 const served = (provider: Listable<Requires>): ReadonlyArray<Listed> =>
