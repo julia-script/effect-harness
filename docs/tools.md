@@ -191,6 +191,30 @@ const release = ({ service }) =>
 
 Declare a tool with `callers: ['tools']` to make it callable only this way, never by the model.
 
+## Delegating to another conversation
+
+A handler reaches the Harness running it with `Harness.current`, so a tool can start a conversation, submit to it and wait for its answer, as a subagent tool does. Give the conversation to the call's task: aborting the call then aborts it, and the call settles only once its work is done.
+
+```ts
+import { Harness } from 'effect-harness/harness'
+import { Call } from 'effect-harness/tool'
+
+const delegate = ({ task }) =>
+  Effect.gen(function* () {
+    const harness = yield* Harness.current
+    const call = yield* Call.Current
+    if (harness === undefined || call === undefined) return yield* Effect.die('not in a tool call')
+    const child = yield* harness.createConversation({
+      ownership: { kind: 'task', taskId: call.taskId },
+    })
+    const submission = yield* child.submit({ type: 'input', content: task })
+    const settled = yield* submission.wait
+    // …read the answer with child.entries
+  })
+```
+
+The handler does not depend on the Harness that installs it, so the toolkit layer stays free of a cycle. Task phases can read `Harness.current` too.
+
 ## Stock tools
 
 ### Coding tools: `read`, `write`, `edit`, `bash`

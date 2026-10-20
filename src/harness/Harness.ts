@@ -104,6 +104,14 @@ export class Harness extends Context.Service<Harness, Service>()(
 ) {}
 
 /**
+ * The Harness running the current task, for its phases and the tool handlers they run, which read
+ * it with `yield* Harness.current`; `undefined` elsewhere. A tool that delegates to another
+ * conversation reaches it here, without depending on the Harness that installs the tool. Recovery
+ * can run tasks while the Harness opens; they wait until it has opened.
+ */
+export const current: Effect.Effect<Service | undefined> = internal.current
+
+/**
  * Open a Harness over the `Storage`, task `Registry` and `Extensions` in context: a Session and a Scheduler
  * with the Harness hooks. Run settings come from `Settings.Current`. Closing the scope closes them; pending submission waits fail.
  */
