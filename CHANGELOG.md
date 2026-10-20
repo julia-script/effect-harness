@@ -1,5 +1,11 @@
 # effect-harness
 
+## 0.9.0
+
+### Minor Changes
+
+- 33f7679: Tool handlers can require the `Harness` service: the tool task provides the Harness it runs under to each call (`Toolkit.Provided`), so a tool can create, submit to and wait on conversations without the Harness in its layer.
+
 ## 0.8.1
 
 ### Patch Changes
