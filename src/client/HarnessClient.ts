@@ -32,7 +32,9 @@ import type { SchedulerClosed, TaskNotFound } from '../task/TaskError.ts'
 import { HarnessRpcs } from './HarnessRpcs.ts'
 import type { ConversationEntryQuery, Inspection } from './HarnessRpcs.ts'
 import type { Bound, Call } from './Init.ts'
+import { Connections } from './HarnessTransport.ts'
 import { broken, eventsFrom, resubscribing, watched } from './internal/watch.ts'
+import type { Reopen } from './internal/watch.ts'
 
 /** How a call fails on the loop, or on the way there. */
 export type Failure<E = never> = E | CommitError | RpcClientError
@@ -158,7 +160,7 @@ const submissionHandle = (rpcs: Rpcs, id: SubmissionId): Submission => ({
   ),
 })
 
-const conversationHandle = (rpcs: Rpcs, id: ConversationId): Conversation => ({
+const conversationHandle = (rpcs: Rpcs, reopen: Reopen, id: ConversationId): Conversation => ({
   id,
   submit: (draft) =>
     Effect.map(rpcs.Submit({ conversationId: id, draft }), (submissionId) =>
@@ -183,34 +185,38 @@ const conversationHandle = (rpcs: Rpcs, id: ConversationId): Conversation => ({
       conversationId: id,
       ...(options?.at === undefined ? {} : { at: options.at }),
     }),
-  view: watched(resubscribing(rpcs.WatchView({ conversationId: id }))),
-  events: eventsFrom(resubscribing(rpcs.WatchEvents({ conversationId: id }))),
+  view: watched(reopen(rpcs.WatchView({ conversationId: id }))),
+  events: eventsFrom(reopen(rpcs.WatchEvents({ conversationId: id }))),
   fork: (at, { ownership, init }) =>
     encodeInit(init).pipe(
       Effect.flatMap((encoded) => rpcs.Fork({ conversationId: id, at, ownership, ...encoded })),
-      Effect.map((forked) => conversationHandle(rpcs, forked)),
+      Effect.map((forked) => conversationHandle(rpcs, reopen, forked)),
     ),
   abort: (options) => rpcs.AbortConversation({ conversationId: id, ...options }),
   waitForIdle: rpcs.WaitForIdle({ conversationId: id }),
 })
 
-/** A client over the `RpcClient.Protocol` in context, for the lifetime of the scope. */
-export const make: Effect.Effect<Service, never, RpcClient.Protocol | Scope.Scope> = Effect.map(
+/**
+ * A client over the `RpcClient.Protocol` in context, for the lifetime of the scope. With the
+ * transport's `Connections`, its watches open again as soon as a dropped connection is back.
+ */
+export const make: Effect.Effect<Service, never, RpcClient.Protocol | Scope.Scope> = Effect.zipWith(
   RpcClient.make(HarnessRpcs),
-  (rpcs): Service => ({
+  Effect.map(Effect.serviceOption(Connections), resubscribing),
+  (rpcs, reopen): Service => ({
     root: (options) =>
       encodeInit(options?.init).pipe(
         Effect.flatMap(rpcs.Root),
-        Effect.map((id) => conversationHandle(rpcs, id)),
+        Effect.map((id) => conversationHandle(rpcs, reopen, id)),
       ),
     conversation: (id) =>
       Effect.map(rpcs.HasConversation({ conversationId: id }), (exists) =>
-        exists ? conversationHandle(rpcs, id) : undefined,
+        exists ? conversationHandle(rpcs, reopen, id) : undefined,
       ),
     createConversation: ({ ownership, init }) =>
       encodeInit(init).pipe(
         Effect.flatMap((encoded) => rpcs.CreateConversation({ ownership, ...encoded })),
-        Effect.map((id) => conversationHandle(rpcs, id)),
+        Effect.map((id) => conversationHandle(rpcs, reopen, id)),
       ),
     submission: (id) =>
       Effect.map(rpcs.HasSubmission({ submissionId: id }), (exists) =>
@@ -230,7 +236,7 @@ export const make: Effect.Effect<Service, never, RpcClient.Protocol | Scope.Scop
     waitForIdle: rpcs.WaitForIdle({}),
     usage: rpcs.Usage(),
     inspect: rpcs.Inspect(),
-    taskGraph: watched(resubscribing(rpcs.WatchTaskGraph())),
+    taskGraph: watched(reopen(rpcs.WatchTaskGraph())),
   }),
 )
 

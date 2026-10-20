@@ -2,7 +2,7 @@
  * Watches over the transport: the first frame and the changes after it, opened again when the
  * connection drops.
  */
-import { Effect, Option, Sink, Stream } from 'effect'
+import { Effect, Option, Sink, Stream, SubscriptionRef } from 'effect'
 import type { Schema } from 'effect'
 import { RpcClientDefect, RpcClientError } from 'effect/rpc/RpcClientError'
 import * as Ops from '../../delta/Ops.ts'
@@ -37,22 +37,52 @@ const replay = <T extends Schema.Json>(value: T, frame: Frame<T>): readonly [T, 
 /** Wait before opening a watch again: as the transport waits before reconnecting. */
 const backoff = (failures: number) => Effect.sleep(Math.min(500 * 1.5 ** failures, 5000))
 
+/** Open a watch again: `open` again when its connection drops, from the loop's state then. */
+export type Reopen = <A, E>(
+  open: Stream.Stream<A, E | RpcClientError>,
+) => Stream.Stream<A, E | RpcClientError>
+
 /**
- * A watch's stream that opens the watch again when its connection drops, such as when the loop
- * restarts. The new watch starts from the loop's state then: a fresh value, or a fresh snapshot.
+ * Open a watch again when its connection drops, such as when the loop restarts. The new watch
+ * starts from the loop's state then: a fresh value, or a fresh snapshot. With the count of the
+ * transport's connections, it opens as soon as the connection is back; otherwise, or when the
+ * connection did not drop, after a backoff.
  */
-export const resubscribing = <A, E>(open: Stream.Stream<A, E | RpcClientError>) =>
-  Stream.suspend(() => {
-    let failures = 0
-    const attempt = (): Stream.Stream<A, E | RpcClientError> =>
-      open.pipe(
-        Stream.tap(() => Effect.sync(() => (failures = 0))),
-        Stream.catchTag('RpcClientError', () =>
-          Stream.unwrap(Effect.as(backoff(failures++), Stream.suspend(attempt))),
-        ),
-      )
-    return attempt()
-  })
+export const resubscribing =
+  (connections: Option.Option<SubscriptionRef.SubscriptionRef<number>>): Reopen =>
+  <A, E>(open: Stream.Stream<A, E | RpcClientError>) =>
+    Stream.suspend(() => {
+      let failures = 0
+      const opened = Option.match(connections, {
+        onNone: () => Effect.succeed(0),
+        onSome: SubscriptionRef.get,
+      })
+      /** After the backoff, or once the connection has opened again since the `seen`th time. */
+      const retry = (seen: number) =>
+        Option.match(connections, {
+          onNone: () => backoff(failures++),
+          onSome: (count) =>
+            Effect.raceFirst(
+              backoff(failures++),
+              SubscriptionRef.changes(count).pipe(
+                Stream.filter((n) => n > seen),
+                Stream.runHead,
+              ),
+            ),
+        })
+      const attempt = (): Stream.Stream<A, E | RpcClientError> =>
+        Stream.unwrap(
+          Effect.map(opened, (seen) =>
+            open.pipe(
+              Stream.tap(() => Effect.sync(() => (failures = 0))),
+              Stream.catchTag('RpcClientError', () =>
+                Stream.unwrap(Effect.as(retry(seen), Stream.suspend(attempt))),
+              ),
+            ),
+          ),
+        )
+      return attempt()
+    })
 
 /** A watch from its frames: the value they start with, then each change replayed onto it. */
 export const watched = <T extends Schema.Json, E>(frames: Stream.Stream<Frame<T>, E>) =>
