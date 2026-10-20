@@ -137,7 +137,7 @@ export const make = (
         })
         return yield* AnthropicLanguageModel.make({
           model: model.id,
-          config: { ...configure(model, request, options), strictJsonSchema: false },
+          config: configure(model, request, options),
         }).pipe(
           Effect.provideService(AnthropicClient.AnthropicClient, transport.client(native, request)),
         )

@@ -17,13 +17,18 @@ import { models as catalog } from './catalog.ts'
 const Effort = Schema.Literals(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 const isEffort = Schema.is(Effort)
 
-/** The Responses API options for `model`, with its entry in `models` for efforts and temperature. */
+/**
+ * The Responses API options for `model`, with its entry in `models` for efforts and temperature.
+ * Tool schemas are sent as written, so not strict: strict mode requires closed objects with every
+ * property required, which optional tool arguments are not.
+ */
 export const config = (model: Info, request: Request, models: ReadonlyArray<Entry> = catalog) => {
   const options = request.options ?? {}
   const level = options.reasoning
   const entry = find(models, model.id)
   const named = level === undefined ? undefined : (effort(entry, level) ?? level)
   return {
+    strictJsonSchema: false,
     ...(options.maxTokens === undefined ? {} : { max_output_tokens: options.maxTokens }),
     ...(options.temperature === undefined || entry?.temperature === false
       ? {}

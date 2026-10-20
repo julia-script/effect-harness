@@ -7,9 +7,12 @@ import { describe, expect, test } from 'bun:test'
 import { Effect, Redacted } from 'effect'
 import { FetchHttpClient } from 'effect/http'
 import type { HttpClient } from 'effect/http'
+import { CodingTools } from '../../coding/index.ts'
 import { Model } from '../../model/index.ts'
 import type { Message } from '../../model/index.ts'
 import { serve } from '../../model/test/fakeApi.ts'
+import { violations } from '../../model/test/strictSchema.ts'
+import { Tool } from '../../tool/index.ts'
 import { Anthropic } from '../index.ts'
 
 const usage = {
@@ -54,14 +57,19 @@ const events = [
 const user = (text: string): Message.Message => ({ role: 'user', content: text, timestamp: 0 })
 
 /** Ask `modelId` with `options` through a Model over a provider at `url`, and return the body. */
-const ask = (url: string, modelId: string, options: Model.Options) =>
+const ask = (
+  url: string,
+  modelId: string,
+  options: Model.Options,
+  messages: ReadonlyArray<Message.Message> = [user('hi')],
+) =>
   Effect.gen(function* () {
     const model = yield* Model.make([
       Anthropic.provider({ apiKey: Redacted.make('sk-ant'), apiUrl: url }),
     ])
     const info = yield* model.info(Anthropic.ref(modelId))
     if (info === undefined) return yield* Effect.die(`no ${modelId}`)
-    const request = { model: Anthropic.ref(modelId), messages: [user('hi')], options }
+    const request = { model: Anthropic.ref(modelId), messages, options }
     return yield* Model.collect(model.stream(request), info)
   })
 
@@ -119,6 +127,25 @@ describe('Anthropic.provider', () => {
     const requests = await run((url) => ask(url, 'claude-opus-4-5', { temperature: 0.5 }))
     expect(requests[0]?.body).toMatchObject({ temperature: 0.5 })
     expect(requests[0]?.body).not.toHaveProperty('thinking')
+  })
+
+  test('sends the bundled tools as written, not strict', async () => {
+    const tools = [CodingTools.Read, CodingTools.Write, CodingTools.Edit, CodingTools.Bash].map(
+      Tool.definition,
+    )
+    const requests = await run((url) =>
+      ask(url, 'claude-sonnet-5-5', {}, [
+        { role: 'system', content: 'Be brief.', toolsAdded: tools, timestamp: 0 },
+        user('hi'),
+      ]),
+    )
+    const body = (requests[0]?.body ?? {}) as {
+      tools?: ReadonlyArray<{ name: string; input_schema: unknown; strict?: boolean }>
+    }
+    const sent = body.tools ?? []
+    expect(sent.map(({ name }) => name)).toEqual(tools.map(({ name }) => name))
+    expect(violations(sent[0]?.input_schema)).not.toEqual([])
+    for (const tool of sent) expect(tool.strict).not.toBe(true)
   })
 
   test('listModels follows the pages and names the catalog levels', async () => {
