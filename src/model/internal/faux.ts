@@ -80,18 +80,23 @@ const finish = (core: Core, raw: AssistantMessage, request: Request, model: Info
     return withUsage(message, request, core.prompts)
   })
 
-const resolve = (core: Core, step: Step, request: Request, model: Info, call: number) =>
-  Effect.gen(function* () {
-    if (step instanceof ModelError) return yield* step
-    const raw =
-      typeof step === 'function' ? yield* step(request, model, yield* Ref.get(core.state)) : step
-    const message = yield* finish(core, raw, request, model, call)
-    if (message.stopReason === 'error' || message.stopReason === 'aborted')
-      return yield* rejected(message.errorMessage ?? 'Faux response failed', message)
-    if (message.stopReason === 'pending')
-      return yield* rejected('Faux response ended without a stop reason')
-    return message
-  })
+const resolve = Effect.fnUntraced(function* (
+  core: Core,
+  step: Step,
+  request: Request,
+  model: Info,
+  call: number,
+) {
+  if (step instanceof ModelError) return yield* step
+  const raw =
+    typeof step === 'function' ? yield* step(request, model, yield* Ref.get(core.state)) : step
+  const message = yield* finish(core, raw, request, model, call)
+  if (message.stopReason === 'error' || message.stopReason === 'aborted')
+    return yield* rejected(message.errorMessage ?? 'Faux response failed', message)
+  if (message.stopReason === 'pending')
+    return yield* rejected('Faux response ended without a stop reason')
+  return message
+})
 
 const deferredMessage = (core: Core, model: Info, handle: DeferredHandle) =>
   Effect.map(blank(core, model), (message): AssistantMessage => ({
@@ -101,77 +106,79 @@ const deferredMessage = (core: Core, model: Info, handle: DeferredHandle) =>
   }))
 
 /** Register a deferred response to `step`, answered by polling. */
-const defer = (core: Core, step: Step, request: Request, model: Info, call: number) =>
-  Effect.gen(function* () {
-    const { pendingFetches = 0, pollAfterMs } = core.options.deferred ?? {}
-    const handle: DeferredHandle = {
-      provider: core.name,
-      modelId: model.id,
-      api: core.api,
-      id: `deferred:${call}`,
-      ...(pollAfterMs === undefined ? {} : { pollAfterMs }),
-    }
-    const entry: Deferred = {
-      handle,
-      step,
-      request,
-      model,
-      pendingFetches: Math.max(0, Math.floor(pendingFetches)),
-      cancelled: false,
-    }
-    yield* Ref.update(core.deferreds, (all) => new Map(all).set(handle.id, entry))
-    return yield* deferredMessage(core, model, handle)
-  })
+const defer = Effect.fnUntraced(function* (
+  core: Core,
+  step: Step,
+  request: Request,
+  model: Info,
+  call: number,
+) {
+  const { pendingFetches = 0, pollAfterMs } = core.options.deferred ?? {}
+  const handle: DeferredHandle = {
+    provider: core.name,
+    modelId: model.id,
+    api: core.api,
+    id: `deferred:${call}`,
+    ...(pollAfterMs === undefined ? {} : { pollAfterMs }),
+  }
+  const entry: Deferred = {
+    handle,
+    step,
+    request,
+    model,
+    pendingFetches: Math.max(0, Math.floor(pendingFetches)),
+    cancelled: false,
+  }
+  yield* Ref.update(core.deferreds, (all) => new Map(all).set(handle.id, entry))
+  return yield* deferredMessage(core, model, handle)
+})
 
 /** Take the next step for `request` and answer it. */
-const answer = (core: Core, request: Request, model: Info) =>
-  Effect.gen(function* () {
-    const step = yield* Ref.modify(core.steps, ([next, ...rest]) => [next, rest] as const)
-    const { callCount: call } = yield* Ref.updateAndGet(core.state, (current) => ({
-      ...current,
-      callCount: current.callCount + 1,
-    }))
-    yield* Ref.update(core.requests, (all) => [...all, request])
-    if (step === undefined) {
-      const text = 'No more faux responses queued'
-      const empty = yield* blank(core, model)
-      const response = withUsage(
-        { ...empty, stopReason: 'error', errorMessage: text },
-        request,
-        core.prompts,
-      )
-      return yield* rejected(text, response)
-    }
-    const deferred = request.options?.deferred
-    if (deferred !== undefined && deferred !== false)
-      return yield* defer(core, step, request, model, call)
-    return yield* resolve(core, step, request, model, call)
-  })
+const answer = Effect.fnUntraced(function* (core: Core, request: Request, model: Info) {
+  const step = yield* Ref.modify(core.steps, ([next, ...rest]) => [next, rest] as const)
+  const { callCount: call } = yield* Ref.updateAndGet(core.state, (current) => ({
+    ...current,
+    callCount: current.callCount + 1,
+  }))
+  yield* Ref.update(core.requests, (all) => [...all, request])
+  if (step === undefined) {
+    const text = 'No more faux responses queued'
+    const empty = yield* blank(core, model)
+    const response = withUsage(
+      { ...empty, stopReason: 'error', errorMessage: text },
+      request,
+      core.prompts,
+    )
+    return yield* rejected(text, response)
+  }
+  const deferred = request.options?.deferred
+  if (deferred !== undefined && deferred !== false)
+    return yield* defer(core, step, request, model, call)
+  return yield* resolve(core, step, request, model, call)
+})
 
-const poll = (core: Core, handle: DeferredHandle) =>
-  Effect.gen(function* () {
-    yield* Ref.update(core.state, (current) => ({
-      ...current,
-      deferredFetchCount: current.deferredFetchCount + 1,
-    }))
-    const entry = (yield* Ref.get(core.deferreds)).get(handle.id)
-    if (entry === undefined || entry.handle.modelId !== handle.modelId)
-      return yield* rejected(`Unknown faux deferred response: ${handle.id}`)
-    if (entry.cancelled)
-      return yield* rejected(`Faux deferred response was cancelled: ${handle.id}`)
-    const save = (next: Deferred) =>
-      Ref.update(core.deferreds, (all) => new Map(all).set(handle.id, next))
-    if (entry.pendingFetches > 0) {
-      yield* save({ ...entry, pendingFetches: entry.pendingFetches - 1 })
-      return yield* deferredMessage(core, entry.model, entry.handle)
-    }
-    const { deferred: _, ...options } = entry.request.options ?? {}
-    const request = { ...entry.request, options }
-    const final =
-      entry.final ?? (yield* Effect.exit(resolve(core, entry.step, request, entry.model, 0)))
-    yield* save({ ...entry, final })
-    return yield* final
-  })
+const poll = Effect.fnUntraced(function* (core: Core, handle: DeferredHandle) {
+  yield* Ref.update(core.state, (current) => ({
+    ...current,
+    deferredFetchCount: current.deferredFetchCount + 1,
+  }))
+  const entry = (yield* Ref.get(core.deferreds)).get(handle.id)
+  if (entry === undefined || entry.handle.modelId !== handle.modelId)
+    return yield* rejected(`Unknown faux deferred response: ${handle.id}`)
+  if (entry.cancelled) return yield* rejected(`Faux deferred response was cancelled: ${handle.id}`)
+  const save = (next: Deferred) =>
+    Ref.update(core.deferreds, (all) => new Map(all).set(handle.id, next))
+  if (entry.pendingFetches > 0) {
+    yield* save({ ...entry, pendingFetches: entry.pendingFetches - 1 })
+    return yield* deferredMessage(core, entry.model, entry.handle)
+  }
+  const { deferred: _, ...options } = entry.request.options ?? {}
+  const request = { ...entry.request, options }
+  const final =
+    entry.final ?? (yield* Effect.exit(resolve(core, entry.step, request, entry.model, 0)))
+  yield* save({ ...entry, final })
+  return yield* final
+})
 
 const cancel = (core: Core, handle: DeferredHandle) =>
   Effect.andThen(

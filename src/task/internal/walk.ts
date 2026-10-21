@@ -20,16 +20,15 @@ export interface Overlay {
 }
 
 /** The overlay of what a transaction staged so far. */
-export const overlayOf = (tx: Tx) =>
-  Effect.gen(function* () {
-    const tasks = new Map((yield* tx.stagedTasks).map((record) => [record.id, record]))
-    const conversations = yield* tx.stagedConversations
-    const edges = new Map(
-      conversations.map((record) => [record.id, record.owner?.taskId ?? null] as const),
-    )
-    const overlay: Overlay = { tasks, edges }
-    return overlay
-  })
+export const overlayOf = Effect.fnUntraced(function* (tx: Tx) {
+  const tasks = new Map((yield* tx.stagedTasks).map((record) => [record.id, record]))
+  const conversations = yield* tx.stagedConversations
+  const edges = new Map(
+    conversations.map((record) => [record.id, record.owner?.taskId ?? null] as const),
+  )
+  const overlay: Overlay = { tasks, edges }
+  return overlay
+})
 
 /** Owner task of a conversation, `null` when ownerless, `undefined` while not loaded. */
 export const edgeOf = (state: State, id: ConversationId, overlay?: Overlay) =>

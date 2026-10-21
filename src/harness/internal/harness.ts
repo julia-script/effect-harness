@@ -20,7 +20,7 @@ import type { Host } from './conversation.ts'
 import { withdrawQueuedInputs } from './inbox.ts'
 import { settleOutcome } from './run.ts'
 import * as Submissions from './submissions.ts'
-import { readsFirst } from './submissions.ts'
+import { readsFirst } from '../../session/internal/readsFirst.ts'
 import * as Views from './views/views.ts'
 
 const SCAN_PAGE_SIZE = 256
@@ -30,13 +30,12 @@ const sessionOptions = (options: Options): Session.Options => ({
   ...(options.documentRetention === undefined
     ? {}
     : { documentRetention: options.documentRetention }),
-  conversationCreated: (tx, record) =>
-    Effect.gen(function* () {
-      yield* tx.doc(Live.document, record.id)
-      yield* tx.doc(Inbox.document, record.id)
-      yield* Agent.created(tx, record)
-      if (options.conversationCreated !== undefined) yield* options.conversationCreated(tx, record)
-    }),
+  conversationCreated: Effect.fnUntraced(function* (tx, record) {
+    yield* tx.doc(Live.document, record.id)
+    yield* tx.doc(Inbox.document, record.id)
+    yield* Agent.created(tx, record)
+    if (options.conversationCreated !== undefined) yield* options.conversationCreated(tx, record)
+  }),
 })
 
 const schedulerOptions: Scheduler.Options = {
@@ -62,15 +61,14 @@ const conversationIds = (session: Session.Service) =>
   )
 
 /** Every conversation's `$usage`, summed. */
-const usage = (session: Session.Service) =>
-  Effect.gen(function* () {
-    const states: Array<Usage.State> = []
-    for (const id of yield* conversationIds(session)) {
-      const state = yield* session.snapshot(Usage.document, id)
-      if (state !== undefined) states.push(state)
-    }
-    return Usage.sum(states)
-  })
+const usage = Effect.fnUntraced(function* (session: Session.Service) {
+  const states: Array<Usage.State> = []
+  for (const id of yield* conversationIds(session)) {
+    const state = yield* session.snapshot(Usage.document, id)
+    if (state !== undefined) states.push(state)
+  }
+  return Usage.sum(states)
+})
 
 /** Every unsettled submission in ID order, read from Storage on the line. */
 const unsettled = (storage: Storage['Service'], session: Session.Service) =>

@@ -46,73 +46,77 @@ export const decodeAll = (model: ReadonlyArray<ModelMessage>): ReadonlyArray<Mes
   model.flatMap((message) => Option.toArray(decodeMessage(message)))
 
 /** Every entry of `query`, oldest first. */
-const scan = (
+const scan = Effect.fnUntraced(function* (
   tx: Tx,
   conversationId: ConversationId,
   range: { readonly minEntryId?: EntryId; readonly maxEntryId: EntryId },
-) =>
-  Effect.gen(function* () {
-    const entries: Array<EntryRecord> = []
-    let cursor: Cursor | undefined
-    do {
-      const query = { conversationId, ...range, order: 'ascending' as const }
-      const page = yield* tx.scanEntries(query, SCAN_PAGE_SIZE, cursor)
-      entries.push(...page.items)
-      cursor = page.next
-    } while (cursor !== undefined)
-    return entries
-  })
+) {
+  const entries: Array<EntryRecord> = []
+  let cursor: Cursor | undefined
+  do {
+    const query = { conversationId, ...range, order: 'ascending' as const }
+    const page = yield* tx.scanEntries(query, SCAN_PAGE_SIZE, cursor)
+    entries.push(...page.items)
+    cursor = page.next
+  } while (cursor !== undefined)
+  return entries
+})
 
 /** The newest head marker at or before `tail`. */
-const headAt = (tx: Tx, conversationId: ConversationId, tail: EntryId) =>
-  Effect.gen(function* () {
-    const latest = yield* tx.latestHeadMarker(conversationId)
-    if (latest === undefined || latest.id <= tail) return latest
-    let found: HeadMarker | undefined
-    let cursor: Cursor | undefined
-    do {
-      const page = yield* tx.scanEntries({ conversationId, maxEntryId: tail }, 64, cursor)
-      const entry = page.items.find((item) => item.head !== undefined)
-      if (entry?.head !== undefined) found = { ...entry, head: entry.head }
-      cursor = found === undefined ? page.next : undefined
-    } while (cursor !== undefined)
-    return found
-  })
+const headAt = Effect.fnUntraced(function* (tx: Tx, conversationId: ConversationId, tail: EntryId) {
+  const latest = yield* tx.latestHeadMarker(conversationId)
+  if (latest === undefined || latest.id <= tail) return latest
+  let found: HeadMarker | undefined
+  let cursor: Cursor | undefined
+  do {
+    const page = yield* tx.scanEntries({ conversationId, maxEntryId: tail }, 64, cursor)
+    const entry = page.items.find((item) => item.head !== undefined)
+    if (entry?.head !== undefined) found = { ...entry, head: entry.head }
+    cursor = found === undefined ? page.next : undefined
+  } while (cursor !== undefined)
+  return found
+})
 
 /**
  * Read the context of a conversation in a commit, before its first table write: now, or cut off at
  * the entry `at`.
  */
-export const read = (tx: Tx, conversationId: ConversationId, at?: EntryId) =>
-  Effect.gen(function* () {
-    const tail = at ?? (yield* tx.scanEntries({ conversationId }, 1)).items[0]?.id
-    if (tail === undefined) {
-      const empty: View = { head: undefined, entries: [], contributions: [], messages: [] }
-      return empty
-    }
-    const head = yield* headAt(tx, conversationId, tail)
-    const range =
-      head === undefined ? { maxEntryId: tail } : { minEntryId: head.head, maxEntryId: tail }
-    return derive(head, yield* scan(tx, conversationId, range))
-  })
+export const read = Effect.fnUntraced(function* (
+  tx: Tx,
+  conversationId: ConversationId,
+  at?: EntryId,
+) {
+  const tail = at ?? (yield* tx.scanEntries({ conversationId }, 1)).items[0]?.id
+  if (tail === undefined) {
+    const empty: View = { head: undefined, entries: [], contributions: [], messages: [] }
+    return empty
+  }
+  const head = yield* headAt(tx, conversationId, tail)
+  const range =
+    head === undefined ? { maxEntryId: tail } : { minEntryId: head.head, maxEntryId: tail }
+  return derive(head, yield* scan(tx, conversationId, range))
+})
 
 /**
  * The public context of a conversation, read in a commit before its first table write: now, or
  * cut off at `at`, which must be visible from the conversation.
  */
-export const readVisible = (tx: Tx, conversationId: ConversationId, at?: EntryId) =>
-  Effect.gen(function* () {
-    if (at !== undefined) {
-      const found = yield* tx.scanEntries({ conversationId, minEntryId: at, maxEntryId: at }, 1)
-      if (found.items.length === 0)
-        return yield* new TransactionError({
-          message: `Entry ${at} is not visible from conversation ${conversationId}`,
-        })
-    }
-    const { head, ...rest } = yield* read(tx, conversationId, at)
-    const view: ContextView = head === undefined ? rest : { head, ...rest }
-    return view
-  })
+export const readVisible = Effect.fnUntraced(function* (
+  tx: Tx,
+  conversationId: ConversationId,
+  at?: EntryId,
+) {
+  if (at !== undefined) {
+    const found = yield* tx.scanEntries({ conversationId, minEntryId: at, maxEntryId: at }, 1)
+    if (found.items.length === 0)
+      return yield* new TransactionError({
+        message: `Entry ${at} is not visible from conversation ${conversationId}`,
+      })
+  }
+  const { head, ...rest } = yield* read(tx, conversationId, at)
+  const view: ContextView = head === undefined ? rest : { head, ...rest }
+  return view
+})
 
 /** Derive the view from the entries of the range. */
 export const derive = (head: HeadMarker | undefined, range: ReadonlyArray<EntryRecord>): View => {

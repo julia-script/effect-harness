@@ -9,7 +9,6 @@ import type { TaskRecord, TaskState } from '../../storage/schema/Task.ts'
 import type { Service as RegistryService, Snapshot } from '../Registry.ts'
 import type { Options } from '../Scheduler.ts'
 import type * as Task from '../Task.ts'
-import { ReadAfterWrite } from '../../session/SessionError.ts'
 import { SchedulerClosed } from '../TaskError.ts'
 import {
   addTo,
@@ -273,17 +272,6 @@ export const seal = (state: State) =>
       Effect.forEach(idle, (wait) => Deferred.fail(wait, closedError()), { discard: true }),
     )
   })
-
-/**
- * A commit whose callback reads tables only before writing cannot fail with `ReadAfterWrite`;
- * if it does, that is a bug.
- */
-export const readsFirst = <A, E, R>(effect: Effect.Effect<A, E | ReadAfterWrite, R>) =>
-  Effect.catchIf(
-    effect,
-    (error): error is ReadAfterWrite => error instanceof ReadAfterWrite,
-    Effect.die,
-  )
 
 /** A definition with its types erased, as the scheduler runs it. */
 export type Erased = Task.Task<Schema.Json, Task.Checkpoint, Schema.Json>

@@ -51,36 +51,35 @@ const endedEarly = (m: Machine, result: CodemodeResult) => {
 }
 
 /** The script's own outcome, stored with its store writes in one commit. */
-const complete = (m: Machine, deps: Deps, result: CodemodeResult) =>
-  Effect.gen(function* () {
-    const shown = details(m)
-    const formatted = yield* format(result, {
-      wallMs: (yield* Clock.currentTimeMillis) - m.start.startedAt,
-      maxOutputTokens: m.start.maxOutputTokens,
-      calls: shown.calls,
-      limits: OUTPUT_LIMITS,
-      write: yield* writer(m.call, deps.files),
-    })
-    const full = formatted.fullOutputPath
-    const stored: Stored = {
-      isError: !result.ok,
-      output: output(formatted.content, {
-        details: full === undefined ? shown : { ...shown, fullOutputPath: full },
-      }),
-    }
-    const writes = result.ok ? result.storeWrites : undefined
-    return yield* settle(m.call, stored, (tx) =>
-      Effect.gen(function* () {
-        if (writes === undefined) return
-        const values = (yield* tx.doc(store, m.call.conversationId)).values
-        for (const key of writes.delete) delete values[key]
-        for (const [key, value] of Object.entries(writes.set)) {
-          const json = toJson(value)
-          if (Option.isSome(json)) values[key] = draft(json.value)
-        }
-      }),
-    )
+const complete = Effect.fnUntraced(function* (m: Machine, deps: Deps, result: CodemodeResult) {
+  const shown = details(m)
+  const formatted = yield* format(result, {
+    wallMs: (yield* Clock.currentTimeMillis) - m.start.startedAt,
+    maxOutputTokens: m.start.maxOutputTokens,
+    calls: shown.calls,
+    limits: OUTPUT_LIMITS,
+    write: yield* writer(m.call, deps.files),
   })
+  const full = formatted.fullOutputPath
+  const stored: Stored = {
+    isError: !result.ok,
+    output: output(formatted.content, {
+      details: full === undefined ? shown : { ...shown, fullOutputPath: full },
+    }),
+  }
+  const writes = result.ok ? result.storeWrites : undefined
+  return yield* settle(m.call, stored, (tx) =>
+    Effect.gen(function* () {
+      if (writes === undefined) return
+      const values = (yield* tx.doc(store, m.call.conversationId)).values
+      for (const key of writes.delete) delete values[key]
+      for (const [key, value] of Object.entries(writes.set)) {
+        const json = toJson(value)
+        if (Option.isSome(json)) values[key] = draft(json.value)
+      }
+    }),
+  )
+})
 
 const toJson = Schema.decodeUnknownOption(Schema.Json)
 
@@ -167,86 +166,88 @@ const watchResult = (vm: CodemodeRun, offer: (event: Event) => void) =>
   )
 
 /** Start the VM and run the machine until the run has its result; the machine and the result. */
-const runScript = (
+const runScript = Effect.fnUntraced(function* (
   deps: Deps,
   call: Call.Service,
   code: string,
   found: Attempt,
   remaining?: number,
-) =>
-  Effect.gen(function* () {
-    const events = yield* Queue.unbounded<Event>()
-    const offer = (event: Event) => {
-      Queue.offerUnsafe(events, event)
-    }
-    // The VM's own signal: aborted on a divergence as well as when this attempt ends.
-    // oxlint-disable-next-line effecttsgo/abort-controller-in-effect
-    const controller = new AbortController()
-    yield* Effect.addFinalizer(() =>
-      Effect.sync(() => {
-        controller.abort()
-      }),
-    )
-    const fibers = yield* FiberSet.make<void, never>()
-    const vm = yield* startVm(deps, code, found.start, controller.signal, offer, remaining)
-    yield* watchResult(vm, offer)
-    const m = makeMachine(call, found, {
-      run: vm,
-      controller,
-      globals: deps.globals,
-      offer,
-      fork: (effect) => Effect.asVoid(FiberSet.run(fibers, effect)),
-    })
-    return { m, result: yield* loop(m, events, handle, commitJournal) }
+) {
+  const events = yield* Queue.unbounded<Event>()
+  const offer = (event: Event) => {
+    Queue.offerUnsafe(events, event)
+  }
+  // The VM's own signal: aborted on a divergence as well as when this attempt ends.
+  // oxlint-disable-next-line effecttsgo/abort-controller-in-effect
+  const controller = new AbortController()
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      controller.abort()
+    }),
+  )
+  const fibers = yield* FiberSet.make<void, never>()
+  const vm = yield* startVm(deps, code, found.start, controller.signal, offer, remaining)
+  yield* watchResult(vm, offer)
+  const m = makeMachine(call, found, {
+    run: vm,
+    controller,
+    globals: deps.globals,
+    offer,
+    fork: (effect) => Effect.asVoid(FiberSet.run(fibers, effect)),
   })
+  return { m, result: yield* loop(m, events, handle, commitJournal) }
+})
 
 /** Run an attempt to its outcome. */
-const attempt = (deps: Deps, call: Call.Service, code: string, found: Attempt) =>
-  Effect.gen(function* () {
-    if (found.start.version !== VERSION) {
-      const message = `The script cannot resume: it started under code mode version ${found.start.version}, this is ${VERSION}.`
-      return yield* settle(call, errorResult(message))
-    }
-    const now = yield* Clock.currentTimeMillis
-    const remaining = found.start.deadline === undefined ? undefined : found.start.deadline - now
-    if (remaining !== undefined && remaining <= 0)
-      return yield* settle(
-        call,
-        errorResult('Script timed out: its deadline passed while it was interrupted.'),
-      )
-    const { m, result } = yield* runScript(deps, call, code, found, remaining)
-    if (m.ended !== undefined) return m.ended
-    // Aborted, but not by this call: the host closed the sandbox, say while shutting down. That
-    // decides nothing about the script: store nothing and wait to be interrupted, so a later
-    // attempt replays it.
-    if (!result.ok && result.error.kind === 'aborted' && !m.controller.signal.aborted)
-      return yield* Effect.never
-    if (endedEarly(m, result)) {
-      const at = result.during?.seq ?? 0
-      return yield* decide(
-        m,
-        errorResult(`${RESUMED}: it ended after result ${at}, where it went on before.`),
-      )
-    }
-    return yield* complete(m, deps, result)
-  }).pipe(Effect.scoped)
+const attempt = Effect.fnUntraced(function* (
+  deps: Deps,
+  call: Call.Service,
+  code: string,
+  found: Attempt,
+) {
+  if (found.start.version !== VERSION) {
+    const message = `The script cannot resume: it started under code mode version ${found.start.version}, this is ${VERSION}.`
+    return yield* settle(call, errorResult(message))
+  }
+  const now = yield* Clock.currentTimeMillis
+  const remaining = found.start.deadline === undefined ? undefined : found.start.deadline - now
+  if (remaining !== undefined && remaining <= 0)
+    return yield* settle(
+      call,
+      errorResult('Script timed out: its deadline passed while it was interrupted.'),
+    )
+  const { m, result } = yield* runScript(deps, call, code, found, remaining)
+  if (m.ended !== undefined) return m.ended
+  // Aborted, but not by this call: the host closed the sandbox, say while shutting down. That
+  // decides nothing about the script: store nothing and wait to be interrupted, so a later
+  // attempt replays it.
+  if (!result.ok && result.error.kind === 'aborted' && !m.controller.signal.aborted)
+    return yield* Effect.never
+  if (endedEarly(m, result)) {
+    const at = result.during?.seq ?? 0
+    return yield* decide(
+      m,
+      errorResult(`${RESUMED}: it ended after result ${at}, where it went on before.`),
+    )
+  }
+  return yield* complete(m, deps, result)
+}, Effect.scoped)
 
 const refuse = (message: string): Stored => errorResult(message)
 
 /** The outcome of one call of the code mode tool for `source`. */
-const outcome = (deps: Deps, source: string) =>
-  Effect.gen(function* () {
-    const parsed = Result.try(() => parseCodemodeSource(source))
-    if (Result.isFailure(parsed)) return refuse(`Invalid script: ${String(parsed.failure)}`)
-    const agent = yield* Agent.Current
-    const call = yield* Call.Current
-    if (agent === undefined || call === undefined)
-      return refuse('codemode runs only for the calls of a conversation')
-    const start = yield* fresh(agent, deps, parsed.success.options)
-    const found = yield* load(call, start)
-    if ('done' in found) return found.done
-    return yield* attempt(deps, call, parsed.success.code, found)
-  })
+const outcome = Effect.fnUntraced(function* (deps: Deps, source: string) {
+  const parsed = Result.try(() => parseCodemodeSource(source))
+  if (Result.isFailure(parsed)) return refuse(`Invalid script: ${String(parsed.failure)}`)
+  const agent = yield* Agent.Current
+  const call = yield* Call.Current
+  if (agent === undefined || call === undefined)
+    return refuse('codemode runs only for the calls of a conversation')
+  const start = yield* fresh(agent, deps, parsed.success.options)
+  const found = yield* load(call, start)
+  if ('done' in found) return found.done
+  return yield* attempt(deps, call, parsed.success.code, found)
+})
 
 /** The handler of the code mode tool. */
 export const execute =

@@ -3,6 +3,7 @@
  * replay sees what the first run saw.
  */
 import { toCodemodeIdentifier } from '@earendil-works/pi-codemode/declarations'
+import { Predicate } from 'effect'
 import type { Schema } from 'effect'
 import { rank } from '../../harness/internal/search.ts'
 import type { NamespaceInfo, Outcome, Start } from './state.ts'
@@ -35,7 +36,7 @@ const describeNamespace = (start: Start, [name]: ReadonlyArray<unknown>): Outcom
 }
 
 const optionsOf = (value: unknown): { readonly limit?: unknown; readonly namespace?: unknown } =>
-  typeof value === 'object' && value !== null ? value : {}
+  Predicate.isObject(value) ? value : {}
 
 const searchTools = (start: Start, [query, options]: ReadonlyArray<unknown>) => {
   if (typeof query !== 'string') return fail('searchTools() expects a query string')

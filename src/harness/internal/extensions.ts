@@ -74,14 +74,17 @@ export const validate = (next: Snapshot, name: string): Effect.Effect<void, Inva
  * Bring the task `Registry` in step: definitions of new or replaced extensions are installed,
  * and those no installed extension has any more are removed.
  */
-export const publish = (registry: RegistryService, current: Snapshot, next: Snapshot) =>
-  Effect.gen(function* () {
-    const kept = new Set(next.flatMap(({ extension }) => extension.tasks.map((task) => task.name)))
-    for (const { extension } of current)
-      for (const task of extension.tasks)
-        if (!kept.has(task.name)) yield* registry.uninstall(task.name)
-    for (const installed of next) {
-      if (current.some((each) => each.extension === installed.extension)) continue
-      for (const task of installed.extension.tasks) yield* registry.install(task)
-    }
-  })
+export const publish = Effect.fnUntraced(function* (
+  registry: RegistryService,
+  current: Snapshot,
+  next: Snapshot,
+) {
+  const kept = new Set(next.flatMap(({ extension }) => extension.tasks.map((task) => task.name)))
+  for (const { extension } of current)
+    for (const task of extension.tasks)
+      if (!kept.has(task.name)) yield* registry.uninstall(task.name)
+  for (const installed of next) {
+    if (current.some((each) => each.extension === installed.extension)) continue
+    for (const task of installed.extension.tasks) yield* registry.install(task)
+  }
+})

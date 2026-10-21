@@ -3,7 +3,7 @@
  * The positional system prompt, ported from pi's `harness/prompt.ts`: which `$system` entries
  * make the sections and tools the model sees equal the ones the agent wants.
  */
-import { Cause, Effect } from 'effect'
+import { Cause, Effect, Equal } from 'effect'
 import type { Message, SystemMessage, ToolDefinition } from '../../model/Message.ts'
 import * as Transcript from '../../model/Transcript.ts'
 import type { EntryDraft } from '../../session/Session.ts'
@@ -29,43 +29,38 @@ export const replaySections = (messages: ReadonlyArray<Message>): Map<string, st
  * Render the agent's sections in order. A section that fails keeps the text the model sees, and
  * the failure is reported as a warning.
  */
-export const renderSections = (
+export const renderSections = Effect.fnUntraced(function* (
   input: Omit<SectionInput, 'shown'>,
   shown: ReadonlyMap<string, string>,
-) =>
-  Effect.gen(function* () {
-    const desired = new Map<string, string>()
-    const rendering: SectionInput = { ...input, shown: Object.fromEntries(shown) }
-    for (const section of input.agent.sections) {
-      const rendered = yield* Effect.catchCause(
-        Effect.map(section.render(rendering), (text) =>
-          text === undefined || section.tag === false
-            ? text
-            : `<${section.key}>\n${text}\n</${section.key}>`,
-        ),
-        (cause) =>
-          Cause.hasInterrupts(cause)
-            ? Effect.interrupt
-            : Effect.as(
-                Effect.logWarning(`Section ${section.key} failed to render`, cause),
-                shown.get(section.key),
-              ),
-      )
-      if (rendered !== undefined) desired.set(section.key, rendered)
-    }
-    return desired
-  })
+) {
+  const desired = new Map<string, string>()
+  const rendering: SectionInput = { ...input, shown: Object.fromEntries(shown) }
+  for (const section of input.agent.sections) {
+    const rendered = yield* Effect.catchCause(
+      Effect.map(section.render(rendering), (text) =>
+        text === undefined || section.tag === false
+          ? text
+          : `<${section.key}>\n${text}\n</${section.key}>`,
+      ),
+      (cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.as(
+              Effect.logWarning(`Section ${section.key} failed to render`, cause),
+              shown.get(section.key),
+            ),
+    )
+    if (rendered !== undefined) desired.set(section.key, rendered)
+  }
+  return desired
+})
 
 interface ToolChanges {
   readonly toolsRemoved: ReadonlyArray<{ readonly name: string }>
   readonly toolsAdded: ReadonlyArray<ToolDefinition>
 }
 
-const sameDeclaration = (a: ToolDefinition, b: ToolDefinition): boolean =>
-  a.name === b.name &&
-  a.description === b.description &&
-  JSON.stringify(a.parameters) === JSON.stringify(b.parameters) &&
-  JSON.stringify(a.constrainedSampling) === JSON.stringify(b.constrainedSampling)
+const sameDeclaration = (a: ToolDefinition, b: ToolDefinition): boolean => Equal.equals(a, b)
 
 /**
  * Tool changes from `offered` to `desired`. A changed declaration is removed and re-added. Replay

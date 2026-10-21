@@ -46,12 +46,11 @@ const storeFailed = () =>
   entries.fail(new AccountError.StoreFailed(), 'The sign-in could not be stored')
 
 /** Must be called under the registry lock, including removal's fence. */
-export const cancelAttempt = (attempt: Attempt) =>
-  Effect.gen(function* () {
-    attempt.phase = 'cancelled'
-    attempt.staged.close()
-    yield* Deferred.succeed(attempt.cancelled, undefined)
-  })
+export const cancelAttempt = Effect.fnUntraced(function* (attempt: Attempt) {
+  attempt.phase = 'cancelled'
+  attempt.staged.close()
+  yield* Deferred.succeed(attempt.cancelled, undefined)
+})
 
 const reserve = (state: State, input: SignIn) =>
   Semaphore.withPermit(
@@ -116,24 +115,23 @@ interface Reserved {
 }
 
 /** Restore only the credential we committed, never overwrite a replacement. */
-const rollback = (
+const rollback = Effect.fnUntraced(function* (
   state: State,
   attempt: Attempt,
   before: Credential | undefined,
   next: Credential,
-) =>
-  Effect.gen(function* () {
-    if (before !== undefined) {
-      yield* state.credentials
-        .update(attempt.name, next, before)
-        .pipe(Effect.catchTag('CredentialChanged', () => Effect.void))
-      return
-    }
-    const current = yield* state.credentials.get(attempt.name)
-    if (Equal.equals(current, next)) {
-      yield* state.credentials.remove(attempt.name)
-    }
-  }).pipe(Effect.mapError(storeFailed))
+) {
+  if (before !== undefined) {
+    yield* state.credentials
+      .update(attempt.name, next, before)
+      .pipe(Effect.catchTag('CredentialChanged', () => Effect.void))
+    return
+  }
+  const current = yield* state.credentials.get(attempt.name)
+  if (Equal.equals(current, next)) {
+    yield* state.credentials.remove(attempt.name)
+  }
+}, Effect.mapError(storeFailed))
 
 /** Tokens precede account metadata; the registry lock fences removal and target replacement. */
 const commit = (state: State, reserved: Reserved) =>

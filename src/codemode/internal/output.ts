@@ -111,53 +111,56 @@ const shorten = (combined: string, maxTokens: number, limits: Limits) => {
 }
 
 /** Apply the token budget, with the complete text in a file. */
-const truncate = (items: ReadonlyArray<Item>, maxTokens: number, limits: Limits, write: Write) =>
-  Effect.gen(function* () {
-    const texts = items.flatMap((item) => (item.type === 'text' ? [item.text] : []))
-    const combined = texts.join('\n')
-    const short = texts.length === 0 ? null : shorten(combined, maxTokens, limits)
-    if (short === null) return { items: [...items] } satisfies Cut
-    const spilled = yield* write('output.txt', combined)
-    const note =
-      'path' in spilled
-        ? `\n\n[Full output: ${spilled.path} (read with offset/limit)]`
-        : `\n\n[Could not save the full output: ${spilled.error}]`
-    const images = items.filter((item) => item.type === 'image')
-    const cut: Cut = {
-      items: [{ type: 'text', text: `${short}${note}` }, ...images],
-      ...('path' in spilled ? { fullOutputPath: spilled.path } : {}),
-    }
-    return cut
-  })
+const truncate = Effect.fnUntraced(function* (
+  items: ReadonlyArray<Item>,
+  maxTokens: number,
+  limits: Limits,
+  write: Write,
+) {
+  const texts = items.flatMap((item) => (item.type === 'text' ? [item.text] : []))
+  const combined = texts.join('\n')
+  const short = texts.length === 0 ? null : shorten(combined, maxTokens, limits)
+  if (short === null) return { items: [...items] } satisfies Cut
+  const spilled = yield* write('output.txt', combined)
+  const note =
+    'path' in spilled
+      ? `\n\n[Full output: ${spilled.path} (read with offset/limit)]`
+      : `\n\n[Could not save the full output: ${spilled.error}]`
+  const images = items.filter((item) => item.type === 'image')
+  const cut: Cut = {
+    items: [{ type: 'text', text: `${short}${note}` }, ...images],
+    ...('path' in spilled ? { fullOutputPath: spilled.path } : {}),
+  }
+  return cut
+})
 
 const decode = (data: string) => Uint8Array.from(atob(data), (char) => char.codePointAt(0) ?? 0)
 
 /** Each image saved to a file, with a text item naming its path before it; saved once each. */
-const saveImages = (items: ReadonlyArray<Item>, write: Write) =>
-  Effect.gen(function* () {
-    const labels = new Map<string, string>()
-    const saved: Array<Item> = []
-    for (const item of items) {
-      if (item.type !== 'image') {
-        saved.push(item)
-        continue
-      }
-      let label = labels.get(item.data)
-      if (label === undefined) {
-        const bytes = decode(item.data)
-        const kind = `${item.mimeType}, ${bytes.length} bytes`
-        const name = `image-${labels.size + 1}${IMAGE_EXTENSIONS[item.mimeType] ?? '.bin'}`
-        const written = yield* write(name, bytes)
-        label =
-          'path' in written
-            ? `[Image saved to ${written.path} (${kind})]`
-            : `[Image (${kind}) could not be saved: ${written.error}]`
-        labels.set(item.data, label)
-      }
-      saved.push({ type: 'text', text: label }, item)
+const saveImages = Effect.fnUntraced(function* (items: ReadonlyArray<Item>, write: Write) {
+  const labels = new Map<string, string>()
+  const saved: Array<Item> = []
+  for (const item of items) {
+    if (item.type !== 'image') {
+      saved.push(item)
+      continue
     }
-    return saved
-  })
+    let label = labels.get(item.data)
+    if (label === undefined) {
+      const bytes = decode(item.data)
+      const kind = `${item.mimeType}, ${bytes.length} bytes`
+      const name = `image-${labels.size + 1}${IMAGE_EXTENSIONS[item.mimeType] ?? '.bin'}`
+      const written = yield* write(name, bytes)
+      label =
+        'path' in written
+          ? `[Image saved to ${written.path} (${kind})]`
+          : `[Image (${kind}) could not be saved: ${written.error}]`
+      labels.set(item.data, label)
+    }
+    saved.push({ type: 'text', text: label }, item)
+  }
+  return saved
+})
 
 const errorHead = (error: Extract<CodemodeResult, { ok: false }>['error']) => {
   if (error.kind === 'script') return error.stack ?? `${error.name ?? 'Error'}: ${error.message}`
@@ -184,22 +187,21 @@ export interface Options {
 }
 
 /** The result's content for a script's result, and the complete text's file when it was cut. */
-export const format = (result: CodemodeResult, options: Options) =>
-  Effect.gen(function* () {
-    const output = [...result.output]
-    if (result.ok && result.value !== undefined)
-      output.push({ type: 'text', text: valueText(result.value) })
-    const items = formatItems(output)
-    if (!result.ok)
-      items.push({ type: 'text', text: `Script error:\n${formatError(result, options.calls)}` })
-    const { maxOutputTokens, limits, write } = options
-    const cut = yield* truncate(joinText(items), maxOutputTokens, limits, write)
-    // After truncation, which moves images after the text, so each path stays next to its image.
-    const content = joinText(yield* saveImages(cut.items, write))
-    const status = result.ok ? 'Script completed' : 'Script failed'
-    const header = `${status}\nWall time ${(options.wallMs / 1000).toFixed(1)} seconds\nOutput:\n`
-    return {
-      content: [{ type: 'text', text: header } satisfies Item, ...content],
-      ...(cut.fullOutputPath === undefined ? {} : { fullOutputPath: cut.fullOutputPath }),
-    }
-  })
+export const format = Effect.fnUntraced(function* (result: CodemodeResult, options: Options) {
+  const output = [...result.output]
+  if (result.ok && result.value !== undefined)
+    output.push({ type: 'text', text: valueText(result.value) })
+  const items = formatItems(output)
+  if (!result.ok)
+    items.push({ type: 'text', text: `Script error:\n${formatError(result, options.calls)}` })
+  const { maxOutputTokens, limits, write } = options
+  const cut = yield* truncate(joinText(items), maxOutputTokens, limits, write)
+  // After truncation, which moves images after the text, so each path stays next to its image.
+  const content = joinText(yield* saveImages(cut.items, write))
+  const status = result.ok ? 'Script completed' : 'Script failed'
+  const header = `${status}\nWall time ${(options.wallMs / 1000).toFixed(1)} seconds\nOutput:\n`
+  return {
+    content: [{ type: 'text', text: header } satisfies Item, ...content],
+    ...(cut.fullOutputPath === undefined ? {} : { fullOutputPath: cut.fullOutputPath }),
+  }
+})

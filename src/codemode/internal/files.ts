@@ -19,30 +19,29 @@ export const files = Effect.gen(function* () {
   return services
 })
 
-const directory = (call: Call.Service, { fs }: Files) =>
-  Effect.gen(function* () {
-    const recorded = (yield* call.snapshot(run, call.taskId))?.outputDir
-    if (recorded !== undefined) return recorded
-    const created = yield* fs.makeTempDirectory({ prefix: 'pi-codemode-' })
-    return yield* call.commit((tx) =>
-      Effect.map(tx.doc(run, call.taskId), (state) => {
-        state.outputDir ??= created
-        return state.outputDir
-      }),
-    )
-  })
+const directory = Effect.fnUntraced(function* (call: Call.Service, { fs }: Files) {
+  const recorded = (yield* call.snapshot(run, call.taskId))?.outputDir
+  if (recorded !== undefined) return recorded
+  const created = yield* fs.makeTempDirectory({ prefix: 'pi-codemode-' })
+  return yield* call.commit((tx) =>
+    Effect.map(tx.doc(run, call.taskId), (state) => {
+      state.outputDir ??= created
+      return state.outputDir
+    }),
+  )
+})
 
 /** The writer of one call's result files; a failure is reported in the result, not raised. */
 export const writer = (call: Call.Service, services: Files): Effect.Effect<Write> =>
-  Effect.map(
-    Effect.cached(directory(call, services)),
-    (dir): Write =>
-      (name, data) =>
-        Effect.gen(function* () {
-          const path = services.path.join(yield* dir, name)
-          yield* typeof data === 'string'
-            ? services.fs.writeFileString(path, data)
-            : services.fs.writeFile(path, data)
-          return { path }
-        }).pipe(Effect.catch((error) => Effect.succeed({ error: error.message }))),
+  Effect.map(Effect.cached(directory(call, services)), (dir): Write =>
+    Effect.fnUntraced(
+      function* (name, data) {
+        const path = services.path.join(yield* dir, name)
+        yield* typeof data === 'string'
+          ? services.fs.writeFileString(path, data)
+          : services.fs.writeFile(path, data)
+        return { path }
+      },
+      Effect.catch((error) => Effect.succeed({ error: error.message })),
+    ),
   )

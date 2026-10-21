@@ -2,7 +2,7 @@
  * ChatGPT sign-in for Codex, ported from pi-ai's `auth/oauth/openai-codex.ts`: the device code
  * login, token refresh, and the account id the access token carries.
  */
-import { Clock, Duration, Effect, Option, Redacted, Result, Schema } from 'effect'
+import { Clock, Duration, Effect, Option, Predicate, Redacted, Result, Schema } from 'effect'
 import { Base64Url } from 'effect/encoding'
 import { HttpClient, HttpClientRequest, HttpClientResponse } from 'effect/http'
 import { Identity } from '../../../credentials/Credential.ts'
@@ -64,22 +64,21 @@ export const accountId = (access: string): string | undefined => {
 const fail = (message: string) => (cause: unknown) => new LoginError({ message, cause })
 
 /** Tokens as a stored credential, with the account id they carry. */
-const credential = (token: typeof Token.Type) =>
-  Effect.gen(function* () {
-    const id = accountId(token.access_token)
-    if (id === undefined) return yield* new LoginError({ message: 'The token has no account id' })
-    const now = yield* Clock.currentTimeMillis
-    const stored: OAuth = {
-      _tag: 'OAuth',
-      access: Redacted.make(token.access_token),
-      refresh: Redacted.make(token.refresh_token),
-      expires: now + token.expires_in * 1000,
-      // These claims come from the successful token exchange, not a caller-supplied JWT.
-      identity: Identity.make({ issuer: AUTH_URL, subject: id }),
-      extra: { accountId: id },
-    }
-    return stored
-  })
+const credential = Effect.fnUntraced(function* (token: typeof Token.Type) {
+  const id = accountId(token.access_token)
+  if (id === undefined) return yield* new LoginError({ message: 'The token has no account id' })
+  const now = yield* Clock.currentTimeMillis
+  const stored: OAuth = {
+    _tag: 'OAuth',
+    access: Redacted.make(token.access_token),
+    refresh: Redacted.make(token.refresh_token),
+    expires: now + token.expires_in * 1000,
+    // These claims come from the successful token exchange, not a caller-supplied JWT.
+    identity: Identity.make({ issuer: AUTH_URL, subject: id }),
+    extra: { accountId: id },
+  }
+  return stored
+})
 
 const tokens = (authUrl: string, params: Record<string, string>, operation: string) =>
   Effect.flatMap(HttpClient.HttpClient, (client) =>
@@ -104,10 +103,9 @@ export const refresh = Effect.fnUntraced(function* (authUrl: string, stored: OAu
     { grant_type: 'refresh_token', refresh_token: Redacted.value(stored.refresh) },
     'refresh',
   )
-  const previousId =
-    typeof stored.extra?.accountId === 'string'
-      ? stored.extra.accountId
-      : accountId(Redacted.value(stored.access))
+  const previousId = Predicate.isString(stored.extra?.accountId)
+    ? stored.extra.accountId
+    : accountId(Redacted.value(stored.access))
   if (
     (stored.identity !== undefined &&
       (stored.identity.issuer !== next.identity?.issuer ||
@@ -133,76 +131,81 @@ type Poll =
   | { readonly status: 'complete'; readonly value: typeof Authorization.Type }
   | { readonly status: 'pending' | 'slow_down' }
 
-const pollOnce = (authUrl: string, device: typeof UserCode.Type) =>
-  Effect.gen(function* () {
-    const response = yield* postJson(`${authUrl}/api/accounts/deviceauth/token`, {
+const pollFailed = fail('Codex device login failed')
+
+const pollOnce = Effect.fnUntraced(function* (authUrl: string, device: typeof UserCode.Type) {
+  const response = yield* Effect.mapError(
+    postJson(`${authUrl}/api/accounts/deviceauth/token`, {
       device_auth_id: device.device_auth_id,
       user_code: device.user_code,
-    })
-    if (response.status === 200) {
-      const value = yield* HttpClientResponse.schemaBodyJson(Authorization)(response)
-      return { status: 'complete', value } satisfies Poll
-    }
-    if (response.status === 403 || response.status === 404)
-      return { status: 'pending' } satisfies Poll
-    const body = yield* Effect.option(HttpClientResponse.schemaBodyJson(PollError)(response))
-    const error = Option.isSome(body) ? body.value.error : undefined
-    const code = typeof error === 'object' ? error.code : error
-    if (code === 'deviceauth_authorization_pending') return { status: 'pending' } satisfies Poll
-    if (code === 'slow_down') return { status: 'slow_down' } satisfies Poll
-    return yield* new LoginError({ message: `Codex device login failed (${response.status})` })
-  }).pipe(
-    Effect.mapError((cause) =>
-      cause instanceof LoginError ? cause : fail('Codex device login failed')(cause),
-    ),
+    }),
+    pollFailed,
   )
+  if (response.status === 200) {
+    const value = yield* Effect.mapError(
+      HttpClientResponse.schemaBodyJson(Authorization)(response),
+      pollFailed,
+    )
+    return { status: 'complete', value } satisfies Poll
+  }
+  if (response.status === 403 || response.status === 404)
+    return { status: 'pending' } satisfies Poll
+  const body = yield* Effect.option(HttpClientResponse.schemaBodyJson(PollError)(response))
+  const error = Option.isSome(body) ? body.value.error : undefined
+  const code = Predicate.isString(error) ? error : error?.code
+  if (code === 'deviceauth_authorization_pending') return { status: 'pending' } satisfies Poll
+  if (code === 'slow_down') return { status: 'slow_down' } satisfies Poll
+  return yield* new LoginError({ message: `Codex device login failed (${response.status})` })
+})
 
-const poll = (
+/** Poll every `intervalMs`, slowing down when asked, until the person approves the code. */
+const poll = Effect.fnUntraced(function* (
   authUrl: string,
   device: typeof UserCode.Type,
   intervalMs: number,
-): Effect.Effect<typeof Authorization.Type, LoginError, HttpClient.HttpClient> =>
-  Effect.flatMap(pollOnce(authUrl, device), (result) => {
-    if (result.status === 'complete') return Effect.succeed(result.value)
-    const next = result.status === 'slow_down' ? intervalMs + SLOW_DOWN_MS : intervalMs
-    return Effect.flatMap(Effect.sleep(Duration.millis(next)), () => poll(authUrl, device, next))
-  })
+) {
+  let interval = intervalMs
+  for (;;) {
+    yield* Effect.sleep(Duration.millis(interval))
+    const result = yield* pollOnce(authUrl, device)
+    if (result.status === 'complete') return result.value
+    if (result.status === 'slow_down') interval += SLOW_DOWN_MS
+  }
+})
 
 /** Sign in with a device code: `onCode` shows the code, and the tokens come back once approved. */
-export const login = (authUrl: string, onCode: (code: DeviceCode) => Effect.Effect<void>) =>
-  Effect.gen(function* () {
-    const response = yield* postJson(`${authUrl}/api/accounts/deviceauth/usercode`, {
-      client_id: CLIENT_ID,
-    }).pipe(
-      Effect.flatMap(HttpClientResponse.filterStatusOk),
-      Effect.flatMap(HttpClientResponse.schemaBodyJson(UserCode)),
-      Effect.mapError(fail('Codex device code request failed')),
-    )
-    yield* onCode({ url: `${authUrl}/codex/device`, code: response.user_code })
-    const intervalMs = Math.max(MIN_INTERVAL_MS, response.interval * 1000)
-    const authorization = yield* Effect.sleep(Duration.millis(intervalMs)).pipe(
-      Effect.andThen(poll(authUrl, response, intervalMs)),
-      Effect.timeoutOrElse({
-        duration: DEVICE_TIMEOUT,
-        orElse: () => Effect.fail(new LoginError({ message: 'Codex device login timed out' })),
-      }),
-    )
-    const stored = yield* tokens(
-      authUrl,
-      {
-        grant_type: 'authorization_code',
-        code: authorization.authorization_code,
-        code_verifier: authorization.code_verifier,
-        redirect_uri: `${authUrl}/deviceauth/callback`,
-      },
-      'exchange',
-    )
-    const revision = yield* Effect.try({
-      try: () => crypto.randomUUID(),
-      catch: fail('Unable to generate credential revision'),
-    })
-    return { ...stored, revision } satisfies OAuth
-  })
+export const login = Effect.fnUntraced(function* (
+  authUrl: string,
+  onCode: (code: DeviceCode) => Effect.Effect<void>,
+) {
+  const response = yield* postJson(`${authUrl}/api/accounts/deviceauth/usercode`, {
+    client_id: CLIENT_ID,
+  }).pipe(
+    Effect.flatMap(HttpClientResponse.filterStatusOk),
+    Effect.flatMap(HttpClientResponse.schemaBodyJson(UserCode)),
+    Effect.mapError(fail('Codex device code request failed')),
+  )
+  yield* onCode({ url: `${authUrl}/codex/device`, code: response.user_code })
+  const intervalMs = Math.max(MIN_INTERVAL_MS, response.interval * 1000)
+  const authorization = yield* poll(authUrl, response, intervalMs).pipe(
+    Effect.timeoutOrElse({
+      duration: DEVICE_TIMEOUT,
+      orElse: () => Effect.fail(new LoginError({ message: 'Codex device login timed out' })),
+    }),
+  )
+  const stored = yield* tokens(
+    authUrl,
+    {
+      grant_type: 'authorization_code',
+      code: authorization.authorization_code,
+      code_verifier: authorization.code_verifier,
+      redirect_uri: `${authUrl}/deviceauth/callback`,
+    },
+    'exchange',
+  )
+  const revision = yield* Effect.sync(() => crypto.randomUUID())
+  return { ...stored, revision } satisfies OAuth
+})
 
 /** `login`, storing the tokens under `name`. */
 export const store = (
