@@ -39,6 +39,8 @@ jobs:
         run: bun run build
       - name: Format, strict lint and type checks
         run: bun run check
+      - name: Build the docs site
+        run: bun run site:build
       - name: Unit, integration and process recovery tests
         run: bun run test
       - name: Verify installed package consumers
