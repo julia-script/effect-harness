@@ -19,39 +19,39 @@ import type { Scope } from 'effect'
 import { KeyValueStore } from 'effect/persistence'
 import { HarnessTransport } from '../../client/index.ts'
 import { runTest } from '../../task/test/support.ts'
-import { Credential, Credentials } from '../index.ts'
+import { Credential, CredentialStore } from '../index.ts'
 import * as keychain from '../internal/keychain.ts'
 import { makeFakeKeychain } from './fakeKeychain.ts'
 
 const apiKey = (key: string): Credential.Credential => ({
-  type: 'api_key',
+  _tag: 'ApiKey',
   key: Redacted.make(key),
 })
 
 const oauth = (access: string, expires: number): Credential.OAuth => ({
-  type: 'oauth',
+  _tag: 'OAuth',
   access: Redacted.make(access),
   refresh: Redacted.make(`${access}-refresh`),
   expires,
 })
 
 const accessOf = (credential: Credential.Credential | undefined) =>
-  credential?.type === 'oauth' ? Redacted.value(credential.access) : undefined
+  credential?._tag === 'OAuth' ? Redacted.value(credential.access) : undefined
 
-/** Memory, served over `CredentialsRpcs`, and read through `Credentials.makeRpc`. */
+/** Memory, served over `CredentialsRpcs`, and read through `CredentialStore.makeRpc`. */
 const remote = (
   protocols: typeof HarnessTransport.makeMemory,
-): Effect.Effect<Credentials.Service, never, Scope.Scope> =>
+): Effect.Effect<CredentialStore.Service, never, Scope.Scope> =>
   Effect.gen(function* () {
     const transport = yield* protocols
-    const store = yield* Credentials.makeMemory()
-    yield* Credentials.layerServer.pipe(
+    const store = yield* CredentialStore.makeMemory()
+    yield* CredentialStore.layerServer.pipe(
       Layer.launch,
-      Effect.provideService(Credentials.CredentialStore, store),
+      Effect.provideService(CredentialStore.CredentialStore, store),
       Effect.provideContext(transport),
       Effect.forkScoped,
     )
-    return yield* Effect.provideContext(Credentials.makeRpc, transport)
+    return yield* Effect.provideContext(CredentialStore.makeRpc, transport)
   })
 
 /** `effect` over an in-memory `KeyValueStore`, open while the scope is. */
@@ -61,13 +61,13 @@ const withKeyValue = <A, E>(effect: Effect.Effect<A, E, KeyValueStore.KeyValueSt
   )
 
 const stores: ReadonlyArray<
-  readonly [string, Effect.Effect<Credentials.Service, never, Scope.Scope>]
+  readonly [string, Effect.Effect<CredentialStore.Service, never, Scope.Scope>]
 > = [
-  ['memory', Credentials.makeMemory()],
+  ['memory', CredentialStore.makeMemory()],
   ['rpc', remote(HarnessTransport.makeMemory)],
   // Secrets cross as strings and decode back to `Redacted`.
   ['encoded rpc', remote(HarnessTransport.makeMemoryEncoded)],
-  ['key-value', withKeyValue(Credentials.makeKeyValueStore())],
+  ['key-value', withKeyValue(CredentialStore.makeKeyValueStore())],
   ['keychain', keychain.make('test', makeFakeKeychain())],
 ]
 
@@ -81,13 +81,13 @@ for (const [name, open] of stores) {
           yield* store.set('anthropic', apiKey('sk-1'))
           yield* store.set('openai', oauth('a', 0))
           const stored = yield* store.get('anthropic')
-          expect(stored?.type === 'api_key' && Redacted.value(stored.key)).toBe('sk-1')
+          expect(stored?._tag === 'ApiKey' && Redacted.value(stored.key)).toBe('sk-1')
           expect(yield* store.list).toEqual([
-            { provider: 'anthropic', type: 'api_key' },
-            { provider: 'openai', type: 'oauth' },
+            { _tag: 'Info', provider: 'anthropic', type: 'ApiKey' },
+            { _tag: 'Info', provider: 'openai', type: 'OAuth' },
           ])
           yield* store.remove('anthropic')
-          expect(yield* store.list).toEqual([{ provider: 'openai', type: 'oauth' }])
+          expect(yield* store.list).toEqual([{ _tag: 'Info', provider: 'openai', type: 'OAuth' }])
         }),
       ))
 
@@ -113,6 +113,7 @@ for (const [name, open] of stores) {
           const first: Credential.OAuth = {
             ...oauth('same-token', 0),
             identity: {
+              _tag: 'Identity',
               issuer: 'https://provider.example',
               subject: 'account-one',
               email: 'person@example.com',
@@ -137,17 +138,17 @@ describe('key-value store', () => {
   test('keeps credentials across reopening, with secrets decoded', () =>
     runTest(() =>
       Effect.gen(function* () {
-        const first = yield* Credentials.makeKeyValueStore()
+        const first = yield* CredentialStore.makeKeyValueStore()
         yield* first.set('codex-work', oauth('work', 1))
         yield* first.set('openai', apiKey('sk-1'))
-        const reopened = yield* Credentials.makeKeyValueStore()
+        const reopened = yield* CredentialStore.makeKeyValueStore()
         expect(accessOf(yield* reopened.get('codex-work'))).toBe('work')
         // A credential read back from the store is the one `update` expects.
         yield* reopened.update('codex-work', oauth('work', 1), oauth('next', 2))
         expect(accessOf(yield* first.get('codex-work'))).toBe('next')
         expect(yield* first.list).toEqual([
-          { provider: 'codex-work', type: 'oauth' },
-          { provider: 'openai', type: 'api_key' },
+          { _tag: 'Info', provider: 'codex-work', type: 'OAuth' },
+          { _tag: 'Info', provider: 'openai', type: 'ApiKey' },
         ])
       }).pipe(withKeyValue),
     ))
@@ -159,14 +160,14 @@ describe('config store', () => {
   test('reads API keys from config at every get, and refuses writes', () =>
     runTest(() =>
       Effect.gen(function* () {
-        const store = Credentials.makeConfig()
+        const store = CredentialStore.makeConfig()
         const stored = yield* store.get('anthropic')
-        expect(stored?.type === 'api_key' && Redacted.value(stored.key)).toBe('sk-env')
+        expect(stored?._tag === 'ApiKey' && Redacted.value(stored.key)).toBe('sk-env')
         expect(yield* store.get('openai')).toBeUndefined()
         expect(yield* store.get('unknown')).toBeUndefined()
         expect(yield* store.list).toEqual([
-          { provider: 'anthropic', type: 'api_key' },
-          { provider: 'groq', type: 'api_key' },
+          { _tag: 'Info', provider: 'anthropic', type: 'ApiKey' },
+          { _tag: 'Info', provider: 'groq', type: 'ApiKey' },
         ])
         expect(yield* Effect.flip(store.set('anthropic', apiKey('x')))).toMatchObject({
           _tag: 'ReadOnly',
@@ -178,9 +179,9 @@ describe('config store', () => {
   test('takes the first name that is set', () =>
     runTest(() =>
       Effect.gen(function* () {
-        const store = Credentials.makeConfig({ custom: ['FIRST', 'SECOND'] })
+        const store = CredentialStore.makeConfig({ custom: ['FIRST', 'SECOND'] })
         const stored = yield* store.get('custom')
-        expect(stored?.type === 'api_key' && Redacted.value(stored.key)).toBe('second')
+        expect(stored?._tag === 'ApiKey' && Redacted.value(stored.key)).toBe('second')
       }).pipe(
         Effect.provideService(
           ConfigProvider.ConfigProvider,
@@ -190,27 +191,27 @@ describe('config store', () => {
     ))
 })
 
-const resolverOver = (store: Credentials.Service, refreshes: Array<string>) =>
-  Credentials.makeResolver({
+const resolverOver = (store: CredentialStore.Service, refreshes: Array<string>) =>
+  CredentialStore.makeResolver({
     refresh: (provider, credential) =>
       Effect.map(Clock.currentTimeMillis, (now) => {
         refreshes.push(provider)
         return oauth(`${Redacted.value(credential.access)}+`, now + 3_600_000)
       }),
-  }).pipe(Effect.provideService(Credentials.CredentialStore, store))
+  }).pipe(Effect.provideService(CredentialStore.CredentialStore, store))
 
 describe('resolver', () => {
   test('returns API keys and fresh tokens as stored', () =>
     runTest(() =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis
-        const store = yield* Credentials.makeMemory([
+        const store = yield* CredentialStore.makeMemory([
           ['anthropic', apiKey('sk')],
           ['openai', oauth('a', now + 3_600_000)],
         ])
         const refreshes: Array<string> = []
         const resolve = yield* resolverOver(store, refreshes)
-        expect((yield* resolve('anthropic'))?.type).toBe('api_key')
+        expect((yield* resolve('anthropic'))?._tag).toBe('ApiKey')
         expect(accessOf(yield* resolve('openai'))).toBe('a')
         expect(yield* resolve('missing')).toBeUndefined()
         expect(refreshes).toEqual([])
@@ -221,7 +222,7 @@ describe('resolver', () => {
     runTest(() =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis
-        const store = yield* Credentials.makeMemory([['openai', oauth('a', now + 1000)]])
+        const store = yield* CredentialStore.makeMemory([['openai', oauth('a', now + 1000)]])
         const refreshes: Array<string> = []
         const resolve = yield* resolverOver(store, refreshes)
         const resolved = yield* Effect.all([resolve('openai'), resolve('openai')], {
@@ -237,16 +238,16 @@ describe('resolver', () => {
     runTest(() =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis
-        const store = yield* Credentials.makeMemory([['openai', oauth('a', now)]])
+        const store = yield* CredentialStore.makeMemory([['openai', oauth('a', now)]])
         const started = yield* Deferred.make<void>()
         const release = yield* Deferred.make<void>()
-        const resolve = yield* Credentials.makeResolver({
+        const resolve = yield* CredentialStore.makeResolver({
           refresh: () =>
             Deferred.done(started, Exit.void).pipe(
               Effect.andThen(Deferred.await(release)),
               Effect.as(oauth('mine', now + 3_600_000)),
             ),
-        }).pipe(Effect.provideService(Credentials.CredentialStore, store))
+        }).pipe(Effect.provideService(CredentialStore.CredentialStore, store))
         const resolving = yield* Effect.forkChild(resolve('openai'))
         yield* Deferred.await(started)
         // Another process refreshes while this one waits on the provider.
@@ -258,9 +259,9 @@ describe('resolver', () => {
 })
 
 describe('credential', () => {
-  test('decodes old serialized OAuth without inventing identity or revision', () => {
+  test('decodes OAuth without optional identity or revision', () => {
     const legacy = Schema.decodeSync(Credential.OAuth)({
-      type: 'oauth',
+      _tag: 'OAuth',
       access: 'legacy-access',
       refresh: 'legacy-refresh',
       expires: 1234,
@@ -274,13 +275,13 @@ describe('credential', () => {
   })
 
   test.each([
-    { identity: { issuer: '', subject: 'account' } },
-    { identity: { issuer: 'provider', subject: '' } },
+    { identity: { _tag: 'Identity', issuer: '', subject: 'account' } },
+    { identity: { _tag: 'Identity', issuer: 'provider', subject: '' } },
     { revision: '' },
   ])('rejects empty identity coordinates or revision (%j)', (metadata) => {
     expect(() =>
       Schema.decodeSync(Credential.OAuth)({
-        type: 'oauth',
+        _tag: 'OAuth',
         access: 'a',
         refresh: 'r',
         expires: 0,

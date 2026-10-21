@@ -32,7 +32,7 @@ export const make = <E>(options: ResolveOptions<E>) =>
     /** The stored credential, or `expiring` when it is OAuth and expires within `minValidity`. */
     const read = (provider: string): Effect.Effect<Found, CredentialsError> =>
       Effect.flatMap(store.get(provider), (stored) =>
-        stored?.type === 'oauth'
+        stored?._tag === 'OAuth'
           ? Effect.map(Clock.currentTimeMillis, (now): Found =>
               expiring(stored, now, minValidity) ? { expiring: stored } : { stored },
             )

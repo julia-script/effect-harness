@@ -150,7 +150,7 @@ const commit = (state: State, reserved: Reserved) =>
           return yield* changed()
         }
         const next = attempt.staged.current()
-        if (next?.type !== 'oauth') return yield* failed()
+        if (next?._tag !== 'OAuth') return yield* failed()
         const current = yield* state.credentials
           .get(attempt.name)
           .pipe(Effect.mapError(storeFailed))

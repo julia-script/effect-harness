@@ -7,7 +7,7 @@ import { BunHttpServer, BunRuntime } from '@effect/platform-bun'
 import { Console, Effect, Layer, Redacted } from 'effect'
 import { HttpRouter, HttpServer } from 'effect/http'
 import { HarnessTransport } from '../../index.ts'
-import { Credentials } from '../../../credentials/index.ts'
+import { CredentialStore } from '../../../credentials/index.ts'
 import { HarnessServer } from '../../../harness/index.ts'
 import { Faux, Model } from '../../../model/index.ts'
 import { ModelError, Rejected } from '../../../model/ModelError.ts'
@@ -16,11 +16,11 @@ import { Storage } from '../../../storage/index.ts'
 const credentialsUrl = process.argv[2] ?? ''
 
 /** Reply with the key of the stored `faux` credential, read fresh for this request. */
-const answer = (store: Credentials.Service) => () =>
+const answer = (store: CredentialStore.Service) => () =>
   store.get('faux').pipe(
     Effect.map((credential) =>
       Faux.message(
-        credential?.type === 'api_key' ? `key ${Redacted.value(credential.key)}` : 'no key',
+        credential?._tag === 'ApiKey' ? `key ${Redacted.value(credential.key)}` : 'no key',
       ),
     ),
     Effect.mapError(
@@ -29,7 +29,7 @@ const answer = (store: Credentials.Service) => () =>
   )
 
 const loop = Effect.gen(function* () {
-  const store = yield* Credentials.CredentialStore
+  const store = yield* CredentialStore.CredentialStore
   const faux = yield* Faux.make()
   yield* faux.setResponses(Array.from({ length: 50 }, () => answer(store)))
   const harness = HarnessServer.layer({ settings: { model: faux.ref() } }).pipe(
@@ -54,7 +54,7 @@ const main = loop.pipe(
   // The process's entry point.
   // oxlint-disable-next-line effecttsgo/strict-effect-provide
   Effect.provide(
-    Credentials.layerRpc.pipe(Layer.provide(HarnessTransport.layerWebSocket(credentialsUrl))),
+    CredentialStore.layerRpc.pipe(Layer.provide(HarnessTransport.layerWebSocket(credentialsUrl))),
   ),
 )
 

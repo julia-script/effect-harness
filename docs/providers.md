@@ -34,12 +34,12 @@ Each provider is a plain value; `Model.layer` turns a list of them into the serv
 ```ts
 import { FetchHttpClient } from 'effect/http'
 import { Anthropic } from 'effect-harness/anthropic'
-import { Credentials } from 'effect-harness/credentials'
+import { CredentialStore } from 'effect-harness/credentials'
 import { Model } from 'effect-harness/model'
 import { OpenAi } from 'effect-harness/openai'
 
 const ModelLive = Model.layer([Anthropic.provider(), OpenAi.provider()]).pipe(
-  Layer.provide([Credentials.layerConfig(), FetchHttpClient.layer]),
+  Layer.provide([CredentialStore.layerConfig(), FetchHttpClient.layer]),
 )
 ```
 
@@ -74,15 +74,15 @@ const listed = yield* Anthropic.provider().listModels
 
 ## Credentials
 
-`Credentials.CredentialStore` is the service where secrets live. The `Credentials` module provides its storage layers. Pick a store by where your app runs:
+`CredentialStore.CredentialStore` is the service where secrets live. The `CredentialStore` module provides its storage layers. Pick a store by where your app runs:
 
-| Layer                              | Stores                                                               | Writable |
-| ---------------------------------- | -------------------------------------------------------------------- | :------: |
-| `Credentials.layerConfig()`        | Reads `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, … from `Config`         |    ❌    |
-| `Credentials.layerMemory()`        | In memory, for tests and single-process tools                        |    ✅    |
-| `Credentials.layerKeyValueStore()` | JSON in any `KeyValueStore`, such as a private directory             |    ✅    |
-| `BunCredentials.layer()`           | The OS keychain via `Bun.secrets` (`effect-harness/credentials/bun`) |    ✅    |
-| `Credentials.layerRpc`             | A store served elsewhere with `Credentials.layerServer`              |    ✅    |
+| Layer                                  | Stores                                                               | Writable |
+| -------------------------------------- | -------------------------------------------------------------------- | :------: |
+| `CredentialStore.layerConfig()`        | Reads `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, … from `Config`         |    ❌    |
+| `CredentialStore.layerMemory()`        | In memory, for tests and single-process tools                        |    ✅    |
+| `CredentialStore.layerKeyValueStore()` | JSON in any `KeyValueStore`, such as a private directory             |    ✅    |
+| `BunCredentials.layer()`               | The OS keychain via `Bun.secrets` (`effect-harness/credentials/bun`) |    ✅    |
+| `CredentialStore.layerRpc`             | A store served elsewhere with `CredentialStore.layerServer`          |    ✅    |
 
 Providers look up a credential under their **name**, so `OpenAi.provider({ name: 'openai-work' })` reads the key stored as `openai-work`. Subscription tokens refresh near expiry and are written back with compare-and-set, so they need a writable store.
 
@@ -126,7 +126,7 @@ const AccountsLive = Accounts.layer(adapters).pipe(
     OpenAi.layerAdapter,
     Anthropic.layerAdapter,
   ]),
-  Layer.provideMerge(Credentials.layerKeyValueStore()),
+  Layer.provideMerge(CredentialStore.layerKeyValueStore()),
   Layer.provide(KeyValueStore.layerFileSystem('./data/accounts')),
   Layer.provide([FetchHttpClient.layer, BunServices.layer]),
 )

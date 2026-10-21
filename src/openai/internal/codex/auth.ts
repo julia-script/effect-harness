@@ -5,6 +5,7 @@
 import { Clock, Duration, Effect, Option, Redacted, Result, Schema } from 'effect'
 import { Base64Url } from 'effect/encoding'
 import { HttpClient, HttpClientRequest, HttpClientResponse } from 'effect/http'
+import { Identity } from '../../../credentials/Credential.ts'
 import type { OAuth } from '../../../credentials/Credential.ts'
 import { CredentialStore } from '../../../credentials/CredentialStore.ts'
 import { LoginError } from '../../OpenAiCodex.ts'
@@ -69,12 +70,12 @@ const credential = (token: typeof Token.Type) =>
     if (id === undefined) return yield* new LoginError({ message: 'The token has no account id' })
     const now = yield* Clock.currentTimeMillis
     const stored: OAuth = {
-      type: 'oauth',
+      _tag: 'OAuth',
       access: Redacted.make(token.access_token),
       refresh: Redacted.make(token.refresh_token),
       expires: now + token.expires_in * 1000,
       // These claims come from the successful token exchange, not a caller-supplied JWT.
-      identity: { issuer: AUTH_URL, subject: id },
+      identity: Identity.make({ issuer: AUTH_URL, subject: id }),
       extra: { accountId: id },
     }
     return stored

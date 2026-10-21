@@ -7,7 +7,7 @@ import { FetchHttpClient } from 'effect/http'
 import { KeyValueStore } from 'effect/persistence'
 import { RpcClient } from 'effect/rpc'
 import { HarnessTransport } from '../../client/index.ts'
-import { Credentials } from '../../credentials/index.ts'
+import { CredentialStore } from '../../credentials/index.ts'
 import type { Credential } from '../../credentials/index.ts'
 import type { Model } from '../../model/index.ts'
 import { AccountError, Accounts, AccountsRpcs, Adapter } from '../index.ts'
@@ -23,17 +23,17 @@ const provider = (account: Adapter.Account): Model.Listable<Adapter.Requires> =>
   listModels: Effect.succeed([]),
 })
 const oauth = (access: string): Credential.OAuth => ({
-  type: 'oauth',
+  _tag: 'OAuth',
   access: Redacted.make(access),
   refresh: Redacted.make('refresh-secret'),
   expires: 4_000_000_000_000,
-  identity: { issuer: 'https://identity.test', subject: 'verified-user' },
+  identity: { _tag: 'Identity', issuer: 'https://identity.test', subject: 'verified-user' },
   revision: access,
   extra: { private: 'not-status' },
 })
 const services = Layer.mergeAll(
   KeyValueStore.layerMemory,
-  Credentials.layerMemory(),
+  CredentialStore.layerMemory(),
   FetchHttpClient.layer,
 )
 const run = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof services> | Scope.Scope>) =>
@@ -46,7 +46,7 @@ const login: Login = (account, flow) =>
     yield* flow.onAuthorize('https://identity.test/authorize')
     const completion = yield* flow.completion
     if (completion !== 'accepted') return yield* Effect.fail({ message: `Rejected ${completion}` })
-    const store = yield* Credentials.CredentialStore
+    const store = yield* CredentialStore.CredentialStore
     yield* store.set(account.name, oauth('fresh'))
   })
 const open = (implementation: Login = login, existing = false) =>
@@ -92,7 +92,7 @@ describe('OAuth sign-in lifecycle', () => {
           redirectUri = flow.redirectUri
           return login(account, flow)
         })
-        const store = yield* Credentials.CredentialStore
+        const store = yield* CredentialStore.CredentialStore
         const attempt = yield* observe(
           accounts.signIn({
             adapter: 'browser',
@@ -188,7 +188,7 @@ describe('OAuth sign-in lifecycle', () => {
             ),
           true,
         )
-        const store = yield* Credentials.CredentialStore
+        const store = yield* CredentialStore.CredentialStore
         const previous = oauth('previous')
         yield* store.set('work', previous)
         const attempt = yield* observe(accounts.signIn({ name: 'work' }))
@@ -226,7 +226,7 @@ describe('OAuth sign-in lifecycle', () => {
         yield* Deferred.await(staged)
         yield* Fiber.interrupt(attempt.fiber)
         yield* Deferred.await(closed)
-        const store = yield* Credentials.CredentialStore
+        const store = yield* CredentialStore.CredentialStore
         expect(yield* store.get('work')).toBeUndefined()
         expect(yield* accounts.list).toEqual([])
         const restarted = yield* observe(accounts.signIn({ adapter: 'browser', name: 'work' }))
@@ -239,7 +239,7 @@ describe('OAuth sign-in lifecycle', () => {
   test('provider failures and rejected callbacks preserve credentials and sanitize secrets', () =>
     run(
       Effect.gen(function* () {
-        const store = yield* Credentials.CredentialStore
+        const store = yield* CredentialStore.CredentialStore
         const previous = oauth('previous')
         yield* store.set('work', previous)
         const accounts = yield* open(undefined, true)
@@ -265,12 +265,12 @@ describe('OAuth sign-in lifecycle', () => {
   test('a login cannot read, write, remove or update another account credential', () =>
     run(
       Effect.gen(function* () {
-        const store = yield* Credentials.CredentialStore
+        const store = yield* CredentialStore.CredentialStore
         const other = oauth('other')
         yield* store.set('other', other)
         const accounts = yield* open((account, flow) =>
           Effect.gen(function* () {
-            const staging = yield* Credentials.CredentialStore
+            const staging = yield* CredentialStore.CredentialStore
             expect(yield* staging.list).toEqual([])
             expect(yield* Effect.flip(staging.get('other')).pipe(Effect.orDie)).toMatchObject({
               _tag: 'CredentialsError',
@@ -295,7 +295,7 @@ describe('OAuth sign-in lifecycle', () => {
         yield* accounts.completeSignIn(attempt.id, Redacted.make('accepted'))
         yield* Fiber.join(attempt.fiber)
         expect(yield* store.get('other')).toEqual(other)
-        expect((yield* store.get('work'))?.type).toBe('oauth')
+        expect((yield* store.get('work'))?._tag).toBe('OAuth')
       }),
     ))
 
@@ -321,7 +321,7 @@ describe('OAuth sign-in lifecycle', () => {
           AccountError.SignInCancelled,
         )
         expect(yield* accounts.list).toEqual([])
-        expect(yield* (yield* Credentials.CredentialStore).get('work')).toBeUndefined()
+        expect(yield* (yield* CredentialStore.CredentialStore).get('work')).toBeUndefined()
       }),
     ))
 
@@ -329,7 +329,7 @@ describe('OAuth sign-in lifecycle', () => {
     run(
       Effect.gen(function* () {
         const accounts = yield* open(undefined, true)
-        const store = yield* Credentials.CredentialStore
+        const store = yield* CredentialStore.CredentialStore
         yield* store.set('work', oauth('previous'))
         const attempt = yield* observe(accounts.signIn({ name: 'work' }))
         const replaced = oauth('replacement')
@@ -402,7 +402,7 @@ describe('OAuth sign-in lifecycle', () => {
             Effect.gen(function* () {
               yield* flow.onAuthorize('https://identity.test/authorize')
               yield* flow.completion
-              const store = yield* Credentials.CredentialStore
+              const store = yield* CredentialStore.CredentialStore
               yield* Effect.uninterruptible(
                 Effect.gen(function* () {
                   yield* Deferred.succeed(entered, undefined)
@@ -413,7 +413,7 @@ describe('OAuth sign-in lifecycle', () => {
             }),
           true,
         )
-        const store = yield* Credentials.CredentialStore
+        const store = yield* CredentialStore.CredentialStore
         const before = oauth('previous')
         yield* store.set('work', before)
         const attempt = yield* observe(accounts.signIn({ name: 'work' }))
@@ -432,7 +432,7 @@ describe('OAuth sign-in lifecycle', () => {
     run(
       Effect.gen(function* () {
         const metadata = yield* KeyValueStore.KeyValueStore
-        const credentials = yield* Credentials.CredentialStore
+        const credentials = yield* CredentialStore.CredentialStore
         const broken = {
           ...metadata,
           set: () =>

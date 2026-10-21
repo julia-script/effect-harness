@@ -3,7 +3,7 @@
  */
 
 /** The `CredentialStore` service and its storage layers. */
-export * as Credentials from './CredentialStore.ts'
+export * as CredentialStore from './CredentialStore.ts'
 
 /** Stored credentials: API keys and OAuth tokens. */
 export * as Credential from './Credential.ts'

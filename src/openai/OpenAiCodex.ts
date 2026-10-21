@@ -2,7 +2,7 @@
  * Codex through a ChatGPT subscription, ported from pi-ai's `openai-codex` provider. Sign in once
  * with `login`, which stores OAuth tokens in `CredentialStore` under the provider's name; `provider`
  * reads them for each request, refreshing tokens near expiry and writing them back. The store must be
- * writable, so a read-only one like `Credentials.layerConfig` cannot hold them.
+ * writable, so a read-only one like `CredentialStore.layerConfig` cannot hold them.
  */
 import { Schema } from 'effect'
 import type { Effect } from 'effect'

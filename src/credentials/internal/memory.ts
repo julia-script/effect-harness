@@ -2,6 +2,7 @@
  * The memory store: one `Ref`, so every `update` compares and sets atomically.
  */
 import { Effect, Equal, Ref } from 'effect'
+import { Info } from '../Credential.ts'
 import type { Credential } from '../Credential.ts'
 import type { Service } from '../CredentialStore.ts'
 import { CredentialChanged } from '../CredentialsError.ts'
@@ -15,7 +16,7 @@ export const make = (initial: Iterable<readonly [string, Credential]>) =>
   Effect.map(Ref.make<Store>(new Map(initial)), (ref): Service => ({
     get: (provider) => Effect.map(Ref.get(ref), (store) => store.get(provider)),
     list: Effect.map(Ref.get(ref), (store) =>
-      [...store].map(([provider, credential]) => ({ provider, type: credential.type })),
+      [...store].map(([provider, credential]) => Info.make({ provider, type: credential._tag })),
     ),
     set: (provider, credential) =>
       Ref.update(ref, (store) => new Map(store).set(provider, credential)),

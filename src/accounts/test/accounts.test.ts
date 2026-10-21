@@ -7,7 +7,7 @@ import { describe, expect, test } from 'bun:test'
 import { Effect, Layer, Redacted, Schema, Stream } from 'effect'
 import { FetchHttpClient } from 'effect/http'
 import { KeyValueStore } from 'effect/persistence'
-import { Credentials } from '../../credentials/index.ts'
+import { CredentialStore } from '../../credentials/index.ts'
 import { Model, ModelError } from '../../model/index.ts'
 import { Accounts, Adapter } from '../index.ts'
 import { AccountError } from '../index.ts'
@@ -27,11 +27,11 @@ const fake = (name: string): Model.Listable<Adapter.Requires> => ({
   stream: () => Stream.empty,
   listModels: Effect.gen(function* () {
     const credential = yield* Effect.orDie(
-      Effect.flatMap(Credentials.CredentialStore, (store) => store.get(name)),
+      Effect.flatMap(CredentialStore.CredentialStore, (store) => store.get(name)),
     )
     const accepted =
-      credential?.type === 'oauth' ||
-      (credential?.type === 'api_key' && Redacted.value(credential.key) === 'good')
+      credential?._tag === 'OAuth' ||
+      (credential?._tag === 'ApiKey' && Redacted.value(credential.key) === 'good')
     if (!accepted) {
       return yield* new ModelError.ModelError({
         message: 'Unauthorized',
@@ -49,9 +49,9 @@ const Implementations = adapters.toLayer({
     login: (account, flow) =>
       Effect.gen(function* () {
         yield* flow.onCode({ url: 'https://example.test/device', code: 'ABCD-1234' })
-        const store = yield* Credentials.CredentialStore
+        const store = yield* CredentialStore.CredentialStore
         yield* store.set(account.name, {
-          type: 'oauth',
+          _tag: 'OAuth',
           access: Redacted.make('access'),
           refresh: Redacted.make('refresh'),
           expires: Date.now() + 3_600_000,
@@ -62,7 +62,7 @@ const Implementations = adapters.toLayer({
 
 const Services = Layer.mergeAll(
   KeyValueStore.layerMemory,
-  Credentials.layerMemory(),
+  CredentialStore.layerMemory(),
   FetchHttpClient.layer,
   Implementations,
 )
@@ -83,7 +83,7 @@ describe('accounts', () => {
     run(
       Effect.gen(function* () {
         const accounts = yield* open()
-        const store = yield* Credentials.CredentialStore
+        const store = yield* CredentialStore.CredentialStore
         const bad = yield* Effect.flip(accounts.add({ ...work, apiKey: Redacted.make('bad') }))
         expect(bad.reason).toBeInstanceOf(AccountError.VerifyFailed)
         expect(yield* accounts.list).toEqual([])
@@ -133,7 +133,7 @@ describe('accounts', () => {
     run(
       Effect.gen(function* () {
         const accounts = yield* open()
-        const store = yield* Credentials.CredentialStore
+        const store = yield* CredentialStore.CredentialStore
         yield* accounts.add({ ...work, apiKey: Redacted.make('good') })
         yield* store.remove('work')
         expect((yield* accounts.list)[0]).toMatchObject({ status: 'needsAuth' })
@@ -153,9 +153,9 @@ describe('accounts', () => {
     run(
       Effect.gen(function* () {
         const accounts = yield* open()
-        const store = yield* Credentials.CredentialStore
+        const store = yield* CredentialStore.CredentialStore
         yield* accounts.add({ ...work, apiKey: Redacted.make('good') })
-        yield* store.set('work', { type: 'api_key', key: Redacted.make('revoked') })
+        yield* store.set('work', { _tag: 'ApiKey', key: Redacted.make('revoked') })
         const [listed] = yield* accounts.models
         expect(listed).toMatchObject({
           account: { status: 'needsAuth', error: 'Unauthorized' },
@@ -220,7 +220,7 @@ describe('accounts', () => {
     run(
       Effect.gen(function* () {
         const accounts = yield* open()
-        const store = yield* Credentials.CredentialStore
+        const store = yield* CredentialStore.CredentialStore
         yield* accounts.add({ ...work, apiKey: Redacted.make('good') })
         const model = yield* Model.makeDynamic(accounts.providers)
         expect((yield* model.models).map(({ provider }) => provider)).toEqual(['work'])

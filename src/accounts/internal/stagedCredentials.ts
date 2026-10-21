@@ -1,5 +1,6 @@
 /** A sign-in sees only its own, disposable credential slot; durable writes happen at commit. */
 import { Effect, Equal } from 'effect'
+import { Info } from '../../credentials/Credential.ts'
 import type { Credential } from '../../credentials/Credential.ts'
 import type { Service } from '../../credentials/CredentialStore.ts'
 import { CredentialChanged, CredentialsError } from '../../credentials/CredentialsError.ts'
@@ -26,7 +27,9 @@ export const make = (name: string): Staged => {
         ),
       ),
     list: Effect.sync(() =>
-      closed || credential === undefined ? [] : [{ provider: name, type: credential.type }],
+      closed || credential === undefined
+        ? []
+        : [Info.make({ provider: name, type: credential._tag })],
     ),
     set: (provider, next) =>
       Effect.suspend(() =>

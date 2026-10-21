@@ -2,7 +2,7 @@
 import { AnthropicClient, AnthropicLanguageModel } from '@effect/ai-anthropic'
 import { Effect, Redacted, Schema, Semaphore } from 'effect'
 import { HttpClient, HttpClientRequest } from 'effect/http'
-import * as Credentials from '../../../credentials/CredentialStore.ts'
+import * as CredentialStore from '../../../credentials/CredentialStore.ts'
 import * as LanguageModelProvider from '../../../model/LanguageModelProvider.ts'
 import type { Info, Listable, Listed, Request } from '../../../model/Model.ts'
 import { ModelError, Rejected } from '../../../model/ModelError.ts'
@@ -31,14 +31,14 @@ const rejected = (message: string) => new ModelError({ message, reason: new Reje
 const account = (name: string, authUrl: string) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
-    const resolve = yield* Credentials.makeResolver({
+    const resolve = yield* CredentialStore.makeResolver({
       refresh: (_provider, stored) =>
         refresh(authUrl, stored).pipe(Effect.provideService(HttpClient.HttpClient, http)),
     })
     const stored = yield* resolve(name).pipe(
       Effect.mapError(() => rejected('Claude credentials could not be resolved')),
     )
-    if (stored?.type !== 'oauth')
+    if (stored?._tag !== 'OAuth')
       return yield* rejected(`Sign in to Claude first: no ${name} OAuth tokens are stored`)
     return stored.access
   }).pipe(Semaphore.withPermit(Semaphore.makeUnsafe(1)))
@@ -121,7 +121,7 @@ const configure = (model: Info, request: Request, options: Options) => {
 
 export const make = (
   options: Options,
-): Listable<HttpClient.HttpClient | Credentials.CredentialStore> => {
+): Listable<HttpClient.HttpClient | CredentialStore.CredentialStore> => {
   const name = options.name ?? 'anthropic-oauth'
   const apiUrl = (options.apiUrl ?? 'https://api.anthropic.com').replace(/\/$/u, '')
   const tokens = account(name, options.authUrl ?? AUTH_URL)

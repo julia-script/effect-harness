@@ -78,17 +78,17 @@ Then the conversation itself:
 
 ## 4. Talk to a real model
 
-Replace the `Faux` model with a provider. `Credentials.layerConfig()` reads API keys from the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …), and providers need an `HttpClient`.
+Replace the `Faux` model with a provider. `CredentialStore.layerConfig()` reads API keys from the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …), and providers need an `HttpClient`.
 
 ```ts
 import { Layer } from 'effect'
 import { FetchHttpClient } from 'effect/http'
 import { Anthropic } from 'effect-harness/anthropic'
-import { Credentials } from 'effect-harness/credentials'
+import { CredentialStore } from 'effect-harness/credentials'
 import { Model } from 'effect-harness/model'
 
 const ModelLive = Model.layer([Anthropic.provider()]).pipe(
-  Layer.provide([Credentials.layerConfig(), FetchHttpClient.layer]),
+  Layer.provide([CredentialStore.layerConfig(), FetchHttpClient.layer]),
 )
 
 const ServerLive = HarnessServer.layer({

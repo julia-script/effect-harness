@@ -45,7 +45,7 @@ const checked = Effect.fnUntraced(function* (
       : yield* registry.withCredential(
           state,
           account.name,
-          { type: 'api_key', key: apiKey },
+          { _tag: 'ApiKey', key: apiKey },
           listing,
         )
   const models = listed.map(({ id }) => id)

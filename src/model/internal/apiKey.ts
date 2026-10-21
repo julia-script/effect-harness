@@ -17,7 +17,7 @@ export const stored = (
   Effect.flatMap(CredentialStore, (store) => store.get(provider)).pipe(
     Effect.mapError((cause) => rejected(cause.message, cause)),
     Effect.flatMap((credential) => {
-      if (credential?.type === 'api_key') return Effect.succeed(credential.key)
+      if (credential?._tag === 'ApiKey') return Effect.succeed(credential.key)
       return Effect.fail(
         rejected(
           credential === undefined

@@ -5,7 +5,7 @@
  */
 import { Effect, Equal, Option, Schema, Semaphore } from 'effect'
 import { KeyValueStore } from 'effect/persistence'
-import { Credential } from '../Credential.ts'
+import { Credential, Info } from '../Credential.ts'
 import type { Service } from '../CredentialStore.ts'
 import { CredentialChanged, CredentialsError } from '../CredentialsError.ts'
 
@@ -29,10 +29,9 @@ export const make = (key: string) =>
     const service: Service = {
       get: (provider) => Effect.map(read, (stored) => stored[provider]),
       list: Effect.map(read, (stored) =>
-        Object.entries(stored).map(([provider, credential]) => ({
-          provider,
-          type: credential.type,
-        })),
+        Object.entries(stored).map(([provider, credential]) =>
+          Info.make({ provider, type: credential._tag }),
+        ),
       ),
       set: (provider, credential) =>
         modify((stored) => Effect.succeed({ ...stored, [provider]: credential })),

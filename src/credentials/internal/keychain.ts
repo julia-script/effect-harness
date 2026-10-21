@@ -62,9 +62,9 @@ const entries = (service: string, keychain: Keychain) => {
     )
     yield* keychain.set(service, provider, value)
     const index = yield* readIndex
-    if (!index.some((entry) => entry.provider === provider && entry.type === credential.type)) {
+    if (!index.some((entry) => entry.provider === provider && entry.type === credential._tag)) {
       const others = index.filter((entry) => entry.provider !== provider)
-      yield* writeIndex([...others, { provider, type: credential.type }])
+      yield* writeIndex([...others, Info.make({ provider, type: credential._tag })])
     }
   })
   const remove = Effect.fnUntraced(function* (provider: string) {
