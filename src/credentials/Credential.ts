@@ -11,8 +11,7 @@ export const Secret = Schema.RedactedFromValue(Schema.String)
 export type Secret = typeof Secret.Type
 
 /** An API key, with provider-scoped settings such as an account or gateway ID. */
-export const ApiKey = Schema.Struct({
-  type: Schema.Literal('api_key'),
+export const ApiKey = Schema.TaggedStruct('ApiKey', {
   key: Secret,
   env: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
 })
@@ -27,7 +26,7 @@ export type ApiKey = typeof ApiKey.Type
  *
  * @category schemas
  */
-export const Identity = Schema.Struct({
+export const Identity = Schema.TaggedStruct('Identity', {
   issuer: Schema.NonEmptyString,
   subject: Schema.NonEmptyString,
   email: Schema.optionalKey(Schema.String),
@@ -36,8 +35,7 @@ export const Identity = Schema.Struct({
 export type Identity = typeof Identity.Type
 
 /** OAuth tokens; `expires` is when `access` expires, in epoch milliseconds. */
-export const OAuth = Schema.Struct({
-  type: Schema.Literal('oauth'),
+export const OAuth = Schema.TaggedStruct('OAuth', {
   access: Secret,
   refresh: Secret,
   expires: Schema.Finite,
@@ -54,8 +52,8 @@ export const Credential = Schema.Union([ApiKey, OAuth])
 export type Credential = typeof Credential.Type
 
 /** What a credential is, without its secrets, for status and account lists. */
-export const Info = Schema.Struct({
+export const Info = Schema.TaggedStruct('Info', {
   provider: Schema.String,
-  type: Schema.Literals(['api_key', 'oauth']),
+  type: Schema.Literals(['ApiKey', 'OAuth']),
 })
 export type Info = typeof Info.Type

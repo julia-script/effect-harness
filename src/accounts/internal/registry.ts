@@ -5,8 +5,8 @@
 import { Effect, Option, Schema, Semaphore, SubscriptionRef } from 'effect'
 import type { Context } from 'effect'
 import { KeyValueStore } from 'effect/persistence'
-import { Credentials } from '../../credentials/Credentials.ts'
-import type { Service as Store } from '../../credentials/Credentials.ts'
+import { CredentialStore } from '../../credentials/CredentialStore.ts'
+import type { Service as Store } from '../../credentials/CredentialStore.ts'
 import type { Credential } from '../../credentials/Credential.ts'
 import * as AccountError from '../AccountError.ts'
 import { Saved } from '../Account.ts'
@@ -73,7 +73,7 @@ export const open = Effect.fnUntraced(function* (group: Lookup, options: Options
     implementations: yield* Effect.context(),
     store,
     key,
-    credentials: yield* Credentials,
+    credentials: yield* CredentialStore,
     context: yield* Effect.context<Requires>(),
     refused: yield* SubscriptionRef.make<ReadonlyMap<string, string>>(new Map()),
     line: yield* Semaphore.make(1),

@@ -135,7 +135,7 @@ export type Event = typeof Event.Type
 
 /**
  * What a backend implements to answer requests for its models: a plain value. `R` is what it
- * needs to answer, such as an `HttpClient` or `Credentials`; the `Model` layer over it needs the
+ * needs to answer, such as an `HttpClient` or `CredentialStore`; the `Model` layer over it needs the
  * same.
  */
 export interface Provider<out R = never> {

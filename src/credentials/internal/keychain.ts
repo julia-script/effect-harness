@@ -7,7 +7,7 @@
  */
 import { Effect, Equal, Schema, Semaphore } from 'effect'
 import { Credential, Info } from '../Credential.ts'
-import type { Service } from '../Credentials.ts'
+import type { Service } from '../CredentialStore.ts'
 import { CredentialChanged, CredentialsError } from '../CredentialsError.ts'
 
 /** The keychain operations a store needs; `get` is `undefined` for a missing entry. */
@@ -62,9 +62,9 @@ const entries = (service: string, keychain: Keychain) => {
     )
     yield* keychain.set(service, provider, value)
     const index = yield* readIndex
-    if (!index.some((entry) => entry.provider === provider && entry.type === credential.type)) {
+    if (!index.some((entry) => entry.provider === provider && entry.type === credential._tag)) {
       const others = index.filter((entry) => entry.provider !== provider)
-      yield* writeIndex([...others, { provider, type: credential.type }])
+      yield* writeIndex([...others, Info.make({ provider, type: credential._tag })])
     }
   })
   const remove = Effect.fnUntraced(function* (provider: string) {

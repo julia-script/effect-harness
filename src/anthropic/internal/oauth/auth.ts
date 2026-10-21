@@ -2,8 +2,9 @@
 import { Clock, Effect, Redacted, Schema } from 'effect'
 import { Base64Url } from 'effect/encoding'
 import { HttpClient, HttpClientRequest } from 'effect/http'
-import type { Identity, OAuth } from '../../../credentials/Credential.ts'
-import { Credentials } from '../../../credentials/Credentials.ts'
+import { Identity } from '../../../credentials/Credential.ts'
+import type { OAuth } from '../../../credentials/Credential.ts'
+import { CredentialStore } from '../../../credentials/CredentialStore.ts'
 import { LoginError } from '../../AnthropicOAuth.ts'
 import type { Authorization, BeginOptions, LoginOptions, Options } from '../../AnthropicOAuth.ts'
 
@@ -156,16 +157,16 @@ const exchange = Effect.fnUntraced(function* (authUrl: string, fields: Record<st
   const account = token.account
   let identity: Identity | undefined
   if (account?.uuid !== undefined && account.uuid !== null && account.uuid !== '') {
-    identity = {
+    identity = Identity.make({
       issuer: AUTH_URL,
       subject: account.uuid,
       ...(account.email_address === undefined || account.email_address === null
         ? {}
         : { email: account.email_address }),
-    }
+    })
   }
   return {
-    type: 'oauth',
+    _tag: 'OAuth',
     access: Redacted.make(token.access_token),
     refresh: Redacted.make(token.refresh_token),
     expires,
@@ -192,7 +193,7 @@ export const complete = Effect.fnUntraced(function* (
     try: () => crypto.randomUUID(),
     catch: () => failure('InvalidConfiguration', 'Unable to generate credential revision'),
   })
-  const store = yield* Credentials
+  const store = yield* CredentialStore
   return yield* store.set(authorization.name, { ...tokens, revision })
 })
 

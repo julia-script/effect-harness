@@ -24,7 +24,7 @@ import { Extension, HarnessServer, Initializer } from 'effect-harness/harness'
 | `session`                              | `Session`, `Document`, `Observation`                                                                                                              | loop          |
 | `task`                                 | `Task`, `Registry`, `Scheduler`, `Hook`                                                                                                           | loop          |
 | `delta`                                | `Tracker`, `Ops`: immutable JSON revisions                                                                                                        | loop          |
-| `credentials`, `credentials/bun`       | `Credentials` stores; `BunCredentials` (OS keychain)                                                                                              | both          |
+| `credentials`, `credentials/bun`       | `CredentialStore`; `BunCredentials` (OS keychain)                                                                                                 | both          |
 | `accounts`                             | `Adapter`, `Account`, `Accounts`, `AccountsRpcs`                                                                                                  | both          |
 | `openai`, `openai/adapter`             | `OpenAi`, `OpenAiCodex`; their adapter declarations                                                                                               | loop · client |
 | `anthropic`, `anthropic/adapter`       | `Anthropic`, `AnthropicOAuth`; their adapter declarations                                                                                         | loop · client |

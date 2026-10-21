@@ -3,8 +3,9 @@
  * environment or a `.env` file, at every `get`. It cannot be written.
  */
 import { Config, Effect, Option } from 'effect'
-import type { Credential, Info } from '../Credential.ts'
-import type { Names, Service } from '../Credentials.ts'
+import { Info } from '../Credential.ts'
+import type { Credential } from '../Credential.ts'
+import type { Names, Service } from '../CredentialStore.ts'
 import { CredentialsError, ReadOnly } from '../CredentialsError.ts'
 
 const readOnly = (provider: string) =>
@@ -21,7 +22,7 @@ const read = (names: ReadonlyArray<string>) =>
     Effect.forEach(names, (name) => Config.option(Config.Redacted(name))),
     (found): Credential | undefined => {
       const key = Option.firstSomeOf(found)
-      return Option.isSome(key) ? { type: 'api_key', key: key.value } : undefined
+      return Option.isSome(key) ? { _tag: 'ApiKey', key: key.value } : undefined
     },
   ).pipe(
     Effect.mapError(
@@ -39,7 +40,7 @@ export const make = (names: Names): Service => {
     list: Effect.map(
       Effect.forEach(Object.keys(names), (provider) =>
         Effect.map(get(provider), (credential): ReadonlyArray<Info> =>
-          credential === undefined ? [] : [{ provider, type: credential.type }],
+          credential === undefined ? [] : [Info.make({ provider, type: credential._tag })],
         ),
       ),
       (found) => found.flat(),

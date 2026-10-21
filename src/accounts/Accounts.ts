@@ -1,6 +1,6 @@
 /**
  * The account registry: the accounts of a host's adapters, added and removed while it runs. It
- * stores accounts in the `KeyValueStore` in context, their secrets in `Credentials`, and builds one
+ * stores accounts in the `KeyValueStore` in context, their secrets in `CredentialStore`, and builds one
  * provider per account, which `layerModel` routes to. Accounts can also be declared in code, for a
  * fixed account beside the dynamic ones.
  *

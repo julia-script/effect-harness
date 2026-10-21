@@ -53,7 +53,7 @@ HttpRouter.serve(HarnessLive).pipe(
 )
 ```
 
-On Node, use `NodeHttpServer` from `@effect/platform-node`. The same router can serve other RPC groups at other paths, such as `Credentials.layerServer` or `Accounts.layerServer`.
+On Node, use `NodeHttpServer` from `@effect/platform-node`. The same router can serve other RPC groups at other paths, such as `CredentialStore.layerServer` or `Accounts.layerServer`.
 
 ## Clients anywhere
 

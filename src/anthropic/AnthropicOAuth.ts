@@ -3,7 +3,7 @@ import { Schema } from 'effect'
 import type { Duration, Effect, Layer, Redacted } from 'effect'
 import type { HttpClient } from 'effect/http'
 import * as Adapter from '../accounts/Adapter.ts'
-import type { Credentials } from '../credentials/Credentials.ts'
+import type { CredentialStore } from '../credentials/CredentialStore.ts'
 import type { CredentialsError, ReadOnly } from '../credentials/CredentialsError.ts'
 import type { Definition, Listable, Ref } from '../model/Model.ts'
 import { models as catalog } from './internal/catalog.ts'
@@ -78,7 +78,7 @@ export const complete: (
 ) => Effect.Effect<
   void,
   LoginError | CredentialsError | ReadOnly,
-  HttpClient.HttpClient | Credentials
+  HttpClient.HttpClient | CredentialStore
 > = auth.complete
 
 export interface LoginOptions extends BeginOptions {
@@ -95,7 +95,7 @@ export const login: (
 ) => Effect.Effect<
   void,
   LoginError | CredentialsError | ReadOnly,
-  HttpClient.HttpClient | Credentials
+  HttpClient.HttpClient | CredentialStore
 > = auth.login
 
 /**
@@ -107,8 +107,9 @@ export const login: (
  *
  * @category constructors
  */
-export const provider = (options: Options = {}): Listable<HttpClient.HttpClient | Credentials> =>
-  internal.make(options)
+export const provider = (
+  options: Options = {},
+): Listable<HttpClient.HttpClient | CredentialStore> => internal.make(options)
 
 export const ref = (modelId: string, providerName: string = name): Ref => ({
   provider: providerName,

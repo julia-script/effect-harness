@@ -1,15 +1,15 @@
 /**
  * Codex through a ChatGPT subscription, ported from pi-ai's `openai-codex` provider. Sign in once
- * with `login`, which stores OAuth tokens in `Credentials` under the provider's name; `provider`
+ * with `login`, which stores OAuth tokens in `CredentialStore` under the provider's name; `provider`
  * reads them for each request, refreshing tokens near expiry and writing them back. The store must be
- * writable, so a read-only one like `Credentials.layerConfig` cannot hold them.
+ * writable, so a read-only one like `CredentialStore.layerConfig` cannot hold them.
  */
 import { Schema } from 'effect'
 import type { Effect } from 'effect'
 import type { HttpClient } from 'effect/http'
 import type { Layer } from 'effect'
 import * as Adapter from '../accounts/Adapter.ts'
-import type { Credentials } from '../credentials/Credentials.ts'
+import type { CredentialStore } from '../credentials/CredentialStore.ts'
 import type { CredentialsError, ReadOnly } from '../credentials/CredentialsError.ts'
 import type { Definition, Listable, Ref } from '../model/Model.ts'
 import { models as catalog } from './internal/codex/catalog.ts'
@@ -66,8 +66,9 @@ export interface Options {
  *
  * @category constructors
  */
-export const provider = (options: Options = {}): Listable<HttpClient.HttpClient | Credentials> =>
-  internal.make(options)
+export const provider = (
+  options: Options = {},
+): Listable<HttpClient.HttpClient | CredentialStore> => internal.make(options)
 
 export interface LoginOptions {
   /** Show the person the URL and code; the login waits for them to approve it. */
@@ -79,7 +80,7 @@ export interface LoginOptions {
 }
 
 /**
- * Sign in with a ChatGPT device code and store the tokens in `Credentials`.
+ * Sign in with a ChatGPT device code and store the tokens in `CredentialStore`.
  *
  * **Details**
  *
@@ -94,7 +95,7 @@ export const login = (
 ): Effect.Effect<
   void,
   LoginError | CredentialsError | ReadOnly,
-  HttpClient.HttpClient | Credentials
+  HttpClient.HttpClient | CredentialStore
 > => auth.store(options.name ?? name, options.authUrl ?? auth.AUTH_URL, options.onCode)
 
 /** The `Model.Ref` of Codex model `modelId`, served by the provider named `providerName`. */
