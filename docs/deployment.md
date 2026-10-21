@@ -124,13 +124,13 @@ HARNESS_TOKEN=dev-token bun run example:cloudflare
 
 ## Cloudflare Workflows
 
-`HarnessWorkflow` runs one-off jobs as durable steps of a [Cloudflare Workflow](https://developers.cloudflare.com/workflows/), deployed with Alchemy. Each step answers its input on a fresh loop over memory storage; Cloudflare retries a failed step and replays its answer once it has one, so a finished turn never asks the model again.
+`HarnessWorkflow` runs one-off jobs as durable steps of a [Cloudflare Workflow](https://developers.cloudflare.com/workflows/), deployed with Alchemy. Each step answers its input on a fresh loop over memory storage; Cloudflare retries a step whose model failed and replays its answer once it has one, so a finished turn never asks the model again.
 
 ```ts
 // src/Summarize.ts: the Workflow, hosted by the Worker that yields it
 export default class Summarize extends Cloudflare.Workflow<Summarize>()(
   'Summarize',
-  Effect.succeed((input: HarnessWorkflow.Input) =>
+  Effect.succeed((input: unknown) =>
     HarnessWorkflow.make({
       settings: { model: Anthropic.ref('claude-sonnet-5-5') },
       step: { retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' } },
@@ -139,11 +139,13 @@ export default class Summarize extends Cloudflare.Workflow<Summarize>()(
 ) {}
 
 // In the Worker: start a run, then read its status
-const summarize = yield * Summarize
-const instance = yield * summarize.create({ params: { content: 'Summarize this thread: …' } })
-const { status, output } = yield * instance.status() // output: HarnessWorkflow.Result
+const summarize = Effect.gen(function* () {
+  const workflow = yield* Summarize
+  const instance = yield* workflow.create({ params: { content: 'Summarize this thread: …' } })
+  return yield* instance.status() // output: HarnessWorkflow.Result once complete
+})
 ```
 
-`HarnessWorkflow.turn(name, content, options)` is the same step on its own, for bodies of several steps with `Cloudflare.Workflows.sleep` or `waitForEvent` between them. Steps share nothing, so pass what a step needs from an earlier one in its content. An unanswered run is a result with its `reason`, not a failure; a failure of the loop fails the attempt with `HarnessWorkflow.TurnFailed`, for Cloudflare to retry. Pass `step.rollback` to undo a step when a later one fails for good.
+`HarnessWorkflow.turn(name, content, options)` is the same step on its own, for bodies of several steps with `Cloudflare.Workflows.sleep` or `waitForEvent` between them. Steps share nothing, so pass what a step needs from an earlier one in its content. `make` decodes the params as `HarnessWorkflow.Input`. When the model or the run's task fails (`model_error`, `faulted`), the attempt fails with `HarnessWorkflow.TurnFailed` for Cloudflare to retry. Any other unanswered run, such as `no_model`, is a result with its `reason`, since another attempt would end the same way. Params that do not decode, or a loop that cannot open, are defects, and the step stops without retrying. Pass `step.rollback` to undo a step when a later one fails for good.
 
 Use a Durable Object for conversations people come back to, and a Workflow for jobs that run to an answer and stop.

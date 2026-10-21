@@ -4,17 +4,14 @@
  * the stack is up.
  */
 import * as Cloudflare from 'alchemy/Cloudflare'
-import { Effect, Layer, Redacted } from 'effect'
+import { Effect, Layer, Redacted, Schema } from 'effect'
 import { FetchHttpClient } from 'effect/http'
-import type { UserInput } from '../../../harness/Submission.ts'
 import { Model } from '../../../model/index.ts'
 import { OpenAi } from '../../../openai/index.ts'
 import { HarnessWorkflow } from '../../index.ts'
 
-export interface AskInput {
-  readonly content: UserInput
-  readonly apiUrl: string
-}
+export const AskInput = Schema.Struct({ ...HarnessWorkflow.Input.fields, apiUrl: Schema.String })
+export type AskInput = typeof AskInput.Type
 
 const model = (apiUrl: string) =>
   Model.layer([

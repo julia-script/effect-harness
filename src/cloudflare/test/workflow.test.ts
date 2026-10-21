@@ -5,9 +5,9 @@
 import { describe, expect, test } from 'bun:test'
 import { WorkflowStep } from 'alchemy/Cloudflare/Workflows'
 import type { WorkflowStepConfig, WorkflowTaskOptions } from 'alchemy/Cloudflare/Workflows'
-import { Effect, Layer } from 'effect'
+import { Cause, Effect, Exit, Layer } from 'effect'
 import { Extension } from '../../harness/index.ts'
-import { Faux, Model } from '../../model/index.ts'
+import { Faux, Model, ModelError } from '../../model/index.ts'
 import { HarnessWorkflow } from '../index.ts'
 
 /** A `WorkflowStep` that runs each step once, and the steps it ran. */
@@ -79,22 +79,49 @@ describe('HarnessWorkflow', () => {
     expect(users?.map((message) => message.content)).toEqual(['After One.'])
   })
 
-  test('fails the step with TurnFailed when the loop cannot open', async () => {
+  test('fails the attempt with TurnFailed when the model fails, for Cloudflare to retry', async () => {
+    const { layer } = steps()
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const faux = yield* Faux.make()
+        yield* faux.setResponses([
+          new ModelError.ModelError({
+            message: 'overloaded',
+            reason: new ModelError.Retryable({}),
+          }),
+        ])
+        return yield* HarnessWorkflow.turn('ask', 'Hi', {
+          settings: { model: faux.ref(), retry: { enabled: false } },
+        }).pipe(Effect.provide([layer, Model.layer([faux.provider])]), Effect.flip)
+      }),
+    )
+    expect(error).toBeInstanceOf(HarnessWorkflow.TurnFailed)
+    expect(error).toMatchObject({ reason: 'model_error', detail: 'overloaded' })
+  })
+
+  test('dies when the loop cannot open, since no retry would fix it', async () => {
     const { layer } = steps()
     const faux = await Effect.runPromise(Faux.make())
     const bad = Extension.make('bad', {
       sections: [Extension.section('Bad', () => Effect.succeed(''))],
     })
-    const exit = await Effect.runPromise(
+    const exit = await Effect.runPromiseExit(
       HarnessWorkflow.turn('ask', 'Hi', { extensions: [bad] }).pipe(
         Effect.provide([layer, Model.layer([faux.provider])]),
-        Effect.flip,
       ),
     )
-    expect(exit).toBeInstanceOf(HarnessWorkflow.TurnFailed)
-    expect(exit).toMatchObject({
-      reason: 'InvalidExtension',
-      message: 'Extension bad: section key "Bad" is invalid',
-    })
+    expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true)
+  })
+
+  test('dies on params that are not an Input', async () => {
+    const { ran, layer } = steps()
+    const faux = await Effect.runPromise(Faux.make())
+    const exit = await Effect.runPromiseExit(
+      HarnessWorkflow.make()({ prompt: 'Hi' }).pipe(
+        Effect.provide([layer, Model.layer([faux.provider])]),
+      ),
+    )
+    expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true)
+    expect(ran).toEqual([])
   })
 })
