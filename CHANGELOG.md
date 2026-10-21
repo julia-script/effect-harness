@@ -1,5 +1,19 @@
 # effect-harness
 
+## 0.10.0
+
+### Minor Changes
+
+- 4105325: Rename the credentials service, module file, and credentials subpath namespace export to `CredentialStore`.
+
+  Use tagged structs for credentials and their metadata: API keys use `_tag: 'ApiKey'`, OAuth credentials use `_tag: 'OAuth'`, identities use `_tag: 'Identity'`, and credential listings use `_tag: 'Info'` with a separate `type: 'ApiKey' | 'OAuth'` field.
+
+  This changes the public API and serialized credential format. Existing `type: 'api_key'` / `type: 'oauth'` records are not migrated or decoded.
+
+### Patch Changes
+
+- 2279850: Use Effect's own helpers throughout: `Effect.fnUntraced` for functions that only run a generator, `Equal.equals` and `Predicate` guards instead of hand-rolled ones, and error reasons checked by their `_tag`.
+
 ## 0.9.2
 
 ### Patch Changes
