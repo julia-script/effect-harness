@@ -22,6 +22,7 @@ flowchart TB
 - [A WebSocket server](#a-websocket-server)
 - [Clients anywhere](#clients-anywhere)
 - [Cloudflare Durable Objects](#cloudflare-durable-objects)
+- [A container, with Alchemy](#a-container-with-alchemy)
 
 ## One process
 
@@ -66,6 +67,9 @@ const ClientLive = HarnessClient.layer.pipe(
 ```
 
 `layerWebSocket` uses the global `WebSocket`, so it runs in browsers, Bun and Deno, and reconnects after transient failures. Watches such as `conversation.events` resubscribe on their own, as soon as the connection is back, and start again from the loop's state then: the events of the gap arrive in the new snapshot.
+
+> [!IMPORTANT]
+> A watch opened again after the loop restarted starts from a fresh `snapshot`. What happened in between, such as a whole run, is in that snapshot rather than in events. Render from the snapshot, and wait for results with `submission.wait`, not by watching for `run_end`.
 
 `effect-harness/client` imports nothing the loop runs, so it's safe to bundle for the browser. Share your tool declarations, extension declarations and `Init`s with it freely; keep handlers on the server.
 
@@ -120,3 +124,14 @@ HARNESS_TOKEN=dev-token bun run example:cloudflare
 
 > [!NOTE]
 > Workers have no file system or processes, so the coding tools and code mode aren't available there.
+
+## A container, with Alchemy
+
+Anywhere with a file system and processes, the coding tools run too. The [Docker example](../examples/docker/README.md) deploys the same routes and RPCs as the Cloudflare one to a Docker Swarm service with Alchemy: one loop per name, each over its own SQLite file and workspace on a volume, all opened again when the container starts so interrupted runs resume at once. The Cloudflare example's client talks to either.
+
+```sh
+HARNESS_TOKEN=dev-token bunx alchemy deploy examples/docker/alchemy.run.ts
+```
+
+> [!CAUTION]
+> Run one replica per volume. Each loop must be the only writer of its store, and replicas over shared storage would each open it.
