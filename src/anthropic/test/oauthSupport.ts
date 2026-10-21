@@ -2,18 +2,22 @@
 import { Effect, Redacted } from 'effect'
 import { FetchHttpClient } from 'effect/http'
 import type { HttpClient } from 'effect/http'
-import { Credentials } from '../../credentials/index.ts'
+import { CredentialStore } from '../../credentials/index.ts'
 import { Model } from '../../model/index.ts'
 import { serve } from '../../model/test/fakeApi.ts'
 import type { FakeApi, Recorded, Reply } from '../../model/test/fakeApi.ts'
 import { AnthropicOAuth } from '../index.ts'
 export const token = { access_token: 'access-new', refresh_token: 'refresh-new', expires_in: 3600 }
 export const existing = {
-  type: 'oauth' as const,
+  _tag: 'OAuth' as const,
   access: Redacted.make('access-old'),
   refresh: Redacted.make('refresh-old'),
   expires: Number.MAX_SAFE_INTEGER,
-  identity: { issuer: 'https://platform.claude.com', subject: 'existing-account' },
+  identity: {
+    _tag: 'Identity' as const,
+    issuer: 'https://platform.claude.com',
+    subject: 'existing-account',
+  },
   revision: 'existing-sign-in',
   extra: { hostSetting: 'preserved' },
 }
@@ -64,12 +68,14 @@ export const events = [
 ]
 export const run = <A, E>(
   respond: (request: Recorded) => ReadonlyArray<unknown> | Reply,
-  body: (api: FakeApi) => Effect.Effect<A, E, HttpClient.HttpClient | Credentials.Credentials>,
+  body: (
+    api: FakeApi,
+  ) => Effect.Effect<A, E, HttpClient.HttpClient | CredentialStore.CredentialStore>,
 ) =>
   Effect.runPromise(
     Effect.scoped(Effect.flatMap(serve(respond), body)).pipe(
       // oxlint-disable-next-line effecttsgo/strict-effect-provide -- test entry point
-      Effect.provide([FetchHttpClient.layer, Credentials.layerMemory()]),
+      Effect.provide([FetchHttpClient.layer, CredentialStore.layerMemory()]),
     ),
   )
 

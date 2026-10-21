@@ -1,5 +1,5 @@
 /**
- * Errors a `Credentials` store reports.
+ * Errors a `CredentialStore` reports.
  */
 import { Schema } from 'effect'
 

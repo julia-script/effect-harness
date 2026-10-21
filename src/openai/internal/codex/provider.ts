@@ -6,7 +6,7 @@
 import { OpenAiClient, OpenAiLanguageModel } from '@effect/ai-openai'
 import { Effect, Redacted, Semaphore } from 'effect'
 import { HttpClient, HttpClientRequest } from 'effect/http'
-import * as Credentials from '../../../credentials/Credentials.ts'
+import * as CredentialStore from '../../../credentials/CredentialStore.ts'
 import * as LanguageModelProvider from '../../../model/LanguageModelProvider.ts'
 import type { Info, Listable, Request } from '../../../model/Model.ts'
 import { ModelError, Rejected } from '../../../model/ModelError.ts'
@@ -39,7 +39,7 @@ const config = (model: Info, request: Request) => {
 const account = (name: string, authUrl: string, line: Semaphore.Semaphore) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
-    const resolve = yield* Credentials.makeResolver({
+    const resolve = yield* CredentialStore.makeResolver({
       refresh: (_provider, stored) =>
         Effect.provideService(refresh(authUrl, stored), HttpClient.HttpClient, http),
     })
@@ -47,7 +47,7 @@ const account = (name: string, authUrl: string, line: Semaphore.Semaphore) =>
       Semaphore.withPermit(line),
       Effect.mapError((cause) => rejected(`Codex credentials: ${cause.message}`, cause)),
     )
-    if (credential?.type !== 'oauth') {
+    if (credential?._tag !== 'OAuth') {
       return yield* rejected(`Sign in to Codex first: no ${name} tokens are stored`)
     }
     const access = Redacted.value(credential.access)
@@ -58,7 +58,7 @@ const account = (name: string, authUrl: string, line: Semaphore.Semaphore) =>
 
 export const make = (
   options: Options,
-): Listable<HttpClient.HttpClient | Credentials.Credentials> => {
+): Listable<HttpClient.HttpClient | CredentialStore.CredentialStore> => {
   const name = options.name ?? 'openai-codex'
   const baseUrl = options.baseUrl ?? BASE_URL
   const originator = options.originator ?? 'effect-harness'

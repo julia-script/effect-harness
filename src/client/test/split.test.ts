@@ -9,18 +9,18 @@ import { describe, expect, test } from 'bun:test'
 import { Effect, Fiber, Layer, Option, Path, Redacted, Schema, Stream } from 'effect'
 import { HttpRouter, HttpServer } from 'effect/http'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
-import { Credentials } from '../../credentials/index.ts'
+import { CredentialStore } from '../../credentials/index.ts'
 import type { HarnessClient } from '../index.ts'
 import { HarnessClient as Client, HarnessTransport } from '../index.ts'
 
-const apiKey = (key: string) => ({ type: 'api_key', key: Redacted.make(key) }) as const
+const apiKey = (key: string) => ({ _tag: 'ApiKey', key: Redacted.make(key) }) as const
 
 /** Serve a memory store at `/credentials` on an ephemeral port; its URL. */
 const serveCredentials = Effect.gen(function* () {
   const served = HttpRouter.serve(
-    Credentials.layerServer.pipe(
+    CredentialStore.layerServer.pipe(
       Layer.provide(HarnessTransport.layerWebSocketServer('/credentials')),
-      Layer.provide(Credentials.layerMemory([['faux', apiKey('k1')]])),
+      Layer.provide(CredentialStore.layerMemory([['faux', apiKey('k1')]])),
     ),
     { disableListenLog: true, disableLogger: true },
   ).pipe(Layer.provideMerge(BunHttpServer.layer({ port: 0, hostname: '127.0.0.1' })))
@@ -70,7 +70,7 @@ describe('a split client and loop', () => {
             const toHarness = yield* Layer.build(HarnessTransport.layerWebSocket(harness))
             const client = yield* Effect.provideContext(Client.make, toHarness)
             const toStore = yield* Layer.build(HarnessTransport.layerWebSocket(credentials))
-            const store = yield* Effect.provideContext(Credentials.makeRpc, toStore)
+            const store = yield* Effect.provideContext(CredentialStore.makeRpc, toStore)
             const root = yield* client.root()
             const ask = (content: string) =>
               Effect.flatMap(

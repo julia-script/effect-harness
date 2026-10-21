@@ -18,18 +18,18 @@ describe('keychain store', () => {
       Effect.gen(function* () {
         const entries = new Map<string, string>()
         const store = yield* keychain.make('app', makeFakeKeychain(entries))
-        yield* store.set('openai', { type: 'api_key', key: Redacted.make('sk-1') })
+        yield* store.set('openai', { _tag: 'ApiKey', key: Redacted.make('sk-1') })
         expect(JSON.parse(entries.get(entry('app', 'openai')) ?? '')).toEqual({
-          type: 'api_key',
+          _tag: 'ApiKey',
           key: 'sk-1',
         })
         const index = entries.get(entry('app:index', 'providers')) ?? ''
-        expect(JSON.parse(index)).toEqual([{ provider: 'openai', type: 'api_key' }])
+        expect(JSON.parse(index)).toEqual([{ _tag: 'Info', provider: 'openai', type: 'ApiKey' }])
         expect(index).not.toContain('sk-1')
 
         const reopened = yield* keychain.make('app', makeFakeKeychain(entries))
         const stored = yield* reopened.get('openai')
-        expect(stored?.type === 'api_key' && Redacted.value(stored.key)).toBe('sk-1')
+        expect(stored?._tag === 'ApiKey' && Redacted.value(stored.key)).toBe('sk-1')
         yield* reopened.remove('openai')
         expect([...entries.keys()]).toEqual([entry('app:index', 'providers')])
         expect(yield* reopened.list).toEqual([])
@@ -42,7 +42,7 @@ describe('keychain store', () => {
         const entries = new Map<string, string>()
         const work = yield* keychain.make('work', makeFakeKeychain(entries))
         const home = yield* keychain.make('home', makeFakeKeychain(entries))
-        yield* work.set('openai', { type: 'api_key', key: Redacted.make('w') })
+        yield* work.set('openai', { _tag: 'ApiKey', key: Redacted.make('w') })
         expect(yield* home.get('openai')).toBeUndefined()
         expect(yield* home.list).toEqual([])
       }),
@@ -60,7 +60,7 @@ describe('keychain store', () => {
           set: () => Effect.fail(new CredentialsError({ message: 'locked' })),
         })
         const failure = yield* Effect.flip(
-          locked.set('openai', { type: 'api_key', key: Redacted.make('x') }),
+          locked.set('openai', { _tag: 'ApiKey', key: Redacted.make('x') }),
         )
         expect(failure.message).toBe('locked')
       }),

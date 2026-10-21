@@ -6,7 +6,7 @@
 import { describe, expect, test } from 'bun:test'
 import { Effect, Redacted } from 'effect'
 import { FetchHttpClient } from 'effect/http'
-import { Credentials } from '../../credentials/index.ts'
+import { CredentialStore } from '../../credentials/index.ts'
 import { Model, ModelError } from '../../model/index.ts'
 import type { Message } from '../../model/index.ts'
 import { serve } from '../../model/test/fakeApi.ts'
@@ -61,17 +61,17 @@ describe('OpenAi.provider', () => {
         Effect.gen(function* () {
           const api = yield* serve(() => events)
           const provider = OpenAi.provider({ apiUrl: `${api.url}/v1` })
-          const store = yield* Credentials.Credentials
-          yield* store.set('openai', { type: 'api_key', key: Redacted.make('sk-first') })
+          const store = yield* CredentialStore.CredentialStore
+          yield* store.set('openai', { _tag: 'ApiKey', key: Redacted.make('sk-first') })
           yield* ask(provider, 'gpt-5')
-          yield* store.set('openai', { type: 'api_key', key: Redacted.make('sk-second') })
+          yield* store.set('openai', { _tag: 'ApiKey', key: Redacted.make('sk-second') })
           yield* ask(provider, 'gpt-5')
           expect(api.requests.map((request) => request.headers['authorization'])).toEqual([
             'Bearer sk-first',
             'Bearer sk-second',
           ])
         }),
-      ).pipe(Effect.provide([FetchHttpClient.layer, Credentials.layerMemory()]), Effect.orDie),
+      ).pipe(Effect.provide([FetchHttpClient.layer, CredentialStore.layerMemory()]), Effect.orDie),
     ))
 
   test('listModels lists what the stored key reaches, marking what the provider serves', () =>
@@ -81,8 +81,8 @@ describe('OpenAi.provider', () => {
           const api = yield* serve(() => ({
             json: { object: 'list', data: [{ id: 'gpt-5.5' }, { id: 'gpt-next' }] },
           }))
-          const store = yield* Credentials.Credentials
-          yield* store.set('openai-team', { type: 'api_key', key: Redacted.make('sk-team') })
+          const store = yield* CredentialStore.CredentialStore
+          yield* store.set('openai-team', { _tag: 'ApiKey', key: Redacted.make('sk-team') })
           const provider = OpenAi.provider({ name: 'openai-team', apiUrl: `${api.url}/v1` })
           const listed = yield* provider.listModels
           expect(api.requests[0]).toMatchObject({
@@ -108,7 +108,7 @@ describe('OpenAi.provider', () => {
             },
           ])
         }),
-      ).pipe(Effect.provide([FetchHttpClient.layer, Credentials.layerMemory()]), Effect.orDie),
+      ).pipe(Effect.provide([FetchHttpClient.layer, CredentialStore.layerMemory()]), Effect.orDie),
     ))
 
   test('listModels fails Rejected on a refused key', () =>

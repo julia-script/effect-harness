@@ -1,19 +1,19 @@
 /**
  * Anthropic, as a `Model` provider over the Messages API. `provider` is a plain value: give it to
- * `Model.layer`, which then needs an `HttpClient`, and `Credentials` unless the provider was given
+ * `Model.layer`, which then needs an `HttpClient`, and `CredentialStore` unless the provider was given
  * an API key. Its `listModels` lists what the key reaches, over the same key.
  */
 import type { HttpClient } from 'effect/http'
 import type { Layer } from 'effect'
 import type { Redacted } from 'effect'
 import * as Adapter from '../accounts/Adapter.ts'
-import type { Credentials } from '../credentials/Credentials.ts'
+import type { CredentialStore } from '../credentials/CredentialStore.ts'
 import type { Definition, Listable, Ref } from '../model/Model.ts'
 import { models as catalog } from './internal/catalog.ts'
 import * as internal from './internal/provider.ts'
 import * as declaration from './adapter/Anthropic.ts'
 
-/** The provider name requests route by, and its API key's name in `Credentials`, by default. */
+/** The provider name requests route by, and its API key's name in `CredentialStore`, by default. */
 export const name = 'anthropic'
 
 /** The API its responses name. */
@@ -28,7 +28,7 @@ export interface Options {
    * account its own, such as `anthropic-work`.
    */
   readonly name?: string
-  /** Without it, each request reads the API key stored under `name` from `Credentials`. */
+  /** Without it, each request reads the API key stored under `name` from `CredentialStore`. */
   readonly apiKey?: Redacted.Redacted
   /** Default `https://api.anthropic.com`; set it for a gateway. */
   readonly apiUrl?: string
@@ -40,9 +40,9 @@ export interface Options {
 export function provider(
   options: Options & { readonly apiKey: Redacted.Redacted },
 ): Listable<HttpClient.HttpClient>
-/** The Anthropic provider, reading its API key from `Credentials` for each request. */
-export function provider(options?: Options): Listable<HttpClient.HttpClient | Credentials>
-export function provider(options: Options = {}): Listable<HttpClient.HttpClient | Credentials> {
+/** The Anthropic provider, reading its API key from `CredentialStore` for each request. */
+export function provider(options?: Options): Listable<HttpClient.HttpClient | CredentialStore>
+export function provider(options: Options = {}): Listable<HttpClient.HttpClient | CredentialStore> {
   return internal.make(options)
 }
 
@@ -57,7 +57,7 @@ export const adapter = declaration.adapter
 
 /**
  * The adapter's implementation, as a layer for `Accounts.layer`: each account's provider, named after the account and reading its
- * key from `Credentials`. An account at a custom `apiUrl` serves the models it listed when its key
+ * key from `CredentialStore`. An account at a custom `apiUrl` serves the models it listed when its key
  * was checked; one at the default URL serves the catalog.
  */
 export const layerAdapter: Layer.Layer<Adapter.Implemented<typeof adapter.id>> = Adapter.layer(

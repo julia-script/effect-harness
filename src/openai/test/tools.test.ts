@@ -10,7 +10,7 @@ import { Base64Url } from 'effect/encoding'
 import { FetchHttpClient } from 'effect/http'
 import { Codemode } from '../../codemode/index.ts'
 import { CodingTools } from '../../coding/index.ts'
-import { Credentials } from '../../credentials/index.ts'
+import { CredentialStore } from '../../credentials/index.ts'
 import { ToolSearch } from '../../harness/index.ts'
 import { Model } from '../../model/index.ts'
 import type { Message } from '../../model/index.ts'
@@ -133,9 +133,9 @@ const providers = {
     }),
   OpenAiCodex: (url: string) =>
     Effect.gen(function* () {
-      const store = yield* Credentials.Credentials
+      const store = yield* CredentialStore.CredentialStore
       yield* store.set('openai-codex', {
-        type: 'oauth',
+        _tag: 'OAuth',
         access: Redacted.make(jwt('acct_1')),
         refresh: Redacted.make('refresh_1'),
         expires: Date.now() + 3_600_000,
@@ -189,7 +189,7 @@ describe('bundled tools over the Responses API', () => {
           }),
         ).pipe(
           // oxlint-disable-next-line effecttsgo/strict-effect-provide -- each test is an entry point
-          Effect.provide([FetchHttpClient.layer, Credentials.layerMemory()]),
+          Effect.provide([FetchHttpClient.layer, CredentialStore.layerMemory()]),
           Effect.orDie,
         ),
       ))

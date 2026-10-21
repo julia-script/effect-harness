@@ -4,8 +4,8 @@
  * `layerMemory`; split, the loop serves `layerWebSocketServer` on an HTTP server and clients
  * connect with `layerWebSocket`.
  *
- * The protocols carry any RPC group, so a credential store served remotely (`Credentials.
- * layerServer`, `Credentials.layerRpc`) uses the same transports at its own path.
+ * The protocols carry any RPC group, so a credential store served remotely (`CredentialStore.
+ * layerServer`, `CredentialStore.layerRpc`) uses the same transports at its own path.
  */
 import { Context, Effect, Layer, Queue, Schema, SubscriptionRef } from 'effect'
 import type { Scope } from 'effect'

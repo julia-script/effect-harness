@@ -1,6 +1,6 @@
 /**
- * The protocol of a remote credential store: what `Credentials.layerRpc` sends, and
- * `Credentials.layerServer` serves from the store in its context.
+ * The protocol of a remote credential store: what `CredentialStore.layerRpc` sends, and
+ * `CredentialStore.layerServer` serves from the store in its context.
  */
 import { Schema } from 'effect'
 import { Rpc, RpcGroup } from 'effect/rpc'

@@ -26,7 +26,7 @@ import * as Accounts from '../accounts/Accounts.ts'
 import { AccountsRpcs } from '../accounts/AccountsRpcs.ts'
 import type * as Adapter from '../accounts/Adapter.ts'
 import { HarnessRpcs } from '../client/HarnessRpcs.ts'
-import * as Credentials from '../credentials/Credentials.ts'
+import * as CredentialStore from '../credentials/CredentialStore.ts'
 import * as Harness from '../harness/Harness.ts'
 import type { Extension } from '../harness/Extension.ts'
 import * as HarnessServer from '../harness/HarnessServer.ts'
@@ -90,7 +90,7 @@ export const layer = <
   Handlers,
   never,
   | Adapter.Implemented<Adapter.Ids<Adapters>>
-  | Exclude<Adapter.Requires, Credentials.Credentials>
+  | Exclude<Adapter.Requires, CredentialStore.CredentialStore>
   | Harness.Requires<Installs[number]>
   | DurableObjectState
   | RuntimeContext
@@ -104,7 +104,7 @@ export const layer = <
   return served.pipe(
     Layer.provide(Accounts.layerModel),
     Layer.provideMerge(Accounts.layer(options.adapters, options)),
-    Layer.provideMerge(Credentials.layerKeyValueStore()),
+    Layer.provideMerge(CredentialStore.layerKeyValueStore()),
     Layer.provide(layerStorage),
     Layer.orDie,
   )

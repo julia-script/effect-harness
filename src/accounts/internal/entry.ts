@@ -120,10 +120,10 @@ export const status = (
     label: saved.label,
     settings: saved.settings,
     removable: !entry.fixed,
-    ...(credential?.type === 'oauth' && credential.identity !== undefined
+    ...(credential?._tag === 'OAuth' && credential.identity !== undefined
       ? { identity: credential.identity }
       : {}),
-    ...(credential?.type === 'oauth' && credential.revision !== undefined
+    ...(credential?._tag === 'OAuth' && credential.revision !== undefined
       ? { revision: credential.revision }
       : {}),
   }
