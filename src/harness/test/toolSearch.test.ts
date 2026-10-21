@@ -14,7 +14,7 @@ import type { Conversation } from '../Conversation.ts'
 import type * as Harness from '../Harness.ts'
 import * as Extension from '../Extension.ts'
 import * as ToolSearch from '../ToolSearch.ts'
-import { entriesOf, open, ownerless, runTest } from './generationSupport.ts'
+import { entriesOf, open, ownerless, runTest } from '../../test/generation.ts'
 
 const declare = <const Name extends string>(name: Name, description: string, deferred = false) =>
   Tool.make(name, {

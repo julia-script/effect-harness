@@ -5,11 +5,11 @@
  */
 import { describe, expect, test } from 'bun:test'
 import { Deferred, Effect, Exit, Layer, Schema } from 'effect'
-import { conversation, open, openClosable, runTest } from '../../task/test/support.ts'
+import { conversation, open, openClosable, runTest } from '../../test/task.ts'
 import { Call, Tool, Toolkit, ToolTask } from '../index.ts'
 import { NestedCallRefused } from '../ToolError.ts'
-import type { Script } from './support.ts'
-import { answer, call, script } from './support.ts'
+import type { Script } from '../../test/tool.ts'
+import { answer, call, script } from '../../test/tool.ts'
 
 const Double = Tool.make('double', {
   description: 'Double a number',

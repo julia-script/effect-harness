@@ -10,7 +10,7 @@ import { Faux, Model } from '../../model/index.ts'
 import * as Storage from '../../storage/Storage.ts'
 import { Tool, Toolkit } from '../../tool/index.ts'
 import { Extension, Extensions, HarnessServer } from '../index.ts'
-import { runTest } from './support.ts'
+import { runTest } from '../../test/harness.ts'
 
 const Weather = Tool.make('weather', {
   description: 'The weather in a city.',

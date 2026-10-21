@@ -6,9 +6,9 @@
  * is deleted, so the index never names a missing entry; `get` reads the entry itself.
  */
 import { Effect, Equal, Schema, Semaphore } from 'effect'
-import { Credential, Info } from '../Credential.ts'
-import type { Service } from '../CredentialStore.ts'
-import { CredentialChanged, CredentialsError } from '../CredentialsError.ts'
+import { Credential, Info } from '../../Credential.ts'
+import type { Service } from '../../CredentialStore.ts'
+import { CredentialChanged, CredentialsError } from '../../CredentialsError.ts'
 
 /** The keychain operations a store needs; `get` is `undefined` for a missing entry. */
 export interface Keychain {

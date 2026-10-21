@@ -1,8 +1,15 @@
 import { arrayOverlay, entryValueAt } from './arrays.ts'
 import { isSettledContext, nodeBase, nodeForTarget } from './context.ts'
 import type { OverlayContext, OverlayNode } from './context.ts'
-import { copyJson, defineData, emptyLike, Invalid, isArray, isContainer } from './json.ts'
-import type { Json } from './json.ts'
+import {
+  copyJson,
+  defineData,
+  emptyLike,
+  Invalid,
+  isArray,
+  isContainer,
+} from '../../internal/json.ts'
+import type { Json } from '../../internal/json.ts'
 import { objectKeys, objectValue } from './objects.ts'
 import { piecesOf } from './pieces.ts'
 

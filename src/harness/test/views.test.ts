@@ -9,11 +9,11 @@ import { Ops } from '../../delta/index.ts'
 import { Faux } from '../../model/index.ts'
 import { SessionClosed } from '../../session/SessionError.ts'
 import * as Feed from '../internal/views/feed.ts'
-import type { AgentEvent } from '../AgentEvent.ts'
+import type { AgentEvent } from '../../protocol/AgentEvent.ts'
 import type { Conversation } from '../Conversation.ts'
-import type { Change } from '../ViewState.ts'
-import { open, ownerless, runTest } from './generationSupport.ts'
-import { openClosable } from './support.ts'
+import type { Change } from '../../protocol/ViewState.ts'
+import { open, ownerless, runTest } from '../../test/generation.ts'
+import { openClosable } from '../../test/harness.ts'
 
 const ask = (conversation: Conversation, content: string) =>
   Effect.orDie(Effect.flatMap(conversation.submit({ type: 'input', content }), (s) => s.wait))

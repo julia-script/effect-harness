@@ -3,10 +3,10 @@
  * conversation, when a client names the `Init` it implements.
  */
 import { Effect, Schema } from 'effect'
-import type { Init, Payload } from '../client/Init.ts'
+import type { Init, Payload } from '../protocol/Init.ts'
 import type { Tx } from '../session/Session.ts'
 import type { ConversationId } from '../storage/schema/Ids.ts'
-import { InitFailed } from './HarnessError.ts'
+import { InitFailed } from '../protocol/HarnessError.ts'
 
 export interface Initializer {
   readonly name: string

@@ -5,7 +5,7 @@
 import { Effect } from 'effect'
 import type { Redacted } from 'effect'
 import { CredentialStore } from '../../credentials/CredentialStore.ts'
-import { ModelError, Rejected } from '../ModelError.ts'
+import { ModelError, Rejected } from '../../model/ModelError.ts'
 
 const rejected = (message: string, cause?: unknown) =>
   new ModelError({ message, reason: new Rejected({}), ...(cause === undefined ? {} : { cause }) })

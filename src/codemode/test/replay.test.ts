@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from 'bun:test'
 import { Effect } from 'effect'
-import { eventually, runTest } from '../../harness/test/generationSupport.ts'
+import { eventually, runTest } from '../../test/generation.ts'
 import type { Session } from '../../session/index.ts'
 import type { TaskId } from '../../storage/schema/Ids.ts'
 import { Codemode } from '../index.ts'

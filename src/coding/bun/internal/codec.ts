@@ -3,7 +3,7 @@
  * pipeline runs on Bun's worker threads, off the event loop.
  */
 import { Effect, Option } from 'effect'
-import type { Codec, Size, Target } from '../ImageProcessor.ts'
+import type { Codec, Size, Target } from '../../ImageProcessor.ts'
 
 /** A rejection is an image this codec cannot take. */
 const attempt = <A>(run: () => Promise<A>): Effect.Effect<A | undefined> =>

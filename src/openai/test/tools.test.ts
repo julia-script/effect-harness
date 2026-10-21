@@ -14,12 +14,12 @@ import { CredentialStore } from '../../credentials/index.ts'
 import { ToolSearch } from '../../harness/index.ts'
 import { Model } from '../../model/index.ts'
 import type { Message } from '../../model/index.ts'
-import { serve } from '../../model/test/fakeApi.ts'
-import type { Recorded } from '../../model/test/fakeApi.ts'
-import { violations } from '../../model/test/strictSchema.ts'
+import { serve } from '../../test/fakeApi.ts'
+import type { Recorded } from '../../test/fakeApi.ts'
+import { violations } from '../../test/strictSchema.ts'
 import { Tool } from '../../tool/index.ts'
 import { OpenAi, OpenAiCodex } from '../index.ts'
-import { events, toolCallEvents } from './support.ts'
+import { events, toolCallEvents } from '../../test/openai.ts'
 
 const definitions = [
   CodingTools.Read,

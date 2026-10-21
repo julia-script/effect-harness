@@ -13,10 +13,10 @@ import * as ToolTask from '../../tool/ToolTask.ts'
 import * as Live from '../Live.ts'
 import * as Usage from '../Usage.ts'
 import { COMPACTION_KIND, failStatus } from './compaction/status.ts'
-import type { UserInput } from '../Submission.ts'
+import type { UserInput } from '../../protocol/Submission.ts'
 import { appendInput, applyBoundary } from './inbox.ts'
 import type { Boundary } from './inbox.ts'
-import { strictJson } from './json.ts'
+import { strictJson } from '../../internal/strictJson.ts'
 
 export const ASSISTANT_KIND = '$assistant'
 

@@ -1,6 +1,6 @@
 import { Deferred, Effect } from 'effect'
 import type { Schema } from 'effect'
-import { copyJson, Invalid } from '../../../delta/internal/json.ts'
+import { copyJson, Invalid } from '../../../internal/json.ts'
 import * as Tracker from '../../../delta/Tracker.ts'
 import { DocumentId } from '../../../storage/schema/Ids.ts'
 import type { JsonObject } from '../../../storage/schema/Json.ts'

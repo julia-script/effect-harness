@@ -21,7 +21,7 @@ import {
   statusIs,
 } from './holds.ts'
 import type { Holds } from './holds.ts'
-import { conversation, eventually, getTask, open, openClosable, runTest } from './support.ts'
+import { conversation, eventually, getTask, open, openClosable, runTest } from '../../test/task.ts'
 
 /**
  * Live P owns `depth` ended tasks in a chain, the last owning conversation C, empty when they

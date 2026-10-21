@@ -1,5 +1,5 @@
 /**
- * The client barrel must not load what the loop runs: following its value imports (type-only
+ * The client and protocol barrels must not load what the loop runs: following its value imports (type-only
  * imports are erased) reaches no internal module and none of the runtime services.
  */
 import { describe, expect, test } from 'bun:test'
@@ -43,16 +43,20 @@ const RUNTIME = new Set([
  */
 const PURE = new Set([
   'delta/internal/apply.ts',
-  'delta/internal/json.ts',
+  'internal/json.ts',
   'delta/internal/ops.ts',
   'client/internal/watch.ts',
 ])
 
 describe('client boundary', () => {
-  test('loads no internal module and no runtime service', () => {
-    const loaded = [...reachable(resolve(SRC, 'client/index.ts'))]
-    expect(loaded.filter((file) => file.includes('/internal/') && !PURE.has(file))).toEqual([])
-    expect(loaded.filter((file) => RUNTIME.has(file))).toEqual([])
-    expect(loaded).toContain('client/HarnessRpcs.ts')
-  })
+  test.each(['client/index.ts', 'protocol/index.ts'])(
+    '%s loads no internal module and no runtime service',
+    (entry) => {
+      const loaded = [...reachable(resolve(SRC, entry))]
+      const internal = loaded.filter((file) => file.split('/').includes('internal'))
+      expect(internal.filter((file) => !PURE.has(file))).toEqual([])
+      expect(loaded.filter((file) => RUNTIME.has(file))).toEqual([])
+      expect(loaded).toContain('protocol/HarnessRpcs.ts')
+    },
+  )
 })

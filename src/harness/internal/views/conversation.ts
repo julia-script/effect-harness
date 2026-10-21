@@ -13,7 +13,7 @@ import * as Agent from '../../Agent.ts'
 import * as Inbox from '../../Inbox.ts'
 import * as Live from '../../Live.ts'
 import * as Usage from '../../Usage.ts'
-import type { ConversationView } from '../../ViewState.ts'
+import type { ConversationView } from '../../../protocol/ViewState.ts'
 import { read } from '../context.ts'
 
 type Path = ReadonlyArray<string | number>

@@ -11,11 +11,11 @@ import type { HttpClient } from 'effect/http'
 import { CredentialStore } from '../../credentials/index.ts'
 import { Model } from '../../model/index.ts'
 import type { Message } from '../../model/index.ts'
-import { serve } from '../../model/test/fakeApi.ts'
-import type { Recorded } from '../../model/test/fakeApi.ts'
+import { serve } from '../../test/fakeApi.ts'
+import type { Recorded } from '../../test/fakeApi.ts'
 import { OpenAiCodex } from '../index.ts'
 import { refresh } from '../internal/codex/auth.ts'
-import { events } from './support.ts'
+import { events } from '../../test/openai.ts'
 
 /** An access token whose claims carry `account`. */
 const jwt = (account: string) =>

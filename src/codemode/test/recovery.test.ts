@@ -6,7 +6,7 @@
 import { CodemodeSandbox } from '@earendil-works/pi-codemode'
 import { describe, expect, test } from 'bun:test'
 import { Deferred, Effect } from 'effect'
-import { ownerless, runTest } from '../../harness/test/generationSupport.ts'
+import { ownerless, runTest } from '../../test/generation.ts'
 import { Faux } from '../../model/index.ts'
 import { Codemode } from '../index.ts'
 import { edit, restart, script } from './scripts.ts'

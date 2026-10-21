@@ -3,7 +3,7 @@
  * The OpenAI chat models, generated from pi-ai 1.3.0's catalog (`dist/providers/data/openai.json`,
  * API `openai-responses`). Regenerate rather than edit by hand.
  */
-import type { Entry } from '../../model/internal/catalog.ts'
+import type { Entry } from '../../internal/provider/catalog.ts'
 
 export const models: ReadonlyArray<Entry> = [
   {

@@ -8,7 +8,7 @@ import type * as Toolkit from '../../tool/Toolkit.ts'
 import * as ToolTask from '../../tool/ToolTask.ts'
 import type { Extension } from '../Extension.ts'
 import type { Installed, Snapshot } from '../Extensions.ts'
-import { InvalidExtension } from '../HarnessError.ts'
+import { InvalidExtension } from '../../protocol/HarnessError.ts'
 import { COMPACTION_KIND } from './compaction/status.ts'
 import { RUN_KIND } from './run.ts'
 

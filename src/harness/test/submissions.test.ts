@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test'
 import { Effect, Exit, Fiber } from 'effect'
 import { SessionError } from '../../session/index.ts'
 import { SubmissionId } from '../../storage/schema/Ids.ts'
-import { HarnessError } from '../index.ts'
+import { HarnessError } from '../../protocol/index.ts'
 import {
   counting,
   eventually,
@@ -22,7 +22,7 @@ import {
   transcript,
   anyEntryId,
   anyNumber,
-} from './support.ts'
+} from '../../test/harness.ts'
 
 describe('submissions', () => {
   test('appends an idle write and settles it done without a run', () =>

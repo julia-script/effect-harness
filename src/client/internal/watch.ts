@@ -6,8 +6,8 @@ import { Effect, Option, Sink, Stream, SubscriptionRef } from 'effect'
 import type { Schema } from 'effect'
 import { RpcClientDefect, RpcClientError } from 'effect/rpc/RpcClientError'
 import * as Ops from '../../delta/Ops.ts'
-import type * as AgentEvent from '../../harness/AgentEvent.ts'
-import type { Change, Watch } from '../../harness/ViewState.ts'
+import type * as AgentEvent from '../../protocol/AgentEvent.ts'
+import type { Change, Watch } from '../../protocol/ViewState.ts'
 import type { Op } from '../../storage/schema/Document.ts'
 
 /** The loop broke the protocol of a watch. */

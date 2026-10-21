@@ -8,7 +8,7 @@ import { ConversationId, SubmissionId } from '../storage/schema/Ids.ts'
 export class ConversationBusy extends Schema.TaggedError<
   ConversationBusy,
   { readonly brand: unique symbol }
->('effect-harness/harness/HarnessError/ConversationBusy')('ConversationBusy', {
+>('effect-harness/protocol/HarnessError/ConversationBusy')('ConversationBusy', {
   message: Schema.String,
   conversationId: ConversationId,
 }) {}
@@ -20,7 +20,7 @@ export class ConversationBusy extends Schema.TaggedError<
 export class InvalidSubmission extends Schema.TaggedError<
   InvalidSubmission,
   { readonly brand: unique symbol }
->('effect-harness/harness/HarnessError/InvalidSubmission')('InvalidSubmission', {
+>('effect-harness/protocol/HarnessError/InvalidSubmission')('InvalidSubmission', {
   message: Schema.String,
 }) {}
 
@@ -28,7 +28,7 @@ export class InvalidSubmission extends Schema.TaggedError<
 export class SubmissionNotFound extends Schema.TaggedError<
   SubmissionNotFound,
   { readonly brand: unique symbol }
->('effect-harness/harness/HarnessError/SubmissionNotFound')('SubmissionNotFound', {
+>('effect-harness/protocol/HarnessError/SubmissionNotFound')('SubmissionNotFound', {
   message: Schema.String,
   submissionId: SubmissionId,
 }) {}
@@ -38,7 +38,7 @@ export class SubmissionNotFound extends Schema.TaggedError<
  * payload did not decode, or the initializer failed. `cause` is the failure.
  */
 export class InitFailed extends Schema.TaggedError<InitFailed, { readonly brand: unique symbol }>(
-  'effect-harness/harness/HarnessError/InitFailed',
+  'effect-harness/protocol/HarnessError/InitFailed',
 )('InitFailed', {
   message: Schema.String,
   init: Schema.String,
@@ -53,7 +53,7 @@ export class InitFailed extends Schema.TaggedError<InitFailed, { readonly brand:
 export class InvalidExtension extends Schema.TaggedError<
   InvalidExtension,
   { readonly brand: unique symbol }
->('effect-harness/harness/HarnessError/InvalidExtension')('InvalidExtension', {
+>('effect-harness/protocol/HarnessError/InvalidExtension')('InvalidExtension', {
   message: Schema.String,
   extension: Schema.String,
 }) {}

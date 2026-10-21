@@ -3,7 +3,7 @@
  * and the effort a requested level sends.
  */
 import { describe, expect, test } from 'bun:test'
-import { effort, thinkingLevels } from '../internal/catalog.ts'
+import { effort, thinkingLevels } from '../../internal/provider/catalog.ts'
 
 /** Codex's gpt-5.5: only the levels that differ from their own names are mapped. */
 const sparse = { id: 'gpt-5.5', reasoning: true, efforts: { xhigh: 'xhigh', minimal: 'low' } }

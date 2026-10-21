@@ -20,7 +20,7 @@ import type { Host } from './conversation.ts'
 import { withdrawQueuedInputs } from './inbox.ts'
 import { settleOutcome } from './run.ts'
 import * as Submissions from './submissions.ts'
-import { readsFirst } from '../../session/internal/readsFirst.ts'
+import { readsFirst } from '../../internal/readsFirst.ts'
 import * as Views from './views/views.ts'
 
 const SCAN_PAGE_SIZE = 256

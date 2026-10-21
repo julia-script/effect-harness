@@ -10,8 +10,8 @@ import { Faux } from '../../model/index.ts'
 import { ContextOverflow, ModelError, Rejected } from '../../model/ModelError.ts'
 import type { Conversation } from '../Conversation.ts'
 import * as Usage from '../Usage.ts'
-import type { Options } from './generationSupport.ts'
-import { anyNumber } from './support.ts'
+import type { Options } from '../../test/generation.ts'
+import { anyNumber } from '../../test/harness.ts'
 import {
   describe,
   entriesOf,
@@ -21,7 +21,7 @@ import {
   ownerless,
   reasonOf,
   runTest,
-} from './generationSupport.ts'
+} from '../../test/generation.ts'
 
 const ask = (conversation: Conversation, content: string) =>
   Effect.orDie(Effect.flatMap(conversation.submit({ type: 'input', content }), (s) => s.wait))

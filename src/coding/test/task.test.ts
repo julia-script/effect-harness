@@ -6,9 +6,9 @@
 import { BunServices } from '@effect/platform-bun'
 import { describe, expect, test } from 'bun:test'
 import { Effect, Layer } from 'effect'
-import { conversation, open, runTest } from '../../task/test/support.ts'
+import { conversation, open, runTest } from '../../test/task.ts'
 import { ToolTask } from '../../tool/index.ts'
-import { answer, call } from '../../tool/test/support.ts'
+import { answer, call } from '../../test/tool.ts'
 import { CodingHandlers, CodingTools } from '../index.ts'
 
 const tasks = Effect.map(

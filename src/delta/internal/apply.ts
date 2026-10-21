@@ -1,5 +1,5 @@
-import { defineData, emptyLike, isArray, isContainer } from './json.ts'
-import type { Container, Json } from './json.ts'
+import { defineData, emptyLike, isArray, isContainer } from '../../internal/json.ts'
+import type { Container, Json } from '../../internal/json.ts'
 import type { Op, Path, Segment } from './ops.ts'
 
 /**

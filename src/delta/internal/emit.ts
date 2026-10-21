@@ -11,7 +11,7 @@ import {
 } from './dense.ts'
 import type { DenseCandidates, DenseRegion } from './dense.ts'
 import { emitArrayOperations, emitObjectOperations, MAX_DELTA_OPERATIONS } from './emitNode.ts'
-import { isArray } from './json.ts'
+import { isArray } from '../../internal/json.ts'
 import { RESERVED_SEGMENTS, reservedIndex, setOp } from './ops.ts'
 import type { Op, Path } from './ops.ts'
 import { resolvePath } from './paths.ts'

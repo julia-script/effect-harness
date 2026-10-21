@@ -8,7 +8,7 @@ import { Faux, Model } from '../../model/index.ts'
 import * as Storage from '../../storage/Storage.ts'
 import { Call, Tool, Toolkit } from '../../tool/index.ts'
 import { Extension, Harness } from '../index.ts'
-import { runTest } from './support.ts'
+import { runTest } from '../../test/harness.ts'
 
 const Delegate = Tool.make('delegate', {
   description: 'Delegate a task to a subagent.',

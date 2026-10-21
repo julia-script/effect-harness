@@ -3,8 +3,8 @@ import { createNode, nodeBase, RELEASED } from './context.ts'
 import type { OverlayContext, TrackerHost } from './context.ts'
 import { applyTrusted } from './apply.ts'
 import { emitOperations } from './emit.ts'
-import { equalTrustedJson } from './json.ts'
-import type { Container, Json } from './json.ts'
+import { equalTrustedJson } from '../../internal/json.ts'
+import type { Container, Json } from '../../internal/json.ts'
 import type { Op } from './ops.ts'
 
 /** Creating, materializing, and releasing overlay contexts. */

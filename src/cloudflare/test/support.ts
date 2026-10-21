@@ -5,7 +5,7 @@
  */
 import { Deferred, Effect } from 'effect'
 import type { Scope } from 'effect'
-import { events } from '../../openai/test/support.ts'
+import { events } from '../../test/openai.ts'
 
 export interface ModelApi {
   readonly url: string

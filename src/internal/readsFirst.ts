@@ -1,5 +1,5 @@
 import { Effect } from 'effect'
-import { ReadAfterWrite } from '../SessionError.ts'
+import { ReadAfterWrite } from '../session/SessionError.ts'
 
 /**
  * A commit whose callback reads tables only before writing cannot fail with `ReadAfterWrite`;

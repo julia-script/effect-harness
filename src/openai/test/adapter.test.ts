@@ -9,7 +9,7 @@ import { KeyValueStore } from 'effect/persistence'
 import { Accounts, AccountError, Adapter } from '../../accounts/index.ts'
 import { CredentialStore } from '../../credentials/index.ts'
 import { Model } from '../../model/index.ts'
-import { serve } from '../../model/test/fakeApi.ts'
+import { serve } from '../../test/fakeApi.ts'
 import { OpenAi, OpenAiCodex } from '../index.ts'
 
 const adapters = Adapter.group(OpenAi.adapter, OpenAiCodex.adapter)

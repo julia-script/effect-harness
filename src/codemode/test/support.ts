@@ -19,7 +19,7 @@ import type { ConversationId } from '../../storage/schema/Ids.ts'
 import { Tool, Toolkit, ToolResult, ToolTask } from '../../tool/index.ts'
 import * as Extension from '../../harness/Extension.ts'
 import type * as Harness from '../../harness/Harness.ts'
-import { entriesOf, open } from '../../harness/test/generationSupport.ts'
+import { entriesOf, open } from '../../test/generation.ts'
 import { Codemode, CodemodeHandlers } from '../index.ts'
 
 const Params = Schema.Struct({

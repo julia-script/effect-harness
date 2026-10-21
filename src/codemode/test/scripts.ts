@@ -2,7 +2,7 @@
  * Test support: scripts run in a Harness with code mode, to their answer or across a restart.
  */
 import { Deferred, Effect } from 'effect'
-import { ownerless } from '../../harness/test/generationSupport.ts'
+import { ownerless } from '../../test/generation.ts'
 import type * as Harness from '../../harness/Harness.ts'
 import { Faux } from '../../model/index.ts'
 import * as Session from '../../session/Session.ts'

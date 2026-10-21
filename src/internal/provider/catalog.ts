@@ -2,8 +2,8 @@
  * Catalog entries of the stock providers: a `Definition` plus what a provider needs to map the
  * request options for that model.
  */
-import type { ModelThinkingLevel } from '../Message.ts'
-import type { Definition } from '../Model.ts'
+import type { ModelThinkingLevel } from '../../model/Message.ts'
+import type { Definition } from '../../model/Model.ts'
 
 export interface Entry extends Definition {
   /**

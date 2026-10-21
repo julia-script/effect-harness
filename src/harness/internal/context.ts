@@ -14,7 +14,7 @@ import type { ContextEdit, EntryRecord } from '../../storage/schema/Entry.ts'
 import type { ConversationId, EntryId } from '../../storage/schema/Ids.ts'
 import type { ModelMessage } from '../../storage/schema/Json.ts'
 import type { Cursor } from '../../storage/schema/Scan.ts'
-import type { ContextView } from '../ViewState.ts'
+import type { ContextView } from '../../protocol/ViewState.ts'
 
 export const SYSTEM_KIND = '$system'
 

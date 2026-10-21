@@ -5,7 +5,7 @@
  */
 import { Effect } from 'effect'
 import * as Document from '../session/Document.ts'
-import type { LiveState as State } from './ViewState.ts'
+import type { LiveState as State } from '../protocol/ViewState.ts'
 
 export {
   CompactionFailure,
@@ -15,7 +15,7 @@ export {
   LiveState as State,
   Run,
   ToolSlot,
-} from './ViewState.ts'
+} from '../protocol/ViewState.ts'
 
 /** One per conversation; every fork starts idle. */
 export const document = Document.make<State>({

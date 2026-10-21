@@ -15,9 +15,6 @@ export * as Initializer from './Initializer.ts'
 /** Conversation handles. */
 export * as Conversation from './Conversation.ts'
 
-/** Submissions: drafts, handles, and settled records. */
-export * as Submission from './Submission.ts'
-
 /** The built-in `$inbox` document. */
 export * as Inbox from './Inbox.ts'
 
@@ -39,9 +36,6 @@ export * as Live from './Live.ts'
 /** Harness-wide run policy. */
 export * as Settings from './Settings.ts'
 
-/** Errors a `Harness` reports. */
-export * as HarnessError from './HarnessError.ts'
-
 /** Extensions: tools, sections, hooks, wrappers and tasks, selected per conversation. */
 export * as Extension from './Extension.ts'
 
@@ -50,15 +44,6 @@ export * as Extensions from './Extensions.ts'
 
 /** The built-in `$agent` document, and the agent resolved from it. */
 export * as Agent from './Agent.ts'
-
-/** What an agent is made of, as Schemas the client shares. */
-export * as AgentState from './AgentState.ts'
-
-/** What a client sees of the loop: built-in document states, views, and the task graph. */
-export * as ViewState from './ViewState.ts'
-
-/** Agent events: one conversation's activity, batch by batch. */
-export * as AgentEvent from './AgentEvent.ts'
 
 /** The `tool_search` tool, which loads deferred tools. */
 export * as ToolSearch from './ToolSearch.ts'

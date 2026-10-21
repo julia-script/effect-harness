@@ -13,7 +13,7 @@ import { inspect } from './inspect.ts'
 import { driveReconcile, driveSweep } from './reconcile.ts'
 import { drive } from './reserve.ts'
 import { kick, makeState, resolveReceipt, seal, track, withState } from './state.ts'
-import { readsFirst } from '../../session/internal/readsFirst.ts'
+import { readsFirst } from '../../internal/readsFirst.ts'
 import type { State } from './state.ts'
 import {
   cancellationIntent,

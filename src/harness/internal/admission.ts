@@ -6,11 +6,11 @@ import { cast } from 'effect/Function'
 import type { Draft as DocumentDraft } from '../../delta/Tracker.ts'
 import type { Tx } from '../../session/Session.ts'
 import type { ConversationId, SubmissionId } from '../../storage/schema/Ids.ts'
-import { ConversationBusy, InvalidSubmission } from '../HarnessError.ts'
+import { ConversationBusy, InvalidSubmission } from '../../protocol/HarnessError.ts'
 import * as Inbox from '../Inbox.ts'
 import * as Live from '../Live.ts'
 import type { Settings } from '../Settings.ts'
-import type { Draft, InputDraft, WriteDraft } from '../Submission.ts'
+import type { Draft, InputDraft, WriteDraft } from '../../protocol/Submission.ts'
 import {
   appendInput,
   applyBoundary,
@@ -21,7 +21,7 @@ import {
   prepareBoundary,
 } from './inbox.ts'
 import type { Boundary } from './inbox.ts'
-import { strictJson } from './json.ts'
+import { strictJson } from '../../internal/strictJson.ts'
 import { startRun } from './run.ts'
 
 /** An input entry's kind must be a non-empty string outside the `$` prefix. */

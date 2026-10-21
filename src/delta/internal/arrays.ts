@@ -16,8 +16,8 @@ import type {
   Piece,
   StoredRef,
 } from './context.ts'
-import { Invalid, isArray, isContainer } from './json.ts'
-import type { Json, JsonArray } from './json.ts'
+import { Invalid, isArray, isContainer } from '../../internal/json.ts'
+import type { Json, JsonArray } from '../../internal/json.ts'
 import {
   arrayLength,
   createPieceNode,

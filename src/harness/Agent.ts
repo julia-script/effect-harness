@@ -33,11 +33,11 @@ import type { ConversationRecord } from '../storage/schema/Conversation.ts'
 import type { ConversationId } from '../storage/schema/Ids.ts'
 import * as Hook from '../task/Hook.ts'
 import type * as ToolTask from '../tool/ToolTask.ts'
-import type { Change, State, View } from './AgentState.ts'
+import type { Change, State, View } from '../protocol/AgentState.ts'
 import type * as Extension from './Extension.ts'
 import type * as Extensions from './Extensions.ts'
 import * as internal from './internal/agent.ts'
-import { strictJson } from './internal/json.ts'
+import { strictJson } from '../internal/strictJson.ts'
 import type { Settings } from './Settings.ts'
 
 /** One per conversation; a fork starts from the agent at its fork entry. */

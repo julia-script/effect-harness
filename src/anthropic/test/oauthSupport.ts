@@ -4,8 +4,8 @@ import { FetchHttpClient } from 'effect/http'
 import type { HttpClient } from 'effect/http'
 import { CredentialStore } from '../../credentials/index.ts'
 import { Model } from '../../model/index.ts'
-import { serve } from '../../model/test/fakeApi.ts'
-import type { FakeApi, Recorded, Reply } from '../../model/test/fakeApi.ts'
+import { serve } from '../../test/fakeApi.ts'
+import type { FakeApi, Recorded, Reply } from '../../test/fakeApi.ts'
 import { AnthropicOAuth } from '../index.ts'
 export const token = { access_token: 'access-new', refresh_token: 'refresh-new', expires_in: 3600 }
 export const existing = {
