@@ -1,6 +1,6 @@
 {
   "name": "effect-harness",
-  "version": "0.9.2",
+  "version": "0.10.0",
   "description": "Durable AI conversations with Effect services, schema-backed state, and scoped local execution.",
   "homepage": "https://github.com/julia-script/effect-harness#readme",
   "bugs": {
@@ -49,6 +49,10 @@
     "./client": {
       "types": "./dist/client/index.d.ts",
       "default": "./dist/client/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol/index.d.ts",
+      "default": "./dist/protocol/index.js"
     },
     "./credentials": {
       "types": "./dist/credentials/index.d.ts",

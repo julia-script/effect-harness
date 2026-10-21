@@ -1,5 +1,5 @@
 /* oxlint-disable effecttsgo/any-unknown-in-error-context -- task code may fail with anything, and a failure of any type faults its task */
-import { Cause, Deferred, Effect, Exit, Option } from 'effect'
+import { Cause, Deferred, Effect, Equal, Exit, Option } from 'effect'
 import { cast } from 'effect/Function'
 import type { Tx } from '../../session/Session.ts'
 import type { TxError } from '../../session/SessionError.ts'
@@ -10,7 +10,6 @@ import type * as Task from '../Task.ts'
 import { loadScopes, scheduleReconcile, settleOutcome } from './chains.ts'
 import { canReserve } from './resolve.ts'
 import { makeRuntime } from './runtime.ts'
-import { jsonEqual } from './json.ts'
 import { causeMessage, end, lookup, report, runTaskCode, withState } from './state.ts'
 import type { Erased, Invocation, State } from './state.ts'
 import { parentOf } from './tree.ts'
@@ -121,7 +120,7 @@ const decide = Effect.fnUntraced(function* (
   if (previous.failure !== undefined) return { fault: causeMessage(previous.failure) }
   // 6. No durable progress.
   const checkpoint = checkpointOf(current)
-  if (jsonEqual(checkpoint, previous.checkpoint)) {
+  if (Equal.equals(checkpoint, previous.checkpoint)) {
     const phase = previous.checkpoint.phase
     return { fault: `Task ${current.kind} phase ${phase} returned without durable progress` }
   }

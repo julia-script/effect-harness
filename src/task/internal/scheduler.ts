@@ -12,7 +12,8 @@ import { abortConversation, settleIdle, waitForIdle } from './idle.ts'
 import { inspect } from './inspect.ts'
 import { driveReconcile, driveSweep } from './reconcile.ts'
 import { drive } from './reserve.ts'
-import { kick, makeState, readsFirst, resolveReceipt, seal, track, withState } from './state.ts'
+import { kick, makeState, resolveReceipt, seal, track, withState } from './state.ts'
+import { readsFirst } from '../../internal/readsFirst.ts'
 import type { State } from './state.ts'
 import {
   cancellationIntent,
@@ -126,8 +127,8 @@ const observeTask = Effect.fnUntraced(function* (
  * The commit listener, on the line: mirror every task change and owner edge, complete receipts,
  * interrupt the run invocation of a newly abort-marked task, and request the passes it implies.
  */
-const observe = (state: State) => (publication: CommitPublication) =>
-  Effect.gen(function* () {
+const observe = (state: State) =>
+  Effect.fnUntraced(function* (publication: CommitPublication) {
     // Edges first, so the tasks a commit creates in a new conversation hang from it.
     for (const change of publication.changes) {
       if (change.type === 'conversation' && !state.tree.edges.has(change.value.id)) {

@@ -4,14 +4,15 @@
  */
 import { Deferred, Effect, Exit } from 'effect'
 import type { CommitPublication, Service as SessionService } from '../../session/Session.ts'
-import { ReadAfterWrite, SessionClosed } from '../../session/SessionError.ts'
+import { SessionClosed } from '../../session/SessionError.ts'
+import { readsFirst } from '../../internal/readsFirst.ts'
 import type { CommitError } from '../../session/SessionError.ts'
 import type { ConversationId, SubmissionId } from '../../storage/schema/Ids.ts'
 import type { SubmissionRecord } from '../../storage/schema/Submission.ts'
-import { SubmissionNotFound } from '../HarnessError.ts'
-import type { ConversationBusy, InvalidSubmission } from '../HarnessError.ts'
+import { SubmissionNotFound } from '../../protocol/HarnessError.ts'
+import type { ConversationBusy, InvalidSubmission } from '../../protocol/HarnessError.ts'
 import type { Settings } from '../Settings.ts'
-import type { AbortResult, Draft, Settled, Submission } from '../Submission.ts'
+import type { AbortResult, Draft, Settled, Submission } from '../../protocol/Submission.ts'
 import { admit } from './admission.ts'
 import { removeItem } from './inbox.ts'
 
@@ -35,17 +36,6 @@ interface Waits {
   readonly pending: Map<SubmissionId, Wait>
   closed: boolean
 }
-
-/**
- * A commit whose callback reads tables only before writing cannot fail with `ReadAfterWrite`;
- * if it does, that is a bug.
- */
-export const readsFirst = <A, E, R>(effect: Effect.Effect<A, E | ReadAfterWrite, R>) =>
-  Effect.catchIf(
-    effect,
-    (error): error is ReadAfterWrite => error instanceof ReadAfterWrite,
-    Effect.die,
-  )
 
 const isSettled = (record: SubmissionRecord): record is Settled =>
   record.status === 'done' || record.status === 'unanswered'

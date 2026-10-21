@@ -12,7 +12,7 @@ import * as Agent from '../../Agent.ts'
 import { Hooks } from '../../Generation.ts'
 import type { Checkpoint } from '../../Generation.ts'
 import * as Live from '../../Live.ts'
-import { strictJson } from '../json.ts'
+import { strictJson } from '../../../internal/strictJson.ts'
 import { convertPartial } from '../run.ts'
 import { classify, failNoModel } from './classify.ts'
 import { agentOf, readView, sleepUntil } from './env.ts'
@@ -33,60 +33,55 @@ const commitPartial = (runtime: GenerationRuntime, attempt: number, partial: Ass
  * in flight and no stale partial lands after the outcome. A commit that fails, as after an abort
  * mark, leaves the committed state as it was.
  */
-const streamResponse = (
+const streamResponse = Effect.fnUntraced(function* (
   runtime: GenerationRuntime,
   env: Env,
   request: Model.Request,
   info: Model.Info,
   attempt: number,
-) =>
-  Effect.gen(function* () {
-    const { partialIntervalMs } = yield* env.settings
-    const pending = yield* Ref.make(Option.none<AssistantMessage>())
-    const final = yield* Ref.make(Option.none<AssistantMessage>())
-    const flush = Effect.flatMap(Ref.getAndSet(pending, Option.none()), (partial) =>
-      Option.isNone(partial)
-        ? Effect.void
-        : Effect.ignore(Effect.uninterruptible(commitPartial(runtime, attempt, partial.value))),
-    )
-    const flusher = yield* Effect.forkChild(
-      Effect.forever(Effect.andThen(Effect.sleep(partialIntervalMs), flush)),
-    )
-    const responses = Model.responses(
-      info,
-      yield* Clock.currentTimeMillis,
-    )(env.model.stream(request))
-    yield* Stream.runForEach(responses, (message) => {
-      if (message.stopReason !== 'pending') return Ref.set(final, Option.some(message))
-      // A partial without content, such as a deferred response before its handle, shows nothing.
-      return message.content.length === 0 ? Effect.void : Ref.set(pending, Option.some(message))
-    }).pipe(Effect.ensuring(Fiber.interrupt(flusher)))
-    const message = yield* Ref.get(final)
-    if (Option.isSome(message)) return message.value
-    return yield* new ModelError({
-      message: `The ${info.provider}/${info.id} response ended before it finished`,
-      reason: new Retryable({}),
-    })
+) {
+  const { partialIntervalMs } = yield* env.settings
+  const pending = yield* Ref.make(Option.none<AssistantMessage>())
+  const final = yield* Ref.make(Option.none<AssistantMessage>())
+  const flush = Effect.flatMap(Ref.getAndSet(pending, Option.none()), (partial) =>
+    Option.isNone(partial)
+      ? Effect.void
+      : Effect.ignore(Effect.uninterruptible(commitPartial(runtime, attempt, partial.value))),
+  )
+  const flusher = yield* Effect.forkChild(
+    Effect.forever(Effect.andThen(Effect.sleep(partialIntervalMs), flush)),
+  )
+  const responses = Model.responses(info, yield* Clock.currentTimeMillis)(env.model.stream(request))
+  yield* Stream.runForEach(responses, (message) => {
+    if (message.stopReason !== 'pending') return Ref.set(final, Option.some(message))
+    // A partial without content, such as a deferred response before its handle, shows nothing.
+    return message.content.length === 0 ? Effect.void : Ref.set(pending, Option.some(message))
+  }).pipe(Effect.ensuring(Fiber.interrupt(flusher)))
+  const message = yield* Ref.get(final)
+  if (Option.isSome(message)) return message.value
+  return yield* new ModelError({
+    message: `The ${info.provider}/${info.id} response ended before it finished`,
+    reason: new Retryable({}),
   })
+})
 
 /** Ask `beforeRequest` in order, each replacing the messages the earlier ones left. */
-const beforeRequest = (
+const beforeRequest = Effect.fnUntraced(function* (
   hooks: ReadonlyArray<Partial<Hooks>>,
   messages: ReadonlyArray<Message>,
   api: Hook.Api,
-) =>
-  Effect.gen(function* () {
-    let current = messages
-    for (const hook of hooks) {
-      if (hook.beforeRequest === undefined) continue
-      const replaced = yield* Hook.ask(
-        hook.beforeRequest({ messages: current }, api),
-        'beforeRequest',
-      )
-      if (Option.isSome(replaced)) current = replaced.value.messages
-    }
-    return current
-  })
+) {
+  let current = messages
+  for (const hook of hooks) {
+    if (hook.beforeRequest === undefined) continue
+    const replaced = yield* Hook.ask(
+      hook.beforeRequest({ messages: current }, api),
+      'beforeRequest',
+    )
+    if (Option.isSome(replaced)) current = replaced.value.messages
+  }
+  return current
+})
 
 type Phase<P extends Checkpoint['phase']> = {
   readonly state: { readonly checkpoint: Extract<Checkpoint, { readonly phase: P }> }
@@ -96,8 +91,8 @@ type Phase<P extends Checkpoint['phase']> = {
  * The `request` phase: turn a partial an interrupted attempt left into an aborted entry, read the
  * context through the cutoff, stream the response, and classify it.
  */
-export const requestPhase = (env: Env) => (task: Phase<'request'>, runtime: GenerationRuntime) =>
-  Effect.gen(function* () {
+export const requestPhase = (env: Env) =>
+  Effect.fnUntraced(function* (task: Phase<'request'>, runtime: GenerationRuntime) {
     const { attempt, compacted, model: ref, options, cutoff } = task.state.checkpoint
     const { conversationId } = runtime
     yield* runtime.commit((tx) =>
@@ -126,8 +121,8 @@ export const requestPhase = (env: Env) => (task: Phase<'request'>, runtime: Gene
   })
 
 /** The `poll` phase: fetch a deferred response at its time, and classify it. */
-export const pollPhase = (env: Env) => (task: Phase<'poll'>, runtime: GenerationRuntime) =>
-  Effect.gen(function* () {
+export const pollPhase = (env: Env) =>
+  Effect.fnUntraced(function* (task: Phase<'poll'>, runtime: GenerationRuntime) {
     const { attempt, compacted, model: ref, cutoff, handle, pollAt } = task.state.checkpoint
     if ((yield* env.model.info(ref)) === undefined) return yield* failNoModel(runtime, ref)
     yield* sleepUntil(pollAt)

@@ -15,43 +15,42 @@ type Stored = typeof Stored.Type
 const failed = (cause: unknown) =>
   new CredentialsError({ message: 'The credential store could not be read or written', cause })
 
-export const make = (key: string) =>
-  Effect.gen(function* () {
-    const store = KeyValueStore.toSchemaStore(yield* KeyValueStore.KeyValueStore, Stored)
-    const line = yield* Semaphore.make(1)
-    const read = store
-      .get(key)
-      .pipe(Effect.map(Option.getOrElse((): Stored => ({}))), Effect.mapError(failed))
-    const write = (next: Stored) => Effect.mapError(store.set(key, next), failed)
-    /** Read, change and write under the write lock; `change` may fail instead. */
-    const modify = <E>(change: (stored: Stored) => Effect.Effect<Stored, E>) =>
-      Semaphore.withPermit(line, Effect.flatMap(Effect.flatMap(read, change), write))
-    const service: Service = {
-      get: (provider) => Effect.map(read, (stored) => stored[provider]),
-      list: Effect.map(read, (stored) =>
-        Object.entries(stored).map(([provider, credential]) =>
-          Info.make({ provider, type: credential._tag }),
+export const make = Effect.fnUntraced(function* (key: string) {
+  const store = KeyValueStore.toSchemaStore(yield* KeyValueStore.KeyValueStore, Stored)
+  const line = yield* Semaphore.make(1)
+  const read = store
+    .get(key)
+    .pipe(Effect.map(Option.getOrElse((): Stored => ({}))), Effect.mapError(failed))
+  const write = (next: Stored) => Effect.mapError(store.set(key, next), failed)
+  /** Read, change and write under the write lock; `change` may fail instead. */
+  const modify = <E>(change: (stored: Stored) => Effect.Effect<Stored, E>) =>
+    Semaphore.withPermit(line, Effect.flatMap(Effect.flatMap(read, change), write))
+  const service: Service = {
+    get: (provider) => Effect.map(read, (stored) => stored[provider]),
+    list: Effect.map(read, (stored) =>
+      Object.entries(stored).map(([provider, credential]) =>
+        Info.make({ provider, type: credential._tag }),
+      ),
+    ),
+    set: (provider, credential) =>
+      modify((stored) => Effect.succeed({ ...stored, [provider]: credential })),
+    remove: (provider) =>
+      modify((stored) =>
+        Effect.succeed(
+          Object.fromEntries(Object.entries(stored).filter(([name]) => name !== provider)),
         ),
       ),
-      set: (provider, credential) =>
-        modify((stored) => Effect.succeed({ ...stored, [provider]: credential })),
-      remove: (provider) =>
-        modify((stored) =>
-          Effect.succeed(
-            Object.fromEntries(Object.entries(stored).filter(([name]) => name !== provider)),
-          ),
-        ),
-      update: (provider, expected, next) =>
-        modify((stored) =>
-          Equal.equals(stored[provider], expected)
-            ? Effect.succeed({ ...stored, [provider]: next })
-            : Effect.fail(
-                new CredentialChanged({
-                  message: `The ${provider} credential changed since it was read`,
-                  provider,
-                }),
-              ),
-        ),
-    }
-    return service
-  })
+    update: (provider, expected, next) =>
+      modify((stored) =>
+        Equal.equals(stored[provider], expected)
+          ? Effect.succeed({ ...stored, [provider]: next })
+          : Effect.fail(
+              new CredentialChanged({
+                message: `The ${provider} credential changed since it was read`,
+                provider,
+              }),
+            ),
+      ),
+  }
+  return service
+})

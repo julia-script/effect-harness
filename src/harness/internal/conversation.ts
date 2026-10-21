@@ -17,7 +17,7 @@ import { createCompaction } from './compaction/status.ts'
 import { readVisible } from './context.ts'
 import { RESET_KIND } from './inbox.ts'
 import type { Submissions } from './submissions.ts'
-import { readsFirst } from './submissions.ts'
+import { readsFirst } from '../../internal/readsFirst.ts'
 import type { Views } from './views/views.ts'
 
 export interface Host {

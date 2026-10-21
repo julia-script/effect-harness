@@ -10,21 +10,21 @@ import { expect } from 'bun:test'
 import { Effect, Exit, Queue, Scope } from 'effect'
 import { cast } from 'effect/Function'
 import type { Schema } from 'effect'
-import type { Service as StorageService } from '../../storage/Storage.ts'
-import { Storage } from '../../storage/Storage.ts'
-import type { Op } from '../../storage/schema/Document.ts'
-import type { EntryRecord } from '../../storage/schema/Entry.ts'
-import type { ConversationId, EntryId } from '../../storage/schema/Ids.ts'
-import { Registry, Task } from '../../task/index.ts'
-import type { Conversation } from '../Conversation.ts'
-import * as Extensions from '../Extensions.ts'
-import * as Harness from '../Harness.ts'
-import * as Inbox from '../Inbox.ts'
-import * as Live from '../Live.ts'
-import * as Settings from '../Settings.ts'
-import type { Settled } from '../Submission.ts'
-import { prepareBoundary } from '../internal/inbox.ts'
-import { continueRun, endRun, finishRun, RUN_KIND } from '../internal/run.ts'
+import type { Service as StorageService } from '../storage/Storage.ts'
+import { Storage } from '../storage/Storage.ts'
+import type { Op } from '../storage/schema/Document.ts'
+import type { EntryRecord } from '../storage/schema/Entry.ts'
+import type { ConversationId, EntryId } from '../storage/schema/Ids.ts'
+import { Registry, Task } from '../task/index.ts'
+import type { Conversation } from '../harness/Conversation.ts'
+import * as Extensions from '../harness/Extensions.ts'
+import * as Harness from '../harness/Harness.ts'
+import * as Inbox from '../harness/Inbox.ts'
+import * as Live from '../harness/Live.ts'
+import * as Settings from '../harness/Settings.ts'
+import type { Settled } from '../protocol/Submission.ts'
+import { prepareBoundary } from '../harness/internal/inbox.ts'
+import { continueRun, endRun, finishRun, RUN_KIND } from '../harness/internal/run.ts'
 
 export const ASSISTANT_KIND = '$assistant'
 
@@ -164,7 +164,7 @@ export const liveOf = (harness: Harness.Service, id: ConversationId) =>
   Effect.map(Effect.orDie(harness.session.snapshot(Live.document, id)), (state) => state ?? {})
 
 /** Retry `check` on a short interval until it holds. */
-export { eventually, runTest, settle } from '../../task/test/support.ts'
+export { eventually, runTest, settle } from './task.ts'
 
 /** The op batches of `$inbox` changes, collected from every later commit in the scope. */
 export const inboxOps = (harness: Harness.Service) =>

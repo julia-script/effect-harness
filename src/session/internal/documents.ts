@@ -1,5 +1,5 @@
 import { Effect, Schema } from 'effect'
-import { copyJson, Invalid, isArray } from '../../delta/internal/json.ts'
+import { copyJson, Invalid, isArray } from '../../internal/json.ts'
 import type {
   DocumentAddress,
   DocumentCreate,

@@ -18,8 +18,8 @@ import {
   open,
   openClosable,
   runTest,
-} from './support.ts'
-import type { Step } from './support.ts'
+} from '../../test/task.ts'
+import type { Step } from '../../test/task.ts'
 
 /** A one-phase task that completes once `gate` opens; `migrate` takes older versions. */
 const versioned = (

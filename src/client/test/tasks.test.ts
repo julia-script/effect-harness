@@ -8,8 +8,9 @@ import { Effect, Exit, Fiber, Schema } from 'effect'
 import { Initializer } from '../../harness/index.ts'
 import * as Usage from '../../harness/Usage.ts'
 import { EntryId, TaskId } from '../../storage/schema/Ids.ts'
-import { settle } from '../../task/test/support.ts'
-import { HarnessTransport, Init } from '../index.ts'
+import { settle } from '../../test/task.ts'
+import { Init } from '../../protocol/index.ts'
+import { HarnessTransport } from '../index.ts'
 import { open, runTest } from './support.ts'
 
 const spend = (tokens: number) => ({

@@ -168,17 +168,20 @@ const readText = (content: string, path: string, params: Params): Effect.Effect<
 const withoutBom = (bytes: Uint8Array) =>
   bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? bytes.subarray(3) : bytes
 
-export const read = (workspace: Workspace, params: Params, config: Config) =>
-  Effect.gen(function* () {
-    const absolute = yield* resolveExisting(workspace, config, params.path)
-    const bytes = yield* Effect.mapError(workspace.fs.readFile(absolute), (error) =>
-      failed(`Could not read ${params.path}: ${error.message}`),
-    )
-    const mimeType = Image.mimeTypeOf(bytes)
-    if (mimeType !== undefined)
-      return yield* Option.match(workspace.images, {
-        onNone: () => rawImage(bytes, params.path, mimeType),
-        onSome: (processor) => preparedImage(processor, bytes, params.path, mimeType),
-      })
-    return yield* readText(decoder.decode(withoutBom(bytes)), params.path, params)
-  })
+export const read = Effect.fnUntraced(function* (
+  workspace: Workspace,
+  params: Params,
+  config: Config,
+) {
+  const absolute = yield* resolveExisting(workspace, config, params.path)
+  const bytes = yield* Effect.mapError(workspace.fs.readFile(absolute), (error) =>
+    failed(`Could not read ${params.path}: ${error.message}`),
+  )
+  const mimeType = Image.mimeTypeOf(bytes)
+  if (mimeType !== undefined)
+    return yield* Option.match(workspace.images, {
+      onNone: () => rawImage(bytes, params.path, mimeType),
+      onSome: (processor) => preparedImage(processor, bytes, params.path, mimeType),
+    })
+  return yield* readText(decoder.decode(withoutBom(bytes)), params.path, params)
+})

@@ -28,25 +28,24 @@ const encodings = (size: Size, jpegFirst: boolean): ReadonlyArray<Target> => {
 }
 
 /** The first encoding at `size` whose base64 fits `maxBytes`. */
-const encodeWithin = (
+const encodeWithin = Effect.fnUntraced(function* (
   codec: Codec,
   bytes: Uint8Array,
   orientation: number,
   size: Size,
   maxBytes: number,
   jpegFirst: boolean,
-) =>
-  Effect.gen(function* () {
-    let found: { readonly data: string; readonly mimeType: string } | undefined
-    for (const target of encodings(size, jpegFirst)) {
-      const encoded = yield* codec.encode(bytes, orientation, target)
-      if (encoded !== undefined && base64Length(encoded.byteLength) <= maxBytes) {
-        found = { data: toBase64(encoded), mimeType: `image/${target.format}` }
-        break
-      }
+) {
+  let found: { readonly data: string; readonly mimeType: string } | undefined
+  for (const target of encodings(size, jpegFirst)) {
+    const encoded = yield* codec.encode(bytes, orientation, target)
+    if (encoded !== undefined && base64Length(encoded.byteLength) <= maxBytes) {
+      found = { data: toBase64(encoded), mimeType: `image/${target.format}` }
+      break
     }
-    return found
-  })
+  }
+  return found
+})
 
 const shrink = (size: Size): Size => ({
   width: Math.max(1, Math.floor(size.width * 0.75)),
@@ -96,21 +95,18 @@ const reencode = (
   return at(scaled(upright, limits))
 }
 
-export const prepare = (
+export const prepare = Effect.fnUntraced(function* (
   codec: Codec,
   bytes: Uint8Array,
   mimeType: string,
   limits: Limits,
-): Effect.Effect<Prepared | undefined> =>
-  Effect.gen(function* () {
-    // Decoded even when it is returned as it is: a damaged file is an error, not an image the provider rejects.
-    const stored = yield* codec.size(bytes)
-    if (stored === undefined) return stored
-    const orientation = orientationOf(bytes)
-    if (INLINE_IMAGE_TYPES.has(mimeType) && orientation === 1 && fits(stored, bytes.length, limits))
-      return { data: toBase64(bytes), mimeType }
-    const upright = transposes(orientation)
-      ? { width: stored.height, height: stored.width }
-      : stored
-    return yield* reencode(codec, bytes, mimeType, upright, limits)
-  })
+): Effect.fn.Return<Prepared | undefined> {
+  // Decoded even when it is returned as it is: a damaged file is an error, not an image the provider rejects.
+  const stored = yield* codec.size(bytes)
+  if (stored === undefined) return stored
+  const orientation = orientationOf(bytes)
+  if (INLINE_IMAGE_TYPES.has(mimeType) && orientation === 1 && fits(stored, bytes.length, limits))
+    return { data: toBase64(bytes), mimeType }
+  const upright = transposes(orientation) ? { width: stored.height, height: stored.width } : stored
+  return yield* reencode(codec, bytes, mimeType, upright, limits)
+})

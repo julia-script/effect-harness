@@ -6,7 +6,7 @@
 import { describe, expect, test } from 'bun:test'
 import { Effect, FileSystem } from 'effect'
 import { BunServices } from '@effect/platform-bun'
-import { entriesOf, runTest } from '../../harness/test/generationSupport.ts'
+import { entriesOf, runTest } from '../../test/generation.ts'
 import type { Details } from '../Codemode.ts'
 import { runScript } from './scripts.ts'
 import { PNG, world } from './support.ts'

@@ -18,9 +18,9 @@ import {
 import type { Scope } from 'effect'
 import { KeyValueStore } from 'effect/persistence'
 import { HarnessTransport } from '../../client/index.ts'
-import { runTest } from '../../task/test/support.ts'
+import { runTest } from '../../test/task.ts'
 import { Credential, CredentialStore } from '../index.ts'
-import * as keychain from '../internal/keychain.ts'
+import * as keychain from '../bun/internal/keychain.ts'
 import { makeFakeKeychain } from './fakeKeychain.ts'
 
 const apiKey = (key: string): Credential.Credential => ({

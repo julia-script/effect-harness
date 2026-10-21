@@ -19,8 +19,8 @@ import {
   storeValue,
 } from './context.ts'
 import type { ArrayOverlay, InsertSource, OverlayNode, Piece } from './context.ts'
-import { isContainer } from './json.ts'
-import type { Json } from './json.ts'
+import { isContainer } from '../../internal/json.ts'
+import type { Json } from '../../internal/json.ts'
 import {
   appendMergedPiece,
   arrayLength,

@@ -8,7 +8,7 @@ import type { ConversationId } from '../../storage/schema/Ids.ts'
 import type * as ToolTask from '../../tool/ToolTask.ts'
 import { document } from '../Agent.ts'
 import type { Resolved } from '../Agent.ts'
-import type { ModelTools, Selection, State, ToolFilter } from '../AgentState.ts'
+import type { ModelTools, Selection, State, ToolFilter } from '../../protocol/AgentState.ts'
 import type { Section } from '../Extension.ts'
 import type { Installed, Service as Extensions, Snapshot } from '../Extensions.ts'
 import type { Settings } from '../Settings.ts'
@@ -98,86 +98,87 @@ const renamed = (target: string, name: string) =>
   Effect.logWarning(`A wrapper renamed ${target} to ${name}; ${target} is left out`)
 
 /** Apply the selected extensions' wrappers to the composed tools and sections, in order. */
-const wrapAll = (
+const wrapAll = Effect.fnUntraced(function* (
   extensions: ReadonlyArray<Installed>,
   tools: Map<string, ToolTask.Installed>,
   sections: Map<string, Section>,
-) =>
-  Effect.gen(function* () {
-    for (const { extension } of extensions) {
-      for (const wrap of extension.wraps) {
-        if ('tool' in wrap) {
-          const target = tools.get(wrap.tool)
-          if (target === undefined || Option.isNone(target.runner)) continue
-          const wrapped = wrap.wrap(target.runner.value)
-          if (wrapped.tool.name === wrap.tool)
-            tools.set(wrap.tool, { ...target, tool: wrapped.tool, runner: Option.some(wrapped) })
-          else {
-            tools.delete(wrap.tool)
-            yield* renamed(wrap.tool, wrapped.tool.name)
-          }
-          continue
-        }
-        const target = sections.get(wrap.section)
-        if (target === undefined) continue
-        const wrapped = wrap.wrap(target)
-        if (wrapped.key === wrap.section) sections.set(wrap.section, wrapped)
+) {
+  for (const { extension } of extensions) {
+    for (const wrap of extension.wraps) {
+      if ('tool' in wrap) {
+        const target = tools.get(wrap.tool)
+        if (target === undefined || Option.isNone(target.runner)) continue
+        const wrapped = wrap.wrap(target.runner.value)
+        if (wrapped.tool.name === wrap.tool)
+          tools.set(wrap.tool, { ...target, tool: wrapped.tool, runner: Option.some(wrapped) })
         else {
-          sections.delete(wrap.section)
-          yield* renamed(wrap.section, wrapped.key)
+          tools.delete(wrap.tool)
+          yield* renamed(wrap.tool, wrapped.tool.name)
         }
+        continue
+      }
+      const target = sections.get(wrap.section)
+      if (target === undefined) continue
+      const wrapped = wrap.wrap(target)
+      if (wrapped.key === wrap.section) sections.set(wrap.section, wrapped)
+      else {
+        sections.delete(wrap.section)
+        yield* renamed(wrap.section, wrapped.key)
       }
     }
-  })
+  }
+})
 
 /** The agent of `state` over `snapshot` and `settings`. */
-export const resolve = (state: State | undefined, snapshot: Snapshot, settings: Settings) =>
-  Effect.gen(function* () {
-    const extensions = select(state?.extensions, snapshot, settings)
-    const tools = new Map<string, ToolTask.Installed>()
-    const sections = new Map<string, Section>()
-    for (const installed of extensions) {
-      for (const tool of installed.tools) tools.set(tool.tool.name, tool)
-      for (const section of installed.extension.sections) sections.set(section.key, section)
-    }
-    yield* wrapAll(extensions, tools, sections)
-    const config = state?.config ?? {}
-    const enabled: Array<ToolTask.Installed> = []
-    for (const tool of filter([...tools.values()], state?.tools)) {
-      const { name } = tool.tool
-      enabled.push(Object.hasOwn(config, name) ? { ...tool, config: config[name] } : tool)
-    }
-    const byModel = enabled.filter(({ tool }) => tool.callers.includes('model'))
-    const offered = offer(byModel, state?.modelTools)
-    const deferred = byModel.filter((each) => each.tool.deferred && !offered.includes(each))
-    const callable = enabled.filter(({ tool }) => tool.callers.includes('tools'))
-    const instructions = state?.instructions
-    const agentSections = [...sections.values()]
-    if (instructions !== undefined)
-      agentSections.push({ key: INSTRUCTIONS_KEY, render: () => Effect.succeed(instructions) })
-    const model = state?.model ?? settings.model
-    const resolved: Resolved = {
-      ...(model === undefined ? {} : { model }),
-      reasoning: state?.reasoning ?? settings.reasoning ?? 'off',
-      extensions,
-      tools: enabled,
-      callable,
-      offered,
-      deferred,
-      sections: agentSections,
-      ...(instructions === undefined ? {} : { instructions }),
-    }
-    return resolved
-  })
+export const resolve = Effect.fnUntraced(function* (
+  state: State | undefined,
+  snapshot: Snapshot,
+  settings: Settings,
+) {
+  const extensions = select(state?.extensions, snapshot, settings)
+  const tools = new Map<string, ToolTask.Installed>()
+  const sections = new Map<string, Section>()
+  for (const installed of extensions) {
+    for (const tool of installed.tools) tools.set(tool.tool.name, tool)
+    for (const section of installed.extension.sections) sections.set(section.key, section)
+  }
+  yield* wrapAll(extensions, tools, sections)
+  const config = state?.config ?? {}
+  const enabled: Array<ToolTask.Installed> = []
+  for (const tool of filter([...tools.values()], state?.tools)) {
+    const { name } = tool.tool
+    enabled.push(Object.hasOwn(config, name) ? { ...tool, config: config[name] } : tool)
+  }
+  const byModel = enabled.filter(({ tool }) => tool.callers.includes('model'))
+  const offered = offer(byModel, state?.modelTools)
+  const deferred = byModel.filter((each) => each.tool.deferred && !offered.includes(each))
+  const callable = enabled.filter(({ tool }) => tool.callers.includes('tools'))
+  const instructions = state?.instructions
+  const agentSections = [...sections.values()]
+  if (instructions !== undefined)
+    agentSections.push({ key: INSTRUCTIONS_KEY, render: () => Effect.succeed(instructions) })
+  const model = state?.model ?? settings.model
+  const resolved: Resolved = {
+    ...(model === undefined ? {} : { model }),
+    reasoning: state?.reasoning ?? settings.reasoning ?? 'off',
+    extensions,
+    tools: enabled,
+    callable,
+    offered,
+    deferred,
+    sections: agentSections,
+    ...(instructions === undefined ? {} : { instructions }),
+  }
+  return resolved
+})
 
 /** The agent of conversation `conversationId` now: its committed `$agent`, resolved. */
-export const current = (
+export const current = Effect.fnUntraced(function* (
   read: Pick<Session.Service, 'snapshot'>,
   conversationId: ConversationId,
   extensions: Extensions,
   settings: Effect.Effect<Settings>,
-) =>
-  Effect.gen(function* () {
-    const state = yield* read.snapshot(document, conversationId)
-    return yield* resolve(state, yield* extensions.snapshot, yield* settings)
-  })
+) {
+  const state = yield* read.snapshot(document, conversationId)
+  return yield* resolve(state, yield* extensions.snapshot, yield* settings)
+})

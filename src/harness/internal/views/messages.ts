@@ -1,7 +1,7 @@
 import { Schema } from 'effect'
 import type { AssistantContent, AssistantMessage } from '../../../model/Message.ts'
 import type { Op } from '../../../storage/schema/Document.ts'
-import type { MessageChange } from '../../AgentEvent.ts'
+import type { MessageChange } from '../../../protocol/AgentEvent.ts'
 
 type Path = ReadonlyArray<string | number>
 

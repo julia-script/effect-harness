@@ -129,12 +129,11 @@ export const decide = (m: Machine, stored: Stored) =>
 const decodeStored = Schema.decodeEffect(Schema.fromJsonString(StoredSchema))
 
 /** End the call with `message`, then stop the VM with an error the script cannot catch. */
-export const end = (m: Machine, message: string) =>
-  Effect.gen(function* () {
-    m.ended = errorResult(message)
-    m.ended = yield* decide(m, m.ended)
-    m.controller.abort(new Error(message))
-  })
+export const end = Effect.fnUntraced(function* (m: Machine, message: string) {
+  m.ended = errorResult(message)
+  m.ended = yield* decide(m, m.ended)
+  m.controller.abort(new Error(message))
+})
 
 /** The script took another path than the journal says: end the call. */
 export const diverge = (m: Machine, message: string) =>
@@ -182,22 +181,21 @@ export const finishRow = (m: Machine, done: Done, nested: Call.Outcome | undefin
 }
 
 /** Take the queued events, in order, until the run has its result. */
-export const loop = (
+export const loop = Effect.fnUntraced(function* (
   m: Machine,
   events: Queue.Dequeue<Event>,
   handle: (m: Machine, event: Event) => Effect.Effect<void, RuntimeError>,
   commit: (m: Machine) => Effect.Effect<void, RuntimeError>,
-): Effect.Effect<CodemodeResult, RuntimeError> =>
-  Effect.gen(function* () {
-    for (;;) {
-      const batch = yield* Queue.takeAll(events)
-      for (const event of batch) {
-        if (event.type === 'finished') return event.result
-        yield* handle(m, event)
-      }
-      if (m.wantCommit) {
-        m.wantCommit = false
-        yield* commit(m)
-      }
+): Effect.fn.Return<CodemodeResult, RuntimeError> {
+  for (;;) {
+    const batch = yield* Queue.takeAll(events)
+    for (const event of batch) {
+      if (event.type === 'finished') return event.result
+      yield* handle(m, event)
     }
-  })
+    if (m.wantCommit) {
+      m.wantCommit = false
+      yield* commit(m)
+    }
+  }
+})

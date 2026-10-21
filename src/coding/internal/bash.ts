@@ -38,18 +38,20 @@ const exceedsLimits = (output: string) =>
   utf8ByteLength(output) > DEFAULT_MAX_BYTES || output.split('\n').length > DEFAULT_MAX_LINES
 
 /** The command's combined output, collected into `chunks` as it arrives, then its exit code. */
-const run = (workspace: Workspace, command: string, cwd: string, chunks: Array<string>) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const handle = yield* workspace.spawner.spawn(
-        ChildProcess.make('bash', ['-c', command], { cwd, extendEnv: true, stdin: 'ignore' }),
-      )
-      yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
-        Effect.sync(() => chunks.push(chunk)),
-      )
-      return yield* handle.exitCode
-    }),
+const run = Effect.fnUntraced(function* (
+  workspace: Workspace,
+  command: string,
+  cwd: string,
+  chunks: Array<string>,
+) {
+  const handle = yield* workspace.spawner.spawn(
+    ChildProcess.make('bash', ['-c', command], { cwd, extendEnv: true, stdin: 'ignore' }),
   )
+  yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
+    Effect.sync(() => chunks.push(chunk)),
+  )
+  return yield* handle.exitCode
+}, Effect.scoped)
 
 /** A file with all of `output`, when it exceeds the limits; spilling is best-effort. */
 const spill = (workspace: Workspace, output: string): Effect.Effect<Option.Option<string>> =>
@@ -61,49 +63,46 @@ const spill = (workspace: Workspace, output: string): Effect.Effect<Option.Optio
       )
     : Effect.succeedNone
 
-export const bash = (
+export const bash = Effect.fnUntraced(function* (
   workspace: Workspace,
   params: Params,
   config: BashConfig,
-): Effect.Effect<Output, Output> =>
-  Effect.gen(function* () {
-    const invalid = invalidTimeout(params.timeout)
-    if (invalid !== undefined) return yield* Effect.fail(text(invalid))
-    const prefix = config.commandPrefix
-    const command =
-      prefix === undefined || prefix === '' ? params.command : `${prefix}\n${params.command}`
-    const chunks: Array<string> = []
-    const running = run(workspace, command, cwdOf(workspace, config), chunks)
-    const finished = yield* Effect.result(
-      params.timeout === undefined
-        ? Effect.asSome(running)
-        : Effect.timeoutOption(running, Duration.seconds(params.timeout)),
-    )
-    const all = chunks.join('')
-    const spilled = yield* spill(workspace, all)
-    const diagnostics: Array<Diagnostic> = Option.match(spilled, {
-      onNone: () => [],
-      onSome: (path) => [
-        { severity: 'info', code: 'full_output', message: `Full output: ${path}` },
-      ],
-    })
-    const fullOutputPath = Option.match(spilled, {
-      onNone: () => ({}),
-      onSome: (path) => ({ fullOutputPath: path }),
-    })
-    if (Result.isFailure(finished))
-      return yield* Effect.fail(
-        text(all, {
-          diagnostics: [...diagnostics, error('spawn_error', finished.failure.message)],
-        }),
-      )
-    if (Option.isNone(finished.success)) {
-      const timedOut = error('timeout', `Command timed out after ${params.timeout} seconds`)
-      return yield* Effect.fail(text(all, { diagnostics: [...diagnostics, timedOut] }))
-    }
-    const exitCode = finished.success.value
-    const details = { exitCode, ...fullOutputPath }
-    if (exitCode === 0) return text(all, { diagnostics, details })
-    const exited = error('exit_code', `Command exited with code ${exitCode}`)
-    return yield* Effect.fail(text(all, { diagnostics: [...diagnostics, exited], details }))
+): Effect.fn.Return<Output, Output> {
+  const invalid = invalidTimeout(params.timeout)
+  if (invalid !== undefined) return yield* Effect.fail(text(invalid))
+  const prefix = config.commandPrefix
+  const command =
+    prefix === undefined || prefix === '' ? params.command : `${prefix}\n${params.command}`
+  const chunks: Array<string> = []
+  const running = run(workspace, command, cwdOf(workspace, config), chunks)
+  const finished = yield* Effect.result(
+    params.timeout === undefined
+      ? Effect.asSome(running)
+      : Effect.timeoutOption(running, Duration.seconds(params.timeout)),
+  )
+  const all = chunks.join('')
+  const spilled = yield* spill(workspace, all)
+  const diagnostics: Array<Diagnostic> = Option.match(spilled, {
+    onNone: () => [],
+    onSome: (path) => [{ severity: 'info', code: 'full_output', message: `Full output: ${path}` }],
   })
+  const fullOutputPath = Option.match(spilled, {
+    onNone: () => ({}),
+    onSome: (path) => ({ fullOutputPath: path }),
+  })
+  if (Result.isFailure(finished))
+    return yield* Effect.fail(
+      text(all, {
+        diagnostics: [...diagnostics, error('spawn_error', finished.failure.message)],
+      }),
+    )
+  if (Option.isNone(finished.success)) {
+    const timedOut = error('timeout', `Command timed out after ${params.timeout} seconds`)
+    return yield* Effect.fail(text(all, { diagnostics: [...diagnostics, timedOut] }))
+  }
+  const exitCode = finished.success.value
+  const details = { exitCode, ...fullOutputPath }
+  if (exitCode === 0) return text(all, { diagnostics, details })
+  const exited = error('exit_code', `Command exited with code ${exitCode}`)
+  return yield* Effect.fail(text(all, { diagnostics: [...diagnostics, exited], details }))
+})

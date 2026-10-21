@@ -4,10 +4,10 @@
  */
 import { Deferred, Effect, Exit, Layer, Schema } from 'effect'
 import type { Scope } from 'effect'
-import { Faux } from '../../model/index.ts'
-import type { Session } from '../../session/index.ts'
-import type { Ids, Task } from '../../storage/schema/index.ts'
-import { Tool, Toolkit, ToolResult, ToolTask } from '../index.ts'
+import { Faux } from '../model/index.ts'
+import type { Session } from '../session/index.ts'
+import type { Ids, Task } from '../storage/schema/index.ts'
+import { Tool, Toolkit, ToolResult, ToolTask } from '../tool/index.ts'
 
 export const Read = Tool.make('read', {
   description: 'Read a file',

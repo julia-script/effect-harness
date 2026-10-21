@@ -7,7 +7,15 @@ import { describe, expect, test } from 'bun:test'
 import { Data, Effect, Exit } from 'effect'
 import * as Inbox from '../Inbox.ts'
 import * as Live from '../Live.ts'
-import { eventually, inboxOf, liveOf, open, queuedNote, runTest, transcript } from './support.ts'
+import {
+  eventually,
+  inboxOf,
+  liveOf,
+  open,
+  queuedNote,
+  runTest,
+  transcript,
+} from '../../test/harness.ts'
 
 class InitFailed extends Data.TaggedError('InitFailed')<{ readonly message: string }> {}
 

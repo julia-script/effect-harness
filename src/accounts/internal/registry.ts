@@ -42,21 +42,19 @@ export const storeFailed = (what: string) => (cause: { readonly message: string 
   entries.fail(new AccountError.StoreFailed(), `${what}: ${cause.message}`, cause)
 
 /** The entry of an account declared in code. */
-const declared = (state: Omit<State, 'live'>, account: AccountOf<Record<string, Any>>) =>
-  Effect.gen(function* () {
-    const { adapter } = yield* entries.adapterOf(
-      state.group,
-      state.implementations,
-      account.adapter,
-    )
-    const settings = yield* entries.encode(adapter, account.settings)
-    return yield* entries.load(
-      state.group,
-      state.implementations,
-      { adapter: account.adapter, name: account.name, label: account.label, settings },
-      true,
-    )
-  })
+const declared = Effect.fnUntraced(function* (
+  state: Omit<State, 'live'>,
+  account: AccountOf<Record<string, Any>>,
+) {
+  const { adapter } = yield* entries.adapterOf(state.group, state.implementations, account.adapter)
+  const settings = yield* entries.encode(adapter, account.settings)
+  return yield* entries.load(
+    state.group,
+    state.implementations,
+    { adapter: account.adapter, name: account.name, label: account.label, settings },
+    true,
+  )
+})
 
 /** Open the registry over the stored accounts and those declared in `options`. */
 export const open = Effect.fnUntraced(function* (group: Lookup, options: Options) {
@@ -150,19 +148,18 @@ export const stored = (state: State) =>
   )
 
 /** How `all` stand now. */
-export const statuses = (state: State, all: ReadonlyArray<Entry>) =>
-  Effect.gen(function* () {
-    const names = yield* stored(state)
-    const refused = yield* SubscriptionRef.get(state.refused)
-    return yield* Effect.forEach(all, (entry) =>
-      Effect.map(
-        state.credentials
-          .get(entry.saved.name)
-          .pipe(Effect.mapError(storeFailed('The credential could not be read'))),
-        (credential) => entries.status(entry, names, refused, credential),
-      ),
-    )
-  })
+export const statuses = Effect.fnUntraced(function* (state: State, all: ReadonlyArray<Entry>) {
+  const names = yield* stored(state)
+  const refused = yield* SubscriptionRef.get(state.refused)
+  return yield* Effect.forEach(all, (entry) =>
+    Effect.map(
+      state.credentials
+        .get(entry.saved.name)
+        .pipe(Effect.mapError(storeFailed('The credential could not be read'))),
+      (credential) => entries.status(entry, names, refused, credential),
+    ),
+  )
+})
 
 export const statusOf = (state: State, entry: Entry) =>
   Effect.map(
@@ -171,33 +168,31 @@ export const statusOf = (state: State, entry: Entry) =>
   )
 
 /** The providers of the accounts that are `ready`; all of them when credentials can't be listed. */
-export const providers = (state: State) =>
-  Effect.gen(function* () {
-    const all = yield* current(state)
-    const found = yield* Effect.option(statuses(state, all))
-    return all.flatMap((entry, index) => {
-      const ready = Option.match(found, {
-        onNone: () => true,
-        onSome: (listed) => listed[index]?.status === 'ready',
-      })
-      return ready && entry.provider !== undefined ? [entry.provider] : []
+export const providers = Effect.fnUntraced(function* (state: State) {
+  const all = yield* current(state)
+  const found = yield* Effect.option(statuses(state, all))
+  return all.flatMap((entry, index) => {
+    const ready = Option.match(found, {
+      onNone: () => true,
+      onSome: (listed) => listed[index]?.status === 'ready',
     })
+    return ready && entry.provider !== undefined ? [entry.provider] : []
   })
+})
 
 /**
  * Store `credential` under `name` and run `check`; when it fails, put back what was stored before.
  */
-export const withCredential = <A>(
+export const withCredential = Effect.fnUntraced(function* <A>(
   state: State,
   name: string,
   credential: Credential,
   check: Effect.Effect<A, AccountError.AccountError>,
-) =>
-  Effect.gen(function* () {
-    const failed = storeFailed('The credential could not be stored')
-    const before = yield* state.credentials.get(name).pipe(Effect.mapError(failed))
-    yield* state.credentials.set(name, credential).pipe(Effect.mapError(failed))
-    const restore =
-      before === undefined ? state.credentials.remove(name) : state.credentials.set(name, before)
-    return yield* check.pipe(Effect.onError(() => Effect.ignore(restore)))
-  })
+) {
+  const failed = storeFailed('The credential could not be stored')
+  const before = yield* state.credentials.get(name).pipe(Effect.mapError(failed))
+  yield* state.credentials.set(name, credential).pipe(Effect.mapError(failed))
+  const restore =
+    before === undefined ? state.credentials.remove(name) : state.credentials.set(name, before)
+  return yield* check.pipe(Effect.onError(() => Effect.ignore(restore)))
+})

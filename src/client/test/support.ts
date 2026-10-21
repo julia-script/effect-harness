@@ -5,8 +5,8 @@
 import { Effect, Layer, Queue } from 'effect'
 import type { Context, Scope } from 'effect'
 import { HarnessServer } from '../../harness/index.ts'
-import type { Step } from '../../harness/test/support.ts'
-import { standIn } from '../../harness/test/support.ts'
+import type { Step } from '../../test/harness.ts'
+import { standIn } from '../../test/harness.ts'
 import * as Settings from '../../harness/Settings.ts'
 import type { Service as StorageService } from '../../storage/Storage.ts'
 import { Storage } from '../../storage/Storage.ts'
@@ -47,4 +47,4 @@ export const open = (
     }
   })
 
-export { runTest } from '../../task/test/support.ts'
+export { runTest } from '../../test/task.ts'

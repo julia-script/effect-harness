@@ -4,7 +4,7 @@
  */
 import { Effect, Schema } from 'effect'
 import { HttpClientRequest } from 'effect/http'
-import { getJson } from '../../../model/internal/listing.ts'
+import { getJson } from '../../../internal/provider/listing.ts'
 import { ModelThinkingLevel } from '../../../model/Message.ts'
 import { ServiceTier } from '../../../model/Model.ts'
 import type { Info, Listed } from '../../../model/Model.ts'

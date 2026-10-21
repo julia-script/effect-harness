@@ -11,9 +11,9 @@ import { SessionFailed } from '../../../session/SessionError.ts'
 import type { CommitError, ReadAfterWrite } from '../../../session/SessionError.ts'
 import type { Op } from '../../../storage/schema/Document.ts'
 import type { ConversationId, TaskId } from '../../../storage/schema/Ids.ts'
-import type { AgentEvent, Events } from '../../AgentEvent.ts'
-import type { Change, ConversationView, TaskGraph, Watch } from '../../ViewState.ts'
-import { readsFirst } from '../submissions.ts'
+import type { AgentEvent, Events } from '../../../protocol/AgentEvent.ts'
+import type { Change, ConversationView, TaskGraph, Watch } from '../../../protocol/ViewState.ts'
+import { readsFirst } from '../../../internal/readsFirst.ts'
 import { RUN_KIND } from '../run.ts'
 import * as Conversation from './conversation.ts'
 import { snapshotOf } from './events.ts'
@@ -166,8 +166,8 @@ interface Mounts {
 }
 
 /** Advance every mount by one publication, and hand it to their observers. */
-const advanceAll = (mounts: Mounts) => (publication: CommitPublication) =>
-  Effect.gen(function* () {
+const advanceAll = (mounts: Mounts) =>
+  Effect.fnUntraced(function* (publication: CommitPublication) {
     for (const [id, mount] of mounts.views) {
       const before = mount.view.value
       const ops = Conversation.advance(id, mount.view, publication)

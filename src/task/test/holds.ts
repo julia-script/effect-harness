@@ -9,7 +9,7 @@ import type { ConversationId, TaskId } from '../../storage/schema/Ids.ts'
 import type { TaskRecord, TaskState } from '../../storage/schema/Task.ts'
 import type { Scheduler } from '../index.ts'
 import { Task } from '../index.ts'
-import { completed, eventually, getTask, settle } from './support.ts'
+import { completed, eventually, getTask, settle } from '../../test/task.ts'
 
 /** Outcome a held task commits once its gate opens. */
 export type Ending = 'completed' | 'failed'

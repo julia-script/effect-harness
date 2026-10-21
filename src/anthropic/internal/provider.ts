@@ -4,13 +4,13 @@
  * Thinking follows pi-ai: an effort for adaptive models, a token budget for the others.
  */
 import { AnthropicClient, AnthropicLanguageModel } from '@effect/ai-anthropic'
-import { Effect, Redacted, Schema } from 'effect'
+import { Effect, Option, Redacted, Schema, Stream } from 'effect'
 import { HttpClientRequest } from 'effect/http'
 import type { HttpClient } from 'effect/http'
-import { stored } from '../../model/internal/apiKey.ts'
-import { effort, find } from '../../model/internal/catalog.ts'
-import type { Entry } from '../../model/internal/catalog.ts'
-import { getJson, listed } from '../../model/internal/listing.ts'
+import { stored } from '../../internal/provider/apiKey.ts'
+import { effort, find } from '../../internal/provider/catalog.ts'
+import type { Entry } from '../../internal/provider/catalog.ts'
+import { getJson, listed } from '../../internal/provider/listing.ts'
 import * as LanguageModelProvider from '../../model/LanguageModelProvider.ts'
 import type { ThinkingLevel } from '../../model/Message.ts'
 import type { Info, Request } from '../../model/Model.ts'
@@ -77,32 +77,37 @@ const ModelPage = Schema.Struct({
 })
 type Found = (typeof ModelPage.Type)['data'][number]
 
-/** Every page of the model list, from `after` on. */
+/** Every model the list pages through. */
 const pages = (
   apiUrl: string,
   key: Redacted.Redacted,
-  after?: string,
 ): Effect.Effect<ReadonlyArray<Found>, ModelError, HttpClient.HttpClient> =>
-  getJson(
-    'The Anthropic model list',
-    HttpClientRequest.get(`${apiUrl}/v1/models`).pipe(
-      HttpClientRequest.setUrlParams({
-        limit: '1000',
-        ...(after === undefined ? {} : { after_id: after }),
-      }),
-      HttpClientRequest.setHeaders({
-        'x-api-key': Redacted.value(key),
-        'anthropic-version': '2023-06-01',
-      }),
+  Stream.paginate(Option.none<string>(), (after) =>
+    getJson(
+      'The Anthropic model list',
+      HttpClientRequest.get(`${apiUrl}/v1/models`).pipe(
+        HttpClientRequest.setUrlParams({
+          limit: '1000',
+          ...Option.match(after, { onNone: () => ({}), onSome: (id) => ({ after_id: id }) }),
+        }),
+        HttpClientRequest.setHeaders({
+          'x-api-key': Redacted.value(key),
+          'anthropic-version': '2023-06-01',
+        }),
+      ),
+      ModelPage,
+    ).pipe(
+      Effect.map(
+        (page) =>
+          [
+            page.data,
+            page.has_more
+              ? Option.map(Option.fromNullOr(page.last_id), Option.some)
+              : Option.none(),
+          ] as const,
+      ),
     ),
-    ModelPage,
-  ).pipe(
-    Effect.flatMap((page) =>
-      page.has_more && page.last_id !== null
-        ? Effect.map(pages(apiUrl, key, page.last_id), (rest) => [...page.data, ...rest])
-        : Effect.succeed(page.data),
-    ),
-  )
+  ).pipe(Stream.runCollect)
 
 export const make = (options: Options) => {
   const name = options.name ?? 'anthropic'

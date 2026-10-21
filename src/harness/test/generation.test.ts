@@ -8,7 +8,7 @@ import { describe as group, expect, test } from 'bun:test'
 import { Deferred, Effect, Exit, Ref } from 'effect'
 import { Faux } from '../../model/index.ts'
 import { ModelError, Rejected, Retryable } from '../../model/ModelError.ts'
-import { Read } from '../../tool/test/support.ts'
+import { Read } from '../../test/tool.ts'
 import type * as Extension from '../Extension.ts'
 import {
   describe,
@@ -20,7 +20,7 @@ import {
   ownerless,
   reasonOf,
   runTest,
-} from './generationSupport.ts'
+} from '../../test/generation.ts'
 
 const calls = (...each: ReadonlyArray<readonly [string, Record<string, string>, string]>) =>
   Faux.message(

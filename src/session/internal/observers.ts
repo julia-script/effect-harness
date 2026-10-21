@@ -109,22 +109,21 @@ export const makeWatch = Effect.fnUntraced(function* (
   const observed = { version }
   let retired = false
   const observer: Observer = {
-    advance: (change) =>
-      Effect.gen(function* () {
-        if (retired) return
-        const ops = observedOps(observed, change)
-        // A migration-only base changes nothing for an observer of the new version.
-        if (ops.length === 0) return
-        const next: Value = change.value
-        if (next === null) retired = true
-        if (Queue.sizeUnsafe(queue) >= MAX_PENDING_CHANGES) {
-          yield* Effect.ignore(Queue.clear(queue))
-          yield* Queue.offer(queue, { value: next, ops: [['r', next]] })
-        } else {
-          yield* Queue.offer(queue, { value: next, ops })
-        }
-        if (retired) yield* unpin
-      }),
+    advance: Effect.fnUntraced(function* (change) {
+      if (retired) return
+      const ops = observedOps(observed, change)
+      // A migration-only base changes nothing for an observer of the new version.
+      if (ops.length === 0) return
+      const next: Value = change.value
+      if (next === null) retired = true
+      if (Queue.sizeUnsafe(queue) >= MAX_PENDING_CHANGES) {
+        yield* Effect.ignore(Queue.clear(queue))
+        yield* Queue.offer(queue, { value: next, ops: [['r', next]] })
+      } else {
+        yield* Queue.offer(queue, { value: next, ops })
+      }
+      if (retired) yield* unpin
+    }),
     // Pending changes are dropped: a closed or failed Session delivers nothing more.
     end: (failure) =>
       Effect.andThen(
@@ -160,13 +159,12 @@ export const makeState = (
     return Effect.forEach(all, (reader) => Queue.end(reader), { discard: true })
   })
   const observer: Observer = {
-    advance: (change) =>
-      Effect.gen(function* () {
-        if (done || observedOps(observed, change).length === 0) return
-        current = change.value
-        for (const reader of readers) yield* Queue.offer(reader, current)
-        if (current === null) yield* Effect.andThen(finish, unpin)
-      }),
+    advance: Effect.fnUntraced(function* (change) {
+      if (done || observedOps(observed, change).length === 0) return
+      current = change.value
+      for (const reader of readers) yield* Queue.offer(reader, current)
+      if (current === null) yield* Effect.andThen(finish, unpin)
+    }),
     end: () => finish,
   }
   const reader = Effect.gen(function* () {

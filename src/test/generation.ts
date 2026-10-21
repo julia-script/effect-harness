@@ -4,22 +4,22 @@
  */
 import { Effect, Layer } from 'effect'
 import type { Scope } from 'effect'
-import type { ModelThinkingLevel } from '../../model/Message.ts'
-import { Faux, Model } from '../../model/index.ts'
-import type { Service as StorageService } from '../../storage/Storage.ts'
-import { Storage } from '../../storage/Storage.ts'
-import type { EntryRecord } from '../../storage/schema/Entry.ts'
-import type { Hook } from '../../task/index.ts'
-import { Registry } from '../../task/index.ts'
-import type { Tool } from '../../tool/index.ts'
-import type { Script } from '../../tool/test/support.ts'
-import { script, slowHandlers, toolkit } from '../../tool/test/support.ts'
-import * as Extension from '../Extension.ts'
-import * as Extensions from '../Extensions.ts'
-import * as Generation from '../Generation.ts'
-import * as Harness from '../Harness.ts'
-import * as Settings from '../Settings.ts'
-import type { Settled } from '../Submission.ts'
+import type { ModelThinkingLevel } from '../model/Message.ts'
+import { Faux, Model } from '../model/index.ts'
+import type { Service as StorageService } from '../storage/Storage.ts'
+import { Storage } from '../storage/Storage.ts'
+import type { EntryRecord } from '../storage/schema/Entry.ts'
+import type { Hook } from '../task/index.ts'
+import { Registry } from '../task/index.ts'
+import type { Tool } from '../tool/index.ts'
+import type { Script } from './tool.ts'
+import { script, slowHandlers, toolkit } from './tool.ts'
+import * as Extension from '../harness/Extension.ts'
+import * as Extensions from '../harness/Extensions.ts'
+import * as Generation from '../harness/Generation.ts'
+import * as Harness from '../harness/Harness.ts'
+import * as Settings from '../harness/Settings.ts'
+import type { Settled } from '../protocol/Submission.ts'
 
 export interface Opened {
   readonly harness: Harness.Service
@@ -132,4 +132,4 @@ export const describe = (entry: EntryRecord): string => {
 export const reasonOf = (settled: Settled): string =>
   settled.status === 'unanswered' ? settled.reason : settled.status
 
-export { eventually, liveOf, ownerless, runTest } from './support.ts'
+export { eventually, liveOf, ownerless, runTest } from './harness.ts'

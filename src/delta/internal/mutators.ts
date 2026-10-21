@@ -18,8 +18,8 @@ import {
 } from './context.ts'
 import type { OverlayNode } from './context.ts'
 import { getArrayIndex } from './handler.ts'
-import { Invalid, isArray, isContainer } from './json.ts'
-import type { Json } from './json.ts'
+import { Invalid, isArray, isContainer } from '../../internal/json.ts'
+import type { Json } from '../../internal/json.ts'
 import { arrayLength, piecesOf, replaceAllPieces } from './pieces.ts'
 import { sort } from './sort.ts'
 

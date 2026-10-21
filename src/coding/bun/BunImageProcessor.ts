@@ -3,7 +3,7 @@
  * worker threads. Bun only.
  */
 import type { Layer } from 'effect'
-import { codec as bunCodec } from '../internal/bunCodec.ts'
+import { codec as bunCodec } from './internal/codec.ts'
 import * as ImageProcessor from '../ImageProcessor.ts'
 
 /** The codec, to build on with `ImageProcessor.make`. */

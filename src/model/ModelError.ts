@@ -50,7 +50,7 @@ export class ModelError extends Schema.TaggedError<ModelError, { readonly brand:
   cause: Schema.optionalKey(Schema.Defect()),
 }) {
   get isRetryable(): boolean {
-    return this.reason instanceof Retryable
+    return this.reason._tag === 'Retryable'
   }
 }
 

@@ -1,6 +1,6 @@
 import { Deferred, Effect } from 'effect'
 import type { Schema } from 'effect'
-import { copyJson, Invalid } from '../../../delta/internal/json.ts'
+import { copyJson, Invalid } from '../../../internal/json.ts'
 import * as Tracker from '../../../delta/Tracker.ts'
 import { DocumentId } from '../../../storage/schema/Ids.ts'
 import type { JsonObject } from '../../../storage/schema/Json.ts'
@@ -139,35 +139,30 @@ const terminalTask = (state: TxState, entry: Pick<DocumentEntry, 'address'>) => 
     : Effect.void
 }
 
-export const doc = (
+export const doc = Effect.fnUntraced(function* (
   state: TxState,
   token: AnyToken,
   args: ReadonlyArray<unknown>,
-): Effect.Effect<Draft, DocumentFailure> =>
-  Effect.gen(function* () {
-    yield* assertOpen(state)
-    const definition = token.definition
-    const { address, id, next } = yield* resolveAddress(definition, args)
-    yield* terminalTask(state, { address })
-    const latest = state.latestDocuments.get(id)
-    if (latest !== undefined && !latest.retireOnCommit) {
-      if (latest.acquisition !== undefined) return yield* Deferred.await(latest.acquisition)
-      if (latest.target?.kind === 'fork-copy') {
-        return yield* start(
-          state,
-          latest,
-          acquireForkCopy(state, latest, definition, latest.target),
-        )
-      }
+): Effect.fn.Return<Draft, DocumentFailure> {
+  yield* assertOpen(state)
+  const definition = token.definition
+  const { address, id, next } = yield* resolveAddress(definition, args)
+  yield* terminalTask(state, { address })
+  const latest = state.latestDocuments.get(id)
+  if (latest !== undefined && !latest.retireOnCommit) {
+    if (latest.acquisition !== undefined) return yield* Deferred.await(latest.acquisition)
+    if (latest.target?.kind === 'fork-copy') {
+      return yield* start(state, latest, acquireForkCopy(state, latest, definition, latest.target))
     }
-    const seed = yield* ownedSeed(definition, args[next])
-    const entry: DocumentEntry = { addressId: id, address, definition, retireOnCommit: false }
-    state.documents.push(entry)
-    state.latestDocuments.set(id, entry)
-    // Decided now, so a pending acquisition of a retired incarnation and its successor stay apart.
-    const skipLoad = latest?.retireOnCommit === true
-    return yield* start(state, entry, acquire(state, entry, definition, seed, skipLoad))
-  })
+  }
+  const seed = yield* ownedSeed(definition, args[next])
+  const entry: DocumentEntry = { addressId: id, address, definition, retireOnCommit: false }
+  state.documents.push(entry)
+  state.latestDocuments.set(id, entry)
+  // Decided now, so a pending acquisition of a retired incarnation and its successor stay apart.
+  const skipLoad = latest?.retireOnCommit === true
+  return yield* start(state, entry, acquire(state, entry, definition, seed, skipLoad))
+})
 
 /** Find the current incarnation a retirement without acquisition retires. */
 const findRetirement = Effect.fnUntraced(function* (
@@ -185,33 +180,32 @@ const findRetirement = Effect.fnUntraced(function* (
   entry.target = { kind: 'retire-only', record }
 })
 
-export const retireDoc = (
+export const retireDoc = Effect.fnUntraced(function* (
   state: TxState,
   token: AnyToken,
   args: ReadonlyArray<unknown>,
-): Effect.Effect<void, DocumentFailure> =>
-  Effect.gen(function* () {
-    yield* assertOpen(state)
-    const definition = token.definition
-    const { address, id } = yield* resolveAddress(definition, args)
-    const latest = state.latestDocuments.get(id)
-    if (latest?.retireOnCommit === true) return
-    if (latest?.target?.kind === 'fork-copy') {
-      yield* checkRecordScope(definition, latest.target.record)
-      latest.retireOnCommit = true
-      return
-    }
-    if (latest?.acquisition !== undefined) {
-      // An acquired draft persists its final content before it retires.
-      latest.retireOnCommit = true
-      yield* track(state, Deferred.await(latest.acquisition))
-      return
-    }
-    const entry: DocumentEntry = { addressId: id, address, definition, retireOnCommit: true }
-    state.documents.push(entry)
-    state.latestDocuments.set(id, entry)
-    yield* track(state, findRetirement(state, entry, definition))
-  })
+): Effect.fn.Return<void, DocumentFailure> {
+  yield* assertOpen(state)
+  const definition = token.definition
+  const { address, id } = yield* resolveAddress(definition, args)
+  const latest = state.latestDocuments.get(id)
+  if (latest?.retireOnCommit === true) return
+  if (latest?.target?.kind === 'fork-copy') {
+    yield* checkRecordScope(definition, latest.target.record)
+    latest.retireOnCommit = true
+    return
+  }
+  if (latest?.acquisition !== undefined) {
+    // An acquired draft persists its final content before it retires.
+    latest.retireOnCommit = true
+    yield* track(state, Deferred.await(latest.acquisition))
+    return
+  }
+  const entry: DocumentEntry = { addressId: id, address, definition, retireOnCommit: true }
+  state.documents.push(entry)
+  state.latestDocuments.set(id, entry)
+  yield* track(state, findRetirement(state, entry, definition))
+})
 
 /** Prepare every open change; this settles every draft. */
 export const prepareChanges = (state: TxState) =>

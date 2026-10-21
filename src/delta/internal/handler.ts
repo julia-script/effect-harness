@@ -20,7 +20,7 @@ import {
   reject,
 } from './context.ts'
 import type { OverlayNode } from './context.ts'
-import { Invalid, isArray, isContainer } from './json.ts'
+import { Invalid, isArray, isContainer } from '../../internal/json.ts'
 import { arrayMutator } from './mutators.ts'
 import {
   deleteObjectDeletion,

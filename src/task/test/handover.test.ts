@@ -17,7 +17,7 @@ import {
   open,
   runTest,
   settle,
-} from './support.ts'
+} from '../../test/task.ts'
 
 type Handover = { readonly phase: 'a' } | { readonly phase: 'b' } | { readonly phase: 'c' }
 

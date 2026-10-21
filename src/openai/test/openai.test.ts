@@ -9,9 +9,9 @@ import { FetchHttpClient } from 'effect/http'
 import { CredentialStore } from '../../credentials/index.ts'
 import { Model, ModelError } from '../../model/index.ts'
 import type { Message } from '../../model/index.ts'
-import { serve } from '../../model/test/fakeApi.ts'
+import { serve } from '../../test/fakeApi.ts'
 import { OpenAi } from '../index.ts'
-import { events } from './support.ts'
+import { events } from '../../test/openai.ts'
 
 const user = (text: string): Message.Message => ({ role: 'user', content: text, timestamp: 0 })
 

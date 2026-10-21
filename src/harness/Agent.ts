@@ -33,11 +33,11 @@ import type { ConversationRecord } from '../storage/schema/Conversation.ts'
 import type { ConversationId } from '../storage/schema/Ids.ts'
 import * as Hook from '../task/Hook.ts'
 import type * as ToolTask from '../tool/ToolTask.ts'
-import type { Change, State, View } from './AgentState.ts'
+import type { Change, State, View } from '../protocol/AgentState.ts'
 import type * as Extension from './Extension.ts'
 import type * as Extensions from './Extensions.ts'
 import * as internal from './internal/agent.ts'
-import { strictJson } from './internal/json.ts'
+import { strictJson } from '../internal/strictJson.ts'
 import type { Settings } from './Settings.ts'
 
 /** One per conversation; a fork starts from the agent at its fork entry. */
@@ -76,14 +76,13 @@ export const configure = (tx: Tx, conversationId: ConversationId, change: Change
  * agent of its owner task's conversation; a fork keeps its as-of copy, and an ownerless one
  * starts empty.
  */
-export const created = (tx: Tx, record: ConversationRecord) =>
-  Effect.gen(function* () {
-    if (record.parent !== undefined) return
-    const agent = yield* tx.doc(document, record.id)
-    if (record.owner === undefined) return
-    const owner = yield* tx.doc(document, record.owner.conversationId)
-    Object.assign(agent, strictJson({ ...owner }))
-  })
+export const created = Effect.fnUntraced(function* (tx: Tx, record: ConversationRecord) {
+  if (record.parent !== undefined) return
+  const agent = yield* tx.doc(document, record.id)
+  if (record.owner === undefined) return
+  const owner = yield* tx.doc(document, record.owner.conversationId)
+  Object.assign(agent, strictJson({ ...owner }))
+})
 
 /**
  * Load tools by name into the conversation's offered tools, as a call's `addTools` control does:

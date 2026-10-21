@@ -26,17 +26,16 @@ export interface Global {
 const decodeArgs = Schema.decodeUnknownOption(JsonObject)
 
 /** A tool call's outcome, and the nested call's own for the details. */
-const callTool = (m: Machine, call: CodemodeHostCall) =>
-  Effect.gen(function* () {
-    const args = decodeArgs(call.args ?? {})
-    if (Option.isNone(args)) {
-      const outcome: Outcome = { ok: false, message: `tools.${call.name}() expects an object` }
-      return { outcome }
-    }
-    const nested = yield* m.call.execute(call.name, args.value, { key: `c${call.id}` })
-    const structured = m.start.tools.find((tool) => tool.name === call.name)?.structured === true
-    return { outcome: outcomeOf(call.name, structured, nested), nested }
-  })
+const callTool = Effect.fnUntraced(function* (m: Machine, call: CodemodeHostCall) {
+  const args = decodeArgs(call.args ?? {})
+  if (Option.isNone(args)) {
+    const outcome: Outcome = { ok: false, message: `tools.${call.name}() expects an object` }
+    return { outcome }
+  }
+  const nested = yield* m.call.execute(call.name, args.value, { key: `c${call.id}` })
+  const structured = m.start.tools.find((tool) => tool.name === call.name)?.structured === true
+  return { outcome: outcomeOf(call.name, structured, nested), nested }
+})
 
 const callGlobal = (m: Machine, call: CodemodeHostCall): Effect.Effect<Outcome> => {
   if (DISCOVERY.includes(call.name)) return Effect.succeed(discover(m.start, call.name, call.args))

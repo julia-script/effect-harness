@@ -2,7 +2,7 @@
  * Nested calls of a running tool call (see `Call`): admission, waiting, and the outcome a caller
  * gets; and settling a nested call into its caller's `NestedCalls` member.
  */
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Equal, Option, Schema } from 'effect'
 import type { ToolCall } from '../../model/Message.ts'
 import type { Tx } from '../../session/Session.ts'
 import { TaskId } from '../../storage/schema/Ids.ts'
@@ -30,7 +30,7 @@ const sameCall = (input: unknown, name: string, args: JsonObject) => {
   return (
     Option.isSome(nested) &&
     nested.value.call.name === name &&
-    JSON.stringify(nested.value.call.arguments) === JSON.stringify(args)
+    Equal.equals(nested.value.call.arguments, args)
   )
 }
 
@@ -41,37 +41,36 @@ interface Request {
 }
 
 /** In one commit: the task already made under the key, or a new one with its member. */
-const admitIn = (
+const admitIn = Effect.fnUntraced(function* (
   tx: Tx,
   runtime: ToolRuntime,
   call: ToolCall,
   { key, name, args }: Request,
   abandonOnRestart: boolean,
-) =>
-  Effect.gen(function* () {
-    const state = yield* tx.doc(NestedCalls, runtime.taskId, key, null)
-    if (state.taskId !== undefined) {
-      const id = TaskId.make(state.taskId)
-      const record = yield* tx.task(id)
-      if (sameCall(record?.input, name, args)) return id
-      return yield* new NestedCallRefused({
-        message: `Nested call ${key} of ${call.id} was already made with another tool or other arguments`,
-      })
-    }
-    const input: NestedInput = {
-      kind: 'nested',
-      parent: runtime.taskId,
-      parentCallId: call.id,
-      key,
-      call: { type: 'toolCall', id: `${call.id}/${key}`, name, arguments: args },
-    }
-    const id = yield* tx.createTask(kind, input, {
-      ownership: { kind: 'task', taskId: runtime.taskId },
-      ...(abandonOnRestart ? { abandonOnRestart: true } : {}),
+) {
+  const state = yield* tx.doc(NestedCalls, runtime.taskId, key, null)
+  if (state.taskId !== undefined) {
+    const id = TaskId.make(state.taskId)
+    const record = yield* tx.task(id)
+    if (sameCall(record?.input, name, args)) return id
+    return yield* new NestedCallRefused({
+      message: `Nested call ${key} of ${call.id} was already made with another tool or other arguments`,
     })
-    state.taskId = id
-    return id
+  }
+  const input: NestedInput = {
+    kind: 'nested',
+    parent: runtime.taskId,
+    parentCallId: call.id,
+    key,
+    call: { type: 'toolCall', id: `${call.id}/${key}`, name, arguments: args },
+  }
+  const id = yield* tx.createTask(kind, input, {
+    ownership: { kind: 'task', taskId: runtime.taskId },
+    ...(abandonOnRestart ? { abandonOnRestart: true } : {}),
   })
+  state.taskId = id
+  return id
+})
 
 /**
  * The task of nested call `request.key`: the one already made under it, which must be of the same
@@ -115,19 +114,17 @@ const fallback = (name: string, outcome: TaskOutcome): Call.Outcome => {
 export const make = (runtime: ToolRuntime, call: ToolCall, replay: 'safe' | 'unsafe') => {
   let sequence = 0
   let ended = false
-  const execute: Call.Service['execute'] = (name, args, options = {}) =>
-    Effect.gen(function* () {
-      if (ended)
-        return yield* new NestedCallRefused({ message: `Tool call ${call.id} has settled` })
-      const key = options.key ?? String(++sequence)
-      if (!KEY.test(key))
-        return yield* new NestedCallRefused({ message: `Invalid nested call key ${key}` })
-      // A caller that is not replay-safe never resumes, so a restart abandons its calls.
-      const id = yield* admit(runtime, call, { key, name, args }, replay === 'unsafe')
-      const settled = yield* runtime.waitForTask(id)
-      const state = yield* runtime.snapshot(NestedCalls, runtime.taskId, key)
-      return state?.result ?? fallback(name, settled.state.outcome)
-    })
+  const execute: Call.Service['execute'] = Effect.fnUntraced(function* (name, args, options = {}) {
+    if (ended) return yield* new NestedCallRefused({ message: `Tool call ${call.id} has settled` })
+    const key = options.key ?? String(++sequence)
+    if (!KEY.test(key))
+      return yield* new NestedCallRefused({ message: `Invalid nested call key ${key}` })
+    // A caller that is not replay-safe never resumes, so a restart abandons its calls.
+    const id = yield* admit(runtime, call, { key, name, args }, replay === 'unsafe')
+    const settled = yield* runtime.waitForTask(id)
+    const state = yield* runtime.snapshot(NestedCalls, runtime.taskId, key)
+    return state?.result ?? fallback(name, settled.state.outcome)
+  })
   const service: Call.Service = {
     taskId: runtime.taskId,
     conversationId: runtime.conversationId,

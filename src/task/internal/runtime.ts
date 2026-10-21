@@ -17,9 +17,8 @@ import { validateWait, waitForTask } from './wait.ts'
 type ErasedRuntime = Task.Runtime<Schema.Json, Task.Checkpoint, Schema.Json>
 type ErasedNext = Task.NextState<Task.Checkpoint, Schema.Json>
 
-/** A state the change returned; nothing is `undefined`. */
-const isNextState = (value: ErasedNext | void): value is ErasedNext =>
-  typeof value === 'object' && value !== null
+/** A state the change returned; returning nothing leaves the task's state. */
+const isNextState = (value: ErasedNext | void): value is ErasedNext => value !== undefined
 
 const endedError = (invocation: Invocation) =>
   new InvocationEnded({

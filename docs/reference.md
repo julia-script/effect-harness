@@ -10,13 +10,15 @@
 Import concept namespaces from lowercase subpaths. Integrations with optional peers have their own subpaths, so importing the core never loads them.
 
 ```ts
-import { HarnessClient, HarnessTransport, Init } from 'effect-harness/client'
+import { HarnessClient, HarnessTransport } from 'effect-harness/client'
 import { Extension, HarnessServer, Initializer } from 'effect-harness/harness'
+import { Init } from 'effect-harness/protocol'
 ```
 
 | Subpath (`effect-harness/…`)           | Exports                                                                                                                                           | Runs on       |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| `client`                               | `HarnessClient`, `HarnessRpcs`, `HarnessTransport`, `Init`, `Submission`, `AgentEvent`, `ViewState`                                               | client        |
+| `client`                               | `HarnessClient`, `HarnessTransport`                                                                                                               | client        |
+| `protocol`                             | `HarnessRpcs`, `Init`, `Submission`, `HarnessError`, `AgentState`, `ViewState`, `AgentEvent`                                                      | both          |
 | `harness`                              | `Harness`, `HarnessServer`, `Conversation`, `Extension(s)`, `Settings`, `Generation`, `Compaction`, `ToolSearch`, `Initializer`, `Agent`, `Usage` | loop          |
 | `model`                                | `Model`, `Message`, `Transcript`, `Faux`, `LanguageModelProvider`, `ModelError`                                                                   | both          |
 | `tool`                                 | `Tool`, `Toolkit`, `ToolResult`, `ToolTask`, `Call`, `ToolError`                                                                                  | both          |
@@ -32,7 +34,7 @@ import { Extension, HarnessServer, Initializer } from 'effect-harness/harness'
 | `codemode`                             | `Codemode`, `CodemodeHandlers`                                                                                                                    | loop          |
 | `cloudflare`                           | `HarnessObject`, `HarnessWorkflow`                                                                                                                | Workers       |
 
-The root import, `effect-harness`, groups the portable core as `Accounts`, `Client`, `Credentials`, `Delta`, `Harness`, `Model`, `Session`, `Storage`, `Task` and `Tool`.
+The root import, `effect-harness`, groups the portable core as `Accounts`, `Client`, `Credentials`, `Delta`, `Harness`, `Model`, `Protocol`, `Session`, `Storage`, `Task` and `Tool`.
 
 ## Settings
 

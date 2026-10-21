@@ -43,7 +43,7 @@ import { provide as provideHarness } from './internal/current.ts'
 import * as internal from './internal/generation/task.ts'
 import { RUN_KIND, toolLifecycle } from './internal/run.ts'
 import * as Settings from './Settings.ts'
-import type { UserInput } from './Submission.ts'
+import type { UserInput } from '../protocol/Submission.ts'
 
 /** The task kind. */
 export const name = RUN_KIND

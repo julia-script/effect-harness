@@ -34,12 +34,12 @@ export const fromAiError = (error: unknown): ModelError => {
   if (!AiError.isAiError(error))
     return new ModelError({ message, reason: new Rejected({}), cause: error })
   const { reason } = error
-  if (reason instanceof AiError.RateLimitError) {
+  if (reason._tag === 'RateLimitError') {
     const after = reason.retryAfter
     const retryAfterMs = after === undefined ? {} : { retryAfterMs: Duration.toMillis(after) }
     return new ModelError({ message, reason: new Retryable(retryAfterMs), cause: error })
   }
-  if (reason instanceof AiError.InvalidRequestError && isOverflowText(message))
+  if (reason._tag === 'InvalidRequestError' && isOverflowText(message))
     return new ModelError({ message, reason: new ContextOverflow({}), cause: error })
   const next = error.isRetryable ? new Retryable({}) : new Rejected({})
   return new ModelError({ message, reason: next, cause: error })

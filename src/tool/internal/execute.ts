@@ -123,15 +123,18 @@ const ranOf = (call: ToolCall, tool: Any, outcome: Outcome): Omit<Ran, 'duration
 }
 
 /** Run the call on `args`, the arguments of intent. */
-export const execute = (call: ToolCall, installed: Installed, args: JsonObject) =>
-  Effect.gen(function* () {
-    const { tool, runner, config } = installed
-    if (Option.isNone(runner)) {
-      const message = `Tool ${call.name} has no implementation`
-      return { result: ToolResult.failure('tool_unavailable', message), ending: COMPLETED }
-    }
-    const started = yield* Clock.currentTimeMillis
-    const outcome = yield* runner.value.run(args, { callId: call.id, config })
-    const durationMs = (yield* Clock.currentTimeMillis) - started
-    return { ...ranOf(call, tool, outcome), durationMs }
-  })
+export const execute = Effect.fnUntraced(function* (
+  call: ToolCall,
+  installed: Installed,
+  args: JsonObject,
+) {
+  const { tool, runner, config } = installed
+  if (Option.isNone(runner)) {
+    const message = `Tool ${call.name} has no implementation`
+    return { result: ToolResult.failure('tool_unavailable', message), ending: COMPLETED }
+  }
+  const started = yield* Clock.currentTimeMillis
+  const outcome = yield* runner.value.run(args, { callId: call.id, config })
+  const durationMs = (yield* Clock.currentTimeMillis) - started
+  return { ...ranOf(call, tool, outcome), durationMs }
+})

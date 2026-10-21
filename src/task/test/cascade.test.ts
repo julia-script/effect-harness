@@ -31,7 +31,7 @@ import {
   open,
   openClosable,
   runTest,
-} from './support.ts'
+} from '../../test/task.ts'
 
 const isTerminal = (session: Session.Service, id: TaskId) =>
   Effect.map(stateOf(session, id), (state) => state.status === 'terminal')

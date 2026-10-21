@@ -119,29 +119,32 @@ const drop = (state: State, addressId: string) => {
 }
 
 /** Schedule the eviction of the oldest idle document, replacing a later pending one. */
-const schedule = (state: State, environment: Environment, sweep: Effect.Effect<void>) =>
-  Effect.gen(function* () {
-    const oldest = state.idle.values().next()
-    if (oldest.done === true) return
-    const at = oldest.value + environment.retention
-    if (!Number.isFinite(at)) return
-    const pending = state.pending
-    if (pending !== undefined && pending.at <= at) return
-    if (pending !== undefined) yield* Fiber.interrupt(pending.fiber)
-    const delay = Math.max(0, at - (yield* Clock.currentTimeMillis))
-    const job = Effect.andThen(
-      Effect.sleep(delay),
-      Semaphore.withPermit(
-        environment.line,
-        Effect.suspend(() => {
-          // Cleared first, so the sweep's own scheduling never interrupts this fiber.
-          if (state.pending?.at === at) state.pending = undefined
-          return sweep
-        }),
-      ),
-    )
-    state.pending = { at, fiber: yield* Effect.forkIn(job, environment.scope) }
-  })
+const schedule = Effect.fnUntraced(function* (
+  state: State,
+  environment: Environment,
+  sweep: Effect.Effect<void>,
+) {
+  const oldest = state.idle.values().next()
+  if (oldest.done === true) return
+  const at = oldest.value + environment.retention
+  if (!Number.isFinite(at)) return
+  const pending = state.pending
+  if (pending !== undefined && pending.at <= at) return
+  if (pending !== undefined) yield* Fiber.interrupt(pending.fiber)
+  const delay = Math.max(0, at - (yield* Clock.currentTimeMillis))
+  const job = Effect.andThen(
+    Effect.sleep(delay),
+    Semaphore.withPermit(
+      environment.line,
+      Effect.suspend(() => {
+        // Cleared first, so the sweep's own scheduling never interrupts this fiber.
+        if (state.pending?.at === at) state.pending = undefined
+        return sweep
+      }),
+    ),
+  )
+  state.pending = { at, fiber: yield* Effect.forkIn(job, environment.scope) }
+})
 
 /** Evict every idle document whose retention passed, oldest first, then schedule the next. */
 const makeSweep = (state: State, environment: Environment) => {

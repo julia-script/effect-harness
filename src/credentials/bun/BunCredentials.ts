@@ -11,7 +11,7 @@ import { Effect, Layer } from 'effect'
 import { CredentialStore } from '../CredentialStore.ts'
 import type { Service } from '../CredentialStore.ts'
 import { CredentialsError } from '../CredentialsError.ts'
-import * as keychain from '../internal/keychain.ts'
+import * as keychain from './internal/keychain.ts'
 
 export interface Options {
   /** The keychain service the entries are stored under. Default: `effect-harness`. */

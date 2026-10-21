@@ -5,7 +5,7 @@
 import { Effect, Schema } from 'effect'
 import { cast } from 'effect/Function'
 import type { Draft } from '../../delta/Tracker.ts'
-import { strictJson } from '../../harness/internal/json.ts'
+import { strictJson } from '../../internal/strictJson.ts'
 import * as Document from '../../session/Document.ts'
 import { Output } from '../../tool/ToolResult.ts'
 

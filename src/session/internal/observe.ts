@@ -16,31 +16,30 @@ export type Create<O> = (
 ) => Effect.Effect<Attached<O>>
 
 /** Attach an observation to a loaded incarnation until its scope closes or it retires. */
-const attach = <O>(
+const attach = Effect.fnUntraced(function* <O>(
   cache: Cache,
   observers: Observers,
   loaded: Loaded,
   create: Create<O>,
-): Effect.Effect<O, never, Scope.Scope> =>
-  Effect.gen(function* () {
-    const value = yield* loaded.tracker.value
-    const recordId = loaded.record.id
-    const acquire = Effect.gen(function* () {
-      // Retirement only unpins: the observer stays attached, so that a close still ends it.
-      const unpin = yield* cache.pin(loaded.addressId, recordId)
-      const attached = yield* create(value, loaded.valueVersion, unpin)
-      yield* observers.attach(recordId, attached.observer)
-      return { attached, unpin }
-    })
-    const { attached } = yield* Effect.acquireRelease(acquire, (held) =>
-      Effect.all([
-        observers.detach(recordId, held.attached.observer),
-        held.unpin,
-        held.attached.close,
-      ]),
-    )
-    return attached.observation
+): Effect.fn.Return<O, never, Scope.Scope> {
+  const value = yield* loaded.tracker.value
+  const recordId = loaded.record.id
+  const acquire = Effect.gen(function* () {
+    // Retirement only unpins: the observer stays attached, so that a close still ends it.
+    const unpin = yield* cache.pin(loaded.addressId, recordId)
+    const attached = yield* create(value, loaded.valueVersion, unpin)
+    yield* observers.attach(recordId, attached.observer)
+    return { attached, unpin }
   })
+  const { attached } = yield* Effect.acquireRelease(acquire, (held) =>
+    Effect.all([
+      observers.detach(recordId, held.attached.observer),
+      held.unpin,
+      held.attached.close,
+    ]),
+  )
+  return attached.observation
+})
 
 /**
  * Attach an observation to the current incarnation at a token's address, on the mutation line,

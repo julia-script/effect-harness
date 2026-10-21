@@ -5,9 +5,9 @@
  */
 import { describe, expect, test } from 'bun:test'
 import { Effect, Redacted } from 'effect'
-import { runTest } from '../../task/test/support.ts'
+import { runTest } from '../../test/task.ts'
 import { CredentialsError } from '../CredentialsError.ts'
-import * as keychain from '../internal/keychain.ts'
+import * as keychain from '../bun/internal/keychain.ts'
 import { makeFakeKeychain } from './fakeKeychain.ts'
 
 const entry = (service: string, name: string) => JSON.stringify([service, name])

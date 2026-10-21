@@ -9,7 +9,7 @@ import { Effect } from 'effect'
 import type { Storage } from '../../storage/index.ts'
 import { withState } from '../internal/state.ts'
 import { hold, holdIn, holds, outcome, statusIs } from './holds.ts'
-import { completed, conversation, open, runTest } from './support.ts'
+import { completed, conversation, open, runTest } from '../../test/task.ts'
 
 /** Count the task and conversation reads a Storage serves. */
 const countReads = (backend: Storage.Service) => {

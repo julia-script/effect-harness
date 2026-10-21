@@ -20,7 +20,7 @@ import {
   runTest,
   settle,
   statusOf,
-} from './support.ts'
+} from '../../test/task.ts'
 
 describe('task close', () => {
   test('stops without outcomes and starts no fresh phase or abort invocation while closing', () =>

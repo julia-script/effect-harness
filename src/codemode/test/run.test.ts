@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from 'bun:test'
 import { Deferred, Effect, Exit, Schema } from 'effect'
-import { entriesOf, runTest } from '../../harness/test/generationSupport.ts'
+import { entriesOf, runTest } from '../../test/generation.ts'
 import type * as Harness from '../../harness/Harness.ts'
 import type { ConversationId } from '../../storage/schema/Ids.ts'
 import { Faux } from '../../model/index.ts'

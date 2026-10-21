@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test'
 import { Effect } from 'effect'
 import type { Conversation } from '../Conversation.ts'
 import type * as Harness from '../Harness.ts'
-import type { Submission } from '../Submission.ts'
+import type { Submission } from '../../protocol/Submission.ts'
 import {
   eventually,
   inboxOf,
@@ -24,7 +24,7 @@ import {
   anyNumber,
   answerOf,
   containing,
-} from './support.ts'
+} from '../../test/harness.ts'
 
 const modes = (harness: Harness.Service, conversation: Conversation) =>
   Effect.map(inboxOf(harness, conversation.id), (items) =>
