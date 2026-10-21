@@ -19,7 +19,7 @@ import { Effect, Layer, Schema } from 'effect'
 import type { Conversation } from '../harness/Conversation.ts'
 import * as Harness from '../harness/Harness.ts'
 import type { Extension } from '../harness/Extension.ts'
-import { UserInput } from '../harness/Submission.ts'
+import { UserInput } from '../protocol/Submission.ts'
 import type { Model } from '../model/Model.ts'
 import * as Storage from '../storage/Storage.ts'
 
