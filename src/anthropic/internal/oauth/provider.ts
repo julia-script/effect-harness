@@ -28,8 +28,8 @@ const Page = Schema.Struct({
 })
 const rejected = (message: string) => new ModelError({ message, reason: new Rejected({}) })
 
-const account = (name: string, authUrl: string) =>
-  Effect.gen(function* () {
+const account = Effect.fnUntraced(
+  function* (name: string, authUrl: string) {
     const http = yield* HttpClient.HttpClient
     const resolve = yield* CredentialStore.makeResolver({
       refresh: (_provider, stored) =>
@@ -41,7 +41,9 @@ const account = (name: string, authUrl: string) =>
     if (stored?._tag !== 'OAuth')
       return yield* rejected(`Sign in to Claude first: no ${name} OAuth tokens are stored`)
     return stored.access
-  }).pipe(Semaphore.withPermit(Semaphore.makeUnsafe(1)))
+  },
+  Semaphore.withPermit(Semaphore.makeUnsafe(1)),
+)
 
 const authorize = (access: Redacted.Redacted, request: HttpClientRequest.HttpClientRequest) => {
   // Native streaming uses /v1/messages; the generated JSON endpoint includes ?beta=true.
@@ -129,20 +131,19 @@ export const make = (
     name,
     api: 'anthropic-messages',
     models: options.models ?? catalog,
-    languageModel: (model, request) =>
-      Effect.gen(function* () {
-        const access = yield* tokens
-        const native = yield* AnthropicClient.make({
-          apiUrl,
-          transformClient: HttpClient.mapRequest((httpRequest) => authorize(access, httpRequest)),
-        })
-        return yield* AnthropicLanguageModel.make({
-          model: model.id,
-          config: configure(model, request, options),
-        }).pipe(
-          Effect.provideService(AnthropicClient.AnthropicClient, transport.client(native, request)),
-        )
-      }),
+    languageModel: Effect.fnUntraced(function* (model, request) {
+      const access = yield* tokens
+      const native = yield* AnthropicClient.make({
+        apiUrl,
+        transformClient: HttpClient.mapRequest((httpRequest) => authorize(access, httpRequest)),
+      })
+      return yield* AnthropicLanguageModel.make({
+        model: model.id,
+        config: configure(model, request, options),
+      }).pipe(
+        Effect.provideService(AnthropicClient.AnthropicClient, transport.client(native, request)),
+      )
+    }),
   })
   const listModels = Effect.flatMap(tokens, (access) =>
     discover(name, apiUrl, provider.models, access),

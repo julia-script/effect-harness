@@ -25,11 +25,10 @@ export const Opening: Context.Reference<Deferred.Deferred<Service> | undefined> 
  * `effect` with the Harness it runs under. Outside one it runs as is, and reading the Harness
  * there fails as a missing service.
  */
-export const provide = <A, E, R>(
+export const provide = Effect.fnUntraced(function* <A, E, R>(
   effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E, Exclude<R, Harness>> =>
-  Effect.gen(function* () {
-    const opening = yield* Opening
-    if (opening === undefined) return yield* cast<typeof effect, Effect.Effect<A, E>>(effect)
-    return yield* Effect.provideService(effect, Harness, yield* Deferred.await(opening))
-  })
+): Effect.fn.Return<A, E, Exclude<R, Harness>> {
+  const opening = yield* Opening
+  if (opening === undefined) return yield* cast<typeof effect, Effect.Effect<A, E>>(effect)
+  return yield* Effect.provideService(effect, Harness, yield* Deferred.await(opening))
+})

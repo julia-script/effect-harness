@@ -46,37 +46,39 @@ export const resolve = (workspace: Workspace, config: Config, path: string): str
  * `resolve`, then the first variant of it that exists: macOS screenshot names use a narrow
  * no-break space before AM/PM, and some file systems keep names decomposed or with curly quotes.
  */
-export const resolveExisting = (workspace: Workspace, config: Config, path: string) =>
-  Effect.gen(function* () {
-    const resolved = resolve(workspace, config, path)
-    const variants = new Set([
-      resolved,
-      resolved.replaceAll(/ (AM|PM)\./giu, `${NARROW_NO_BREAK_SPACE}$1.`),
-      resolved.normalize('NFD'),
-      resolved.replaceAll("'", '’'),
-      resolved.normalize('NFD').replaceAll("'", '’'),
-    ])
-    for (const variant of variants) {
-      if (yield* Effect.orElseSucceed(workspace.fs.exists(variant), () => false)) return variant
-    }
-    return resolved
-  })
+export const resolveExisting = Effect.fnUntraced(function* (
+  workspace: Workspace,
+  config: Config,
+  path: string,
+) {
+  const resolved = resolve(workspace, config, path)
+  const variants = new Set([
+    resolved,
+    resolved.replaceAll(/ (AM|PM)\./giu, `${NARROW_NO_BREAK_SPACE}$1.`),
+    resolved.normalize('NFD'),
+    resolved.replaceAll("'", '’'),
+    resolved.normalize('NFD').replaceAll("'", '’'),
+  ])
+  for (const variant of variants) {
+    if (yield* Effect.orElseSucceed(workspace.fs.exists(variant), () => false)) return variant
+  }
+  return resolved
+})
 
 /**
  * The canonical path of `absolute`; for a file that does not exist yet, its canonical parent with
  * its name, so a `write` that creates a file and a later `edit` of it share one key.
  */
-const canonical = (workspace: Workspace, absolute: string): Effect.Effect<string> =>
-  Effect.gen(function* () {
-    const real = yield* Effect.option(workspace.fs.realPath(absolute))
-    if (Option.isSome(real)) return real.value
-    const parent = workspace.path.dirname(absolute)
-    if (parent === absolute) return absolute
-    return workspace.path.join(
-      yield* canonical(workspace, parent),
-      workspace.path.basename(absolute),
-    )
-  })
+const canonical = Effect.fnUntraced(function* (
+  workspace: Workspace,
+  absolute: string,
+): Effect.fn.Return<string> {
+  const real = yield* Effect.option(workspace.fs.realPath(absolute))
+  if (Option.isSome(real)) return real.value
+  const parent = workspace.path.dirname(absolute)
+  if (parent === absolute) return absolute
+  return workspace.path.join(yield* canonical(workspace, parent), workspace.path.basename(absolute))
+})
 
 /**
  * Serialize `edit` and `write` mutations of one file within this layer, by canonical path; other

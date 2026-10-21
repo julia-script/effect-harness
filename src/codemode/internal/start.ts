@@ -49,37 +49,36 @@ const namespacesOf = (
 }
 
 /** The start data a first attempt records, without the store, which the commit reads. */
-export const fresh = (
+export const fresh = Effect.fnUntraced(function* (
   agent: Agent.Resolved,
   options: {
     readonly namespaces: ReadonlyArray<Namespace>
     readonly globals: ReadonlyArray<Global>
   },
   source: CodemodeSourceOptions,
-) =>
-  Effect.gen(function* () {
-    const tools: Array<DeclaredTool> = agent.callable.map(({ tool }) => ({
-      name: tool.name,
-      jsName: toCodemodeIdentifier(tool.name),
-      description: sampleOf(tool),
-      ...(isStructured(tool) ? { structured: true as const } : {}),
-    }))
-    const startedAt = yield* Clock.currentTimeMillis
-    const start: Omit<Start, 'store'> = {
-      version: VERSION,
-      startedAt,
-      seed: yield* Random.nextIntBetween(0, 0xff_ff_ff_ff),
-      ...(source.timeoutMs === undefined ? {} : { deadline: startedAt + source.timeoutMs }),
-      tools,
-      namespaces: namespacesOf(tools, options.namespaces),
-      globals: [
-        ...DISCOVERY.map((name) => ({ name, spread: true })),
-        ...options.globals.map(({ name, spread }) => ({ name, spread: spread === true })),
-      ],
-      maxOutputTokens: source.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-    }
-    return start
-  })
+) {
+  const tools: Array<DeclaredTool> = agent.callable.map(({ tool }) => ({
+    name: tool.name,
+    jsName: toCodemodeIdentifier(tool.name),
+    description: sampleOf(tool),
+    ...(isStructured(tool) ? { structured: true as const } : {}),
+  }))
+  const startedAt = yield* Clock.currentTimeMillis
+  const start: Omit<Start, 'store'> = {
+    version: VERSION,
+    startedAt,
+    seed: yield* Random.nextIntBetween(0, 0xff_ff_ff_ff),
+    ...(source.timeoutMs === undefined ? {} : { deadline: startedAt + source.timeoutMs }),
+    tools,
+    namespaces: namespacesOf(tools, options.namespaces),
+    globals: [
+      ...DISCOVERY.map((name) => ({ name, spread: true })),
+      ...options.globals.map(({ name, spread }) => ({ name, spread: spread === true })),
+    ],
+    maxOutputTokens: source.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+  }
+  return start
+})
 
 /** What a first attempt or a rerun finds. */
 const Found = Schema.Union([

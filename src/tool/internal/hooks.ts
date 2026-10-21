@@ -34,29 +34,31 @@ const askBefore = (
  * Ask `beforeTool` in order: each sees the arguments the earlier ones left, and the first block
  * wins. A hook that fails blocks the call with its failure.
  */
-export const beforeTool = (hooks: ReadonlyArray<Partial<Hooks>>, call: ToolCall, api: Hook.Api) =>
-  Effect.gen(function* () {
-    let decided: Decision = { args: call.arguments }
-    for (const hook of hooks) {
-      if (hook.beforeTool === undefined || 'block' in decided) continue
-      decided = yield* askBefore(hook.beforeTool, call, decided.args, api)
-    }
-    return decided
-  })
+export const beforeTool = Effect.fnUntraced(function* (
+  hooks: ReadonlyArray<Partial<Hooks>>,
+  call: ToolCall,
+  api: Hook.Api,
+) {
+  let decided: Decision = { args: call.arguments }
+  for (const hook of hooks) {
+    if (hook.beforeTool === undefined || 'block' in decided) continue
+    decided = yield* askBefore(hook.beforeTool, call, decided.args, api)
+  }
+  return decided
+})
 
 /** Ask `afterTool` in order, each replacing the result the earlier ones left. */
-export const afterTool = (
+export const afterTool = Effect.fnUntraced(function* (
   hooks: ReadonlyArray<Partial<Hooks>>,
   call: ToolCall,
   result: ToolResult.Result,
   api: Hook.Api,
-) =>
-  Effect.gen(function* () {
-    let current = result
-    for (const hook of hooks) {
-      if (hook.afterTool === undefined) continue
-      const replaced = yield* Hook.ask(hook.afterTool(call, current, api), 'afterTool')
-      if (Option.isSome(replaced)) current = replaced.value
-    }
-    return current
-  })
+) {
+  let current = result
+  for (const hook of hooks) {
+    if (hook.afterTool === undefined) continue
+    const replaced = yield* Hook.ask(hook.afterTool(call, current, api), 'afterTool')
+    if (Option.isSome(replaced)) current = replaced.value
+  }
+  return current
+})

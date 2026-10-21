@@ -38,30 +38,29 @@ export interface View {
 }
 
 /** Build the view of `id` in a commit, before its first table write. */
-export const build = (tx: Tx, id: ConversationId) =>
-  Effect.gen(function* () {
-    const conversation = yield* tx.conversation(id)
-    if (conversation === undefined) {
-      return yield* new TransactionError({ message: `Conversation ${id} does not exist` })
-    }
-    const { entries } = yield* read(tx, id)
-    const shown = yield* Effect.all([
-      tx.snapshot(Agent.document, id),
-      tx.snapshot(Live.document, id),
-      tx.snapshot(Inbox.document, id),
-      tx.snapshot(Usage.document, id),
-    ])
-    const docs: Record<string, JsonObject> = {}
-    const incarnations = new Map<string, Incarnation>()
-    for (const [index, value] of shown.entries()) {
-      const definition = MOUNTED[index]?.definition
-      if (value === undefined || definition === undefined) continue
-      docs[definition.kind] = value
-      incarnations.set(definition.kind, { id: undefined, version: definition.version })
-    }
-    const view: View = { value: { conversation, entries, docs }, docs: incarnations }
-    return view
-  })
+export const build = Effect.fnUntraced(function* (tx: Tx, id: ConversationId) {
+  const conversation = yield* tx.conversation(id)
+  if (conversation === undefined) {
+    return yield* new TransactionError({ message: `Conversation ${id} does not exist` })
+  }
+  const { entries } = yield* read(tx, id)
+  const shown = yield* Effect.all([
+    tx.snapshot(Agent.document, id),
+    tx.snapshot(Live.document, id),
+    tx.snapshot(Inbox.document, id),
+    tx.snapshot(Usage.document, id),
+  ])
+  const docs: Record<string, JsonObject> = {}
+  const incarnations = new Map<string, Incarnation>()
+  for (const [index, value] of shown.entries()) {
+    const definition = MOUNTED[index]?.definition
+    if (value === undefined || definition === undefined) continue
+    docs[definition.kind] = value
+    incarnations.set(definition.kind, { id: undefined, version: definition.version })
+  }
+  const view: View = { value: { conversation, entries, docs }, docs: incarnations }
+  return view
+})
 
 type DocumentChange = Extract<CommitPublication['changes'][number], { readonly type: 'document' }>
 

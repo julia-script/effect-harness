@@ -166,8 +166,8 @@ interface Mounts {
 }
 
 /** Advance every mount by one publication, and hand it to their observers. */
-const advanceAll = (mounts: Mounts) => (publication: CommitPublication) =>
-  Effect.gen(function* () {
+const advanceAll = (mounts: Mounts) =>
+  Effect.fnUntraced(function* (publication: CommitPublication) {
     for (const [id, mount] of mounts.views) {
       const before = mount.view.value
       const ops = Conversation.advance(id, mount.view, publication)

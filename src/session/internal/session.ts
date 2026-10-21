@@ -181,24 +181,23 @@ const retentionMillis = (input: Options['documentRetention']): number => {
   })
 }
 
-const close = (
+const close = Effect.fnUntraced(function* (
   lifecycle: Lifecycle,
   line: Semaphore.Semaphore,
   cache: Cache.Cache,
   observers: Observers.Observers,
   pubsub: PubSub.PubSub<CommitPublication>,
-) =>
-  Effect.gen(function* () {
-    yield* Deferred.done(lifecycle.closing, Exit.void)
-    // Observers end before admitted commits settle: they see nothing committed while closing.
-    yield* observers.end()
-    // Admitted commits settle before the Session, and then its Storage, closes.
-    yield* Semaphore.withPermit(
-      line,
-      Effect.andThen(cache.clear, Deferred.succeed(lifecycle.ended, { reason: 'closed' })),
-    )
-    yield* PubSub.shutdown(pubsub)
-  })
+) {
+  yield* Deferred.done(lifecycle.closing, Exit.void)
+  // Observers end before admitted commits settle: they see nothing committed while closing.
+  yield* observers.end()
+  // Admitted commits settle before the Session, and then its Storage, closes.
+  yield* Semaphore.withPermit(
+    line,
+    Effect.andThen(cache.clear, Deferred.succeed(lifecycle.ended, { reason: 'closed' })),
+  )
+  yield* PubSub.shutdown(pubsub)
+})
 
 /** The Session's committed document reads and observations. */
 const documentReads = (
@@ -227,50 +226,51 @@ const documentReads = (
   }
 }
 
-export const make = (options: Options): Effect.Effect<Service, never, Storage | Scope.Scope> =>
-  Effect.gen(function* () {
-    const storage: StorageService = yield* Storage
-    const line = yield* Semaphore.make(1)
-    const pubsub = yield* PubSub.unbounded<CommitPublication>()
-    const listeners: Listeners = new Set()
-    const lifecycle: Lifecycle = {
-      failure: yield* Deferred.make<never, SessionFailed>(),
-      closing: yield* Deferred.make<void>(),
-      ended: yield* Deferred.make<SessionEnd>(),
-    }
-    const retention = retentionMillis(options.documentRetention)
-    const scope = yield* Effect.scope
-    const observers = Observers.make()
-    const guarded = guard(lifecycle, observers)
-    const cache = Cache.make({ storage, guard: guarded, retention, line, scope })
-    const host: Host = {
-      storage,
-      guard: guarded,
-      cache,
-      conversationCreated: options.conversationCreated,
-    }
-    yield* Effect.addFinalizer(() => close(lifecycle, line, cache, observers, pubsub))
-    const usable = Effect.suspend((): Effect.Effect<void, SessionClosed | SessionFailed> =>
-      Deferred.isDoneUnsafe(lifecycle.closing) ? Effect.fail(closed) : healthy(lifecycle),
+export const make = Effect.fnUntraced(function* (
+  options: Options,
+): Effect.fn.Return<Service, never, Storage | Scope.Scope> {
+  const storage: StorageService = yield* Storage
+  const line = yield* Semaphore.make(1)
+  const pubsub = yield* PubSub.unbounded<CommitPublication>()
+  const listeners: Listeners = new Set()
+  const lifecycle: Lifecycle = {
+    failure: yield* Deferred.make<never, SessionFailed>(),
+    closing: yield* Deferred.make<void>(),
+    ended: yield* Deferred.make<SessionEnd>(),
+  }
+  const retention = retentionMillis(options.documentRetention)
+  const scope = yield* Effect.scope
+  const observers = Observers.make()
+  const guarded = guard(lifecycle, observers)
+  const cache = Cache.make({ storage, guard: guarded, retention, line, scope })
+  const host: Host = {
+    storage,
+    guard: guarded,
+    cache,
+    conversationCreated: options.conversationCreated,
+  }
+  yield* Effect.addFinalizer(() => close(lifecycle, line, cache, observers, pubsub))
+  const usable = Effect.suspend((): Effect.Effect<void, SessionClosed | SessionFailed> =>
+    Deferred.isDoneUnsafe(lifecycle.closing) ? Effect.fail(closed) : healthy(lifecycle),
+  )
+  /** Run on the line, refusing when the Session closed or failed. */
+  const onLine: OnLine = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.suspend((): Effect.Effect<A, E | SessionClosed | SessionFailed, R> =>
+      Deferred.isDoneUnsafe(lifecycle.closing)
+        ? Effect.fail(closed)
+        : Semaphore.withPermit(
+            line,
+            Effect.andThen(healthy(lifecycle), effect).pipe(Effect.ensuring(cache.sweep)),
+          ),
     )
-    /** Run on the line, refusing when the Session closed or failed. */
-    const onLine: OnLine = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      Effect.suspend((): Effect.Effect<A, E | SessionClosed | SessionFailed, R> =>
-        Deferred.isDoneUnsafe(lifecycle.closing)
-          ? Effect.fail(closed)
-          : Semaphore.withPermit(
-              line,
-              Effect.andThen(healthy(lifecycle), effect).pipe(Effect.ensuring(cache.sweep)),
-            ),
-      )
-    const service: Service = {
-      commit: (change, transactionScope) =>
-        onLine(runCommit(lifecycle, host, observers, pubsub, listeners, change, transactionScope)),
-      subscribe: PubSub.subscribe(pubsub),
-      observeCommits: observeCommits(listeners),
-      ended: Deferred.await(lifecycle.ended),
-      ...documentReads(host, observers, usable, onLine),
-      unloadDocuments: onLine(cache.clear),
-    }
-    return service
-  })
+  const service: Service = {
+    commit: (change, transactionScope) =>
+      onLine(runCommit(lifecycle, host, observers, pubsub, listeners, change, transactionScope)),
+    subscribe: PubSub.subscribe(pubsub),
+    observeCommits: observeCommits(listeners),
+    ended: Deferred.await(lifecycle.ended),
+    ...documentReads(host, observers, usable, onLine),
+    unloadDocuments: onLine(cache.clear),
+  }
+  return service
+})

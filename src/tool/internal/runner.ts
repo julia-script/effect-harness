@@ -68,17 +68,16 @@ const withProvided = <A, E>(effect: Effect.Effect<A, E, Provided>) =>
 /** `handler` behind the encoded signature. */
 export const implement = <T extends Tool.Any>(tool: T, handler: Handler<T>): Runner => ({
   tool,
-  run: (args, { callId, config }) =>
-    Effect.gen(function* () {
-      const params = yield* Effect.result(Schema.decodeUnknownEffect(tool.parameters)(args))
-      if (Result.isFailure(params))
-        return { type: 'invalidArguments', message: params.failure.message } as const
-      const decoded = yield* Effect.result(Schema.decodeUnknownEffect(tool.config)(config))
-      if (Result.isFailure(decoded))
-        return { type: 'invalidConfig', message: decoded.failure.message } as const
-      const exit = yield* Effect.exit(
-        withProvided(handler(params.success, { callId, config: decoded.success })),
-      )
-      return yield* outcome(tool, exit)
-    }),
+  run: Effect.fnUntraced(function* (args, { callId, config }) {
+    const params = yield* Effect.result(Schema.decodeUnknownEffect(tool.parameters)(args))
+    if (Result.isFailure(params))
+      return { type: 'invalidArguments', message: params.failure.message } as const
+    const decoded = yield* Effect.result(Schema.decodeUnknownEffect(tool.config)(config))
+    if (Result.isFailure(decoded))
+      return { type: 'invalidConfig', message: decoded.failure.message } as const
+    const exit = yield* Effect.exit(
+      withProvided(handler(params.success, { callId, config: decoded.success })),
+    )
+    return yield* outcome(tool, exit)
+  }),
 })

@@ -37,23 +37,25 @@ const compactionFailure = (outcome: TaskOutcome): string => {
  * overflow, only a summary makes the request fit; after the threshold, one that found nothing to
  * compact leaves a request that may still fit, but one that failed does not.
  */
-const checkCompacted = (runtime: GenerationRuntime, checkpoint: Prepare) =>
-  Effect.gen(function* () {
-    const { compacted, overflow } = checkpoint
-    if (compacted === undefined || (overflow === undefined && checkpoint.threshold !== true))
-      return true
-    const [outcome] = yield* runtime.outcomes([compacted])
-    if (outcome === undefined) return true
-    if (overflow !== undefined) {
-      const result = outcome.status === 'completed' ? decodeResult(outcome.result) : Option.none()
-      if (Option.isSome(result) && result.value.entryId !== undefined) return true
-      yield* fail(runtime, 'model_error', overflow)
-      return false
-    }
-    if (outcome.status === 'completed') return true
-    yield* fail(runtime, 'model_error', compactionFailure(outcome))
+const checkCompacted = Effect.fnUntraced(function* (
+  runtime: GenerationRuntime,
+  checkpoint: Prepare,
+) {
+  const { compacted, overflow } = checkpoint
+  if (compacted === undefined || (overflow === undefined && checkpoint.threshold !== true))
+    return true
+  const [outcome] = yield* runtime.outcomes([compacted])
+  if (outcome === undefined) return true
+  if (overflow !== undefined) {
+    const result = outcome.status === 'completed' ? decodeResult(outcome.result) : Option.none()
+    if (Option.isSome(result) && result.value.entryId !== undefined) return true
+    yield* fail(runtime, 'model_error', overflow)
     return false
-  })
+  }
+  if (outcome.status === 'completed') return true
+  yield* fail(runtime, 'model_error', compactionFailure(outcome))
+  return false
+})
 
 /** Compact first, with a compaction the generation owns, and prepare again once it is done. */
 const compactFirst = (runtime: GenerationRuntime, attempt: number) =>
@@ -103,51 +105,51 @@ const fixRequest = (
  * the request, or compact first above the blocking threshold. Only the Harness writes model
  * context to a busy conversation, so the context read here is still current at the commit.
  */
-const prepare = (
+const prepare = Effect.fnUntraced(function* (
   env: Env,
   runtime: GenerationRuntime,
   checkpoint: Prepare,
   agent: Resolved,
   info: { readonly ref: Model.Ref; readonly contextWindow: number },
-) =>
-  Effect.gen(function* () {
-    const { attempt, compacted } = checkpoint
-    const view = yield* readView(runtime)
-    const shown = replaySections(view.messages)
-    const { conversationId } = runtime
-    const desired = yield* renderSections({ conversationId, agent, read: runtime }, shown)
-    const tools = agent.offered.map(({ tool }) => Tool.definition(tool))
-    const entries = planSystemEntries(view, desired, tools, yield* Clock.currentTimeMillis)
-    const settings = yield* env.settings
-    const planned = entries.flatMap((entry) => decodeAll(entry.model ?? []))
-    const over =
-      compacted === undefined
-        ? threshold(view, planned, info.contextWindow, compactionFor(settings, info.ref))
-        : undefined
-    // The transcript is unchanged until the summary lands.
-    if (over === 'blocking') return yield* compactFirst(runtime, attempt)
-    const { reasoning } = agent
-    const options = reasoning === 'off' ? settings.stream : { ...settings.stream, reasoning }
-    return yield* fixRequest(runtime, entries, over === 'background', {
-      attempt,
-      ...(compacted === undefined ? {} : { compacted }),
-      model: info.ref,
-      options,
-    })
+) {
+  const { attempt, compacted } = checkpoint
+  const view = yield* readView(runtime)
+  const shown = replaySections(view.messages)
+  const { conversationId } = runtime
+  const desired = yield* renderSections({ conversationId, agent, read: runtime }, shown)
+  const tools = agent.offered.map(({ tool }) => Tool.definition(tool))
+  const entries = planSystemEntries(view, desired, tools, yield* Clock.currentTimeMillis)
+  const settings = yield* env.settings
+  const planned = entries.flatMap((entry) => decodeAll(entry.model ?? []))
+  const over =
+    compacted === undefined
+      ? threshold(view, planned, info.contextWindow, compactionFor(settings, info.ref))
+      : undefined
+  // The transcript is unchanged until the summary lands.
+  if (over === 'blocking') return yield* compactFirst(runtime, attempt)
+  const { reasoning } = agent
+  const options = reasoning === 'off' ? settings.stream : { ...settings.stream, reasoning }
+  return yield* fixRequest(runtime, entries, over === 'background', {
+    attempt,
+    ...(compacted === undefined ? {} : { compacted }),
+    model: info.ref,
+    options,
   })
+})
 
 /** The `prepare` phase, once the model is known and any blocking compaction is checked. */
-export const preparePhase =
-  (env: Env) =>
-  (task: { readonly state: { readonly checkpoint: Prepare } }, runtime: GenerationRuntime) =>
-    Effect.gen(function* () {
-      const { checkpoint } = task.state
-      const agent = yield* agentOf(env, runtime)
-      const ref = agent.model
-      const info = ref === undefined ? undefined : yield* env.model.info(ref)
-      if (ref === undefined || info === undefined) return yield* failNoModel(runtime, ref)
-      const ready = yield* checkCompacted(runtime, checkpoint)
-      return yield* ready
-        ? prepare(env, runtime, checkpoint, agent, { ref, contextWindow: info.contextWindow })
-        : Effect.void
-    })
+export const preparePhase = (env: Env) =>
+  Effect.fnUntraced(function* (
+    task: { readonly state: { readonly checkpoint: Prepare } },
+    runtime: GenerationRuntime,
+  ) {
+    const { checkpoint } = task.state
+    const agent = yield* agentOf(env, runtime)
+    const ref = agent.model
+    const info = ref === undefined ? undefined : yield* env.model.info(ref)
+    if (ref === undefined || info === undefined) return yield* failNoModel(runtime, ref)
+    const ready = yield* checkCompacted(runtime, checkpoint)
+    return yield* ready
+      ? prepare(env, runtime, checkpoint, agent, { ref, contextWindow: info.contextWindow })
+      : Effect.void
+  })

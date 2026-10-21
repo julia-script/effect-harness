@@ -29,32 +29,31 @@ export const replaySections = (messages: ReadonlyArray<Message>): Map<string, st
  * Render the agent's sections in order. A section that fails keeps the text the model sees, and
  * the failure is reported as a warning.
  */
-export const renderSections = (
+export const renderSections = Effect.fnUntraced(function* (
   input: Omit<SectionInput, 'shown'>,
   shown: ReadonlyMap<string, string>,
-) =>
-  Effect.gen(function* () {
-    const desired = new Map<string, string>()
-    const rendering: SectionInput = { ...input, shown: Object.fromEntries(shown) }
-    for (const section of input.agent.sections) {
-      const rendered = yield* Effect.catchCause(
-        Effect.map(section.render(rendering), (text) =>
-          text === undefined || section.tag === false
-            ? text
-            : `<${section.key}>\n${text}\n</${section.key}>`,
-        ),
-        (cause) =>
-          Cause.hasInterrupts(cause)
-            ? Effect.interrupt
-            : Effect.as(
-                Effect.logWarning(`Section ${section.key} failed to render`, cause),
-                shown.get(section.key),
-              ),
-      )
-      if (rendered !== undefined) desired.set(section.key, rendered)
-    }
-    return desired
-  })
+) {
+  const desired = new Map<string, string>()
+  const rendering: SectionInput = { ...input, shown: Object.fromEntries(shown) }
+  for (const section of input.agent.sections) {
+    const rendered = yield* Effect.catchCause(
+      Effect.map(section.render(rendering), (text) =>
+        text === undefined || section.tag === false
+          ? text
+          : `<${section.key}>\n${text}\n</${section.key}>`,
+      ),
+      (cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.as(
+              Effect.logWarning(`Section ${section.key} failed to render`, cause),
+              shown.get(section.key),
+            ),
+    )
+    if (rendered !== undefined) desired.set(section.key, rendered)
+  }
+  return desired
+})
 
 interface ToolChanges {
   readonly toolsRemoved: ReadonlyArray<{ readonly name: string }>

@@ -188,15 +188,14 @@ const modelsOf = (state: State, entry: Entry): Effect.Effect<Listing> => {
   )
 }
 
-export const models = (state: State) =>
-  Effect.gen(function* () {
-    const all = yield* registry.current(state)
-    const listed = yield* Effect.forEach(all, (entry) => modelsOf(state, entry), {
-      concurrency: 'unbounded',
-    })
-    const statuses = yield* registry.statuses(state, all)
-    return statuses.flatMap((account, index): ReadonlyArray<Models> => {
-      const found = listed[index]
-      return found === undefined ? [] : [{ account, ...found }]
-    })
+export const models = Effect.fnUntraced(function* (state: State) {
+  const all = yield* registry.current(state)
+  const listed = yield* Effect.forEach(all, (entry) => modelsOf(state, entry), {
+    concurrency: 'unbounded',
   })
+  const statuses = yield* registry.statuses(state, all)
+  return statuses.flatMap((account, index): ReadonlyArray<Models> => {
+    const found = listed[index]
+    return found === undefined ? [] : [{ account, ...found }]
+  })
+})

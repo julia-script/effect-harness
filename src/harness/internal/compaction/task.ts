@@ -60,8 +60,8 @@ const complete = (runtime: CompactionRuntime) =>
  * The `select` phase: choose the range to summarize, ask `beforeCompact`, and fix the
  * summarization request, or complete or place a summary a hook decided.
  */
-const selectPhase = (env: Env) => (task: Phase<'select'>, runtime: CompactionRuntime) =>
-  Effect.gen(function* () {
+const selectPhase = (env: Env) =>
+  Effect.fnUntraced(function* (task: Phase<'select'>, runtime: CompactionRuntime) {
     const agent = yield* agentOf(env, runtime)
     const ref = agent.model
     const info = ref === undefined ? undefined : yield* env.model.info(ref)
@@ -214,8 +214,8 @@ const settleAttempt = (
   )
 
 /** The `summarize` phase: one summarization attempt, then place, retry, or fail. */
-const summarizePhase = (env: Env) => (task: Phase<'summarize'>, runtime: CompactionRuntime) =>
-  Effect.gen(function* () {
+const summarizePhase = (env: Env) =>
+  Effect.fnUntraced(function* (task: Phase<'summarize'>, runtime: CompactionRuntime) {
     const { phase: _phase, ...request } = task.state.checkpoint
     const info = yield* env.model.info(request.model)
     if (info === undefined) return yield* failNoModel(runtime, request.model)
@@ -239,22 +239,21 @@ const summarizePhase = (env: Env) => (task: Phase<'summarize'>, runtime: Compact
   })
 
 /** The `retry` phase: wait out the backoff, then summarize again. */
-const retryPhase = (task: Phase<'retry'>, runtime: CompactionRuntime) =>
-  Effect.gen(function* () {
-    const { phase: _phase, until, ...request } = task.state.checkpoint
-    yield* sleepUntil(until)
-    const attempt = request.attempt + 1
-    yield* runtime.commit((tx) =>
-      Effect.map(tx.doc(Live.document, runtime.conversationId), (live): Next => {
-        const status = statusOf(live, runtime.taskId)
-        if (status !== undefined) {
-          status.attempt = attempt
-          delete status.retry
-        }
-        return { status: 'running', checkpoint: { phase: 'summarize', ...request, attempt } }
-      }),
-    )
-  })
+const retryPhase = Effect.fnUntraced(function* (task: Phase<'retry'>, runtime: CompactionRuntime) {
+  const { phase: _phase, until, ...request } = task.state.checkpoint
+  yield* sleepUntil(until)
+  const attempt = request.attempt + 1
+  yield* runtime.commit((tx) =>
+    Effect.map(tx.doc(Live.document, runtime.conversationId), (live): Next => {
+      const status = statusOf(live, runtime.taskId)
+      if (status !== undefined) {
+        status.attempt = attempt
+        delete status.retry
+      }
+      return { status: 'running', checkpoint: { phase: 'summarize', ...request, attempt } }
+    }),
+  )
+})
 
 export const definition = (env: Env): Definition<Input, Checkpoint, CompactionResult> => ({
   name: COMPACTION_KIND,

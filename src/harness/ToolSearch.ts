@@ -81,25 +81,24 @@ const summary = (loaded: ReadonlyArray<Tool.Any>) => {
   return `Loaded ${loaded.length} tool${plural}. They are available from your next call:\n${lines.join('\n')}`
 }
 
-const search = ({ query, limit }: Tool.Parameters<typeof ToolSearch>) =>
-  Effect.gen(function* () {
-    if (query.trim() === '') return yield* Effect.fail(text('query must not be empty'))
-    const max = limit ?? DEFAULT_LIMIT
-    if (!Number.isInteger(max) || max <= 0)
-      return yield* Effect.fail(text('limit must be a positive integer'))
-    const agent = yield* Agent.Current
-    if (agent === undefined)
-      return yield* Effect.fail(text(`${NAME} runs only for a conversation's calls`))
-    const candidates = agent.deferred.map(({ tool }) => tool)
-    const documents = candidates.map((tool) => ({ name: tool.name, text: searchText(tool) }))
-    const names = rank(query, documents, max)
-    const loaded = names.flatMap((name) => candidates.filter((tool) => tool.name === name))
-    const details: Details = { loaded: [...names] }
-    return text(summary(loaded), {
-      details,
-      ...(names.length === 0 ? {} : { control: { addTools: names } }),
-    })
+const search = Effect.fnUntraced(function* ({ query, limit }: Tool.Parameters<typeof ToolSearch>) {
+  if (query.trim() === '') return yield* Effect.fail(text('query must not be empty'))
+  const max = limit ?? DEFAULT_LIMIT
+  if (!Number.isInteger(max) || max <= 0)
+    return yield* Effect.fail(text('limit must be a positive integer'))
+  const agent = yield* Agent.Current
+  if (agent === undefined)
+    return yield* Effect.fail(text(`${NAME} runs only for a conversation's calls`))
+  const candidates = agent.deferred.map(({ tool }) => tool)
+  const documents = candidates.map((tool) => ({ name: tool.name, text: searchText(tool) }))
+  const names = rank(query, documents, max)
+  const loaded = names.flatMap((name) => candidates.filter((tool) => tool.name === name))
+  const details: Details = { loaded: [...names] }
+  return text(summary(loaded), {
+    details,
+    ...(names.length === 0 ? {} : { control: { addTools: names } }),
   })
+})
 
 /** The implementation of `tool_search`. */
 export const layer = toolkit.toLayer({ [NAME]: search })

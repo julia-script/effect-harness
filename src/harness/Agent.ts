@@ -76,14 +76,13 @@ export const configure = (tx: Tx, conversationId: ConversationId, change: Change
  * agent of its owner task's conversation; a fork keeps its as-of copy, and an ownerless one
  * starts empty.
  */
-export const created = (tx: Tx, record: ConversationRecord) =>
-  Effect.gen(function* () {
-    if (record.parent !== undefined) return
-    const agent = yield* tx.doc(document, record.id)
-    if (record.owner === undefined) return
-    const owner = yield* tx.doc(document, record.owner.conversationId)
-    Object.assign(agent, strictJson({ ...owner }))
-  })
+export const created = Effect.fnUntraced(function* (tx: Tx, record: ConversationRecord) {
+  if (record.parent !== undefined) return
+  const agent = yield* tx.doc(document, record.id)
+  if (record.owner === undefined) return
+  const owner = yield* tx.doc(document, record.owner.conversationId)
+  Object.assign(agent, strictJson({ ...owner }))
+})
 
 /**
  * Load tools by name into the conversation's offered tools, as a call's `addTools` control does:

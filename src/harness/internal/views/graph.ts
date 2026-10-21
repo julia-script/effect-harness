@@ -14,17 +14,18 @@ const LIVE_STATUSES = ['pending', 'running', 'waiting', 'completing'] as const
 const SCAN_PAGE_SIZE = 256
 
 /** Every item of a paged scan. */
-const scanAll = <A, E>(page: (cursor: Cursor | undefined) => Effect.Effect<Page<A>, E>) =>
-  Effect.gen(function* () {
-    const items: Array<A> = []
-    let cursor: Cursor | undefined
-    do {
-      const next = yield* page(cursor)
-      items.push(...next.items)
-      cursor = next.next
-    } while (cursor !== undefined)
-    return items
-  })
+const scanAll = Effect.fnUntraced(function* <A, E>(
+  page: (cursor: Cursor | undefined) => Effect.Effect<Page<A>, E>,
+) {
+  const items: Array<A> = []
+  let cursor: Cursor | undefined
+  do {
+    const next = yield* page(cursor)
+    items.push(...next.items)
+    cursor = next.next
+  } while (cursor !== undefined)
+  return items
+})
 
 const phaseOf = (checkpoint: unknown): string =>
   typeof checkpoint === 'object' &&
@@ -64,27 +65,24 @@ const nodeOf = (
 const byId = <A extends { readonly id: number }>(a: A, b: A) => a.id - b.id
 
 /** Build the graph in a commit, before its first table write. */
-export const build = (tx: Tx) =>
-  Effect.gen(function* () {
-    const records: Array<TaskRecord> = []
-    for (const status of LIVE_STATUSES) {
-      records.push(
-        ...(yield* scanAll((cursor) => tx.scanTasks({ status }, SCAN_PAGE_SIZE, cursor))),
-      )
-    }
-    const tasks: Record<string, TaskGraphNode> = {}
-    for (const record of records.toSorted(byId)) {
-      const owned = yield* scanAll((cursor) =>
-        tx.scanConversations({ ownerTaskId: record.id }, SCAN_PAGE_SIZE, cursor),
-      )
-      tasks[String(record.id)] = nodeOf(
-        record,
-        owned.toSorted(byId).map(({ id }) => id),
-      )
-    }
-    const graph: TaskGraph = { tasks }
-    return graph
-  })
+export const build = Effect.fnUntraced(function* (tx: Tx) {
+  const records: Array<TaskRecord> = []
+  for (const status of LIVE_STATUSES) {
+    records.push(...(yield* scanAll((cursor) => tx.scanTasks({ status }, SCAN_PAGE_SIZE, cursor))))
+  }
+  const tasks: Record<string, TaskGraphNode> = {}
+  for (const record of records.toSorted(byId)) {
+    const owned = yield* scanAll((cursor) =>
+      tx.scanConversations({ ownerTaskId: record.id }, SCAN_PAGE_SIZE, cursor),
+    )
+    tasks[String(record.id)] = nodeOf(
+      record,
+      owned.toSorted(byId).map(({ id }) => id),
+    )
+  }
+  const graph: TaskGraph = { tasks }
+  return graph
+})
 
 /** The graph after one publication's task changes, and the operations that apply them. */
 const advanceTasks = (graph: TaskGraph, publication: CommitPublication) => {

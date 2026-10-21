@@ -75,40 +75,38 @@ export const waitForIdle = (state: State, conversationId: ConversationId | undef
  * reaches, and withdraw the queued inputs of every conversation it reaches; then wait until the conversation is idle. With `background`, traversal crosses
  * background boundaries, and the wait also covers every task it reached.
  */
-export const abortConversation = (
+export const abortConversation = Effect.fnUntraced(function* (
   state: State,
   conversationId: ConversationId,
   background: boolean,
-) =>
-  Effect.gen(function* () {
-    const reached = yield* readsFirst(
-      state.session.commit((tx) =>
-        Effect.gen(function* () {
-          yield* loadScopes(state)
-          const queued = yield* loadQueued(state)
-          const found: Array<TaskId> = []
-          const walk = walkDown(state, conversationNode(conversationId), {
-            crossBackground: background,
-          })
-          for (const { node, live } of walk) {
-            if (live === undefined || (node.background && !background)) continue
-            found.push(live.id)
-            if (!live.abortRequested || live.abortReason !== undefined) {
-              yield* tx.setTask(withAbortMark(live))
-            }
+) {
+  const reached = yield* readsFirst(
+    state.session.commit((tx) =>
+      Effect.gen(function* () {
+        yield* loadScopes(state)
+        const queued = yield* loadQueued(state)
+        const found: Array<TaskId> = []
+        const walk = walkDown(state, conversationNode(conversationId), {
+          crossBackground: background,
+        })
+        for (const { node, live } of walk) {
+          if (live === undefined || (node.background && !background)) continue
+          found.push(live.id)
+          if (!live.abortRequested || live.abortReason !== undefined) {
+            yield* tx.setTask(withAbortMark(live))
           }
-          const scope = { conversation: conversationId }
-          yield* withdrawInputs(
-            state,
-            tx,
-            queued,
-            (id) => inScope(state, { conversation: id }, scope, background) === true,
-          )
-          return found
-        }),
-      ),
-    )
-    if (background)
-      yield* Effect.forEach(reached, (id) => waitForTask(state, id), { discard: true })
-    yield* waitForIdle(state, conversationId)
-  })
+        }
+        const scope = { conversation: conversationId }
+        yield* withdrawInputs(
+          state,
+          tx,
+          queued,
+          (id) => inScope(state, { conversation: id }, scope, background) === true,
+        )
+        return found
+      }),
+    ),
+  )
+  if (background) yield* Effect.forEach(reached, (id) => waitForTask(state, id), { discard: true })
+  yield* waitForIdle(state, conversationId)
+})

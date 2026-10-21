@@ -17,42 +17,44 @@ import type { Env } from '../generation/env.ts'
 type Request = Omit<Extract<Checkpoint, { readonly phase: 'summarize' }>, 'phase'>
 
 /** The summarization request over the range `select` chose. */
-export const fixRequest = (
+export const fixRequest = Effect.fnUntraced(function* (
   env: Env,
   agent: Resolved,
   info: Model.Info,
   view: View,
   firstKept: EntryId,
-) =>
-  Effect.gen(function* () {
-    const settings = yield* env.settings
-    const model = { provider: info.provider, modelId: info.id }
-    const policy = compactionFor(settings, model)
-    // A deferred summary would leave the generation waiting on a batch.
-    const { deferred: _deferred, ...stream } = settings.stream
-    const { reasoning } = agent
-    const maxTokens = Math.min(
-      Math.floor(0.8 * policy.reserveTokens),
-      info.maxTokens > 0 ? info.maxTokens : Number.POSITIVE_INFINITY,
-    )
-    const options = {
-      ...stream,
-      cacheRetention: 'none' as const,
-      maxTokens,
-      ...(reasoning === 'off' ? {} : { reasoning }),
-    }
-    const tail = view.entries.reduce((max, entry) => (entry.id > max ? entry.id : max), firstKept)
-    const request: Request = { attempt: 1, model, options, tail, firstKept }
-    return request
-  })
+) {
+  const settings = yield* env.settings
+  const model = { provider: info.provider, modelId: info.id }
+  const policy = compactionFor(settings, model)
+  // A deferred summary would leave the generation waiting on a batch.
+  const { deferred: _deferred, ...stream } = settings.stream
+  const { reasoning } = agent
+  const maxTokens = Math.min(
+    Math.floor(0.8 * policy.reserveTokens),
+    info.maxTokens > 0 ? info.maxTokens : Number.POSITIVE_INFINITY,
+  )
+  const options = {
+    ...stream,
+    cacheRetention: 'none' as const,
+    maxTokens,
+    ...(reasoning === 'off' ? {} : { reasoning }),
+  }
+  const tail = view.entries.reduce((max, entry) => (entry.id > max ? entry.id : max), firstKept)
+  const request: Request = { attempt: 1, model, options, tail, firstKept }
+  return request
+})
 
 /** Ask `beforeCompact` in order; the first decision wins. */
-export const beforeCompact = (agent: Resolved, pending: Pending, api: Hook.Api) =>
-  Effect.gen(function* () {
-    for (const hook of Agent.hooks(agent, Hooks)) {
-      if (hook.beforeCompact === undefined) continue
-      const decision = yield* Hook.ask(hook.beforeCompact(pending, api), 'beforeCompact')
-      if (Option.isSome(decision)) return decision
-    }
-    return Option.none<{ readonly decline: true } | { readonly summary: string }>()
-  })
+export const beforeCompact = Effect.fnUntraced(function* (
+  agent: Resolved,
+  pending: Pending,
+  api: Hook.Api,
+) {
+  for (const hook of Agent.hooks(agent, Hooks)) {
+    if (hook.beforeCompact === undefined) continue
+    const decision = yield* Hook.ask(hook.beforeCompact(pending, api), 'beforeCompact')
+    if (Option.isSome(decision)) return decision
+  }
+  return Option.none<{ readonly decline: true } | { readonly summary: string }>()
+})
