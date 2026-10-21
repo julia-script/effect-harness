@@ -5,7 +5,7 @@
 import { toCodemodeIdentifier } from '@earendil-works/pi-codemode/declarations'
 import { Predicate } from 'effect'
 import type { Schema } from 'effect'
-import { rank } from '../../harness/internal/search.ts'
+import { rank } from '../../internal/search.ts'
 import type { NamespaceInfo, Outcome, Start } from './state.ts'
 
 export const GLOBALS: ReadonlyArray<string> = ['searchTools', 'describeTool', 'describeNamespace']

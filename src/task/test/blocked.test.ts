@@ -17,8 +17,8 @@ import {
   runTest,
   settle,
   statusOf,
-} from './support.ts'
-import type { Step } from './support.ts'
+} from '../../test/task.ts'
+import type { Step } from '../../test/task.ts'
 
 type Migrate = (
   input: Schema.Json,

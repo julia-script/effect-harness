@@ -8,7 +8,7 @@ import type { Op } from '../../../storage/schema/Document.ts'
 import type { ConversationId } from '../../../storage/schema/Ids.ts'
 import type { Cursor, Page } from '../../../storage/schema/Scan.ts'
 import type { TaskRecord } from '../../../storage/schema/Task.ts'
-import type { TaskGraph, TaskGraphNode, TaskGraphState } from '../../ViewState.ts'
+import type { TaskGraph, TaskGraphNode, TaskGraphState } from '../../../protocol/ViewState.ts'
 
 const LIVE_STATUSES = ['pending', 'running', 'waiting', 'completing'] as const
 const SCAN_PAGE_SIZE = 256

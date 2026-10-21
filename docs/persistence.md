@@ -107,8 +107,8 @@ sequenceDiagram
 
 <!-- prettier-ignore -->
 ```ts
-import { Init } from 'effect-harness/client'
 import { Initializer } from 'effect-harness/harness'
+import { Init } from 'effect-harness/protocol'
 // Shared: the name and the payload Schema.
 const FromTicket = Init.make('from-ticket', Schema.Struct({ title: Schema.String }))
 

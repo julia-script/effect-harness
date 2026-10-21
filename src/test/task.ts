@@ -1,9 +1,9 @@
 import { Cause, Data, Deferred, Effect, Exit, Logger, Schedule, Scope } from 'effect'
 import type { Schema } from 'effect'
-import { Session } from '../../session/index.ts'
-import { Storage } from '../../storage/index.ts'
-import type { Ids } from '../../storage/schema/index.ts'
-import { Registry, Scheduler, Task } from '../index.ts'
+import { Session } from '../session/index.ts'
+import { Storage } from '../storage/index.ts'
+import type { Ids } from '../storage/schema/index.ts'
+import { Registry, Scheduler, Task } from '../task/index.ts'
 
 /** A failure task code raises on purpose. */
 export class Boom extends Data.TaggedError('Boom')<{ readonly message: string }> {}

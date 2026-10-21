@@ -225,7 +225,7 @@ bun run test
 bun run test:package # pack, install into an isolated consumer, run under Node 24+
 ```
 
-Tests live next to the code under `src/`. Every PR carries a changeset (`bun run changeset`); see [Releasing](docs/releasing.md) for the publishing workflow.
+Tests live next to the code, in each module's `test/` folder, with fixtures several modules share in `src/test/`. Every PR carries a changeset (`bun run changeset`); see [Releasing](docs/releasing.md) for the publishing workflow.
 
 ## Credits
 

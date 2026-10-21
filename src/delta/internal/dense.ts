@@ -1,7 +1,7 @@
 import { arrayOverlay, baseElement } from './arrays.ts'
 import { nodeBase, nodeParent, storedValue } from './context.ts'
 import type { OverlayNode } from './context.ts'
-import { isArray } from './json.ts'
+import { isArray } from '../../internal/json.ts'
 import type { Path } from './ops.ts'
 import { resolvePath } from './paths.ts'
 

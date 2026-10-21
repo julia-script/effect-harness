@@ -14,7 +14,7 @@
  */
 import { Context, Effect, Layer } from 'effect'
 import type { Duration, Scope } from 'effect'
-import * as Rpcs from '../client/HarnessRpcs.ts'
+import * as Rpcs from '../protocol/HarnessRpcs.ts'
 import type { Service as SessionService, Tx } from '../session/Session.ts'
 import type {
   CommitError,
@@ -35,14 +35,14 @@ import type * as Task from '../task/Task.ts'
 import type * as Toolkit from '../tool/Toolkit.ts'
 import type { Extension } from './Extension.ts'
 import { Extensions } from './Extensions.ts'
-import type { InvalidExtension } from './HarnessError.ts'
+import type { InvalidExtension } from '../protocol/HarnessError.ts'
 import * as current from './internal/current.ts'
 import * as defaults from './internal/layer.ts'
 import type * as Settings from './Settings.ts'
 import * as internal from './internal/harness.ts'
-import type { AbortResult, Submission } from './Submission.ts'
+import type { AbortResult, Submission } from '../protocol/Submission.ts'
 import type * as Usage from './Usage.ts'
-import type { TaskGraph, Watch } from './ViewState.ts'
+import type { TaskGraph, Watch } from '../protocol/ViewState.ts'
 
 /** Live work: scheduling state, every live task, and the queued and placed submissions. */
 export const Inspection = Rpcs.Inspection

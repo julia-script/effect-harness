@@ -50,6 +50,10 @@
       "types": "./dist/client/index.d.ts",
       "default": "./dist/client/index.js"
     },
+    "./protocol": {
+      "types": "./dist/protocol/index.d.ts",
+      "default": "./dist/protocol/index.js"
+    },
     "./credentials": {
       "types": "./dist/credentials/index.d.ts",
       "default": "./dist/credentials/index.js"

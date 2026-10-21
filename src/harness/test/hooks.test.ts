@@ -14,7 +14,7 @@ import * as Compaction from '../Compaction.ts'
 import type { Conversation } from '../Conversation.ts'
 import * as Extension from '../Extension.ts'
 import * as Generation from '../Generation.ts'
-import { describe, entriesOf, open, ownerless, runTest } from './generationSupport.ts'
+import { describe, entriesOf, open, ownerless, runTest } from '../../test/generation.ts'
 
 const ask = (conversation: Conversation, content: string) =>
   Effect.orDie(Effect.flatMap(conversation.submit({ type: 'input', content }), (s) => s.wait))

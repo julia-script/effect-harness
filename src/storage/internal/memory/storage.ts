@@ -1,13 +1,13 @@
 import { Effect } from 'effect'
 import type { Scope } from 'effect'
-import { commit } from './memory/commit.ts'
-import { materializeDocument } from './memory/documents.ts'
-import * as Reads from './memory/reads.ts'
-import { addressKey, ensureOpen, isAliveAt, makeState } from './memory/state.ts'
-import type { State } from './memory/state.ts'
-import type { DocumentAddress, DocumentPoint, DocumentRecord } from '../schema/Document.ts'
-import type { IdSchema, StorageId, Service } from '../Storage.ts'
-import { StorageError } from '../StorageError.ts'
+import { commit } from './commit.ts'
+import { materializeDocument } from './documents.ts'
+import * as Reads from './reads.ts'
+import { addressKey, ensureOpen, isAliveAt, makeState } from './state.ts'
+import type { State } from './state.ts'
+import type { DocumentAddress, DocumentPoint, DocumentRecord } from '../../schema/Document.ts'
+import type { IdSchema, StorageId, Service } from '../../Storage.ts'
+import { StorageError } from '../../StorageError.ts'
 
 /**
  * Detached in-memory reference implementation of `Storage`, ported from pi's

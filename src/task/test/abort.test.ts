@@ -25,8 +25,8 @@ import {
   open,
   runTest,
   statusOf,
-} from './support.ts'
-import type { StepRuntime } from './support.ts'
+} from '../../test/task.ts'
+import type { StepRuntime } from '../../test/task.ts'
 
 const marked = (session: Parameters<typeof getTask>[0], id: Ids.TaskId) =>
   eventually(Effect.map(getTask(session, id), (record) => record?.abortRequested === true))

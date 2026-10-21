@@ -4,7 +4,7 @@
 import { Effect, Option } from 'effect'
 import sharp from 'sharp'
 import type { Sharp } from 'sharp'
-import type { Codec, Size, Target } from '../ImageProcessor.ts'
+import type { Codec, Size, Target } from '../../ImageProcessor.ts'
 
 /** A rejection is an image this codec cannot take. */
 const attempt = <A>(run: () => Promise<A>): Effect.Effect<A | undefined> =>

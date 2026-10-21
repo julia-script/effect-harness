@@ -6,17 +6,10 @@
  */
 import { describe, expect, test } from 'bun:test'
 import { Deferred, Effect, Exit, Layer, Schema } from 'effect'
-import {
-  conversation,
-  eventually,
-  open,
-  openClosable,
-  runTest,
-  statusOf,
-} from '../../task/test/support.ts'
+import { conversation, eventually, open, openClosable, runTest, statusOf } from '../../test/task.ts'
 import { Registry } from '../../task/index.ts'
 import { Tool, ToolResult, ToolTask } from '../index.ts'
-import { answer, call, Read, script, tasks, toolkit } from './support.ts'
+import { answer, call, Read, script, tasks, toolkit } from '../../test/tool.ts'
 
 const text = (message: unknown) =>
   Schema.decodeUnknownSync(

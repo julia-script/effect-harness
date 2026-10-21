@@ -7,7 +7,7 @@ import { Effect, Schema } from 'effect'
 import * as Document from '../session/Document.ts'
 import { EntryDraft } from '../storage/schema/Entry.ts'
 import { SubmissionId } from '../storage/schema/Ids.ts'
-import { InputEntry, UserInput } from './Submission.ts'
+import { InputEntry, UserInput } from '../protocol/Submission.ts'
 
 /** Queued user input, with the entry it is placed as when not `$user`. */
 export const InputItem = Schema.Struct({

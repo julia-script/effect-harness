@@ -10,10 +10,10 @@ import type { Usage } from '../model/Message.ts'
 import * as Document from '../session/Document.ts'
 import type { Tx } from '../session/Session.ts'
 import type { ConversationId } from '../storage/schema/Ids.ts'
-import { strictJson } from './internal/json.ts'
-import type { UsageState as State } from './ViewState.ts'
+import { strictJson } from '../internal/strictJson.ts'
+import type { UsageState as State } from '../protocol/ViewState.ts'
 
-export { UsageState as State } from './ViewState.ts'
+export { UsageState as State } from '../protocol/ViewState.ts'
 
 /** One per conversation; every fork starts empty. */
 export const document = Document.make<State>({

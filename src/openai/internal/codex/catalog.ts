@@ -3,7 +3,7 @@
  * The OpenAI Codex models (ChatGPT subscription), generated from pi-ai 1.3.0's catalog (`dist/providers/data/openai-codex.json`,
  * API `openai-codex-responses`). Regenerate rather than edit by hand.
  */
-import type { Entry } from '../../../model/internal/catalog.ts'
+import type { Entry } from '../../../internal/provider/catalog.ts'
 
 export const models: ReadonlyArray<Entry> = [
   {

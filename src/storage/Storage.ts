@@ -34,9 +34,9 @@ import type {
 import type { SubmissionRecord } from './schema/Submission.ts'
 import type { TaskRecord } from './schema/Task.ts'
 import type { StorageWrite } from './schema/Write.ts'
-import * as jsonl from './internal/jsonlStorage.ts'
-import * as internal from './internal/memoryStorage.ts'
-import * as sql from './internal/sqlStorage.ts'
+import * as jsonl from './internal/jsonl/storage.ts'
+import * as internal from './internal/memory/storage.ts'
+import * as sql from './internal/sql/storage.ts'
 import type { StorageError } from './StorageError.ts'
 
 /** Any ID from the Session-global numeric namespace. */

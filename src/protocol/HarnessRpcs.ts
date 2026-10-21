@@ -9,17 +9,11 @@ import {
   InitFailed,
   InvalidSubmission,
   SubmissionNotFound,
-} from '../harness/HarnessError.ts'
-import { AgentEvent } from '../harness/AgentEvent.ts'
-import { Change, View } from '../harness/AgentState.ts'
-import { AbortResult, Draft, Settled } from '../harness/Submission.ts'
-import {
-  ContextView,
-  ConversationView,
-  Frame,
-  TaskGraph,
-  UsageState,
-} from '../harness/ViewState.ts'
+} from './HarnessError.ts'
+import { AgentEvent } from './AgentEvent.ts'
+import { Change, View } from './AgentState.ts'
+import { AbortResult, Draft, Settled } from './Submission.ts'
+import { ContextView, ConversationView, Frame, TaskGraph, UsageState } from './ViewState.ts'
 import {
   DocumentError,
   SessionClosed,

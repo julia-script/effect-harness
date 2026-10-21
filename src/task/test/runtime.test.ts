@@ -17,8 +17,8 @@ import {
   oneStep,
   open,
   runTest,
-} from './support.ts'
-import type { StepRuntime } from './support.ts'
+} from '../../test/task.ts'
+import type { StepRuntime } from '../../test/task.ts'
 
 const messageOf = <A, E extends { readonly message: string }, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.match(effect, { onFailure: (error) => error.message, onSuccess: () => 'succeeded' })

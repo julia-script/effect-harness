@@ -12,7 +12,7 @@ import * as Toolkit from '../tool/Toolkit.ts'
 import { Output, text } from '../tool/ToolResult.ts'
 import * as Agent from './Agent.ts'
 import * as Extension from './Extension.ts'
-import { rank } from './internal/search.ts'
+import { rank } from '../internal/search.ts'
 
 export const NAME = 'tool_search'
 export const DEFAULT_LIMIT = 8

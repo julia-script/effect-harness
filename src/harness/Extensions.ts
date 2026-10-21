@@ -14,7 +14,7 @@ import { Registry } from '../task/Registry.ts'
 import type * as Toolkit from '../tool/Toolkit.ts'
 import type * as ToolTask from '../tool/ToolTask.ts'
 import type { Extension } from './Extension.ts'
-import type { InvalidExtension } from './HarnessError.ts'
+import type { InvalidExtension } from '../protocol/HarnessError.ts'
 import { implementations, publish, validate } from './internal/extensions.ts'
 
 /** An installed extension, with the implementations its tools were installed with. */

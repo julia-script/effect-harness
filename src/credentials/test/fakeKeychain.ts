@@ -2,7 +2,7 @@
  * A keychain in a `Map`, keyed by service and name, standing in for `Bun.secrets` in tests.
  */
 import { Effect } from 'effect'
-import type { Keychain } from '../internal/keychain.ts'
+import type { Keychain } from '../bun/internal/keychain.ts'
 
 const key = (service: string, name: string) => JSON.stringify([service, name])
 

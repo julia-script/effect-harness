@@ -16,7 +16,7 @@ import {
   oneStep,
   open,
   runTest,
-} from './support.ts'
+} from '../../test/task.ts'
 
 describe('task phases', () => {
   test('continues one invocation through checkpoint progress and completes with its result', () =>

@@ -1,5 +1,5 @@
 import type { Op } from '../../storage/schema/Document.ts'
-import type { Json } from './json.ts'
+import type { Json } from '../../internal/json.ts'
 
 /**
  * Op paths and the string overlap of Chord's `delta/index.ts`. Ops are the storage `Op` tuples, so

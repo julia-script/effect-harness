@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from 'bun:test'
 import { Effect, Schema } from 'effect'
-import { entriesOf, ownerless, runTest } from '../../harness/test/generationSupport.ts'
+import { entriesOf, ownerless, runTest } from '../../test/generation.ts'
 import { Faux } from '../../model/index.ts'
 import { Tool } from '../../tool/index.ts'
 import { Codemode } from '../index.ts'

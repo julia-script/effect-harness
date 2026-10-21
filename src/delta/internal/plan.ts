@@ -1,7 +1,7 @@
 import { arrayOverlay } from './arrays.ts'
 import { nodeBase } from './context.ts'
 import type { ArrayPlan, OverlayNode, Piece } from './context.ts'
-import { isArray } from './json.ts'
+import { isArray } from '../../internal/json.ts'
 import { piecesOf } from './pieces.ts'
 
 /**

@@ -14,7 +14,7 @@ import { Task } from '../index.ts'
 import { withState } from '../internal/state.ts'
 import { bareSession, finishes, hold, holds, outcome, statusIs, watchTaskWrites } from './holds.ts'
 import type { HoldInput, Holds } from './holds.ts'
-import { eventually, getTask, open, openClosable, runTest, settle } from './support.ts'
+import { eventually, getTask, open, openClosable, runTest, settle } from '../../test/task.ts'
 
 /** In a fresh ownerless conversation, `top` owning `middle` owning `leaf`, all held. */
 const chain = (

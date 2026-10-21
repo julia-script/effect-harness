@@ -10,11 +10,11 @@ import type { ConversationId, EntryId, TaskId } from '../storage/schema/Ids.ts'
 import type { Cursor, EntryQuery, Page } from '../storage/schema/Scan.ts'
 import type { StorageError } from '../storage/StorageError.ts'
 import type { SchedulerClosed, TaskNotFound } from '../task/TaskError.ts'
-import type * as AgentEvent from './AgentEvent.ts'
-import type * as AgentState from './AgentState.ts'
-import type { ConversationBusy, InvalidSubmission } from './HarnessError.ts'
-import type { Draft, Submission } from './Submission.ts'
-import type { ContextView, ConversationView, Watch } from './ViewState.ts'
+import type * as AgentEvent from '../protocol/AgentEvent.ts'
+import type * as AgentState from '../protocol/AgentState.ts'
+import type { ConversationBusy, InvalidSubmission } from '../protocol/HarnessError.ts'
+import type { Draft, Submission } from '../protocol/Submission.ts'
+import type { ContextView, ConversationView, Watch } from '../protocol/ViewState.ts'
 
 /**
  * Runs inside the creating commit, after the built-in documents. The conversation record is

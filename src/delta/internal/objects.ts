@@ -7,8 +7,8 @@ import {
   storeValue,
 } from './context.ts'
 import type { OverlayNode } from './context.ts'
-import { isArray } from './json.ts'
-import type { Json, JsonObject } from './json.ts'
+import { isArray } from '../../internal/json.ts'
+import type { Json, JsonObject } from '../../internal/json.ts'
 
 /**
  * Object overlays. The common single write and single deletion live in `writeKey` and

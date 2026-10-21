@@ -3,18 +3,18 @@
  */
 import { Effect, Stream } from 'effect'
 import type { Rpc, RpcGroup } from 'effect/rpc'
-import { HarnessRpcs } from '../../client/HarnessRpcs.ts'
-import type { Call } from '../../client/Init.ts'
+import { HarnessRpcs } from '../../protocol/HarnessRpcs.ts'
+import type { Call } from '../../protocol/Init.ts'
 import { TransactionError } from '../../session/SessionError.ts'
 import type { CommitError } from '../../session/SessionError.ts'
 import type { ConversationId, SubmissionId } from '../../storage/schema/Ids.ts'
 import type { Conversation, Init } from '../Conversation.ts'
 import { Harness } from '../Harness.ts'
 import type { Service } from '../Harness.ts'
-import { InitFailed, SubmissionNotFound } from '../HarnessError.ts'
+import { InitFailed, SubmissionNotFound } from '../../protocol/HarnessError.ts'
 import type { Initializer } from '../Initializer.ts'
-import type { Submission } from '../Submission.ts'
-import type { Watch } from '../ViewState.ts'
+import type { Submission } from '../../protocol/Submission.ts'
+import type { Watch } from '../../protocol/ViewState.ts'
 
 /** The `init` option a named call resolves to; unknown names fail before any commit. */
 const resolver = (initializers: ReadonlyArray<Initializer>) => {

@@ -1,6 +1,6 @@
 import { handler } from './handler.ts'
-import { isContainer } from './json.ts'
-import type { Container, Json, JsonObject } from './json.ts'
+import { isContainer } from '../../internal/json.ts'
+import type { Container, Json, JsonObject } from '../../internal/json.ts'
 import type { Op, Path } from './ops.ts'
 
 /**

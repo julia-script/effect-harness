@@ -7,10 +7,10 @@ import { describe as group, expect, test } from 'bun:test'
 import { Effect, Ref } from 'effect'
 import { Faux } from '../../model/index.ts'
 import { Registry, Task } from '../../task/index.ts'
-import { Read } from '../../tool/test/support.ts'
+import { Read } from '../../test/tool.ts'
 import * as Extension from '../Extension.ts'
 import * as Extensions from '../Extensions.ts'
-import { describe, entriesOf, messageOf, open, ownerless, runTest } from './generationSupport.ts'
+import { describe, entriesOf, messageOf, open, ownerless, runTest } from '../../test/generation.ts'
 
 const section = (key: string, text: string) => Extension.section(key, () => Effect.succeed(text))
 
