@@ -133,7 +133,7 @@ const providers = {
     }),
   OpenAiCodex: (url: string) =>
     Effect.gen(function* () {
-      const store = yield* Credentials.Credentials
+      const store = yield* Credentials.CredentialStore
       yield* store.set('openai-codex', {
         type: 'oauth',
         access: Redacted.make(jwt('acct_1')),

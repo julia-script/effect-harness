@@ -1,5 +1,5 @@
 /**
- * The `Credentials` service: where provider secrets live. The loop reads a credential before each
+ * The `CredentialStore` service: where provider secrets live. The loop reads a credential before each
  * model request; a client sets, lists and removes them; an OAuth refresh writes back with a
  * compare-and-set. The layer decides where they are kept: in memory, in `Config` such as a `.env`
  * file, or in a remote store reached over `CredentialsRpcs`. A client and its loops share a store
@@ -37,8 +37,8 @@ export interface Service {
   ) => Effect.Effect<void, CredentialChanged | CredentialsError | ReadOnly>
 }
 
-export class Credentials extends Context.Service<Credentials, Service>()(
-  'effect-harness/credentials/Credentials',
+export class CredentialStore extends Context.Service<CredentialStore, Service>()(
+  'effect-harness/credentials/CredentialStore',
 ) {}
 
 /** A store in memory, for tests and single-process hosts. */
@@ -47,7 +47,7 @@ export const makeMemory = (
 ): Effect.Effect<Service> => memory.make(initial)
 
 export const layerMemory = (initial: Iterable<readonly [string, Credential]> = []) =>
-  Layer.effect(Credentials, makeMemory(initial))
+  Layer.effect(CredentialStore, makeMemory(initial))
 
 /**
  * A writable store that survives restarts: every credential as JSON under `key` of the
@@ -61,8 +61,8 @@ export const makeKeyValueStore = (
 
 export const layerKeyValueStore = (
   key = 'credentials',
-): Layer.Layer<Credentials, never, KeyValueStore.KeyValueStore> =>
-  Layer.effect(Credentials, makeKeyValueStore(key))
+): Layer.Layer<CredentialStore, never, KeyValueStore.KeyValueStore> =>
+  Layer.effect(CredentialStore, makeKeyValueStore(key))
 
 /** Config names to read, per provider: the first that is set is its API key. */
 export type Names = Readonly<Record<string, ReadonlyArray<string>>>
@@ -86,20 +86,20 @@ export const defaultNames: Names = {
 export const makeConfig = (names: Names = defaultNames): Service => config.make(names)
 
 export const layerConfig = (names: Names = defaultNames) =>
-  Layer.succeed(Credentials, makeConfig(names))
+  Layer.succeed(CredentialStore, makeConfig(names))
 
 /** A remote store, over the `RpcClient.Protocol` in context; transport failures are `CredentialsError`. */
 export const makeRpc: Effect.Effect<Service, never, RpcClient.Protocol | Scope.Scope> =
   rpc.makeClient
 
-export const layerRpc: Layer.Layer<Credentials, never, RpcClient.Protocol> = Layer.effect(
-  Credentials,
+export const layerRpc: Layer.Layer<CredentialStore, never, RpcClient.Protocol> = Layer.effect(
+  CredentialStore,
   makeRpc,
 )
 
-/** Serve the `Credentials` in context over the `RpcServer.Protocol` in context. */
-export const layerServer: Layer.Layer<never, never, Credentials | RpcServer.Protocol> =
-  RpcServer.layer(CredentialsRpcs).pipe(Layer.provide(rpc.handlers(Credentials)))
+/** Serve the `CredentialStore` in context over the `RpcServer.Protocol` in context. */
+export const layerServer: Layer.Layer<never, never, CredentialStore | RpcServer.Protocol> =
+  RpcServer.layer(CredentialsRpcs).pipe(Layer.provide(rpc.handlers(CredentialStore)))
 
 export interface ResolveOptions<E> {
   /** New tokens for `credential`, from the provider. */
@@ -118,5 +118,5 @@ export const makeResolver: <E>(
 ) => Effect.Effect<
   (provider: string) => Effect.Effect<Credential | undefined, E | CredentialsError | ReadOnly>,
   never,
-  Credentials
+  CredentialStore
 > = resolver.make

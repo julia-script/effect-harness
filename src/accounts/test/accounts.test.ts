@@ -27,7 +27,7 @@ const fake = (name: string): Model.Listable<Adapter.Requires> => ({
   stream: () => Stream.empty,
   listModels: Effect.gen(function* () {
     const credential = yield* Effect.orDie(
-      Effect.flatMap(Credentials.Credentials, (store) => store.get(name)),
+      Effect.flatMap(Credentials.CredentialStore, (store) => store.get(name)),
     )
     const accepted =
       credential?.type === 'oauth' ||
@@ -49,7 +49,7 @@ const Implementations = adapters.toLayer({
     login: (account, flow) =>
       Effect.gen(function* () {
         yield* flow.onCode({ url: 'https://example.test/device', code: 'ABCD-1234' })
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* store.set(account.name, {
           type: 'oauth',
           access: Redacted.make('access'),
@@ -83,7 +83,7 @@ describe('accounts', () => {
     run(
       Effect.gen(function* () {
         const accounts = yield* open()
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         const bad = yield* Effect.flip(accounts.add({ ...work, apiKey: Redacted.make('bad') }))
         expect(bad.reason).toBeInstanceOf(AccountError.VerifyFailed)
         expect(yield* accounts.list).toEqual([])
@@ -133,7 +133,7 @@ describe('accounts', () => {
     run(
       Effect.gen(function* () {
         const accounts = yield* open()
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* accounts.add({ ...work, apiKey: Redacted.make('good') })
         yield* store.remove('work')
         expect((yield* accounts.list)[0]).toMatchObject({ status: 'needsAuth' })
@@ -153,7 +153,7 @@ describe('accounts', () => {
     run(
       Effect.gen(function* () {
         const accounts = yield* open()
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* accounts.add({ ...work, apiKey: Redacted.make('good') })
         yield* store.set('work', { type: 'api_key', key: Redacted.make('revoked') })
         const [listed] = yield* accounts.models
@@ -220,7 +220,7 @@ describe('accounts', () => {
     run(
       Effect.gen(function* () {
         const accounts = yield* open()
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* accounts.add({ ...work, apiKey: Redacted.make('good') })
         const model = yield* Model.makeDynamic(accounts.providers)
         expect((yield* model.models).map(({ provider }) => provider)).toEqual(['work'])

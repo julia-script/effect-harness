@@ -107,7 +107,7 @@ const ask = (url: string, modelId: string) =>
   })
 
 const run = <A, E>(
-  body: (url: string) => Effect.Effect<A, E, HttpClient.HttpClient | Credentials.Credentials>,
+  body: (url: string) => Effect.Effect<A, E, HttpClient.HttpClient | Credentials.CredentialStore>,
 ) =>
   Effect.runPromise(
     Effect.scoped(
@@ -139,7 +139,7 @@ describe('OpenAiCodex', () => {
           onCode: (code) => Ref.update(shown, (all) => [...all, code]),
         })
         yield* login
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         const first = yield* store.get('openai-codex')
         yield* login
         return {
@@ -169,7 +169,7 @@ describe('OpenAiCodex', () => {
   test('sends the stored token, account, instructions and no output limit', async () => {
     const { value, requests } = await run((url) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* store.set('openai-codex', stored(Date.now() + 3_600_000))
         return yield* ask(url, 'gpt-5.5')
       }),
@@ -203,7 +203,7 @@ describe('OpenAiCodex', () => {
   test('refreshes tokens near expiry, writes them back, and uses them', async () => {
     const { value, requests } = await run((url) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* store.set('openai-codex', {
           ...stored(Date.now() + 1000),
           access: Redacted.make(jwt('acct_new')),
@@ -232,7 +232,7 @@ describe('OpenAiCodex', () => {
   test('refresh rejects another account before persisting tokens or sending inference', async () => {
     const { value, requests } = await run((url) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         const expired = {
           ...stored(0),
           identity: { issuer: 'https://auth.openai.com', subject: 'acct_1' },
@@ -267,7 +267,7 @@ describe('OpenAiCodex', () => {
     const { value, requests } = await run((url) =>
       Effect.gen(function* () {
         yield* OpenAiCodex.login({ name: 'codex-work', authUrl: url, onCode: () => Effect.void })
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* store.set('codex-home', stored(Date.now() + 3_600_000))
         const model = yield* Model.make(
           ['codex-work', 'codex-home'].map((name) =>
@@ -301,7 +301,7 @@ describe('OpenAiCodex', () => {
   test('listModels lists the account models with their efforts and tiers', async () => {
     const { value, requests } = await run((url) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* store.set('codex-work', stored(Date.now() + 3_600_000))
         const codex = OpenAiCodex.provider({ name: 'codex-work', baseUrl: url, authUrl: url })
         return yield* codex.listModels

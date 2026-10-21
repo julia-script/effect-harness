@@ -6,7 +6,7 @@
 import { OpenAiClient, OpenAiLanguageModel } from '@effect/ai-openai'
 import { Effect, Redacted, Semaphore } from 'effect'
 import { HttpClient, HttpClientRequest } from 'effect/http'
-import * as Credentials from '../../../credentials/Credentials.ts'
+import * as Credentials from '../../../credentials/CredentialStore.ts'
 import * as LanguageModelProvider from '../../../model/LanguageModelProvider.ts'
 import type { Info, Listable, Request } from '../../../model/Model.ts'
 import { ModelError, Rejected } from '../../../model/ModelError.ts'
@@ -58,7 +58,7 @@ const account = (name: string, authUrl: string, line: Semaphore.Semaphore) =>
 
 export const make = (
   options: Options,
-): Listable<HttpClient.HttpClient | Credentials.Credentials> => {
+): Listable<HttpClient.HttpClient | Credentials.CredentialStore> => {
   const name = options.name ?? 'openai-codex'
   const baseUrl = options.baseUrl ?? BASE_URL
   const originator = options.originator ?? 'effect-harness'

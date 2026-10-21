@@ -1,5 +1,5 @@
 /**
- * A `Credentials` store in the operating system's keychain, through `Bun.secrets`: the macOS
+ * A `CredentialStore` in the operating system's keychain, through `Bun.secrets`: the macOS
  * Keychain, libsecret on Linux, or the Windows Credential Manager. Bun only.
  *
  * Each credential is one keychain entry under `service`, named after its provider. A keychain
@@ -8,8 +8,8 @@
  * two processes must not write one service at once.
  */
 import { Effect, Layer } from 'effect'
-import { Credentials } from '../Credentials.ts'
-import type { Service } from '../Credentials.ts'
+import { CredentialStore } from '../CredentialStore.ts'
+import type { Service } from '../CredentialStore.ts'
 import { CredentialsError } from '../CredentialsError.ts'
 import * as keychain from '../internal/keychain.ts'
 
@@ -38,5 +38,5 @@ const secrets: keychain.Keychain = {
 export const make = (options: Options = {}): Effect.Effect<Service> =>
   keychain.make(options.service ?? 'effect-harness', secrets)
 
-export const layer = (options: Options = {}): Layer.Layer<Credentials> =>
-  Layer.effect(Credentials, make(options))
+export const layer = (options: Options = {}): Layer.Layer<CredentialStore> =>
+  Layer.effect(CredentialStore, make(options))

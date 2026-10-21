@@ -2,8 +2,8 @@
  * Provider credentials, shared by a client and its loops through one store.
  */
 
-/** The `Credentials` service and its stores. */
-export * as Credentials from './Credentials.ts'
+/** The `CredentialStore` service and its storage layers. */
+export * as Credentials from './CredentialStore.ts'
 
 /** Stored credentials: API keys and OAuth tokens. */
 export * as Credential from './Credential.ts'

@@ -1,7 +1,7 @@
 /** A sign-in sees only its own, disposable credential slot; durable writes happen at commit. */
 import { Effect, Equal } from 'effect'
 import type { Credential } from '../../credentials/Credential.ts'
-import type { Service } from '../../credentials/Credentials.ts'
+import type { Service } from '../../credentials/CredentialStore.ts'
 import { CredentialChanged, CredentialsError } from '../../credentials/CredentialsError.ts'
 
 export interface Staged {

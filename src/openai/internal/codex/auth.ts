@@ -6,7 +6,7 @@ import { Clock, Duration, Effect, Option, Redacted, Result, Schema } from 'effec
 import { Base64Url } from 'effect/encoding'
 import { HttpClient, HttpClientRequest, HttpClientResponse } from 'effect/http'
 import type { OAuth } from '../../../credentials/Credential.ts'
-import { Credentials } from '../../../credentials/Credentials.ts'
+import { CredentialStore } from '../../../credentials/CredentialStore.ts'
 import { LoginError } from '../../OpenAiCodex.ts'
 import type { DeviceCode } from '../../OpenAiCodex.ts'
 
@@ -210,5 +210,5 @@ export const store = (
   onCode: (code: DeviceCode) => Effect.Effect<void>,
 ) =>
   Effect.flatMap(login(authUrl, onCode), (stored) =>
-    Effect.flatMap(Credentials, (credentials) => credentials.set(name, stored)),
+    Effect.flatMap(CredentialStore, (credentials) => credentials.set(name, stored)),
   )

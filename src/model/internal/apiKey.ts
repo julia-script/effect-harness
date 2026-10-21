@@ -4,7 +4,7 @@
  */
 import { Effect } from 'effect'
 import type { Redacted } from 'effect'
-import { Credentials } from '../../credentials/Credentials.ts'
+import { CredentialStore } from '../../credentials/CredentialStore.ts'
 import { ModelError, Rejected } from '../ModelError.ts'
 
 const rejected = (message: string, cause?: unknown) =>
@@ -13,8 +13,8 @@ const rejected = (message: string, cause?: unknown) =>
 /** The stored API key of `provider`. */
 export const stored = (
   provider: string,
-): Effect.Effect<Redacted.Redacted, ModelError, Credentials> =>
-  Effect.flatMap(Credentials, (store) => store.get(provider)).pipe(
+): Effect.Effect<Redacted.Redacted, ModelError, CredentialStore> =>
+  Effect.flatMap(CredentialStore, (store) => store.get(provider)).pipe(
     Effect.mapError((cause) => rejected(cause.message, cause)),
     Effect.flatMap((credential) => {
       if (credential?.type === 'api_key') return Effect.succeed(credential.key)

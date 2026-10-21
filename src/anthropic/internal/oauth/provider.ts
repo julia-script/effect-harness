@@ -2,7 +2,7 @@
 import { AnthropicClient, AnthropicLanguageModel } from '@effect/ai-anthropic'
 import { Effect, Redacted, Schema, Semaphore } from 'effect'
 import { HttpClient, HttpClientRequest } from 'effect/http'
-import * as Credentials from '../../../credentials/Credentials.ts'
+import * as Credentials from '../../../credentials/CredentialStore.ts'
 import * as LanguageModelProvider from '../../../model/LanguageModelProvider.ts'
 import type { Info, Listable, Listed, Request } from '../../../model/Model.ts'
 import { ModelError, Rejected } from '../../../model/ModelError.ts'
@@ -121,7 +121,7 @@ const configure = (model: Info, request: Request, options: Options) => {
 
 export const make = (
   options: Options,
-): Listable<HttpClient.HttpClient | Credentials.Credentials> => {
+): Listable<HttpClient.HttpClient | Credentials.CredentialStore> => {
   const name = options.name ?? 'anthropic-oauth'
   const apiUrl = (options.apiUrl ?? 'https://api.anthropic.com').replace(/\/$/u, '')
   const tokens = account(name, options.authUrl ?? AUTH_URL)

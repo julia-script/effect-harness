@@ -1,10 +1,10 @@
 /**
- * A remote store: `Credentials` over `CredentialsRpcs`, and the handlers that serve a store.
+ * A remote store: `CredentialStore` over `CredentialsRpcs`, and the handlers that serve a store.
  */
 import { Effect } from 'effect'
 import { RpcClient } from 'effect/rpc'
-import type { Credentials } from '../Credentials.ts'
-import type { Service } from '../Credentials.ts'
+import type { CredentialStore } from '../CredentialStore.ts'
+import type { Service } from '../CredentialStore.ts'
 import { CredentialsRpcs } from '../CredentialsRpcs.ts'
 import { CredentialsError } from '../CredentialsError.ts'
 
@@ -25,7 +25,7 @@ export const makeClient = Effect.map(RpcClient.make(CredentialsRpcs), (rpcs): Se
 }))
 
 /** Handlers over the store `tag`; `Credentials` imports this module, so it passes itself. */
-export const handlers = (tag: typeof Credentials) =>
+export const handlers = (tag: typeof CredentialStore) =>
   CredentialsRpcs.toLayer(
     Effect.map(tag, (store) =>
       CredentialsRpcs.of({

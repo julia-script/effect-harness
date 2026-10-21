@@ -61,7 +61,7 @@ describe('OpenAi.provider', () => {
         Effect.gen(function* () {
           const api = yield* serve(() => events)
           const provider = OpenAi.provider({ apiUrl: `${api.url}/v1` })
-          const store = yield* Credentials.Credentials
+          const store = yield* Credentials.CredentialStore
           yield* store.set('openai', { type: 'api_key', key: Redacted.make('sk-first') })
           yield* ask(provider, 'gpt-5')
           yield* store.set('openai', { type: 'api_key', key: Redacted.make('sk-second') })
@@ -81,7 +81,7 @@ describe('OpenAi.provider', () => {
           const api = yield* serve(() => ({
             json: { object: 'list', data: [{ id: 'gpt-5.5' }, { id: 'gpt-next' }] },
           }))
-          const store = yield* Credentials.Credentials
+          const store = yield* Credentials.CredentialStore
           yield* store.set('openai-team', { type: 'api_key', key: Redacted.make('sk-team') })
           const provider = OpenAi.provider({ name: 'openai-team', apiUrl: `${api.url}/v1` })
           const listed = yield* provider.listModels

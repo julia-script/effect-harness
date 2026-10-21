@@ -3,7 +3,7 @@
  */
 import { Effect, Equal, Ref } from 'effect'
 import type { Credential } from '../Credential.ts'
-import type { Service } from '../Credentials.ts'
+import type { Service } from '../CredentialStore.ts'
 import { CredentialChanged } from '../CredentialsError.ts'
 
 type Store = ReadonlyMap<string, Credential>

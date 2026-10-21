@@ -11,7 +11,7 @@
 import { Context, Effect, Layer, Schema } from 'effect'
 import type { Scope } from 'effect'
 import type { HttpClient } from 'effect/http'
-import type { Credentials } from '../credentials/Credentials.ts'
+import type { CredentialStore } from '../credentials/CredentialStore.ts'
 import type { Listable } from '../model/Model.ts'
 import type { DeviceCode } from './Account.ts'
 
@@ -80,7 +80,7 @@ export interface Account<A extends Any = Any> {
 }
 
 /** What the providers and sign-ins of accounts need to answer. */
-export type Requires = HttpClient.HttpClient | Credentials
+export type Requires = HttpClient.HttpClient | CredentialStore
 
 /** What an implementation's sign-in fails with: anything with a message. */
 export interface LoginFailure {
@@ -99,7 +99,7 @@ export interface LoginFlow {
 export interface Base<A extends Any> {
   /** The account's provider, named after the account. Build it once; the registry keeps it. */
   readonly provider: (account: Account<A>) => Listable<Requires>
-  /** Sign in, staging tokens in `Credentials` under the account's name until success. */
+  /** Sign in, staging tokens in `CredentialStore` under the account's name until success. */
   readonly login?: (
     account: Account<A>,
     flow: LoginFlow,

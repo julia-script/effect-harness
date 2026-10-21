@@ -64,7 +64,7 @@ export const events = [
 ]
 export const run = <A, E>(
   respond: (request: Recorded) => ReadonlyArray<unknown> | Reply,
-  body: (api: FakeApi) => Effect.Effect<A, E, HttpClient.HttpClient | Credentials.Credentials>,
+  body: (api: FakeApi) => Effect.Effect<A, E, HttpClient.HttpClient | Credentials.CredentialStore>,
 ) =>
   Effect.runPromise(
     Effect.scoped(Effect.flatMap(serve(respond), body)).pipe(

@@ -29,7 +29,7 @@ const answer = (store: Credentials.Service) => () =>
   )
 
 const loop = Effect.gen(function* () {
-  const store = yield* Credentials.Credentials
+  const store = yield* Credentials.CredentialStore
   const faux = yield* Faux.make()
   yield* faux.setResponses(Array.from({ length: 50 }, () => answer(store)))
   const harness = HarnessServer.layer({ settings: { model: faux.ref() } }).pipe(

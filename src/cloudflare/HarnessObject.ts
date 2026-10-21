@@ -26,7 +26,7 @@ import * as Accounts from '../accounts/Accounts.ts'
 import { AccountsRpcs } from '../accounts/AccountsRpcs.ts'
 import type * as Adapter from '../accounts/Adapter.ts'
 import { HarnessRpcs } from '../client/HarnessRpcs.ts'
-import * as Credentials from '../credentials/Credentials.ts'
+import * as Credentials from '../credentials/CredentialStore.ts'
 import * as Harness from '../harness/Harness.ts'
 import type { Extension } from '../harness/Extension.ts'
 import * as HarnessServer from '../harness/HarnessServer.ts'
@@ -90,7 +90,7 @@ export const layer = <
   Handlers,
   never,
   | Adapter.Implemented<Adapter.Ids<Adapters>>
-  | Exclude<Adapter.Requires, Credentials.Credentials>
+  | Exclude<Adapter.Requires, Credentials.CredentialStore>
   | Harness.Requires<Installs[number]>
   | DurableObjectState
   | RuntimeContext

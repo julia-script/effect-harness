@@ -3,7 +3,7 @@ import { Clock, Effect, Redacted, Schema } from 'effect'
 import { Base64Url } from 'effect/encoding'
 import { HttpClient, HttpClientRequest } from 'effect/http'
 import type { Identity, OAuth } from '../../../credentials/Credential.ts'
-import { Credentials } from '../../../credentials/Credentials.ts'
+import { CredentialStore } from '../../../credentials/CredentialStore.ts'
 import { LoginError } from '../../AnthropicOAuth.ts'
 import type { Authorization, BeginOptions, LoginOptions, Options } from '../../AnthropicOAuth.ts'
 
@@ -192,7 +192,7 @@ export const complete = Effect.fnUntraced(function* (
     try: () => crypto.randomUUID(),
     catch: () => failure('InvalidConfiguration', 'Unable to generate credential revision'),
   })
-  const store = yield* Credentials
+  const store = yield* CredentialStore
   return yield* store.set(authorization.name, { ...tokens, revision })
 })
 

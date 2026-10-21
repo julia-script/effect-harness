@@ -11,7 +11,7 @@ import {
   SubscriptionRef,
 } from 'effect'
 import type { Credential } from '../../credentials/Credential.ts'
-import { Credentials } from '../../credentials/Credentials.ts'
+import { CredentialStore } from '../../credentials/CredentialStore.ts'
 import * as AccountError from '../AccountError.ts'
 import type { Saved, SignIn, SignInEvent } from '../Account.ts'
 import type { Account, Any, Base } from '../Adapter.ts'
@@ -219,7 +219,7 @@ const run = Effect.fnUntraced(function* (
       ...(input.redirectUri === undefined ? {} : { redirectUri: input.redirectUri }),
     }),
   ).pipe(
-    Effect.provideService(Credentials, attempt.staged.service),
+    Effect.provideService(CredentialStore, attempt.staged.service),
     Effect.provideContext(state.context),
     Effect.catchCause((cause) =>
       Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.fail(failed()),

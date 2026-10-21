@@ -40,7 +40,7 @@ test('PKCE binds the callback and stores credentials only after the JSON exchang
           },
         })
         expect(api.requests[0]?.headers['content-type']).toContain('application/json')
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         const saved = yield* store.get('work')
         expect(saved?.type).toBe('oauth')
         if (saved?.type !== 'oauth') return yield* Effect.die('Missing saved tokens')
@@ -68,7 +68,7 @@ test('reauthentication keeps provider identity but changes revision even when to
     }),
     (api) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         const signIn = Effect.gen(function* () {
           const authorization = yield* AnthropicOAuth.begin({ name: 'work' })
           yield* AnthropicOAuth.complete(authorization, `code#${authorization.state}`, {
@@ -110,7 +110,7 @@ test.each([
         yield* AnthropicOAuth.complete(authorization, `code#${authorization.state}`, {
           authUrl: api.url,
         })
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         const saved = yield* store.get(AnthropicOAuth.name)
         if (saved?.type !== 'oauth') return yield* Effect.die('Missing saved tokens')
         expect(saved.identity).toBeUndefined()
@@ -167,7 +167,7 @@ test.each([
     () => ({ json: token }),
     (api) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* store.set('work', existing)
         const authorization = yield* AnthropicOAuth.begin({ name: 'work' })
         const result = yield* Effect.result(
@@ -211,7 +211,7 @@ test.each([0, -1, 1e100])('invalid expiry %s never replaces an existing credenti
     () => ({ json: { ...token, expires_in } }),
     (api) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* store.set('work', existing)
         const authorization = yield* AnthropicOAuth.begin({ name: 'work' })
         const result = yield* Effect.result(
@@ -262,7 +262,7 @@ test('login carries a host loopback redirect through authorization and exchange'
           completion: Effect.sync(() => callback),
         })
         expect(api.requests[0]?.body).toMatchObject({ redirect_uri: redirectUri, code: 'approved' })
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         expect((yield* store.get('browser'))?.type).toBe('oauth')
       }),
   ))

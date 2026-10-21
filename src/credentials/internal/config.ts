@@ -4,7 +4,7 @@
  */
 import { Config, Effect, Option } from 'effect'
 import type { Credential, Info } from '../Credential.ts'
-import type { Names, Service } from '../Credentials.ts'
+import type { Names, Service } from '../CredentialStore.ts'
 import { CredentialsError, ReadOnly } from '../CredentialsError.ts'
 
 const readOnly = (provider: string) =>

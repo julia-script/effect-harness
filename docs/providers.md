@@ -8,7 +8,7 @@ flowchart LR
   M --> A["Anthropic.provider()"]
   M --> O["OpenAi.provider({ name: 'openai-work' })"]
   M --> X["OpenAiCodex.provider()"]
-  A & O & X -.reads secrets.-> CR[(Credentials)]
+  A & O & X -.reads secrets.-> CR[(CredentialStore)]
 ```
 
 - [Built-in providers](#built-in-providers)
@@ -29,7 +29,7 @@ flowchart LR
 | `AnthropicOAuth` from `effect-harness/anthropic` | Claude subscription    | `anthropic-oauth` | Browser sign-in, refreshed tokens     |
 | `Faux` from `effect-harness/model`               | Scripted, for tests    | `faux`            | Nothing                               |
 
-Each provider is a plain value; `Model.layer` turns a list of them into the service. Providers need an `HttpClient`, and `Credentials` unless you hand them a fixed key:
+Each provider is a plain value; `Model.layer` turns a list of them into the service. Providers need an `HttpClient`, and `CredentialStore` unless you hand them a fixed key:
 
 ```ts
 import { FetchHttpClient } from 'effect/http'
@@ -74,7 +74,7 @@ const listed = yield* Anthropic.provider().listModels
 
 ## Credentials
 
-`Credentials` is where secrets live. Pick a store by where your app runs:
+`Credentials.CredentialStore` is the service where secrets live. The `Credentials` module provides its storage layers. Pick a store by where your app runs:
 
 | Layer                              | Stores                                                               | Writable |
 | ---------------------------------- | -------------------------------------------------------------------- | :------: |
@@ -182,7 +182,7 @@ Use `cancelSignIn(id)` to cancel explicitly. Unsubscribing or interrupting the s
 
 Account status includes optional `identity` and `revision`, never tokens or arbitrary credential extras. Account names distinguish saved connections; compare the provider's `issuer` and `subject` to establish an identity match, not the display label or revision. Keeping an active default and pinning conversations to an account remain host policy.
 
-Custom OAuth adapters now implement `login(account, flow)` instead of receiving an `onCode` callback directly. Use `flow.onCode`, or `flow.onAuthorize` and `flow.completion` for `Adapter.browserOAuth`; write the completed OAuth credential under `account.name` in the supplied `Credentials` service. The service is isolated to that account for the attempt.
+Custom OAuth adapters now implement `login(account, flow)` instead of receiving an `onCode` callback directly. Use `flow.onCode`, or `flow.onAuthorize` and `flow.completion` for `Adapter.browserOAuth`; write the completed OAuth credential under `account.name` in the supplied `CredentialStore` service. The service is isolated to that account for the attempt.
 
 The registry serializes its own mutations in one process. It does not turn two independent metadata and credential stores into a cross-process transaction. Hosts sharing storage with a CLI must supply their own coordination; the built-in key-value credential store must not be shared by two processes.
 

@@ -47,7 +47,7 @@ const remote = (
     const store = yield* Credentials.makeMemory()
     yield* Credentials.layerServer.pipe(
       Layer.launch,
-      Effect.provideService(Credentials.Credentials, store),
+      Effect.provideService(Credentials.CredentialStore, store),
       Effect.provideContext(transport),
       Effect.forkScoped,
     )
@@ -197,7 +197,7 @@ const resolverOver = (store: Credentials.Service, refreshes: Array<string>) =>
         refreshes.push(provider)
         return oauth(`${Redacted.value(credential.access)}+`, now + 3_600_000)
       }),
-  }).pipe(Effect.provideService(Credentials.Credentials, store))
+  }).pipe(Effect.provideService(Credentials.CredentialStore, store))
 
 describe('resolver', () => {
   test('returns API keys and fresh tokens as stored', () =>
@@ -246,7 +246,7 @@ describe('resolver', () => {
               Effect.andThen(Deferred.await(release)),
               Effect.as(oauth('mine', now + 3_600_000)),
             ),
-        }).pipe(Effect.provideService(Credentials.Credentials, store))
+        }).pipe(Effect.provideService(Credentials.CredentialStore, store))
         const resolving = yield* Effect.forkChild(resolve('openai'))
         yield* Deferred.await(started)
         // Another process refreshes while this one waits on the provider.

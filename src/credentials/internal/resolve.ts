@@ -6,8 +6,8 @@
  */
 import { Clock, Duration, Effect, Semaphore } from 'effect'
 import type { Credential, OAuth } from '../Credential.ts'
-import { Credentials } from '../Credentials.ts'
-import type { ResolveOptions, Service } from '../Credentials.ts'
+import { CredentialStore } from '../CredentialStore.ts'
+import type { ResolveOptions, Service } from '../CredentialStore.ts'
 import type { CredentialsError } from '../CredentialsError.ts'
 
 const DEFAULT_MIN_VALIDITY = Duration.minutes(5)
@@ -19,7 +19,7 @@ const expiring = (credential: OAuth, now: number, minValidity: number) =>
   credential.expires - now < minValidity
 
 export const make = <E>(options: ResolveOptions<E>) =>
-  Effect.map(Credentials, (store: Service) => {
+  Effect.map(CredentialStore, (store: Service) => {
     const minValidity = Duration.toMillis(
       Duration.fromInputUnsafe(options.minValidity ?? DEFAULT_MIN_VALIDITY),
     )

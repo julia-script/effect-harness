@@ -9,7 +9,7 @@ test('subscription inference sends Claude headers and prefix, normalizes tool na
     () => events,
     (api) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* store.set(AnthropicOAuth.name, existing)
         const answer = yield* ask(api)
         expect(answer.content).toMatchObject([
@@ -64,7 +64,7 @@ test('concurrent discovery refreshes once, persists token rotation, and retains 
           },
     (api) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* store.set(AnthropicOAuth.name, { ...existing, expires: 0 })
         const provider = AnthropicOAuth.provider({ apiUrl: api.url, authUrl: api.url })
         const lists = yield* Effect.all([provider.listModels, provider.listModels], {
@@ -95,7 +95,7 @@ test('discovery rejects a repeated page cursor instead of looping indefinitely',
     () => ({ json: { data: [], has_more: true, last_id: 'repeated' } }),
     (api) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* store.set(AnthropicOAuth.name, existing)
         const result = yield* Effect.result(AnthropicOAuth.provider({ apiUrl: api.url }).listModels)
         expect(result).toMatchObject({ _tag: 'Failure', failure: { reason: { _tag: 'Rejected' } } })
@@ -108,7 +108,7 @@ test('failed token refresh preserves stored credentials and never sends inferenc
     () => ({ status: 400, json: { error: 'invalid_grant', secret: 'must-not-be-in-error' } }),
     (api) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         const expired = { ...existing, expires: 0 }
         yield* store.set(AnthropicOAuth.name, expired)
         const result = yield* Effect.result(ask(api))
@@ -124,7 +124,7 @@ test('refresh rejects a different known account without replacing credentials or
     () => ({ json: { ...token, account: { uuid: 'different-account' } } }),
     (api) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         const expired = { ...existing, expires: 0 }
         yield* store.set(AnthropicOAuth.name, expired)
         const result = yield* Effect.result(ask(api))
@@ -139,7 +139,7 @@ test('the latest default model enables adaptive binding without an explicit reas
     () => events,
     (api) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* store.set(AnthropicOAuth.name, existing)
         const answer = yield* ask(api, 'claude-sonnet-5-5', {})
         expect(answer.stopReason).toBe('toolUse')
@@ -163,7 +163,7 @@ test('an older budget model retains summarized display alongside its enabled thi
     () => events,
     (api) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* store.set(AnthropicOAuth.name, existing)
         yield* ask(api, 'claude-opus-4-5', { reasoning: 'medium', maxTokens: 4096 })
         expect(api.requests[0]?.body).toMatchObject({
@@ -183,7 +183,7 @@ test('discovered adaptive models send effort rather than a budget outside the st
     () => events,
     (api) =>
       Effect.gen(function* () {
-        const store = yield* Credentials.Credentials
+        const store = yield* Credentials.CredentialStore
         yield* store.set(AnthropicOAuth.name, existing)
         yield* ask(
           api,

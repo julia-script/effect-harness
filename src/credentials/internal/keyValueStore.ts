@@ -6,7 +6,7 @@
 import { Effect, Equal, Option, Schema, Semaphore } from 'effect'
 import { KeyValueStore } from 'effect/persistence'
 import { Credential } from '../Credential.ts'
-import type { Service } from '../Credentials.ts'
+import type { Service } from '../CredentialStore.ts'
 import { CredentialChanged, CredentialsError } from '../CredentialsError.ts'
 
 const Stored = Schema.Record(Schema.String, Credential)
