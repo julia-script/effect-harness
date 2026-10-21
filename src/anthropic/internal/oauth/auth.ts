@@ -1,5 +1,5 @@
 /** Claude's JSON token exchange and state-bound PKCE copy-code/loopback flow. */
-import { Clock, Effect, Redacted, Schema } from 'effect'
+import { Clock, Duration, Effect, Predicate, Redacted, Schema } from 'effect'
 import { Base64Url } from 'effect/encoding'
 import { HttpClient, HttpClientRequest } from 'effect/http'
 import { Identity } from '../../../credentials/Credential.ts'
@@ -13,7 +13,7 @@ const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 const REDIRECT_URI = `${AUTH_URL}/oauth/code/callback`
 const SCOPE =
   'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload'
-const TIMEOUT_MS = 600_000
+const TIMEOUT = Duration.minutes(10)
 
 const failure = (reason: LoginError['reason'], message: string) =>
   new LoginError({ reason, message })
@@ -33,23 +33,23 @@ const Token = Schema.Struct({
   ),
 })
 
-const validateRedirect = (redirectUri: string) =>
-  Effect.try({
-    try: () => {
-      const url = new URL(redirectUri)
-      const loopback =
-        url.protocol === 'http:' &&
-        (url.hostname === 'localhost' || url.hostname === '127.0.0.1') &&
-        url.pathname === '/callback' &&
-        url.search === '' &&
-        url.hash === '' &&
-        url.username === '' &&
-        url.password === ''
-      if (redirectUri !== REDIRECT_URI && !loopback) throw new Error('Invalid redirect')
-    },
-    catch: () =>
-      failure('InvalidConfiguration', 'Use the copy-code callback or a localhost /callback URL'),
-  })
+const isLoopback = (url: URL) =>
+  url.protocol === 'http:' &&
+  (url.hostname === 'localhost' || url.hostname === '127.0.0.1') &&
+  url.pathname === '/callback' &&
+  url.search === '' &&
+  url.hash === '' &&
+  url.username === '' &&
+  url.password === ''
+
+const validateRedirect = (redirectUri: string) => {
+  const url = URL.parse(redirectUri)
+  return redirectUri === REDIRECT_URI || (url !== null && isLoopback(url))
+    ? Effect.void
+    : Effect.fail(
+        failure('InvalidConfiguration', 'Use the copy-code callback or a localhost /callback URL'),
+      )
+}
 
 export const begin = Effect.fnUntraced(function* (
   options: BeginOptions = {},
@@ -59,12 +59,11 @@ export const begin = Effect.fnUntraced(function* (
     return yield* failure('InvalidConfiguration', 'A credential name is required')
   const redirectUri = options.redirectUri ?? REDIRECT_URI
   yield* validateRedirect(redirectUri)
-  const pkce = yield* Effect.tryPromise({
-    try: async () => {
-      const verifier = Base64Url.encode(crypto.getRandomValues(new Uint8Array(32)))
-      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
-      return { verifier, challenge: Base64Url.encode(new Uint8Array(digest)) }
-    },
+  const verifier = yield* Effect.sync(() =>
+    Base64Url.encode(crypto.getRandomValues(new Uint8Array(32))),
+  )
+  const digest = yield* Effect.tryPromise({
+    try: () => crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)),
     catch: () => failure('InvalidConfiguration', 'Unable to generate PKCE authorization'),
   })
   // Claude requires the verifier itself as OAuth state, unlike Codex.
@@ -74,60 +73,60 @@ export const begin = Effect.fnUntraced(function* (
     client_id: CLIENT_ID,
     redirect_uri: redirectUri,
     scope: SCOPE,
-    code_challenge: pkce.challenge,
+    code_challenge: Base64Url.encode(new Uint8Array(digest)),
     code_challenge_method: 'S256',
-    state: pkce.verifier,
+    state: verifier,
   })
   return {
     name,
     url: `https://claude.ai/oauth/authorize?${params.toString()}`,
-    state: pkce.verifier,
-    verifier: Redacted.make(pkce.verifier),
+    state: verifier,
+    verifier: Redacted.make(verifier),
     redirectUri,
-    expires: (yield* Clock.currentTimeMillis) + TIMEOUT_MS,
+    expires: (yield* Clock.currentTimeMillis) + Duration.toMillis(TIMEOUT),
   }
 })
 
-const completionCode = (input: string, authorization: Authorization) =>
-  Effect.try({
-    try: () => {
-      const value = input.trim()
-      let code: string | null | undefined
-      let state: string | null | undefined
-      if (/^https?:\/\//u.test(value) || value.includes('code=')) {
-        let params: URLSearchParams
-        if (/^https?:\/\//u.test(value)) {
-          const url = new URL(value)
-          const expected = new URL(authorization.redirectUri)
-          if (url.origin !== expected.origin || url.pathname !== expected.pathname)
-            throw new Error('Redirect')
-          params = url.searchParams
-        } else params = new URLSearchParams(value.replace(/^\?/u, ''))
-        if (
-          params.has('error') ||
-          params.getAll('code').length !== 1 ||
-          params.getAll('state').length !== 1
-        )
-          throw new Error('Callback')
-        code = params.get('code')
-        state = params.get('state')
-      } else {
-        const parts = value.split('#')
-        if (parts.length !== 2) throw new Error('Callback')
-        ;[code, state] = parts
-      }
-      if (
-        code === undefined ||
-        code === null ||
-        code === '' ||
-        state !== authorization.state ||
-        state !== Redacted.value(authorization.verifier)
+interface Callback {
+  readonly code: string | null | undefined
+  readonly state: string | null | undefined
+}
+
+/** The one `code` and `state` of a callback query; `undefined` for an error or a repeated key. */
+const fromQuery = (params: URLSearchParams): Callback | undefined =>
+  params.has('error') || params.getAll('code').length !== 1 || params.getAll('state').length !== 1
+    ? undefined
+    : { code: params.get('code'), state: params.get('state') }
+
+/** What the person pasted: the callback URL, its query string, or `code#state`. */
+const callback = (value: string, redirectUri: string): Callback | undefined => {
+  if (/^https?:\/\//u.test(value)) {
+    const url = URL.parse(value)
+    const expected = URL.parse(redirectUri)
+    return url === null ||
+      expected === null ||
+      url.origin !== expected.origin ||
+      url.pathname !== expected.pathname
+      ? undefined
+      : fromQuery(url.searchParams)
+  }
+  if (value.includes('code=')) return fromQuery(new URLSearchParams(value.replace(/^\?/u, '')))
+  const parts = value.split('#')
+  return parts.length === 2 ? { code: parts[0], state: parts[1] } : undefined
+}
+
+const completionCode = (input: string, authorization: Authorization) => {
+  const found = callback(input.trim(), authorization.redirectUri)
+  return found !== undefined &&
+    Predicate.isString(found.code) &&
+    found.code !== '' &&
+    found.state === authorization.state &&
+    found.state === Redacted.value(authorization.verifier)
+    ? Effect.succeed(found.code)
+    : Effect.fail(
+        failure('InvalidState', 'The authorization callback has an invalid state or code'),
       )
-        throw new Error('State')
-      return code
-    },
-    catch: () => failure('InvalidState', 'The authorization callback has an invalid state or code'),
-  })
+}
 
 const exchange = Effect.fnUntraced(function* (authUrl: string, fields: Record<string, string>) {
   const client = yield* HttpClient.HttpClient
@@ -155,16 +154,14 @@ const exchange = Effect.fnUntraced(function* (authUrl: string, fields: Record<st
   if (!Number.isSafeInteger(expires))
     return yield* failure('InvalidResponse', 'Claude returned an invalid token expiry')
   const account = token.account
-  let identity: Identity | undefined
-  if (account?.uuid !== undefined && account.uuid !== null && account.uuid !== '') {
-    identity = Identity.make({
-      issuer: AUTH_URL,
-      subject: account.uuid,
-      ...(account.email_address === undefined || account.email_address === null
-        ? {}
-        : { email: account.email_address }),
-    })
-  }
+  const identity =
+    Predicate.isString(account?.uuid) && account.uuid !== ''
+      ? Identity.make({
+          issuer: AUTH_URL,
+          subject: account.uuid,
+          ...(Predicate.isString(account.email_address) ? { email: account.email_address } : {}),
+        })
+      : undefined
   return {
     _tag: 'OAuth',
     access: Redacted.make(token.access_token),
@@ -189,10 +186,7 @@ export const complete = Effect.fnUntraced(function* (
     state: authorization.state,
     redirect_uri: authorization.redirectUri,
   })
-  const revision = yield* Effect.try({
-    try: () => crypto.randomUUID(),
-    catch: () => failure('InvalidConfiguration', 'Unable to generate credential revision'),
-  })
+  const revision = yield* Effect.sync(() => crypto.randomUUID())
   const store = yield* CredentialStore
   return yield* store.set(authorization.name, { ...tokens, revision })
 })
@@ -217,14 +211,15 @@ export const refresh = Effect.fnUntraced(function* (authUrl: string, stored: OAu
   } satisfies OAuth
 })
 
-export const login = (options: LoginOptions) =>
-  Effect.gen(function* () {
+export const login = Effect.fnUntraced(
+  function* (options: LoginOptions) {
     const authorization = yield* begin(options)
     yield* options.onAuthorize(authorization.url)
     yield* complete(authorization, yield* options.completion, options)
-  }).pipe(
-    Effect.timeoutOrElse({
-      duration: options.timeout ?? TIMEOUT_MS,
+  },
+  (effect, options) =>
+    Effect.timeoutOrElse(effect, {
+      duration: options.timeout ?? TIMEOUT,
       orElse: () => Effect.fail(failure('Timeout', 'Claude authorization timed out')),
     }),
-  )
+)

@@ -2,7 +2,7 @@
  * The task graph mount, ported from pi's `harness/task-graph.ts`: every live task, built in a
  * commit and advanced from every later commit's publication.
  */
-import { Effect } from 'effect'
+import { Effect, Equal, Predicate } from 'effect'
 import type { CommitPublication, Tx } from '../../../session/Session.ts'
 import type { Op } from '../../../storage/schema/Document.ts'
 import type { ConversationId } from '../../../storage/schema/Ids.ts'
@@ -28,10 +28,7 @@ const scanAll = Effect.fnUntraced(function* <A, E>(
 })
 
 const phaseOf = (checkpoint: unknown): string =>
-  typeof checkpoint === 'object' &&
-  checkpoint !== null &&
-  'phase' in checkpoint &&
-  typeof checkpoint.phase === 'string'
+  Predicate.hasProperty(checkpoint, 'phase') && Predicate.isString(checkpoint.phase)
     ? checkpoint.phase
     : ''
 
@@ -99,7 +96,7 @@ const advanceTasks = (graph: TaskGraph, publication: CommitPublication) => {
       continue
     }
     const next = nodeOf(change.value, previous?.conversations ?? [])
-    if (previous !== undefined && JSON.stringify(next) === JSON.stringify(previous)) continue
+    if (previous !== undefined && Equal.equals(next, previous)) continue
     ops.push(['s', ['tasks', key], next])
     tasks[key] = next
   }

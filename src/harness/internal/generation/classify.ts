@@ -5,7 +5,6 @@
 import { Clock, Effect, Option, Result } from 'effect'
 import type { AssistantMessage, Message } from '../../../model/Message.ts'
 import type * as Model from '../../../model/Model.ts'
-import { ContextOverflow, Retryable, UnknownModel } from '../../../model/ModelError.ts'
 import type { ModelError } from '../../../model/ModelError.ts'
 import * as Transcript from '../../../model/Transcript.ts'
 import type { EntryId, TaskId } from '../../../storage/schema/Ids.ts'
@@ -214,7 +213,7 @@ const retryOrFail = Effect.fnUntraced(function* (
 ) {
   const { retry } = yield* env.settings
   const { attempt } = request
-  if (!(error.reason instanceof Retryable && retry.enabled && attempt <= retry.maxRetries))
+  if (!(error.reason._tag === 'Retryable' && retry.enabled && attempt <= retry.maxRetries))
     return yield* fail(runtime, 'model_error', error.message, error.response)
   const delay = Math.max(error.reason.retryAfterMs ?? 0, retryDelayMs(retry, attempt))
   const until = (yield* Clock.currentTimeMillis) + delay
@@ -239,8 +238,8 @@ const retryOrFail = Effect.fnUntraced(function* (
  * run `model_error`. The policies are read now, since they govern the next attempt.
  */
 const failed = (runtime: GenerationRuntime, env: Env, request: Request, error: ModelError) => {
-  if (error.reason instanceof UnknownModel) return failNoModel(runtime, request.model)
-  if (!(error.reason instanceof ContextOverflow)) return retryOrFail(runtime, env, request, error)
+  if (error.reason._tag === 'UnknownModel') return failNoModel(runtime, request.model)
+  if (error.reason._tag !== 'ContextOverflow') return retryOrFail(runtime, env, request, error)
   return Effect.flatMap(compactOnOverflow(runtime, env, request, error), (compacted) =>
     compacted ? Effect.void : retryOrFail(runtime, env, request, error),
   )

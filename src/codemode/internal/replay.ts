@@ -7,14 +7,14 @@
  * journal says.
  */
 import type { CodemodeHostCall } from '@earendil-works/pi-codemode/portable'
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Equal, Option, Schema } from 'effect'
 import { NestedCalls, NestedInput } from '../../tool/ToolTask.ts'
 import { TaskId } from '../../storage/schema/Ids.ts'
 import type { RuntimeError } from '../../task/Task.ts'
 import type { Event, Machine } from './machine.ts'
 import { deliverReplayed, diverge, end, finishRow, started, stopped } from './machine.ts'
 import { launch, replayTool } from './launch.ts'
-import { describeCall, sameJson, toSandbox } from './outcome.ts'
+import { describeCall, toSandbox } from './outcome.ts'
 import { draft, journal, run } from './state.ts'
 
 /** Launch the waiting calls whose issued count is committed. */
@@ -34,7 +34,9 @@ const earlier = Effect.fnUntraced(function* (m: Machine, call: CodemodeHostCall)
   const record = yield* m.call.getTask(TaskId.make(member.taskId))
   return Option.flatMap(decodeNested(record?.input), ({ call: made }) => {
     const same =
-      call.target === 'tool' && made.name === call.name && sameJson(made.arguments, call.args ?? {})
+      call.target === 'tool' &&
+      made.name === call.name &&
+      Equal.equals(made.arguments, call.args ?? {})
     return same
       ? Option.none()
       : Option.some(`tools.${made.name}(${JSON.stringify(made.arguments)})`)
@@ -90,7 +92,7 @@ const replayCall = Effect.fnUntraced(function* (m: Machine, call: CodemodeHostCa
   const global = entry.global
   if (global !== undefined) {
     const same =
-      call.target === 'global' && call.name === global.name && sameJson(call.args, global.args)
+      call.target === 'global' && call.name === global.name && Equal.equals(call.args, global.args)
     if (!same) {
       yield* diverge(
         m,

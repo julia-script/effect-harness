@@ -6,7 +6,7 @@
  *
  * Install `extension` with `layer`, and declare tools with `deferred: true` for it to find.
  */
-import { Effect, Schema } from 'effect'
+import { Effect, Predicate, Schema } from 'effect'
 import * as Tool from '../tool/Tool.ts'
 import * as Toolkit from '../tool/Toolkit.ts'
 import { Output, text } from '../tool/ToolResult.ts'
@@ -44,15 +44,12 @@ export const toolkit = Toolkit.make(ToolSearch)
 /** The `tool-search` extension; installing it needs `layer`. */
 export const extension = Extension.make('tool-search', { toolkit })
 
-const isObject = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
-
 /** Descriptions and property names of a JSON Schema, recursively. */
 const schemaText = (schema: unknown, parts: Array<string>): void => {
-  if (!isObject(schema)) return
-  if (typeof schema['description'] === 'string') parts.push(schema['description'])
+  if (!Predicate.isObject(schema)) return
+  if (Predicate.isString(schema['description'])) parts.push(schema['description'])
   const properties = schema['properties']
-  if (isObject(properties)) {
+  if (Predicate.isObject(properties)) {
     for (const [name, property] of Object.entries(properties)) {
       parts.push(name)
       schemaText(property, parts)

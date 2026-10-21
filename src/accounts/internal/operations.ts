@@ -5,7 +5,6 @@
 import { Effect } from 'effect'
 import type { Redacted } from 'effect'
 import type { Listable, Listed } from '../../model/Model.ts'
-import { Rejected } from '../../model/ModelError.ts'
 import * as AccountError from '../AccountError.ts'
 import type { Add, Models, Saved } from '../Account.ts'
 import type { Account, Any, Base, Requires } from '../Adapter.ts'
@@ -179,7 +178,7 @@ const modelsOf = (state: State, entry: Entry): Effect.Effect<Listing> => {
     Effect.map((models): Listing => ({ models })),
     Effect.catch((error) =>
       Effect.as(
-        error.reason instanceof Rejected
+        error.reason._tag === 'Rejected'
           ? registry.refuse(state, entry.saved.name, error.message)
           : Effect.void,
         { models: served(provider), error: error.message },

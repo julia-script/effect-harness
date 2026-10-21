@@ -3,7 +3,7 @@
  * The positional system prompt, ported from pi's `harness/prompt.ts`: which `$system` entries
  * make the sections and tools the model sees equal the ones the agent wants.
  */
-import { Cause, Effect } from 'effect'
+import { Cause, Effect, Equal } from 'effect'
 import type { Message, SystemMessage, ToolDefinition } from '../../model/Message.ts'
 import * as Transcript from '../../model/Transcript.ts'
 import type { EntryDraft } from '../../session/Session.ts'
@@ -60,11 +60,7 @@ interface ToolChanges {
   readonly toolsAdded: ReadonlyArray<ToolDefinition>
 }
 
-const sameDeclaration = (a: ToolDefinition, b: ToolDefinition): boolean =>
-  a.name === b.name &&
-  a.description === b.description &&
-  JSON.stringify(a.parameters) === JSON.stringify(b.parameters) &&
-  JSON.stringify(a.constrainedSampling) === JSON.stringify(b.constrainedSampling)
+const sameDeclaration = (a: ToolDefinition, b: ToolDefinition): boolean => Equal.equals(a, b)
 
 /**
  * Tool changes from `offered` to `desired`. A changed declaration is removed and re-added. Replay

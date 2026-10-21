@@ -2,7 +2,7 @@
  * Nested calls of a running tool call (see `Call`): admission, waiting, and the outcome a caller
  * gets; and settling a nested call into its caller's `NestedCalls` member.
  */
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Equal, Option, Schema } from 'effect'
 import type { ToolCall } from '../../model/Message.ts'
 import type { Tx } from '../../session/Session.ts'
 import { TaskId } from '../../storage/schema/Ids.ts'
@@ -30,7 +30,7 @@ const sameCall = (input: unknown, name: string, args: JsonObject) => {
   return (
     Option.isSome(nested) &&
     nested.value.call.name === name &&
-    JSON.stringify(nested.value.call.arguments) === JSON.stringify(args)
+    Equal.equals(nested.value.call.arguments, args)
   )
 }
 

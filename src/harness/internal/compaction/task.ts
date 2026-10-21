@@ -6,7 +6,6 @@ import { Clock, Effect, Option, Result } from 'effect'
 import type { Draft } from '../../../delta/Tracker.ts'
 import type { AssistantMessage, Message } from '../../../model/Message.ts'
 import * as Model from '../../../model/Model.ts'
-import { Retryable } from '../../../model/ModelError.ts'
 import type { ModelError } from '../../../model/ModelError.ts'
 import type { Tx } from '../../../session/Session.ts'
 import type { EntryId } from '../../../storage/schema/Ids.ts'
@@ -230,7 +229,7 @@ const summarizePhase = (env: Env) =>
     const { retry } = settings
     const retrying =
       Result.isFailure(outcome) &&
-      outcome.failure.reason instanceof Retryable &&
+      outcome.failure.reason._tag === 'Retryable' &&
       retry.enabled &&
       request.attempt <= retry.maxRetries
     const until = (yield* Clock.currentTimeMillis) + retryDelayMs(retry, request.attempt)
