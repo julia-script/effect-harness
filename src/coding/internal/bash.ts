@@ -38,18 +38,20 @@ const exceedsLimits = (output: string) =>
   utf8ByteLength(output) > DEFAULT_MAX_BYTES || output.split('\n').length > DEFAULT_MAX_LINES
 
 /** The command's combined output, collected into `chunks` as it arrives, then its exit code. */
-const run = (workspace: Workspace, command: string, cwd: string, chunks: Array<string>) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const handle = yield* workspace.spawner.spawn(
-        ChildProcess.make('bash', ['-c', command], { cwd, extendEnv: true, stdin: 'ignore' }),
-      )
-      yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
-        Effect.sync(() => chunks.push(chunk)),
-      )
-      return yield* handle.exitCode
-    }),
+const run = Effect.fnUntraced(function* (
+  workspace: Workspace,
+  command: string,
+  cwd: string,
+  chunks: Array<string>,
+) {
+  const handle = yield* workspace.spawner.spawn(
+    ChildProcess.make('bash', ['-c', command], { cwd, extendEnv: true, stdin: 'ignore' }),
   )
+  yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
+    Effect.sync(() => chunks.push(chunk)),
+  )
+  return yield* handle.exitCode
+}, Effect.scoped)
 
 /** A file with all of `output`, when it exceeds the limits; spilling is best-effort. */
 const spill = (workspace: Workspace, output: string): Effect.Effect<Option.Option<string>> =>
