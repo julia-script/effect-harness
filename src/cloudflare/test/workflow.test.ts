@@ -6,6 +6,7 @@ import { describe, expect, test } from 'bun:test'
 import { WorkflowStep } from 'alchemy/Cloudflare/Workflows'
 import type { WorkflowStepConfig, WorkflowTaskOptions } from 'alchemy/Cloudflare/Workflows'
 import { Effect, Layer } from 'effect'
+import { Extension } from '../../harness/index.ts'
 import { Faux, Model } from '../../model/index.ts'
 import { HarnessWorkflow } from '../index.ts'
 
@@ -76,5 +77,24 @@ describe('HarnessWorkflow', () => {
     // The second request carries only its own input: nothing of the first step's conversation.
     const users = result.requests[1]?.messages.filter((message) => message.role === 'user')
     expect(users?.map((message) => message.content)).toEqual(['After One.'])
+  })
+
+  test('fails the step with TurnFailed when the loop cannot open', async () => {
+    const { layer } = steps()
+    const faux = await Effect.runPromise(Faux.make())
+    const bad = Extension.make('bad', {
+      sections: [Extension.section('Bad', () => Effect.succeed(''))],
+    })
+    const exit = await Effect.runPromise(
+      HarnessWorkflow.turn('ask', 'Hi', { extensions: [bad] }).pipe(
+        Effect.provide([layer, Model.layer([faux.provider])]),
+        Effect.flip,
+      ),
+    )
+    expect(exit).toBeInstanceOf(HarnessWorkflow.TurnFailed)
+    expect(exit).toMatchObject({
+      reason: 'InvalidExtension',
+      message: 'Extension bad: section key "Bad" is invalid',
+    })
   })
 })

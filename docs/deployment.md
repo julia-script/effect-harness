@@ -144,6 +144,6 @@ const instance = yield * summarize.create({ params: { content: 'Summarize this t
 const { status, output } = yield * instance.status() // output: HarnessWorkflow.Result
 ```
 
-`HarnessWorkflow.turn(name, content, options)` is the same step on its own, for bodies of several steps with `Cloudflare.Workflows.sleep` or `waitForEvent` between them. Steps share nothing, so pass what a step needs from an earlier one in its content. An unanswered run is a result with its `reason`, not a failure; a failure of the loop fails the attempt for Cloudflare to retry.
+`HarnessWorkflow.turn(name, content, options)` is the same step on its own, for bodies of several steps with `Cloudflare.Workflows.sleep` or `waitForEvent` between them. Steps share nothing, so pass what a step needs from an earlier one in its content. An unanswered run is a result with its `reason`, not a failure; a failure of the loop fails the attempt with `HarnessWorkflow.TurnFailed`, for Cloudflare to retry. Pass `step.rollback` to undo a step when a later one fails for good.
 
 Use a Durable Object for conversations people come back to, and a Workflow for jobs that run to an answer and stop.

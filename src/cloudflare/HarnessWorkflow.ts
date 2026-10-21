@@ -14,13 +14,14 @@
  * The coding tools and code mode do not run in a Worker, which has no file system or processes.
  */
 import { task } from 'alchemy/Cloudflare/Workflows'
-import type { WorkflowStepConfig } from 'alchemy/Cloudflare/Workflows'
+import type { WorkflowStep, WorkflowTaskConfig } from 'alchemy/Cloudflare/Workflows'
 import { Effect, Layer, Option, Schema } from 'effect'
 import type { Conversation } from '../harness/Conversation.ts'
 import * as Harness from '../harness/Harness.ts'
 import type { Extension } from '../harness/Extension.ts'
 import { UserInput } from '../harness/Submission.ts'
 import { AssistantMessage } from '../model/Message.ts'
+import type { Model } from '../model/Model.ts'
 import * as Storage from '../storage/Storage.ts'
 
 /** What an instance starts with: the user input its run answers. */
@@ -41,9 +42,21 @@ export type Result = typeof Result.Type
 export interface Options<
   Installs extends ReadonlyArray<Extension> = ReadonlyArray<Extension>,
 > extends Harness.LayerOptions<Installs> {
-  /** The step's retries and timeout. Default: Cloudflare's. */
-  readonly step?: WorkflowStepConfig
+  /** The step's retries, timeout and rollback. Default: Cloudflare's retries, no rollback. */
+  readonly step?: WorkflowTaskConfig<Result>
 }
+
+/**
+ * The loop failed before the run settled: it could not open, or admit or wait for the input.
+ * `reason` is the tag of the loop's error. Cloudflare retries the step on it, and replays it as
+ * the step's failure once the retries run out, so it carries only what survives that replay.
+ */
+export class TurnFailed extends Schema.TaggedError<TurnFailed, { readonly brand: unique symbol }>(
+  'effect-harness/cloudflare/HarnessWorkflow/TurnFailed',
+)('TurnFailed', {
+  message: Schema.String,
+  reason: Schema.String,
+}) {}
 
 /** The text blocks of the newest `$assistant` entry's messages, or `''` when there is none. */
 const lastAnswer = (conversation: Conversation) =>
@@ -64,7 +77,7 @@ const lastAnswer = (conversation: Conversation) =>
 const answer = <const Installs extends ReadonlyArray<Extension>>(
   content: UserInput,
   options: Harness.LayerOptions<Installs>,
-) =>
+): Effect.Effect<Result, TurnFailed, Model | Harness.Requires<Installs[number]>> =>
   Effect.gen(function* () {
     const harness = yield* Harness.Harness
     const root = yield* harness.root()
@@ -77,17 +90,20 @@ const answer = <const Installs extends ReadonlyArray<Extension>>(
   }).pipe(
     Effect.provide(Harness.layer(options).pipe(Layer.provide(Storage.layerMemory))),
     Effect.scoped,
+    Effect.mapError((error) => new TurnFailed({ message: error.message, reason: error._tag })),
   )
 
 /**
  * A durable step named `name` that answers `content` on a fresh loop. A failure of the loop fails
- * the attempt, for Cloudflare to retry; an unanswered run is a result, not a failure.
+ * the attempt with `TurnFailed`, for Cloudflare to retry; an unanswered run is a result, not a
+ * failure. The `Model` and the extensions' tools come from context.
  */
 export const turn = <const Installs extends ReadonlyArray<Extension> = readonly []>(
   name: string,
   content: UserInput,
   options: Options<Installs> = {},
-) => task(name, answer(content, options), options.step)
+): Effect.Effect<Result, TurnFailed, WorkflowStep | Model | Harness.Requires<Installs[number]>> =>
+  task(name, answer(content, options), options.step)
 
 /**
  * The body of a `Cloudflare.Workflow`: each run answers its input's `content` in one step named
@@ -97,5 +113,7 @@ export const make =
   <const Installs extends ReadonlyArray<Extension> = readonly []>(
     options: Options<Installs> = {},
   ) =>
-  (input: Input) =>
+  (
+    input: Input,
+  ): Effect.Effect<Result, TurnFailed, WorkflowStep | Model | Harness.Requires<Installs[number]>> =>
     turn('turn', input.content, options)
