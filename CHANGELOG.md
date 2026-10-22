@@ -1,5 +1,17 @@
 # effect-harness
 
+## 0.12.0
+
+### Minor Changes
+
+- cca5afc: Runs move to fallback models. A conversation's `fallbacks` (or `Settings.fallbacks`) take over for the rest of a run when its model is `Unavailable` (out of quota, or its credentials stopped working), unknown, out of retries, or asks to wait longer than `retry.maxDelayMs`. The run appends a `$fallback` entry and sets `$live.run.fallback`; the next run starts on the conversation's model again. Quota and authentication failures, and missing credentials, now fail with the new `Unavailable` reason instead of `Rejected`.
+
+### Patch Changes
+
+- 1a36085: Keep Claude thinking signatures. Anthropic sends a signature with a thinking delta and redacted thinking with the block's start, but only metadata on a part's end was kept, so Claude's thinking was never sent back, even to the same model.
+- c146a95: Offer a tool whose parameters are `Schema.Struct({})` an empty object schema. Its JSON Schema had no `type`, and Anthropic refused every request that carried the tool.
+- 1a36085: Replay the transcript for the model a request goes to, so a conversation can switch models. Other models' empty text blocks, provider item IDs, thought signatures and reasoning are left out (Claude thinking still goes to Claude on the same account), tool call IDs another provider refuses are rewritten with their results, and images become a note for text-only models. Adds `Transcript.replay`; stored messages are unchanged.
+
 ## 0.11.0
 
 ### Minor Changes
