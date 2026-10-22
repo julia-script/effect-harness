@@ -97,7 +97,24 @@ const LAYERED = {
   'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
 } as const
 
-const elk = new ELK()
+/**
+ * Bun defines `self` but not `document`, so ELK's worker file takes itself for a real Web Worker and
+ * skips the in-process fallback ELK needs; `self` is hidden while ELK starts.
+ */
+const startElk = () => {
+  const self = Object.getOwnPropertyDescriptor(globalThis, 'self')
+  if (self === undefined || 'document' in globalThis) {
+    return new ELK()
+  }
+  Reflect.deleteProperty(globalThis, 'self')
+  try {
+    return new ELK()
+  } finally {
+    Object.defineProperty(globalThis, 'self', self)
+  }
+}
+
+const elk = startElk()
 
 /** The chain of groups a node sits in, innermost first. */
 const ancestry = (graph: Graph, id: string | undefined): ReadonlyArray<string> => {
