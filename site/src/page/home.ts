@@ -1,6 +1,7 @@
 import { Array } from 'effect'
 import type { Html, HtmlBuilder } from 'foldkit/html'
 import wordsmithSource from '../demo/agents/wordsmith.ts?highlight'
+import architectureDiagram from './architecture.mmd?diagram'
 import * as Demos from '../demos.ts'
 import * as Diagram from '../diagram.ts'
 import { Message } from '../message.ts'
@@ -36,22 +37,6 @@ const features: ReadonlyArray<readonly [title: string, text: string]> = [
     'read, write, edit and bash coding tools, a durable code mode over QuickJS, and a scripted Faux model for tests.',
   ],
 ]
-
-const ARCHITECTURE = `flowchart LR
-  subgraph app["Your app (anywhere)"]
-    C["HarnessClient"]
-  end
-  subgraph loop["The loop (HarnessServer)"]
-    H["Harness<br/>conversations · submissions · runs"]
-    S["Scheduler<br/>durable tasks"]
-    X["Extensions<br/>tools · sections · hooks"]
-  end
-  C <-- "RPC: memory · WebSocket · Durable Object" --> H
-  H --> S
-  S -- "$generation" --> M(["Model<br/>OpenAI · Anthropic · Codex · Faux"])
-  S -- "$tool" --> T["Tool handlers<br/>(your Layers)"]
-  X -. selected per conversation .-> S
-  H --> ST[("Storage<br/>memory · JSONL · SQL")]`
 
 const button = (href: string, label: string, isPrimary: boolean, h: HtmlBuilder<Message>): Html =>
   h.a(
@@ -271,7 +256,7 @@ const architecture = (h: HtmlBuilder<Message>): Html =>
     [
       eyebrow('How it fits together', h),
       sectionTitle('Your app holds a client. The loop runs anywhere.', h),
-      Diagram.view('diagram-home-architecture', ARCHITECTURE, h),
+      Diagram.view(architectureDiagram, h),
       h.div(
         [h.Class('mt-12 flex flex-col items-center gap-4 text-center')],
         [

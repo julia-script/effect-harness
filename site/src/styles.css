@@ -22,11 +22,162 @@ body {
   @apply overflow-x-auto bg-transparent! p-4 text-[13px] leading-6;
 }
 
+/* Diagrams: drawn at build time by plugins/diagram, colored and animated here. */
 .diagram svg {
   @apply mx-auto h-auto max-w-full;
 }
 
-.diagram:empty::before {
-  @apply animate-pulse text-sm text-zinc-500;
-  content: 'Drawing diagram…';
+/* On a phone, a wide diagram scrolls rather than shrinking past reading. */
+@media (width < 40rem) {
+  .diagram svg {
+    max-width: none;
+  }
+}
+
+.dg {
+  --dg-line: var(--color-zinc-600);
+  --dg-bright: var(--color-zinc-100);
+  --dg-step: var(--color-zinc-400);
+  font-family: var(--font-mono);
+  color: var(--dg-line);
+  overflow: visible;
+}
+
+.dg text {
+  fill: var(--color-zinc-300);
+}
+
+.dg .dg-strong {
+  fill: var(--color-zinc-100);
+  font-weight: 600;
+}
+
+.dg .dg-muted {
+  fill: var(--color-zinc-500);
+  font-style: italic;
+}
+
+.dg-shape {
+  fill: var(--color-ink-900);
+  stroke: var(--color-zinc-700);
+  stroke-width: 1;
+  transition: stroke 150ms;
+}
+
+.dg-accent {
+  stroke: var(--color-zinc-500);
+}
+
+.dg-rim {
+  fill: none;
+  stroke: var(--color-zinc-700);
+}
+
+.dg-dot {
+  fill: var(--color-zinc-300);
+}
+
+.dg-hit {
+  fill: transparent;
+}
+
+.dg-node:hover .dg-shape {
+  stroke: var(--color-zinc-300);
+}
+
+.dg-group rect {
+  fill: rgb(255 255 255 / 0.015);
+  stroke: var(--color-zinc-800);
+  stroke-dasharray: 4 4;
+}
+
+.dg-group text {
+  fill: var(--color-zinc-500);
+  letter-spacing: 0.04em;
+}
+
+.dg-edge {
+  transition:
+    opacity 150ms,
+    color 150ms;
+}
+
+.dg-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25;
+}
+
+.dg-dashed .dg-line,
+.dg-reply .dg-line {
+  stroke-dasharray: 4 4;
+}
+
+.dg-head {
+  fill: currentColor;
+}
+
+/* Packets travel along every edge, in its direction. */
+.dg-flow {
+  fill: none;
+  stroke: var(--color-zinc-300);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-dasharray: 1.5 22;
+  animation: dg-flow 1.6s linear infinite;
+}
+
+@keyframes dg-flow {
+  to {
+    stroke-dashoffset: -23.5;
+  }
+}
+
+.dg-edge-label rect {
+  fill: var(--color-ink-950);
+}
+
+.dg-edge-label text {
+  fill: var(--color-zinc-400);
+}
+
+.dg-lifeline {
+  stroke: var(--color-zinc-800);
+  stroke-dasharray: 3 5;
+}
+
+.dg-step {
+  color: var(--dg-step);
+}
+
+.dg .dg-step-text {
+  fill: currentColor;
+}
+
+.dg-badge {
+  fill: var(--color-ink-950);
+  stroke: currentColor;
+}
+
+.dg .dg-badge-text {
+  fill: currentColor;
+}
+
+.dg-note rect {
+  fill: var(--color-ink-800);
+  stroke: var(--color-zinc-700);
+}
+
+.dg .dg-note text {
+  fill: currentColor;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dg-flow {
+    display: none;
+  }
+
+  .dg .dg-step {
+    animation: none;
+  }
 }
