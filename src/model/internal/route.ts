@@ -1,13 +1,14 @@
 /**
- * The `Model` service over providers: each request goes to the provider its model names. The
- * providers are read for each call, so a set that changes while the loop runs is routed as it is
- * now.
+ * The `Model` service over providers: each request goes to the provider its model names, with its
+ * transcript replayed for that model. The providers are read for each call, so a set that changes
+ * while the loop runs is routed as it is now.
  */
 import { Effect, Stream } from 'effect'
 import type { Context } from 'effect'
 import type { DeferredHandle } from '../Message.ts'
 import type { Info, Provider, Ref, Service } from '../Model.ts'
 import { ModelError, Rejected, UnknownModel } from '../ModelError.ts'
+import { replay } from '../Transcript.ts'
 
 const unknown = (ref: Ref) =>
   new ModelError({
@@ -55,7 +56,10 @@ export const make = <R>(
     stream: (request) =>
       Stream.unwrap(
         Effect.map(resolved(request.model), ([provider, model]) =>
-          Stream.provideContext(provider.stream(request, model), context),
+          Stream.provideContext(
+            provider.stream({ ...request, messages: replay(request.messages, model) }, model),
+            context,
+          ),
         ),
       ),
     poll: (ref, handle: DeferredHandle) =>

@@ -24,7 +24,12 @@ interface State {
   readonly message: AssistantMessage
   /** The content index of each part ID. */
   readonly indices: ReadonlyMap<string, number>
+  /** The provider metadata each part has sent so far, merged by provider. */
+  readonly metadata: ReadonlyMap<string, Metadata>
 }
+
+/** Part metadata: each provider's fields under its name. */
+type Metadata = Readonly<Record<string, unknown>>
 
 type Step = Effect.Effect<readonly [State, ReadonlyArray<Event>], ModelError>
 
@@ -47,7 +52,11 @@ export const fromAiError = (error: unknown): ModelError => {
 
 const emit = (state: State, events: ReadonlyArray<Event>, indices = state.indices): Step =>
   Effect.succeed([
-    { message: events.reduce((message, event) => apply(message, event), state.message), indices },
+    {
+      ...state,
+      message: events.reduce((message, event) => apply(message, event), state.message),
+      indices,
+    },
     events,
   ])
 
@@ -64,9 +73,26 @@ const updateBlock = (
   return Effect.succeed([{ ...state, message: { ...state.message, content } }, []])
 }
 
-/** Provider metadata worth replaying, as JSON; `undefined` when there is none. */
-const signatureOf = (metadata: object): string | undefined =>
-  Object.keys(metadata).length === 0 ? undefined : JSON.stringify(metadata)
+/** Run `next` on the state `step` leaves, keeping the events of both. */
+const andThen = (step: Step, next: (state: State) => Step): Step =>
+  Effect.flatMap(step, ([state, events]) =>
+    Effect.map(next(state), ([after, more]) => [after, [...events, ...more]] as const),
+  )
+
+/** `previous` with each provider's fields in `next` laid over its own. */
+const mergeMetadata = (previous: Metadata, next: Metadata): Metadata =>
+  Object.fromEntries([
+    ...Object.entries(previous),
+    ...Object.entries(next).map(([provider, fields]) => {
+      const before = previous[provider]
+      return [
+        provider,
+        Predicate.isObject(before) && Predicate.isObject(fields)
+          ? { ...before, ...fields }
+          : fields,
+      ]
+    }),
+  ])
 
 /** Start a block for part `id` with `event`, at the next index. */
 const start = (state: State, id: string, event: (contentIndex: number) => Event): Step => {
@@ -162,16 +188,21 @@ const finish = (state: State, part: Extract<Part, { type: 'finish' }>, model: In
   return Effect.fail(new ModelError({ message: text, reason: new Rejected({}), response }))
 }
 
-/** Keep part metadata, when there is any, on the block it ends. */
+/**
+ * Keep part metadata on its block, as JSON. A part may send it with any of its events: Anthropic
+ * sends a thinking signature with a delta and redacted thinking with the start, OpenAI sends
+ * reasoning items with the end. Later fields win within a provider.
+ */
 const sign = (
   state: State,
   id: string,
-  metadata: object,
+  metadata: Metadata | undefined,
   key: 'textSignature' | 'thinkingSignature',
-) => {
-  const signature = signatureOf(metadata)
-  if (signature === undefined) return emit(state, [])
-  return updateBlock(state, id, (block) => ({ ...block, [key]: signature }))
+): Step => {
+  if (metadata === undefined || Object.keys(metadata).length === 0) return emit(state, [])
+  const merged = mergeMetadata(state.metadata.get(id) ?? {}, metadata)
+  const signed = { ...state, metadata: new Map(state.metadata).set(id, merged) }
+  return updateBlock(signed, id, (block) => ({ ...block, [key]: JSON.stringify(merged) }))
 }
 
 const metadata = (
@@ -193,23 +224,33 @@ const step =
   (state: State, part: Part): Step => {
     switch (part.type) {
       case 'text-start':
-        return start(state, part.id, (contentIndex) => ({
-          type: 'text_delta',
-          contentIndex,
-          delta: '',
-        }))
+        return andThen(
+          start(state, part.id, (contentIndex) => ({
+            type: 'text_delta',
+            contentIndex,
+            delta: '',
+          })),
+          (next) => sign(next, part.id, part.metadata, 'textSignature'),
+        )
       case 'text-delta':
-        return delta(state, part.id, 'text_delta', part.delta)
+        return andThen(delta(state, part.id, 'text_delta', part.delta), (next) =>
+          sign(next, part.id, part.metadata, 'textSignature'),
+        )
       case 'text-end':
         return sign(state, part.id, part.metadata, 'textSignature')
       case 'reasoning-start':
-        return start(state, part.id, (contentIndex) => ({
-          type: 'thinking_delta',
-          contentIndex,
-          delta: '',
-        }))
+        return andThen(
+          start(state, part.id, (contentIndex) => ({
+            type: 'thinking_delta',
+            contentIndex,
+            delta: '',
+          })),
+          (next) => sign(next, part.id, part.metadata, 'thinkingSignature'),
+        )
       case 'reasoning-delta':
-        return delta(state, part.id, 'thinking_delta', part.delta)
+        return andThen(delta(state, part.id, 'thinking_delta', part.delta), (next) =>
+          sign(next, part.id, part.metadata, 'thinkingSignature'),
+        )
       case 'reasoning-end':
         return sign(state, part.id, part.metadata, 'thinkingSignature')
       case 'tool-params-start':
@@ -248,6 +289,6 @@ export const events = <E, R>(
 ): Stream.Stream<Event, ModelError | E, R> =>
   Stream.mapAccumEffect(
     parts,
-    (): State => ({ message: partial(model, timestamp), indices: new Map() }),
+    (): State => ({ message: partial(model, timestamp), indices: new Map(), metadata: new Map() }),
     step(model),
   )
