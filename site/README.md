@@ -32,7 +32,7 @@ bun run site:deploy
 
 The first deploy signs you in to Cloudflare and offers to set up Alchemy's state store in your account, so later deploys, from a laptop or from CI, share the same state.
 
-Pushes to `main` that touch the site, the guides or the library deploy the `production` stage through [`.github/workflows/docs.yml`](../.github/workflows/docs.yml). It needs two repository secrets:
+Pushes to `main` that touch the site, the guides or the library deploy the `production` stage through [`.github/workflows/docs.yml`](../.github/workflows/docs.yml). It reads two repository settings:
 
-- `CLOUDFLARE_ACCOUNT_ID`: the account to deploy to.
-- `CLOUDFLARE_API_TOKEN`: an API token for that account with **Workers Scripts: Edit** and **Secrets Store: Edit** (the state store keeps its token in Secrets Store).
+- `CLOUDFLARE_ACCOUNT_ID`, a repository variable: the account to deploy to.
+- `CLOUDFLARE_API_TOKEN`, a repository secret: an API token for that account with **Workers Scripts: Edit** and **Secrets Store: Edit** (the state store keeps its token in Secrets Store).
