@@ -2,16 +2,19 @@
 /**
  * The harness in a Durable Object, run by Alchemy in a local workerd: the Worker checks the token,
  * a client adds an account and chats over WebSockets, and a reset in the middle of a turn ends
- * with the answer, once the object has started again and resumed the turn from its SQLite.
+ * with the answer, once the object has started again and resumed the turn from its SQLite. A
+ * Workflow run answers its input in a durable step.
  */
 import { expect } from 'bun:test'
 import * as Cloudflare from 'alchemy/Cloudflare'
 import * as Test from 'alchemy/Test/Bun'
-import { Deferred, Effect, Layer, Redacted, Schedule } from 'effect'
+import { Deferred, Effect, Layer, Redacted, Schedule, Schema } from 'effect'
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from 'effect/http'
 import { RpcClient } from 'effect/rpc'
 import { AccountsRpcs } from '../../accounts/index.ts'
 import { HarnessClient, HarnessTransport } from '../../client/index.ts'
 import type { HarnessClient as Client } from '../../client/index.ts'
+import { HarnessWorkflow } from '../index.ts'
 import { TestRpcs } from './stack/agent.ts'
 import Stack from './stack/stack.ts'
 import { serveModel } from './support.ts'
@@ -125,4 +128,49 @@ test(
     }),
   ),
   { timeout: 90_000 },
+)
+
+/** What `POST /ask` answers, and what `GET /ask/<id>` reports. */
+const Started = Schema.Struct({ id: Schema.String })
+const Status = Schema.Struct({
+  status: Schema.String,
+  output: Schema.optional(Schema.NullOr(HarnessWorkflow.Result)),
+})
+
+test(
+  'answers in a workflow step',
+  Effect.scoped(
+    Effect.gen(function* () {
+      const model = yield* serveModel
+      const { url } = yield* stack
+      const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk)
+      const refused = yield* HttpClient.execute(
+        HttpClientRequest.post(`${String(url)}/ask`).pipe(
+          HttpClientRequest.bodyJsonUnsafe({ prompt: 'Hi' }),
+        ),
+      )
+      expect(refused.status).toBe(400)
+      const started = yield* client
+        .execute(
+          HttpClientRequest.post(`${String(url)}/ask`).pipe(
+            HttpClientRequest.bodyJsonUnsafe({ content: 'Hi', apiUrl: `${model.url}/v1` }),
+          ),
+        )
+        .pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(Started)))
+      const status = yield* client.get(`${String(url)}/ask/${started.id}`).pipe(
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(Status)),
+        Effect.repeat({
+          schedule: Schedule.spaced('500 millis'),
+          until: ({ status }) => status === 'complete' || status === 'errored',
+          times: 60,
+        }),
+      )
+      expect(status).toMatchObject({
+        status: 'complete',
+        output: { status: 'done', answer: 'Hello' },
+      })
+      expect(yield* model.responses).toBe(1)
+    }).pipe(Effect.provide(FetchHttpClient.layer)),
+  ),
+  { timeout: 60_000 },
 )
