@@ -9,7 +9,7 @@ import { HttpClient, HttpClientRequest } from 'effect/http'
 import * as CredentialStore from '../../../credentials/CredentialStore.ts'
 import * as LanguageModelProvider from '../../../model/LanguageModelProvider.ts'
 import type { Info, Listable, Request } from '../../../model/Model.ts'
-import { ModelError, Rejected } from '../../../model/ModelError.ts'
+import { ModelError, Unavailable } from '../../../model/ModelError.ts'
 import * as Transcript from '../../../model/Transcript.ts'
 import type { Options } from '../../OpenAiCodex.ts'
 import { config as responsesConfig } from '../provider.ts'
@@ -19,8 +19,13 @@ import { list } from './models.ts'
 
 const BASE_URL = 'https://chatgpt.com/backend-api'
 
-const rejected = (message: string, cause?: unknown) =>
-  new ModelError({ message, reason: new Rejected({}), ...(cause === undefined ? {} : { cause }) })
+/** No usable credentials: another model may still answer. */
+const unavailable = (message: string, cause?: unknown) =>
+  new ModelError({
+    message,
+    reason: new Unavailable({}),
+    ...(cause === undefined ? {} : { cause }),
+  })
 
 /** The request options Codex takes: no output limit, nothing stored, instructions required. */
 const config = (model: Info, request: Request) => {
@@ -48,14 +53,14 @@ const account = Effect.fnUntraced(function* (
   })
   const credential = yield* resolve(name).pipe(
     Semaphore.withPermit(line),
-    Effect.mapError((cause) => rejected(`Codex credentials: ${cause.message}`, cause)),
+    Effect.mapError((cause) => unavailable(`Codex credentials: ${cause.message}`, cause)),
   )
   if (credential?._tag !== 'OAuth') {
-    return yield* rejected(`Sign in to Codex first: no ${name} tokens are stored`)
+    return yield* unavailable(`Sign in to Codex first: no ${name} tokens are stored`)
   }
   const access = Redacted.value(credential.access)
   const id = accountId(access)
-  if (id === undefined) return yield* rejected('The Codex token has no account id')
+  if (id === undefined) return yield* unavailable('The Codex token has no account id')
   return { access, id }
 })
 

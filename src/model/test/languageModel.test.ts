@@ -185,20 +185,22 @@ describe('LanguageModelProvider', () => {
             new AiError.InvalidRequestError({ description: 'prompt is too long: 300000 tokens' }),
           ),
           failure(new AiError.AuthenticationError({ kind: 'InvalidKey' })),
+          failure(new AiError.QuotaExhaustedError({})),
           failure(new AiError.InternalProviderError({ description: 'overloaded' })),
           [{ type: 'finish', reason: 'content-filter', usage: usage(1, 0) }],
         ])
-        const reasons = yield* Effect.forEach([1, 2, 3, 4, 5], () =>
+        const reasons = yield* Effect.forEach([1, 2, 3, 4, 5, 6], () =>
           Effect.map(Effect.flip(ask([user('hi')])), (error) => error),
         )
         expect(reasons.map((error) => error.reason)).toEqual([
           new ModelError.Retryable({ retryAfterMs: 2000 }),
           new ModelError.ContextOverflow({}),
-          new ModelError.Rejected({}),
+          new ModelError.Unavailable({}),
+          new ModelError.Unavailable({}),
           new ModelError.Retryable({}),
           new ModelError.Rejected({}),
         ])
-        expect(reasons[4]!.response).toMatchObject({
+        expect(reasons[5]!.response).toMatchObject({
           stopReason: 'error',
           rawStopReason: 'content-filter',
         })

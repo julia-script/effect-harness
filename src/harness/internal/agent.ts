@@ -160,6 +160,7 @@ export const resolve = Effect.fnUntraced(function* (
   const model = state?.model ?? settings.model
   const resolved: Resolved = {
     ...(model === undefined ? {} : { model }),
+    fallbacks: state?.fallbacks ?? settings.fallbacks ?? [],
     reasoning: state?.reasoning ?? settings.reasoning ?? 'off',
     extensions,
     tools: enabled,

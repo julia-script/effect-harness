@@ -2,22 +2,25 @@
 /**
  * What a response means for the run: poll it, retry, answer, start a tool round, or end the run.
  */
-import { Clock, Effect, Option, Result } from 'effect'
+import { Clock, Effect, Equal, Option, Result } from 'effect'
 import type { AssistantMessage, Message } from '../../../model/Message.ts'
 import type * as Model from '../../../model/Model.ts'
-import type { ModelError } from '../../../model/ModelError.ts'
+import type { ModelError, Reason } from '../../../model/ModelError.ts'
 import * as Transcript from '../../../model/Transcript.ts'
 import type { EntryId, TaskId } from '../../../storage/schema/Ids.ts'
 import * as Hook from '../../../task/Hook.ts'
 import type { Hooks } from '../../Generation.ts'
 import * as Live from '../../Live.ts'
 import { compactionFor, retryDelayMs } from '../../Settings.ts'
+import type { Retry } from '../../Settings.ts'
 import type { UserInput } from '../../../protocol/Submission.ts'
+import { strictJson } from '../../../internal/strictJson.ts'
 import { selectCut } from '../compaction/select.ts'
 import { createCompaction } from '../compaction/status.ts'
 import { prepareBoundary } from '../inbox.ts'
-import { appendAssistant, endRun, finishRun } from '../run.ts'
-import { readView } from './env.ts'
+import { appendAssistant, endRun, FALLBACK_KIND, finishRun } from '../run.ts'
+import type { FallbackNote } from '../run.ts'
+import { agentOf, readView } from './env.ts'
 import type { Env, GenerationRuntime, Next } from './env.ts'
 import { startToolRound } from './round.ts'
 
@@ -233,17 +236,77 @@ const retryOrFail = Effect.fnUntraced(function* (
 })
 
 /**
- * A failed request: an unknown model ends the run `no_model`; a context overflow compacts; a
+ * Whether a failure moves the run to a fallback model rather than waiting on this one: the model
+ * is unavailable or unknown, its retries ran out, or it asks to wait longer than a retry would.
+ */
+const movesOn = (reason: Reason, retry: Retry, attempt: number): boolean => {
+  if (reason._tag === 'Unavailable' || reason._tag === 'UnknownModel') return true
+  if (reason._tag !== 'Retryable') return false
+  const retries = retry.enabled && attempt <= retry.maxRetries
+  return !retries || (reason.retryAfterMs ?? 0) > retry.maxDelayMs
+}
+
+/**
+ * Move the run to the agent's next fallback model that a provider serves, keeping the failed
+ * response and noting the move in the transcript; the next run starts on the agent's model again.
+ * Returns whether it moved.
+ */
+const fallBack = Effect.fnUntraced(function* (
+  runtime: GenerationRuntime,
+  env: Env,
+  request: Request,
+  error: ModelError,
+) {
+  const { conversationId } = runtime
+  const agent = yield* agentOf(env, runtime)
+  const live = yield* runtime.snapshot(Live.document, conversationId)
+  const from = live?.run?.fallback === undefined ? 0 : live.run.fallback.index + 1
+  const left = [request.model, agent.model]
+  const found = yield* Effect.findFirst(
+    agent.fallbacks.map((model, index) => ({ model, index })).slice(from),
+    ({ model }) =>
+      left.some((each) => Equal.equals(model, each))
+        ? Effect.succeed(false)
+        : Effect.map(env.model.info(model), (info) => info !== undefined),
+  )
+  if (Option.isNone(found)) return false
+  const { model: to, index } = found.value
+  const note: FallbackNote = { from: request.model, to, error: error.message }
+  yield* runtime.commit((tx) =>
+    Effect.gen(function* () {
+      const draft = yield* tx.doc(Live.document, conversationId)
+      if (error.response !== undefined) yield* appendAssistant(tx, conversationId, error.response)
+      yield* tx.appendEntry(conversationId, { kind: FALLBACK_KIND, data: strictJson({ ...note }) })
+      if (draft.run !== undefined) draft.run.fallback = { index, model: to }
+      delete draft.generation
+      const next: Next = { status: 'running', checkpoint: { phase: 'prepare', attempt: 1 } }
+      return next
+    }),
+  )
+  return true
+})
+
+/**
+ * A failed request: a context overflow compacts; a model that cannot answer, or keeps failing,
+ * hands the run to the next fallback model; an unknown model ends the run `no_model`; a
  * `Retryable` failure waits and tries again while the retry policy allows; anything else ends the
  * run `model_error`. The policies are read now, since they govern the next attempt.
  */
-const failed = (runtime: GenerationRuntime, env: Env, request: Request, error: ModelError) => {
-  if (error.reason._tag === 'UnknownModel') return failNoModel(runtime, request.model)
-  if (error.reason._tag !== 'ContextOverflow') return retryOrFail(runtime, env, request, error)
-  return Effect.flatMap(compactOnOverflow(runtime, env, request, error), (compacted) =>
-    compacted ? Effect.void : retryOrFail(runtime, env, request, error),
-  )
-}
+const failed = Effect.fnUntraced(function* (
+  runtime: GenerationRuntime,
+  env: Env,
+  request: Request,
+  error: ModelError,
+) {
+  const { reason } = error
+  if (reason._tag === 'ContextOverflow' && (yield* compactOnOverflow(runtime, env, request, error)))
+    return
+  const { retry } = yield* env.settings
+  if (movesOn(reason, retry, request.attempt) && (yield* fallBack(runtime, env, request, error)))
+    return
+  if (reason._tag === 'UnknownModel') return yield* failNoModel(runtime, request.model)
+  return yield* retryOrFail(runtime, env, request, error)
+})
 
 /** Classify a request's outcome in one commit that also replaces the partial. */
 export const classify = Effect.fnUntraced(function* (

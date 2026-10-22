@@ -11,6 +11,10 @@
  *   a deferred one is polled (`poll`), a `Retryable` failure waits durably (`retry`) and prepares
  *   again, other failures end the run `unanswered` with `model_error`, and an unknown model with
  *   `no_model`.
+ * - Fallback: when the model is `Unavailable` or unknown, its retries run out, or it asks to wait
+ *   longer than `retry.maxDelayMs`, the run moves to the agent's next `fallbacks` model a provider
+ *   serves: it appends a `$fallback` entry (`FallbackNote`), sets `$live.run.fallback`, and
+ *   prepares again. The next run starts on the agent's model.
  * - An answer (`stop`, `length`) ends the run at the final boundary.
  * - Tool calls start a tool round in the commit that appends the answer: each offered call gets a
  *   `$tool` task the generation owns, all at once or one after another (`toolExecution`); a call
@@ -41,12 +45,19 @@ import { Extensions } from './Extensions.ts'
 import { current as currentAgent } from './internal/agent.ts'
 import { provide as provideHarness } from './internal/current.ts'
 import * as internal from './internal/generation/task.ts'
-import { RUN_KIND, toolLifecycle } from './internal/run.ts'
+import { FALLBACK_KIND, RUN_KIND, toolLifecycle } from './internal/run.ts'
 import * as Settings from './Settings.ts'
 import type { UserInput } from '../protocol/Submission.ts'
 
 /** The task kind. */
 export const name = RUN_KIND
+
+/** The kind of the display entry a run appends when it moves to a fallback model. */
+export const fallbackKind = FALLBACK_KIND
+
+/** The `data` of a `$fallback` entry: the model the run left, the one it moved to, and why. */
+export const FallbackNote = Schema.Struct({ from: Model.Ref, to: Model.Ref, error: Schema.String })
+export type FallbackNote = typeof FallbackNote.Type
 
 const attempt = {
   attempt: Schema.Finite,

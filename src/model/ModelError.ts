@@ -1,6 +1,7 @@
 /**
  * How a model request fails. The `reason` decides what the generation does next: compact on
- * `ContextOverflow`, retry on `Retryable`, and end the run otherwise.
+ * `ContextOverflow`, retry on `Retryable`, move to the agent's next fallback model on
+ * `Unavailable`, and end the run otherwise.
  */
 import { Schema } from 'effect'
 import * as overflow from './internal/overflow.ts'
@@ -25,6 +26,14 @@ export class Rejected extends Schema.TaggedError<Rejected, { readonly brand: uni
   'effect-harness/model/ModelError/Rejected',
 )('Rejected', {}) {}
 
+/**
+ * The model cannot answer for now, whatever the request: its account is out of quota or its
+ * credentials stopped working. Retrying the same model does not help; another model may.
+ */
+export class Unavailable extends Schema.TaggedError<Unavailable, { readonly brand: unique symbol }>(
+  'effect-harness/model/ModelError/Unavailable',
+)('Unavailable', {}) {}
+
 /** No provider serves the model. */
 export class UnknownModel extends Schema.TaggedError<
   UnknownModel,
@@ -34,7 +43,13 @@ export class UnknownModel extends Schema.TaggedError<
   modelId: Schema.String,
 }) {}
 
-export const Reason = Schema.Union([ContextOverflow, Retryable, Rejected, UnknownModel])
+export const Reason = Schema.Union([
+  ContextOverflow,
+  Retryable,
+  Rejected,
+  Unavailable,
+  UnknownModel,
+])
 export type Reason = typeof Reason.Type
 
 export class ModelError extends Schema.TaggedError<ModelError, { readonly brand: unique symbol }>(

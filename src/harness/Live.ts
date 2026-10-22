@@ -11,6 +11,7 @@ export {
   CompactionFailure,
   CompactionReason,
   CompactionStatus,
+  Fallback,
   Generation,
   LiveState as State,
   Run,
