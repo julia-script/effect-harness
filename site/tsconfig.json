@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "noEmit": true,
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "types": ["bun", "vite/client", "@foldkit/markdown/content"],
+    "paths": {
+      "effect-harness/*": ["../src/*/index.ts"]
+    }
+  },
+  "include": ["."]
+}
