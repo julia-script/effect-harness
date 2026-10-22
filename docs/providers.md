@@ -65,6 +65,16 @@ yield* conversation.configure({ model: OpenAi.ref('gpt-5', 'openai-work'), reaso
 
 A conversation with no model of its own uses the one in `Settings`. With neither, its run ends `unanswered` with reason `no_model`.
 
+Give it `fallbacks` for when the model cannot answer: its account is out of quota or its credentials stopped working (`Unavailable`), no provider serves it, its retries ran out, or the provider asks to wait longer than `retry.maxDelayMs`. The run moves to the first fallback a provider serves, appends a `$fallback` entry saying from which model to which and why, and goes on there. The next run starts on the conversation's model again.
+
+<!-- prettier-ignore -->
+```ts
+yield* conversation.configure({
+  model: Anthropic.ref('claude-opus-5-5'),
+  fallbacks: [OpenAi.ref('gpt-5'), OpenAi.ref('gpt-5', 'openai-work')],
+})
+```
+
 Providers ship a catalog of models with their context windows, costs and reasoning support, which is what compaction and `$usage` use. Pass `models` to serve others, and use `listModels` to see what an account can reach right now:
 
 <!-- prettier-ignore -->

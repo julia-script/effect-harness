@@ -39,6 +39,11 @@ export type ModelTools = typeof ModelTools.Type
 
 export const State = Schema.Struct({
   model: Schema.optionalKey(ModelRef),
+  /**
+   * Models a run moves to, in order, when `model` is unavailable or keeps failing; the next run
+   * starts on `model` again.
+   */
+  fallbacks: Schema.optionalKey(Schema.Array(ModelRef)),
   reasoning: Schema.optionalKey(ModelThinkingLevel),
   extensions: Schema.optionalKey(Selection),
   tools: Schema.optionalKey(ToolFilter),
@@ -54,6 +59,7 @@ export type State = typeof State.Type
 /** A change to `$agent`: a given field replaces the stored one, and `null` clears it. */
 export const Change = Schema.Struct({
   model: Schema.optionalKey(Schema.NullOr(ModelRef)),
+  fallbacks: Schema.optionalKey(Schema.NullOr(Schema.Array(ModelRef))),
   reasoning: Schema.optionalKey(Schema.NullOr(ModelThinkingLevel)),
   extensions: Schema.optionalKey(Schema.NullOr(Selection)),
   tools: Schema.optionalKey(Schema.NullOr(ToolFilter)),
@@ -66,6 +72,7 @@ export type Change = typeof Change.Type
 /** A resolved agent by name, as a client sees it. */
 export const View = Schema.Struct({
   model: Schema.optionalKey(ModelRef),
+  fallbacks: Schema.optionalKey(Schema.Array(ModelRef)),
   reasoning: ModelThinkingLevel,
   extensions: Schema.Array(Schema.String),
   /** The tools the model is offered, in order. */

@@ -5,6 +5,7 @@
 import { Effect } from 'effect'
 import type { Draft } from '../../delta/Tracker.ts'
 import type { AssistantMessage } from '../../model/Message.ts'
+import type * as Model from '../../model/Model.ts'
 import type { SubmissionSettlement, TaskKind, Tx } from '../../session/Session.ts'
 import type { ConversationId, EntryId, SubmissionId, TaskId } from '../../storage/schema/Ids.ts'
 import type { TaskRecord } from '../../storage/schema/Task.ts'
@@ -19,6 +20,16 @@ import type { Boundary } from './inbox.ts'
 import { strictJson } from '../../internal/strictJson.ts'
 
 export const ASSISTANT_KIND = '$assistant'
+
+/** The display entry a run appends when it moves to a fallback model. */
+export const FALLBACK_KIND = '$fallback'
+
+/** The `data` of a `$fallback` entry: the model the run left, the one it moved to, and why. */
+export interface FallbackNote {
+  readonly from: Model.Ref
+  readonly to: Model.Ref
+  readonly error: string
+}
 
 /** The task kind that takes `$live.run`: the built-in generation task. */
 export const RUN_KIND = '$generation'

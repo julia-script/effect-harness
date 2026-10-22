@@ -2,8 +2,8 @@
  * The built-in `$agent` document, ported from pi's `harness/agent.ts`: what one conversation asks
  * with, and the agent resolved from it.
  *
- * A conversation stores its model, reasoning level, extension selection, tool filter,
- * instructions and tool config; every field is optional. Each reader resolves the agent from the
+ * A conversation stores its model, fallback models, reasoning level, extension selection, tool
+ * filter, instructions and tool config; every field is optional. Each reader resolves the agent from the
  * stored state, an `Extensions` snapshot, and the settings, once per decision: the generation as it
  * prepares a request, the tool task as it runs a call, the compaction as it selects.
  *
@@ -18,7 +18,7 @@
  *   the stored `config[name]` when set, else its extension's.
  * - Offered tools: the enabled tools through `modelTools`; deferred tools only once loaded.
  * - Sections: the same way, then `instructions` last, as the tagged section `instructions`.
- * - Model and reasoning: stored, else the settings' defaults.
+ * - Model, fallbacks and reasoning: stored, else the settings' defaults.
  *
  * The document is rewindable: a fork starts from the agent at its fork entry, and a task-owned
  * conversation starts with a copy of its owner's.
@@ -53,6 +53,7 @@ export const document = Document.make<State>({
 
 const FIELDS = [
   'model',
+  'fallbacks',
   'reasoning',
   'extensions',
   'tools',
@@ -108,6 +109,8 @@ export const Current: Context.Reference<Resolved | undefined> = Context.Referenc
 /** The agent of one decision. */
 export interface Resolved {
   readonly model?: Model.Ref
+  /** Where a run goes, in order, when `model` cannot answer: stored, else the settings'. */
+  readonly fallbacks: ReadonlyArray<Model.Ref>
   readonly reasoning: ModelThinkingLevel
   readonly extensions: ReadonlyArray<Extensions.Installed>
   /** The enabled tools, in order. */
@@ -143,6 +146,7 @@ export const hooks = <H>(agent: Resolved, kind: Hook.Kind<H>): ReadonlyArray<Par
 /** The names in `agent`. */
 export const view = (agent: Resolved): View => ({
   ...(agent.model === undefined ? {} : { model: agent.model }),
+  ...(agent.fallbacks.length === 0 ? {} : { fallbacks: agent.fallbacks }),
   reasoning: agent.reasoning,
   extensions: agent.extensions.map(({ extension }) => extension.name),
   tools: agent.offered.map(({ tool }) => tool.name),

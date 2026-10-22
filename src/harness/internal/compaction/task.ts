@@ -16,7 +16,7 @@ import { compactionFor, retryDelayMs } from '../../Settings.ts'
 import type { Settings } from '../../Settings.ts'
 import * as Usage from '../../Usage.ts'
 import { admit } from '../admission.ts'
-import { agentOf, readView, sleepUntil } from '../generation/env.ts'
+import { agentOf, modelOf, readView, sleepUntil } from '../generation/env.ts'
 import type { Env } from '../generation/env.ts'
 import { beforeCompact, fixRequest } from './request.ts'
 import { selectCut, summarizedMessages } from './select.ts'
@@ -62,7 +62,7 @@ const complete = (runtime: CompactionRuntime) =>
 const selectPhase = (env: Env) =>
   Effect.fnUntraced(function* (task: Phase<'select'>, runtime: CompactionRuntime) {
     const agent = yield* agentOf(env, runtime)
-    const ref = agent.model
+    const ref = yield* modelOf(runtime, agent)
     const info = ref === undefined ? undefined : yield* env.model.info(ref)
     if (ref === undefined || info === undefined) return yield* failNoModel(runtime, ref)
     const policy = compactionFor(yield* env.settings, ref)

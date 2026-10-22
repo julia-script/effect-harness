@@ -17,7 +17,7 @@ import { createCompaction } from '../compaction/status.ts'
 import { decodeAll } from '../context.ts'
 import { planSystemEntries, renderSections, replaySections } from '../prompt.ts'
 import { fail, failNoModel } from './classify.ts'
-import { agentOf, readView } from './env.ts'
+import { agentOf, modelOf, readView } from './env.ts'
 import type { Env, GenerationRuntime, Next } from './env.ts'
 
 type Prepare = Extract<Checkpoint, { readonly phase: 'prepare' }>
@@ -145,7 +145,7 @@ export const preparePhase = (env: Env) =>
   ) {
     const { checkpoint } = task.state
     const agent = yield* agentOf(env, runtime)
-    const ref = agent.model
+    const ref = yield* modelOf(runtime, agent)
     const info = ref === undefined ? undefined : yield* env.model.info(ref)
     if (ref === undefined || info === undefined) return yield* failNoModel(runtime, ref)
     const ready = yield* checkCompacted(runtime, checkpoint)

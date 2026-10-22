@@ -7,7 +7,7 @@
 import { describe as group, expect, test } from 'bun:test'
 import { Deferred, Effect, Exit, Ref } from 'effect'
 import { Faux } from '../../model/index.ts'
-import { ModelError, Rejected, Retryable } from '../../model/ModelError.ts'
+import { ModelError, Rejected, Retryable, Unavailable } from '../../model/ModelError.ts'
 import { Read } from '../../test/tool.ts'
 import type * as Extension from '../Extension.ts'
 import {
@@ -247,6 +247,100 @@ group('generation', () => {
         ])
       }),
     ))
+
+  group('fallback', () => {
+    const models = [{ id: 'main' }, { id: 'backup' }]
+    const withBackup = (fallbacks: ReadonlyArray<string> = ['backup']) =>
+      ({
+        faux: { models },
+        agent: (faux: Faux.Faux) => ({
+          model: faux.ref('main'),
+          fallbacks: fallbacks.map((id) => faux.ref(id)),
+        }),
+      }) as const
+    const unavailable = new ModelError({
+      message: 'quota exhausted',
+      reason: new Unavailable({}),
+      response: Faux.message([], { stopReason: 'error', errorMessage: 'quota exhausted' }),
+    })
+    const modelsAsked = (faux: Faux.Faux) =>
+      Effect.map(faux.requests, (requests) => requests.map((request) => request.model.modelId))
+
+    test('an unavailable model hands the run to the fallback, and the next run starts on it again', () =>
+      runTest((storage) =>
+        Effect.gen(function* () {
+          const { harness, faux } = yield* open(storage, withBackup())
+          yield* faux.setResponses([unavailable, Faux.message('from backup'), Faux.message('main')])
+          const conversation = yield* ownerless(harness)
+          const ask = Effect.orDie(
+            Effect.flatMap(conversation.submit({ type: 'input', content: 'hi' }), (s) => s.wait),
+          )
+          expect((yield* ask).status).toBe('done')
+          const entries = yield* entriesOf(harness, conversation.id)
+          expect(entries.map((entry) => describe(entry))).toEqual([
+            '$user: hi',
+            '$system',
+            '$assistant (error)',
+            '$fallback',
+            '$assistant: from backup',
+          ])
+          expect(entries[3]?.data).toEqual({
+            from: faux.ref('main'),
+            to: faux.ref('backup'),
+            error: 'quota exhausted',
+          })
+          expect(yield* liveOf(harness, conversation.id)).toEqual({})
+          expect((yield* ask).status).toBe('done')
+          expect(yield* modelsAsked(faux)).toEqual(['main', 'backup', 'main'])
+        }),
+      ))
+
+    test('moves on once retries run out, or when the provider asks to wait too long', () =>
+      runTest((storage) =>
+        Effect.gen(function* () {
+          const { harness, faux } = yield* open(storage, {
+            ...withBackup(),
+            settings: { retry: { maxRetries: 1, baseDelayMs: 1, maxDelayMs: 1 } },
+          })
+          const later = new ModelError({
+            message: 'usage limit',
+            reason: new Retryable({ retryAfterMs: 60_000 }),
+          })
+          yield* faux.setResponses([
+            retryable,
+            retryable,
+            Faux.message('one'),
+            later,
+            Faux.message('two'),
+          ])
+          const conversation = yield* ownerless(harness)
+          const ask = Effect.orDie(
+            Effect.flatMap(conversation.submit({ type: 'input', content: 'hi' }), (s) => s.wait),
+          )
+          expect((yield* ask).status).toBe('done')
+          expect((yield* ask).status).toBe('done')
+          expect(yield* modelsAsked(faux)).toEqual(['main', 'main', 'backup', 'main', 'backup'])
+        }),
+      ))
+
+    test('skips a fallback no provider serves, and ends model_error once none is left', () =>
+      runTest((storage) =>
+        Effect.gen(function* () {
+          const { harness, faux } = yield* open(storage, withBackup(['gone', 'backup']))
+          yield* faux.setResponses([unavailable, unavailable])
+          const conversation = yield* ownerless(harness)
+          const settled = yield* Effect.orDie(
+            Effect.flatMap(conversation.submit({ type: 'input', content: 'hi' }), (s) => s.wait),
+          )
+          expect(settled).toMatchObject({
+            status: 'unanswered',
+            reason: 'model_error',
+            detail: 'quota exhausted',
+          })
+          expect(yield* modelsAsked(faux)).toEqual(['main', 'backup'])
+        }),
+      ))
+  })
 
   test('ends the run no_model without a model', () =>
     runTest((storage) =>

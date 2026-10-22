@@ -8,7 +8,7 @@
  */
 import { Schema } from 'effect'
 import type { Stream } from 'effect'
-import { AssistantMessage, Message, Usage } from '../model/Message.ts'
+import { AssistantMessage, Message, ModelRef, Usage } from '../model/Message.ts'
 import { ConversationRecord } from '../storage/schema/Conversation.ts'
 import { Op } from '../storage/schema/Document.ts'
 import { EntryRecord } from '../storage/schema/Entry.ts'
@@ -16,8 +16,21 @@ import { ConversationId, EntryId, SubmissionId, TaskId } from '../storage/schema
 import { JsonObject } from '../storage/schema/Json.ts'
 import { JoinPolicy } from '../storage/schema/Task.ts'
 
+/** The fallback model a run moved to, for the rest of the run. */
+export const Fallback = Schema.Struct({
+  /** Its position in the agent's `fallbacks`. */
+  index: Schema.Finite,
+  model: ModelRef,
+})
+export type Fallback = typeof Fallback.Type
+
 /** The task that settles a run's inputs, and those inputs. */
-export const Run = Schema.Struct({ taskId: TaskId, inputs: Schema.Array(SubmissionId) })
+export const Run = Schema.Struct({
+  taskId: TaskId,
+  inputs: Schema.Array(SubmissionId),
+  /** Set once the agent's model could not answer; the next run starts on that model again. */
+  fallback: Schema.optionalKey(Fallback),
+})
 export type Run = typeof Run.Type
 
 /** The current generation attempt. */

@@ -72,6 +72,8 @@ export const Settings = Schema.Struct({
   extensions: Schema.optionalKey(Schema.Array(Schema.String)),
   /** The model of a conversation whose `$agent` sets none; absent, such a run ends `no_model`. */
   model: Schema.optionalKey(Model.Ref),
+  /** The fallback models of a conversation whose `$agent` sets none. Default: none. */
+  fallbacks: Schema.optionalKey(Schema.Array(Model.Ref)),
   /** The reasoning level of a conversation whose `$agent` sets none. Default: `off`. */
   reasoning: Schema.optionalKey(ModelThinkingLevel),
 })
@@ -100,6 +102,7 @@ export const Input = Schema.Struct({
   ),
   extensions: Schema.optionalKey(Schema.Array(Schema.String)),
   model: Schema.optionalKey(Model.Ref),
+  fallbacks: Schema.optionalKey(Schema.Array(Model.Ref)),
   reasoning: Schema.optionalKey(ModelThinkingLevel),
 })
 export type Input = typeof Input.Type
@@ -131,6 +134,7 @@ export const resolve = (input: Input = {}): Settings => ({
   compaction: { ...defaults.compaction, ...input.compaction },
   ...(input.extensions === undefined ? {} : { extensions: input.extensions }),
   ...(input.model === undefined ? {} : { model: input.model }),
+  ...(input.fallbacks === undefined ? {} : { fallbacks: input.fallbacks }),
   ...(input.reasoning === undefined ? {} : { reasoning: input.reasoning }),
 })
 

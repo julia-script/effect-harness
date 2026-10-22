@@ -5,7 +5,7 @@ import { HttpClient, HttpClientRequest } from 'effect/http'
 import * as CredentialStore from '../../../credentials/CredentialStore.ts'
 import * as LanguageModelProvider from '../../../model/LanguageModelProvider.ts'
 import type { Info, Listable, Listed, Request } from '../../../model/Model.ts'
-import { ModelError, Rejected } from '../../../model/ModelError.ts'
+import { ModelError, Rejected, Unavailable } from '../../../model/ModelError.ts'
 import { getJson, listed } from '../../../internal/provider/listing.ts'
 import type { Options } from '../../AnthropicOAuth.ts'
 import { models as catalog } from '../catalog.ts'
@@ -27,6 +27,8 @@ const Page = Schema.Struct({
   last_id: Schema.NullOr(Schema.String),
 })
 const rejected = (message: string) => new ModelError({ message, reason: new Rejected({}) })
+/** No usable credentials: another model may still answer. */
+const unavailable = (message: string) => new ModelError({ message, reason: new Unavailable({}) })
 
 const account = Effect.fnUntraced(
   function* (name: string, authUrl: string) {
@@ -36,10 +38,10 @@ const account = Effect.fnUntraced(
         refresh(authUrl, stored).pipe(Effect.provideService(HttpClient.HttpClient, http)),
     })
     const stored = yield* resolve(name).pipe(
-      Effect.mapError(() => rejected('Claude credentials could not be resolved')),
+      Effect.mapError(() => unavailable('Claude credentials could not be resolved')),
     )
     if (stored?._tag !== 'OAuth')
-      return yield* rejected(`Sign in to Claude first: no ${name} OAuth tokens are stored`)
+      return yield* unavailable(`Sign in to Claude first: no ${name} OAuth tokens are stored`)
     return stored.access
   },
   Semaphore.withPermit(Semaphore.makeUnsafe(1)),

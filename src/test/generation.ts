@@ -32,6 +32,7 @@ export interface Opened {
 export interface Agent {
   /** Default: the faux model; `null` for none. */
   readonly model?: Model.Ref | null
+  readonly fallbacks?: ReadonlyArray<Model.Ref>
   readonly reasoning?: ModelThinkingLevel
   readonly sections?: ReadonlyArray<Extension.Section>
   /** Default: every tool of the toolkit. */
@@ -62,6 +63,7 @@ export const open = (
     const settings = Settings.make({
       retry: { baseDelayMs: 1, maxDelayMs: 1 },
       ...(model === null ? {} : { model }),
+      ...(agent.fallbacks === undefined ? {} : { fallbacks: agent.fallbacks }),
       ...(agent.reasoning === undefined ? {} : { reasoning: agent.reasoning }),
       ...options.settings,
     })

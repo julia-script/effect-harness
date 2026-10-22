@@ -14,6 +14,7 @@ import {
   ModelError,
   Rejected,
   Retryable,
+  Unavailable,
 } from '../../ModelError.ts'
 import { apply, partial } from '../messages.ts'
 import type { Tools } from './prompt.ts'
@@ -46,6 +47,8 @@ export const fromAiError = (error: unknown): ModelError => {
   }
   if (reason._tag === 'InvalidRequestError' && isOverflowText(message))
     return new ModelError({ message, reason: new ContextOverflow({}), cause: error })
+  if (reason._tag === 'QuotaExhaustedError' || reason._tag === 'AuthenticationError')
+    return new ModelError({ message, reason: new Unavailable({}), cause: error })
   const next = error.isRetryable ? new Retryable({}) : new Rejected({})
   return new ModelError({ message, reason: next, cause: error })
 }
