@@ -9,7 +9,7 @@
  * installs the tool rather than by the model. Its Schema decodes the value the task is given, so a
  * config with defaults can be left out.
  */
-import { Option, Schema } from 'effect'
+import { Option, Schema, SchemaAST } from 'effect'
 import type { ImageContent, TextContent, ToolDefinition } from '../model/Message.ts'
 import { JsonObject } from '../storage/schema/Json.ts'
 
@@ -125,8 +125,21 @@ export function make(name: string, options: Options<Codec, Codec, Codec, Codec>)
 
 const jsonObject = Schema.decodeUnknownOption(JsonObject)
 
+/**
+ * `Schema.Struct({})` accepts any value but null, so its JSON Schema has no `type`. Providers want
+ * an object for a tool's input, and Anthropic refuses the request without one.
+ */
+const isEmptyObject = (ast: SchemaAST.AST) =>
+  SchemaAST.isObjects(ast) &&
+  ast.propertySignatures.length === 0 &&
+  ast.indexSignatures.length === 0
+
+const emptyParameters = { type: 'object', properties: {}, additionalProperties: false }
+
 /** The tool as the transcript offers it to the model, with its parameters as JSON Schema. */
 export const definition = (tool: Any): ToolDefinition => {
+  if (isEmptyObject(SchemaAST.toEncoded(tool.parameters.ast)))
+    return { name: tool.name, description: tool.description, parameters: emptyParameters }
   const document = Schema.toJsonSchemaDocument(tool.parameters)
   const schema =
     Object.keys(document.definitions).length === 0
