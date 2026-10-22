@@ -99,7 +99,7 @@ const answer = (results: ReadonlyArray<Message.ToolResultMessage>) =>
       results,
       Array.map(
         (result) =>
-          `\`${result.toolName}\` says: ${Array.join(
+          `${result.toolName} says: ${Array.join(
             Array.flatMap(result.content, (part) => (part.type === 'text' ? [part.text] : [])),
             '',
           )}`,

@@ -287,13 +287,13 @@ export const make = (config: Config) => {
 const statusView = (loop: Loop, h: HtmlBuilder<Message>): Html => {
   const status = Loop.match(loop, {
     Off: () => ({ dot: 'bg-zinc-500', text: 'Waiting for the page' }),
-    Starting: () => ({ dot: 'bg-amber-400 animate-pulse', text: 'Opening storage…' }),
+    Starting: () => ({ dot: 'bg-zinc-500 animate-pulse', text: 'Opening storage…' }),
     Running: ({ epoch }) => ({
-      dot: 'bg-emerald-400 shadow-[0_0_12px] shadow-emerald-400/70',
+      dot: 'bg-zinc-100',
       text: epoch === 1 ? 'Loop running' : `Loop running · life #${epoch}`,
     }),
-    Crashed: () => ({ dot: 'bg-rose-500', text: 'Loop crashed · storage intact' }),
-    Failed: ({ reason }) => ({ dot: 'bg-rose-500', text: `Failed: ${reason}` }),
+    Crashed: () => ({ dot: 'ring-1 ring-zinc-500', text: 'Loop crashed · storage intact' }),
+    Failed: ({ reason }) => ({ dot: 'ring-1 ring-zinc-500', text: `Failed: ${reason}` }),
   })
   return h.div(
     [h.Class('flex items-center gap-2 text-sm text-zinc-300')],
@@ -312,10 +312,10 @@ const controlsView = (config: Config, model: Model, h: HtmlBuilder<Message>): Ht
               h.Type('button'),
               h.OnClick(Message.ClickedCrash()),
               h.Class(
-                'rounded-lg bg-rose-500/15 px-3 py-1.5 text-sm font-semibold text-rose-300 ring-1 ring-rose-500/40 transition hover:bg-rose-500/25',
+                'rounded-lg bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-300 ring-1 ring-white/15 transition hover:bg-white/10',
               ),
             ],
-            ['💥 Crash the loop'],
+            ['Crash the loop'],
           ),
         Crashed: () => restartButton(h),
         Failed: () => restartButton(h),
@@ -328,25 +328,24 @@ const restartButton = (h: HtmlBuilder<Message>): Html =>
       h.Type('button'),
       h.OnClick(Message.ClickedStart()),
       h.Class(
-        'rounded-lg bg-emerald-500/15 px-3 py-1.5 text-sm font-semibold text-emerald-300 ring-1 ring-emerald-500/40 transition hover:bg-emerald-500/25',
+        'rounded-lg bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-300 ring-1 ring-white/15 transition hover:bg-white/10',
       ),
     ],
-    ['▶ Restart the loop'],
+    ['Restart the loop'],
   )
 
 const blockView = (block: Transcript.Block, h: HtmlBuilder<Message>): Html =>
   Transcript.Block.match(block, {
     Text: ({ text }) => h.p([h.Class('whitespace-pre-wrap leading-relaxed')], [text]),
-    Thinking: ({ text }) =>
-      h.p([h.Class('text-sm italic leading-relaxed text-zinc-400')], [`💭 ${text}`]),
+    Thinking: ({ text }) => h.p([h.Class('text-sm italic leading-relaxed text-zinc-400')], [text]),
     ToolCall: ({ name, args }) =>
       h.p(
         [
           h.Class(
-            'w-fit rounded-md bg-sky-500/10 px-2 py-1 font-mono text-xs text-sky-300 ring-1 ring-sky-500/30',
+            'w-fit rounded-md bg-white/5 px-2 py-1 font-mono text-xs text-zinc-300 ring-1 ring-white/15',
           ),
         ],
-        [`⚙ ${name}(${args})`],
+        [`${name}(${args})`],
       ),
   })
 
@@ -359,11 +358,11 @@ const assistantView = (
     [h.Class('flex flex-col gap-2 self-start max-w-[90%]')],
     [
       h.span(
-        [h.Class('text-xs font-semibold uppercase tracking-wider text-violet-300')],
+        [h.Class('text-xs font-semibold uppercase tracking-wider text-zinc-300')],
         [isDraft ? 'assistant · streaming' : 'assistant'],
       ),
       ...Array.map(blocks, (block) => blockView(block, h)),
-      isDraft ? h.span([h.Class('h-4 w-2 animate-pulse bg-violet-300')]) : h.empty,
+      isDraft ? h.span([h.Class('h-4 w-2 animate-pulse bg-zinc-300')]) : h.empty,
     ],
   )
 
@@ -374,7 +373,7 @@ const bubbleView = (bubble: Transcript.Bubble, h: HtmlBuilder<Message>): Html =>
         `${id}`,
         [
           h.Class(
-            'self-end max-w-[85%] rounded-2xl rounded-br-sm bg-violet-500/20 px-4 py-2 text-violet-50 ring-1 ring-violet-400/30',
+            'self-end max-w-[85%] rounded-xl rounded-br-sm bg-white/5 px-4 py-2 text-zinc-200 ring-1 ring-white/15',
           ),
         ],
         [text],
@@ -388,12 +387,12 @@ const bubbleView = (bubble: Transcript.Bubble, h: HtmlBuilder<Message>): Html =>
           h.Class(
             `self-start max-w-[90%] rounded-lg px-3 py-2 font-mono text-xs ring-1 ${
               isError
-                ? 'bg-rose-500/10 text-rose-200 ring-rose-500/30'
-                : 'bg-emerald-500/10 text-emerald-200 ring-emerald-500/30'
+                ? 'bg-white/5 text-zinc-200 ring-white/15'
+                : 'bg-white/5 text-zinc-200 ring-white/15'
             }`,
           ),
         ],
-        [`${isError ? '✗' : '✓'} ${toolName} → ${text}`],
+        [`${toolName}${isError ? ' failed' : ''}: ${text}`],
       ),
     System: ({ id, tools }) =>
       h.keyed('div')(
@@ -421,10 +420,10 @@ const runningToolsView = (
         callId,
         [
           h.Class(
-            'flex items-center gap-2 rounded-md bg-amber-500/10 px-2 py-1 font-mono text-xs text-amber-200 ring-1 ring-amber-500/30',
+            'flex items-center gap-2 rounded-md bg-white/5 px-2 py-1 font-mono text-xs text-zinc-200 ring-1 ring-white/15',
           ),
         ],
-        [h.span([h.Class('size-2 animate-ping rounded-full bg-amber-300')]), `running ${name}…`],
+        [h.span([h.Class('size-2 animate-ping rounded-full bg-zinc-300')]), `running ${name}…`],
       ),
     ),
   )
@@ -456,17 +455,11 @@ const transcriptView = (transcript: Transcript.Transcript, h: HtmlBuilder<Messag
     ],
   )
 
+/** The demo's own lines stand out from the loop's events. */
+const DEMO_LOG_TYPES: ReadonlyArray<string> = ['crash', 'error', 'restart', 'lab']
+
 const logTypeClass = (type: string): string =>
-  Match.value(type).pipe(
-    Match.when('crash', () => 'text-rose-400'),
-    Match.when('error', () => 'text-rose-400'),
-    Match.when('restart', () => 'text-emerald-400'),
-    Match.when('lab', () => 'text-emerald-400'),
-    Match.when('snapshot', () => 'text-amber-300'),
-    Match.when(String.startsWith('tool'), () => 'text-sky-300'),
-    Match.when(String.startsWith('message'), () => 'text-violet-300'),
-    Match.orElse(() => 'text-zinc-400'),
-  )
+  Array.contains(DEMO_LOG_TYPES, type) ? 'text-zinc-100' : 'text-zinc-400'
 
 const logView = (log: ReadonlyArray<Transcript.LogLine>, h: HtmlBuilder<Message>): Html =>
   h.div(
@@ -522,7 +515,7 @@ const composerView = (config: Config, model: Model, h: HtmlBuilder<Message>): Ht
                 h.AriaLabel('Message'),
                 h.Disabled(isDisabled),
                 h.Class(
-                  'min-w-0 flex-1 rounded-lg bg-black/40 px-3 py-2 text-sm text-zinc-100 ring-1 ring-white/10 outline-none placeholder:text-zinc-500 focus:ring-violet-400/60',
+                  'min-w-0 flex-1 rounded-lg bg-black/40 px-3 py-2 text-sm text-zinc-100 ring-1 ring-white/10 outline-none placeholder:text-zinc-500 focus:ring-white/15',
                 ),
               ]),
               h.button(
@@ -530,7 +523,7 @@ const composerView = (config: Config, model: Model, h: HtmlBuilder<Message>): Ht
                   h.Type('submit'),
                   h.Disabled(isDisabled),
                   h.Class(
-                    'rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-400 disabled:opacity-40',
+                    'rounded-lg bg-zinc-100 px-4 py-2 text-sm font-semibold text-ink-950 transition hover:bg-white disabled:opacity-40',
                   ),
                 ],
                 ['Send'],
@@ -549,7 +542,7 @@ const composerView = (config: Config, model: Model, h: HtmlBuilder<Message>): Ht
               h.Disabled(isDisabled),
               h.OnClick(Message.ClickedPrompt({ content })),
               h.Class(
-                'rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-400 disabled:opacity-40',
+                'rounded-lg bg-zinc-100 px-4 py-2 text-sm font-semibold text-ink-950 transition hover:bg-white disabled:opacity-40',
               ),
             ],
             [label],
@@ -569,11 +562,7 @@ const composerView = (config: Config, model: Model, h: HtmlBuilder<Message>): Ht
 
 const demoView = (config: Config, model: Model, h: HtmlBuilder<Message>): Html =>
   h.div(
-    [
-      h.Class(
-        'overflow-hidden rounded-2xl bg-zinc-950/80 shadow-2xl shadow-violet-950/40 ring-1 ring-white/10 backdrop-blur',
-      ),
-    ],
+    [h.Class('overflow-hidden rounded-xl bg-ink-900 ring-1 ring-white/10')],
     [
       h.div(
         [h.Class('flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3')],

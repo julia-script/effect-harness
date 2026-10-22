@@ -3,13 +3,9 @@
 @theme {
   --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  --color-ink-950: #0b1020;
-  --color-ink-900: #141a3a;
-  --color-ink-800: #1d2550;
-  --color-plum-900: #2a1145;
-  --color-sky-accent: #7c9cff;
-  --color-violet-accent: #b47cff;
-  --color-pink-accent: #ff7ab6;
+  --color-ink-950: #0a0a0a;
+  --color-ink-900: #141414;
+  --color-ink-800: #1f1f1f;
 }
 
 html {
@@ -19,17 +15,6 @@ html {
 
 body {
   @apply bg-ink-950 font-sans text-zinc-200 antialiased;
-}
-
-.text-gradient {
-  @apply bg-linear-to-r from-sky-accent via-violet-accent to-pink-accent bg-clip-text text-transparent;
-}
-
-.bg-grid {
-  background-image:
-    linear-gradient(to right, rgb(255 255 255 / 0.04) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(255 255 255 / 0.04) 1px, transparent 1px);
-  background-size: 32px 32px;
 }
 
 /* Shiki paints its own background; the code panels have theirs. */

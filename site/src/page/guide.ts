@@ -24,12 +24,12 @@ const sidebar = (current: Guide, h: HtmlBuilder<Message>): Html =>
             h.Class(
               `flex items-center gap-2.5 rounded-lg px-3 py-1.5 text-sm transition ${
                 isCurrent
-                  ? 'bg-violet-accent/10 font-semibold text-white ring-1 ring-violet-accent/30'
+                  ? 'bg-white/[0.03] font-semibold text-white ring-1 ring-white/20'
                   : 'text-zinc-400 hover:bg-white/5 hover:text-white'
               }`,
             ),
           ],
-          [h.span([h.Class('w-5 text-center')], [guide.icon]), guide.title],
+          [guide.title],
         )
       }),
     ],
@@ -51,7 +51,7 @@ const tableOfContents = (guide: Guide, h: HtmlBuilder<Message>): Html =>
               [
                 h.Href(`#${id}`),
                 h.Class(
-                  'border-l border-white/10 py-1 pl-3 text-zinc-400 transition hover:border-violet-accent hover:text-white',
+                  'border-l border-white/10 py-1 pl-3 text-zinc-400 transition hover:border-zinc-300 hover:text-white',
                 ),
               ],
               [title],
@@ -74,12 +74,12 @@ const neighbour = (
         [
           h.Href(guideRouter({ slug: guide.slug })),
           h.Class(
-            `flex flex-col gap-1 rounded-xl bg-white/[0.03] p-4 ring-1 ring-white/10 transition hover:ring-violet-accent/40 ${alignClass}`,
+            `flex flex-col gap-1 rounded-xl bg-white/[0.03] p-4 ring-1 ring-white/10 transition hover:ring-white/20 ${alignClass}`,
           ),
         ],
         [
           h.span([h.Class('text-xs text-zinc-500')], [label]),
-          h.span([h.Class('font-semibold text-white')], [`${guide.icon} ${guide.title}`]),
+          h.span([h.Class('font-semibold text-white')], [guide.title]),
         ],
       ),
   })
@@ -103,7 +103,7 @@ const pager = (guide: Guide, h: HtmlBuilder<Message>): Html => {
           h.Href(`${REPOSITORY}/edit/main/docs/${guide.slug}.md`),
           h.Class('text-sm text-zinc-500 hover:text-white'),
         ],
-        ['✎ Edit this page on GitHub'],
+        ['Edit this page on GitHub'],
       ),
     ],
   )
@@ -115,7 +115,7 @@ const mobileNav = (guide: Guide, h: HtmlBuilder<Message>): Html =>
     [
       h.summary(
         [h.Class('cursor-pointer px-4 py-3 text-sm font-semibold text-white select-none')],
-        [`${guide.icon} ${guide.title}`],
+        [guide.title],
       ),
       h.div([h.Class('px-2 pb-3')], [sidebar(guide, h)]),
     ],

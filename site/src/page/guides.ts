@@ -16,7 +16,7 @@ export const view = (h: HtmlBuilder<Message>): Html =>
         [
           'New here? Start with Getting started, then read Concepts. The rest can be read in any order, or ',
           h.a(
-            [h.Href(playgroundRouter()), h.Class('font-medium text-sky-accent hover:underline')],
+            [h.Href(playgroundRouter()), h.Class('font-medium text-zinc-100 hover:underline')],
             ['try the playground'],
           ),
           ' first.',
@@ -29,15 +29,11 @@ export const view = (h: HtmlBuilder<Message>): Html =>
             [
               h.Href(guideRouter({ slug: guide.slug })),
               h.Class(
-                'group rounded-2xl bg-white/[0.03] p-6 ring-1 ring-white/10 transition hover:-translate-y-0.5 hover:bg-white/[0.05] hover:ring-violet-accent/40',
+                'group rounded-lg p-6 ring-1 ring-white/10 transition hover:bg-white/[0.03] hover:ring-white/20',
               ),
             ],
             [
-              h.p([h.Class('text-2xl')], [guide.icon]),
-              h.h2(
-                [h.Class('mt-4 font-semibold text-white group-hover:text-gradient')],
-                [guide.title],
-              ),
+              h.h2([h.Class('font-semibold text-white')], [guide.title]),
               h.p([h.Class('mt-2 text-sm leading-6 text-zinc-400')], [guide.blurb]),
             ],
           ),

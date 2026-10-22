@@ -106,19 +106,15 @@ export const hrefOf = (url: string): string =>
 
 const ALERT = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/
 
-const Alert = {
-  NOTE: { icon: 'ℹ️', label: 'Note', className: 'border-sky-accent/60 bg-sky-accent/5' },
-  TIP: { icon: '💡', label: 'Tip', className: 'border-emerald-400/60 bg-emerald-400/5' },
-  IMPORTANT: {
-    icon: '❗',
-    label: 'Important',
-    className: 'border-violet-accent/60 bg-violet-accent/5',
-  },
-  WARNING: { icon: '⚠️', label: 'Warning', className: 'border-amber-400/60 bg-amber-400/5' },
-  CAUTION: { icon: '🛑', label: 'Caution', className: 'border-rose-400/60 bg-rose-400/5' },
+const alertLabel = {
+  NOTE: 'Note',
+  TIP: 'Tip',
+  IMPORTANT: 'Important',
+  WARNING: 'Warning',
+  CAUTION: 'Caution',
 } as const
 
-type AlertKind = keyof typeof Alert
+type AlertKind = keyof typeof alertLabel
 
 const alertOf = (blockquote: Markdown.Blockquote): Option.Option<AlertKind> =>
   pipe(
@@ -129,7 +125,7 @@ const alertOf = (blockquote: Markdown.Blockquote): Option.Option<AlertKind> =>
     Option.flatMap((inline) =>
       inline._tag === 'Text' ? Option.fromNullishOr(ALERT.exec(inline.value)?.[1]) : Option.none(),
     ),
-    Option.filter((kind): kind is AlertKind => kind in Alert),
+    Option.filter((kind): kind is AlertKind => kind in alertLabel),
   )
 
 // VIEWS
@@ -156,9 +152,7 @@ const headingView = (
       [
         h.Href(`#${id}`),
         h.AriaLabel('Link to this section'),
-        h.Class(
-          'ml-2 text-zinc-600 opacity-0 transition group-hover:opacity-100 hover:text-violet-accent',
-        ),
+        h.Class('ml-2 text-zinc-600 opacity-0 transition group-hover:opacity-100 hover:text-white'),
       ],
       ['#'],
     ),
@@ -231,11 +225,7 @@ export const guideViews = (guide: Guide, h: HtmlBuilder<Message>): Markdown.View
     Text: ({ value }) => String.replace(ALERT, '')(value),
     InlineCode: ({ value }) =>
       h.code(
-        [
-          h.Class(
-            'rounded-md bg-white/[0.07] px-1.5 py-0.5 font-mono text-[0.85em] text-violet-200',
-          ),
-        ],
+        [h.Class('rounded-md bg-white/[0.07] px-1.5 py-0.5 font-mono text-[0.85em] text-zinc-200')],
         [value],
       ),
     Strong: (_strong, content) => h.strong([h.Class('font-semibold text-white')], content),
@@ -244,7 +234,7 @@ export const guideViews = (guide: Guide, h: HtmlBuilder<Message>): Markdown.View
         [
           h.Href(hrefOf(url)),
           h.Class(
-            'font-medium text-sky-accent underline decoration-sky-accent/30 underline-offset-4 transition hover:decoration-sky-accent',
+            'font-medium text-zinc-100 underline decoration-zinc-600 underline-offset-4 transition hover:decoration-zinc-300',
           ),
         ],
         content,
@@ -259,7 +249,7 @@ export const guideViews = (guide: Guide, h: HtmlBuilder<Message>): Markdown.View
             items,
           )
         : h.ul(
-            [h.Class('my-4 list-disc space-y-2 pl-6 text-zinc-300 marker:text-violet-accent/70')],
+            [h.Class('my-4 list-disc space-y-2 pl-6 text-zinc-300 marker:text-zinc-600')],
             items,
           ),
     ListItem: (_item, blocks) => h.li([h.Class('pl-1 leading-7 [&>p]:my-0')], blocks),
@@ -271,16 +261,9 @@ export const guideViews = (guide: Guide, h: HtmlBuilder<Message>): Markdown.View
             h.blockquote([h.Class('my-6 border-l-2 border-white/20 pl-4 text-zinc-400')], blocks),
           onSome: (kind) =>
             h.aside(
+              [h.Class('my-6 border-l-2 border-zinc-500 bg-white/[0.02] px-5 py-3 [&>p]:my-2')],
               [
-                h.Class(
-                  `my-6 rounded-r-xl border-l-4 px-5 py-3 ${Alert[kind].className} [&>p]:my-2`,
-                ),
-              ],
-              [
-                h.p(
-                  [h.Class('mt-1 mb-0 text-sm font-semibold text-white')],
-                  [`${Alert[kind].icon} ${Alert[kind].label}`],
-                ),
+                h.p([h.Class('mt-1 mb-0 text-sm font-semibold text-white')], [alertLabel[kind]]),
                 ...blocks,
               ],
             ),

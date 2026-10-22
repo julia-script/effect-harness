@@ -11,13 +11,13 @@ const prose = (text: ReadonlyArray<string | Html>, h: HtmlBuilder<Message>): Htm
   h.p([h.Class('mt-4 max-w-3xl leading-7 text-zinc-400')], text)
 
 const link = (href: string, label: string, h: HtmlBuilder<Message>): Html =>
-  h.a([h.Href(href), h.Class('font-medium text-sky-accent hover:underline')], [label])
+  h.a([h.Href(href), h.Class('font-medium text-zinc-100 hover:underline')], [label])
 
-const legendItem = (type: string, colorClass: string, text: string, h: HtmlBuilder<Message>) =>
+const legendItem = (type: string, text: string, h: HtmlBuilder<Message>) =>
   h.li(
     [h.Class('flex gap-3 text-sm leading-6')],
     [
-      h.code([h.Class(`w-44 shrink-0 font-mono text-xs leading-6 ${colorClass}`)], [type]),
+      h.code([h.Class('w-44 shrink-0 font-mono text-xs leading-6 text-zinc-300')], [type]),
       h.span([h.Class('text-zinc-400')], [text]),
     ],
   )
@@ -45,9 +45,9 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Html =>
           prose(
             [
               'Three tools and a model that picks them by keyword. Ask for more than one and the model calls them in a single round. Watch the event log: each commit delivers a batch, and the streamed response arrives as ',
-              h.code([h.Class('font-mono text-violet-200')], ['message_update']),
+              h.code([h.Class('font-mono text-zinc-200')], ['message_update']),
               ' deltas before its ',
-              h.code([h.Class('font-mono text-violet-200')], ['message_end']),
+              h.code([h.Class('font-mono text-zinc-200')], ['message_end']),
               '.',
             ],
             h,
@@ -79,9 +79,9 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Html =>
           prose(
             [
               'Ship a release, then crash the loop while a step runs. Restarting opens the same storage: the scheduler resumes every unfinished task from its last checkpoint. Tools declared ',
-              h.code([h.Class('font-mono text-violet-200')], ["replay: 'safe'"]),
+              h.code([h.Class('font-mono text-zinc-200')], ["replay: 'safe'"]),
               ' run again; the unsafe deploy answers ',
-              h.code([h.Class('font-mono text-violet-200')], ['interrupted']),
+              h.code([h.Class('font-mono text-zinc-200')], ['interrupted']),
               ' and the model checks before deploying twice. See ',
               link(guideRouter({ slug: 'tools' }) + '#replay-safety', 'replay safety', h),
               ' and ',
@@ -111,13 +111,13 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Html =>
       ),
 
       h.section(
-        [h.Class('mt-20 rounded-2xl bg-white/[0.03] p-6 ring-1 ring-white/10 sm:p-8')],
+        [h.Class('mt-20 rounded-xl bg-white/[0.03] p-6 ring-1 ring-white/10 sm:p-8')],
         [
           h.h2([h.Class('text-xl font-bold text-white')], ['Reading the event log']),
           prose(
             [
               'The right-hand column is ',
-              h.code([h.Class('font-mono text-violet-200')], ['conversation.events']),
+              h.code([h.Class('font-mono text-zinc-200')], ['conversation.events']),
               ', the same stream a UI subscribes to. It starts with a snapshot and then delivers one batch per commit. ',
               link(
                 guideRouter({ slug: 'conversations' }) + '#watching-live',
@@ -131,30 +131,10 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Html =>
           h.ul(
             [h.Class('mt-6 flex flex-col gap-2')],
             [
-              legendItem(
-                'snapshot',
-                'text-amber-300',
-                'Where a watch starts: entries, the run, tools in flight.',
-                h,
-              ),
-              legendItem(
-                'message_*',
-                'text-violet-300',
-                'A message committed, or the response streaming in.',
-                h,
-              ),
-              legendItem(
-                'tool_execution_*',
-                'text-sky-300',
-                'A durable $tool task started or finished.',
-                h,
-              ),
-              legendItem(
-                'crash · restart',
-                'text-rose-400',
-                'Written by the demo, not the loop.',
-                h,
-              ),
+              legendItem('snapshot', 'Where a watch starts: entries, the run, tools in flight.', h),
+              legendItem('message_*', 'A message committed, or the response streaming in.', h),
+              legendItem('tool_execution_*', 'A durable $tool task started or finished.', h),
+              legendItem('crash · restart', 'Written by the demo, not the loop.', h),
             ],
           ),
         ],
