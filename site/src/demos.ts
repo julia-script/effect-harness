@@ -16,7 +16,7 @@ export const release = Demo.make({
       tokensPerSecond: 60,
     })
   }),
-  composer: Demo.Composer.Action({ label: '🚀 Ship it', content: 'Ship it' }),
+  composer: Demo.Composer.Action({ label: 'Ship it', content: 'Ship it' }),
   crashable: true,
 })
 

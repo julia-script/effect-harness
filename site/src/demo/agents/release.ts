@@ -102,12 +102,12 @@ const next = (version: string, result: Message.ToolResultMessage) => {
     )
   }
   if (result.toolName === 'status' && !String.includes('not live')(textOf(result))) {
-    return Faux.message(`${version} landed before the crash, so I did not deploy it again. 🚀`)
+    return Faux.message(`${version} landed before the crash, so I did not deploy it again.`)
   }
   if (result.toolName === 'status') {
     return call('deploy', version, `${version} never landed. Deploying it now.`)
   }
-  return Faux.message(`Shipped ${version}. 🚀`)
+  return Faux.message(`Shipped ${version}.`)
 }
 
 export const respond: Faux.Respond = (request) => {

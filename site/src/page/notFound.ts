@@ -7,7 +7,7 @@ export const view = (path: string, h: HtmlBuilder<Message>): Html =>
   h.div(
     [h.Class(`${container} flex flex-col items-center py-32 text-center`)],
     [
-      h.p([h.Class('font-mono text-sm text-violet-accent')], ['404']),
+      h.p([h.Class('font-mono text-sm text-zinc-500')], ['404']),
       h.h1([h.Class('mt-4 text-4xl font-extrabold text-white')], ['This page crashed for good.']),
       h.p(
         [h.Class('mt-4 text-zinc-400')],

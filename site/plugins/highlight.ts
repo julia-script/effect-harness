@@ -14,7 +14,7 @@ import type { Plugin } from 'vite'
 import { islandAttributes } from '../src/markdown/islands.ts'
 import { normalize } from './githubMarkdown.ts'
 
-export const THEME = 'github-dark-default'
+export const THEME = 'min-dark'
 
 const LANGUAGES = ['typescript', 'tsx', 'json', 'shellscript', 'yaml', 'text'] as const
 

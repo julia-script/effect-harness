@@ -10,34 +10,28 @@ import { container, copyCommand, eyebrow, sectionTitle } from './shared.ts'
 
 const INSTALL = 'bun add effect-harness effect'
 
-const features: ReadonlyArray<readonly [icon: string, title: string, text: string]> = [
+const features: ReadonlyArray<readonly [title: string, text: string]> = [
   [
-    '💾',
     'Durable by default',
     'Runs are durable tasks with checkpoints. Restart the process and unfinished generations, tool calls and compactions resume from storage.',
   ],
   [
-    '🧩',
     'Schemas all the way down',
     'Tools are Effect Schemas and implementations are Layers. A missing handler is a type error, not a runtime surprise.',
   ],
   [
-    '🔌',
     'Client and loop, split',
     'HarnessClient speaks typed RPC to HarnessServer: in one process, over a WebSocket, or inside a Cloudflare Durable Object.',
   ],
   [
-    '🤖',
     'Real providers, real accounts',
     'OpenAI, Anthropic, Codex through a ChatGPT sign-in, Claude subscriptions, and any OpenAI-compatible server.',
   ],
   [
-    '🧠',
     'A loop that manages itself',
     'Steering and follow-up queues, retries with backoff, compaction before the window fills, deferred tools and usage ledgers.',
   ],
   [
-    '🛠️',
     'Batteries included',
     'read, write, edit and bash coding tools, a durable code mode over QuickJS, and a scripted Faux model for tests.',
   ],
@@ -65,8 +59,8 @@ const button = (href: string, label: string, isPrimary: boolean, h: HtmlBuilder<
       h.Href(href),
       h.Class(
         isPrimary
-          ? 'rounded-xl bg-linear-to-r from-sky-accent via-violet-accent to-pink-accent px-5 py-3 text-sm font-semibold text-ink-950 shadow-lg shadow-violet-accent/25 transition hover:brightness-110'
-          : 'rounded-xl bg-white/5 px-5 py-3 text-sm font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/10',
+          ? 'rounded-lg bg-zinc-100 px-5 py-3 text-sm font-semibold text-ink-950 transition hover:bg-white'
+          : 'rounded-lg px-5 py-3 text-sm font-semibold text-zinc-200 ring-1 ring-white/15 transition hover:bg-white/5',
       ),
     ],
     [label],
@@ -74,32 +68,18 @@ const button = (href: string, label: string, isPrimary: boolean, h: HtmlBuilder<
 
 const hero = (model: Model, h: HtmlBuilder<Message>): Html =>
   h.section(
-    [h.Class('relative overflow-hidden')],
+    [h.Class('border-b border-white/10')],
     [
-      h.div([
-        h.Class(
-          'bg-grid absolute inset-0 [mask-image:radial-gradient(ellipse_at_top,black,transparent_70%)]',
-        ),
-      ]),
-      h.div([
-        h.Class(
-          'absolute -top-40 left-1/2 size-[42rem] -translate-x-1/2 rounded-full bg-violet-accent/20 blur-3xl',
-        ),
-      ]),
       h.div(
         [h.Class(`${container} relative flex flex-col items-center py-20 text-center sm:py-28`)],
         [
           h.p(
-            [
-              h.Class(
-                'mb-6 rounded-full bg-white/5 px-4 py-1.5 text-xs font-medium text-zinc-300 ring-1 ring-white/10',
-              ),
-            ],
+            [h.Class('mb-6 text-sm text-zinc-500')],
             ['Built on Effect 4 · runs on Bun, Node and Cloudflare Workers'],
           ),
           h.h1(
             [h.Class('max-w-4xl text-5xl font-extrabold tracking-tight text-white sm:text-7xl')],
-            ['An agent loop you can ', h.span([h.Class('text-gradient')], ['kill at any moment.'])],
+            ['An agent loop you can ', h.span([h.Class('text-zinc-400')], ['kill at any moment.'])],
           ),
           h.p(
             [h.Class('mt-6 max-w-2xl text-lg leading-8 text-zinc-400')],
@@ -130,7 +110,7 @@ const step = (index: number, title: string, text: string, h: HtmlBuilder<Message
       h.span(
         [
           h.Class(
-            'flex size-8 shrink-0 items-center justify-center rounded-full bg-violet-accent/15 font-mono text-sm font-semibold text-violet-200 ring-1 ring-violet-accent/40',
+            'flex size-8 shrink-0 items-center justify-center rounded-full bg-white/[0.03] font-mono text-sm font-semibold text-zinc-200 ring-1 ring-white/20',
           ),
         ],
         [`${index}`],
@@ -207,16 +187,15 @@ const featureGrid = (h: HtmlBuilder<Message>): Html =>
       sectionTitle('Everything an agent needs to survive production.', h),
       h.div(
         [h.Class('mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3')],
-        Array.map(features, ([icon, title, text]) =>
+        Array.map(features, ([title, text]) =>
           h.div(
             [
               h.Class(
-                'rounded-2xl bg-white/[0.03] p-6 ring-1 ring-white/10 transition hover:bg-white/[0.05] hover:ring-violet-accent/30',
+                'rounded-xl bg-white/[0.03] p-6 ring-1 ring-white/10 transition hover:bg-white/[0.05] hover:ring-white/20',
               ),
             ],
             [
-              h.p([h.Class('text-2xl')], [icon]),
-              h.h3([h.Class('mt-4 font-semibold text-white')], [title]),
+              h.h3([h.Class('font-semibold text-white')], [title]),
               h.p([h.Class('mt-2 text-sm leading-6 text-zinc-400')], [text]),
             ],
           ),
@@ -261,7 +240,7 @@ const firstAgent = (h: HtmlBuilder<Message>): Html =>
           h.div(
             [
               h.Class(
-                'highlighted overflow-hidden rounded-2xl bg-ink-900/60 font-mono ring-1 ring-white/10',
+                'highlighted overflow-hidden rounded-xl bg-ink-900/60 font-mono ring-1 ring-white/10',
               ),
             ],
             [
@@ -272,9 +251,9 @@ const firstAgent = (h: HtmlBuilder<Message>): Html =>
                   ),
                 ],
                 [
-                  h.span([h.Class('size-3 rounded-full bg-rose-400/70')]),
-                  h.span([h.Class('size-3 rounded-full bg-amber-300/70')]),
-                  h.span([h.Class('size-3 rounded-full bg-emerald-400/70')]),
+                  h.span([h.Class('size-3 rounded-full bg-white/5')]),
+                  h.span([h.Class('size-3 rounded-full bg-white/5')]),
+                  h.span([h.Class('size-3 rounded-full bg-white/5')]),
                   h.span([h.Class('ml-2 font-mono')], ['site/src/demo/agents/wordsmith.ts']),
                 ],
               ),

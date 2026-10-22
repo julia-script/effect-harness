@@ -28,7 +28,6 @@ import toolsCode from '../../docs/tools.md?code'
 
 export interface Guide {
   readonly slug: string
-  readonly icon: string
   readonly title: string
   /** When to read it. */
   readonly blurb: string
@@ -38,17 +37,15 @@ export interface Guide {
 
 const guide = (
   slug: string,
-  icon: string,
   title: string,
   blurb: string,
   wire: unknown,
   code: ReadonlyArray<string | null>,
-): Guide => ({ slug, icon, title, blurb, document: Markdown.decodeDocument(wire), code })
+): Guide => ({ slug, title, blurb, document: Markdown.decodeDocument(wire), code })
 
 export const guides: ReadonlyArray<Guide> = [
   guide(
     'getting-started',
-    '🚀',
     'Getting started',
     'Run a first conversation, then add a real model and storage.',
     gettingStarted,
@@ -56,7 +53,6 @@ export const guides: ReadonlyArray<Guide> = [
   ),
   guide(
     'concepts',
-    '🧭',
     'Concepts',
     'Understand loops, clients, runs, entries, tasks and documents.',
     concepts,
@@ -64,7 +60,6 @@ export const guides: ReadonlyArray<Guide> = [
   ),
   guide(
     'conversations',
-    '💬',
     'Conversations',
     'Submit, steer, fork, reset, compact and stream live events.',
     conversations,
@@ -72,7 +67,6 @@ export const guides: ReadonlyArray<Guide> = [
   ),
   guide(
     'tools',
-    '🛠️',
     'Tools',
     'Declare tools, make them crash-safe, return images, use the stock tools.',
     tools,
@@ -80,7 +74,6 @@ export const guides: ReadonlyArray<Guide> = [
   ),
   guide(
     'extensions',
-    '🧩',
     'Extensions',
     'Shape the system prompt, hook into the loop, mix and match per conversation.',
     extensions,
@@ -88,7 +81,6 @@ export const guides: ReadonlyArray<Guide> = [
   ),
   guide(
     'providers',
-    '🤖',
     'Providers & accounts',
     'Connect OpenAI, Anthropic, Codex or Claude, or let users add accounts.',
     providers,
@@ -96,7 +88,6 @@ export const guides: ReadonlyArray<Guide> = [
   ),
   guide(
     'persistence',
-    '💾',
     'Persistence',
     'Pick a storage backend, know what recovery covers, keep your own state.',
     persistence,
@@ -104,7 +95,6 @@ export const guides: ReadonlyArray<Guide> = [
   ),
   guide(
     'deployment',
-    '🌍',
     'Deployment',
     'Split client and loop, serve WebSockets, run on Cloudflare.',
     deployment,
@@ -112,20 +102,12 @@ export const guides: ReadonlyArray<Guide> = [
   ),
   guide(
     'reference',
-    '📚',
     'Reference',
     'Look up a subpath, a setting or a built-in name.',
     reference,
     referenceCode,
   ),
-  guide(
-    'releasing',
-    '📦',
-    'Releasing',
-    'Publish a new version (maintainers).',
-    releasing,
-    releasingCode,
-  ),
+  guide('releasing', 'Releasing', 'Publish a new version (maintainers).', releasing, releasingCode),
 ]
 
 export const find = (slug: string): Option.Option<Guide> =>
