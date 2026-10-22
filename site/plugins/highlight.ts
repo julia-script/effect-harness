@@ -1,9 +1,10 @@
 /**
  * Syntax highlighting at build time, so the browser gets markup and no highlighter.
  *
- * - `guide.md?code` is the guide's code blocks in document order, highlighted, with `null` for
- *   diagrams, which render in the browser.
+ * - `guide.md?code` is the guide's code blocks in document order: highlighted code, or a Mermaid
+ *   diagram drawn as SVG.
  * - `file.ts?highlight` is a source file, raw and highlighted, for the demos' code panels.
+ * - `file.mmd?diagram` is a Mermaid diagram drawn as SVG.
  */
 import { readFile } from 'node:fs/promises'
 import type * as Markdown from '@foldkit/markdown'
@@ -12,6 +13,7 @@ import { Array, Option, pipe } from 'effect'
 import { createHighlighter } from 'shiki'
 import type { Plugin } from 'vite'
 import { islandAttributes } from '../src/markdown/islands.ts'
+import { renderDiagram } from './diagram/index.ts'
 import { normalize } from './githubMarkdown.ts'
 
 export const THEME = 'min-dark'
@@ -49,20 +51,21 @@ const codeBlocks = (blocks: ReadonlyArray<Markdown.Block>): ReadonlyArray<Markdo
     return []
   })
 
-const highlightGuide = async (source: string): Promise<ReadonlyArray<string | null>> =>
+const highlightGuide = async (source: string): Promise<ReadonlyArray<string>> =>
   Promise.all(
     Array.map(codeBlocks(parseMarkdown(source, { islands: islandAttributes }).blocks), (block) =>
       pipe(
         block.maybeLanguage,
         Option.getOrElse(() => 'text'),
         (language) =>
-          language === 'mermaid' ? Promise.resolve(null) : highlight(block.value, language),
+          language === 'mermaid' ? renderDiagram(block.value) : highlight(block.value, language),
       ),
     ),
   )
 
 const CODE = '?code'
 const HIGHLIGHT = '?highlight'
+const DIAGRAM = '?diagram'
 
 export const highlightCode = (): Plugin => ({
   name: 'site:highlight',
@@ -80,6 +83,11 @@ export const highlightCode = (): Plugin => ({
       const raw = (await readFile(file, 'utf8')).trimEnd()
       const html = await highlight(raw, file.endsWith('.tsx') ? 'tsx' : 'typescript')
       return `export default ${JSON.stringify({ raw, html })}`
+    }
+    if (id.endsWith(DIAGRAM)) {
+      const file = id.slice(0, -DIAGRAM.length)
+      this.addWatchFile(file)
+      return `export default ${JSON.stringify(await renderDiagram(await readFile(file, 'utf8')))}`
     }
     return undefined
   },

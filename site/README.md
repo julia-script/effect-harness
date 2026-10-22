@@ -2,7 +2,9 @@
 
 The documentation site for effect-harness: a [Foldkit](https://foldkit.dev) app styled with Tailwind, deployed to Cloudflare with [Alchemy](https://alchemy.run).
 
-The guides are the files in [`docs/`](../docs), rendered at build time with their code highlighted by Shiki and their Mermaid diagrams drawn in the page. Edit a guide there and the site follows.
+The guides are the files in [`docs/`](../docs), rendered at build time: code is highlighted by Shiki, and the Mermaid diagrams are laid out by ELK and drawn as the site's own SVG, so the browser loads neither. Edit a guide there and the site follows.
+
+The diagram renderer reads the Mermaid the guides use, so GitHub keeps drawing them: flowcharts with subgraphs, state diagrams, sequence diagrams and mind maps. Syntax outside that subset fails the build rather than drawing wrong. Edges carry a slow moving pulse in their direction, hovering a node lights its edges, and sequence diagrams step through their messages in order. All of it stops when the reader prefers reduced motion.
 
 The demos on the home page and in the playground run the real loop in the browser: `HarnessServer` and `HarnessClient` over in-memory storage, with a scripted Faux model in place of a provider. Crashing a demo closes the loop's scope; restarting it builds a new loop over the same storage.
 
@@ -15,14 +17,14 @@ bun run site:build   # site/dist
 
 The site imports the library from `src/` directly, so changes there show up without a build.
 
-| Path             | What it holds                                                              |
-| ---------------- | -------------------------------------------------------------------------- |
-| `src/main.ts`    | The application: model, update, view, routing                              |
-| `src/page/`      | One view per page                                                          |
-| `src/demo/`      | The demos: the loop in a scope (`lab.ts`), the transcript fold, the agents |
-| `src/markdown/`  | How a guide renders                                                        |
-| `plugins/`       | Vite plugins: GitHub markdown to Foldkit markdown, Shiki highlighting      |
-| `alchemy.run.ts` | The Cloudflare stack                                                       |
+| Path             | What it holds                                                                                       |
+| ---------------- | --------------------------------------------------------------------------------------------------- |
+| `src/main.ts`    | The application: model, update, view, routing                                                       |
+| `src/page/`      | One view per page                                                                                   |
+| `src/demo/`      | The demos: the loop in a scope (`lab.ts`), the transcript fold, the agents                          |
+| `src/markdown/`  | How a guide renders                                                                                 |
+| `plugins/`       | Vite plugins: GitHub markdown to Foldkit markdown, Shiki highlighting, diagrams (`plugins/diagram`) |
+| `alchemy.run.ts` | The Cloudflare stack                                                                                |
 
 ## Deploy
 

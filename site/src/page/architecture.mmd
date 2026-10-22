@@ -1,0 +1,15 @@
+flowchart LR
+  subgraph app["Your app (anywhere)"]
+    C["<b>HarnessClient</b>"]
+  end
+  subgraph loop["The loop (HarnessServer)"]
+    H["<b>Harness</b><br/><i>conversations · runs</i>"]
+    S["<b>Scheduler</b><br/><i>durable tasks</i>"]
+    X["<b>Extensions</b><br/><i>tools · sections · hooks</i>"]
+  end
+  C <-- typed RPC --> H
+  H --> S
+  H --> ST[("<b>Storage</b><br/><i>memory · JSONL · SQL</i>")]
+  X -. selected per conversation .-> S
+  S -- "$generation" --> M(["<b>Model</b><br/><i>OpenAI · Anthropic · Codex</i>"])
+  S -- "$tool" --> T["<b>Tool handlers</b><br/><i>your Layers</i>"]

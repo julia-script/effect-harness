@@ -21,6 +21,6 @@ export default defineConfig({
   resolve: { alias: [{ find: /^effect-harness\/(.*)$/, replacement: `${source}/$1/index.ts` }] },
   server: { fs: { allow: ['..'] } },
   optimizeDeps: { entries: ['src/entry.ts'] },
-  // Mermaid and its layout engines are large, but they load only when a page draws a diagram.
-  build: { chunkSizeWarningLimit: 2048 },
+  // Every guide ships in the main chunk, with its code highlighted and its diagrams drawn.
+  build: { chunkSizeWarningLimit: 1536 },
 })

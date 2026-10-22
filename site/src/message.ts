@@ -14,8 +14,6 @@ export const Message = defineMessageUnion({
   SucceededCopy: { text: Schema.String },
   FailedCopy: {},
   CompletedWaitAfterCopy: { text: Schema.String },
-  CompletedRenderDiagram: {},
-  FailedRenderDiagram: { reason: Schema.String },
   GotReleaseMessage: { message: Demo.Message },
   GotWordsmithMessage: { message: Demo.Message },
 })

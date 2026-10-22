@@ -175,22 +175,22 @@ const codeView = (
   occurrenceIndex: number,
   h: HtmlBuilder<Message>,
 ): Html =>
-  Option.contains(block.maybeLanguage, 'mermaid')
-    ? Diagram.view(`diagram-${guide.slug}-${occurrenceIndex}`, block.value, h)
-    : pipe(
-        Option.fromNullishOr(guide.code[occurrenceIndex]),
-        Option.match({
-          onNone: () =>
-            h.pre(
-              [
-                h.Class(
-                  'my-6 overflow-x-auto rounded-xl bg-ink-900/70 p-4 font-mono text-[13px] ring-1 ring-white/10',
-                ),
-              ],
-              [h.code([], [block.value])],
+  pipe(
+    Option.fromNullishOr(guide.code[occurrenceIndex]),
+    Option.match({
+      onNone: () =>
+        h.pre(
+          [
+            h.Class(
+              'my-6 overflow-x-auto rounded-xl bg-ink-900/70 p-4 font-mono text-[13px] ring-1 ring-white/10',
             ),
-          onSome: (html) =>
-            h.div(
+          ],
+          [h.code([], [block.value])],
+        ),
+      onSome: (html) =>
+        Option.contains(block.maybeLanguage, 'mermaid')
+          ? Diagram.view(html, h)
+          : h.div(
               [
                 h.Class(
                   'highlighted relative my-6 rounded-xl bg-ink-900/70 font-mono ring-1 ring-white/10',
@@ -215,8 +215,8 @@ const codeView = (
                 ),
               ],
             ),
-        }),
-      )
+    }),
+  )
 
 const tableCellClass = 'border-b border-white/5 px-3 py-2 align-top'
 

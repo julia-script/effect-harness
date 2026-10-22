@@ -153,9 +153,6 @@ export const update = (model: Model, message: Message) =>
       }),
     }),
 
-    CompletedRenderDiagram: () => ({ model }),
-    FailedRenderDiagram: () => ({ model }),
-
     GotReleaseMessage: ({ message }) => foldRelease(model, message),
     GotWordsmithMessage: ({ message }) => foldWordsmith(model, message),
   })
