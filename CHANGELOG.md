@@ -1,5 +1,12 @@
 # effect-harness
 
+## 0.13.0
+
+### Minor Changes
+
+- 842aae4: Codex sign-in records the signed-in user's email on the credential's identity, read from the ID token (or the access token's profile claim), as Claude sign-in already does.
+- b8d6993: Add an IndexedDB storage backend. `Storage.layerIndexedDb(name, { factory?, durability? })` keeps a Session in an IndexedDB database, so a loop running in a browser survives reloads. It loads the database into memory on open, writes each commit in one transaction, and opens `globalThis.indexedDB` unless you pass another factory, such as `fake-indexeddb`'s.
+
 ## 0.12.0
 
 ### Minor Changes
