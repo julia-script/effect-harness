@@ -27,6 +27,14 @@ const jwt = (account: string) =>
     'signature',
   ].join('.')
 
+/** An ID token whose claims carry the signed-in user's `email`. */
+const idToken = (email: string) =>
+  [
+    Base64Url.encode(JSON.stringify({ alg: 'none' })),
+    Base64Url.encode(JSON.stringify({ email })),
+    'signature',
+  ].join('.')
+
 const pendingPolls = new Map<string, number>()
 
 /** The auth server's device flow and token endpoint, and the Codex backend's responses. */
@@ -43,7 +51,12 @@ const respond = (request: Recorded) => {
   }
   if (request.path === '/oauth/token') {
     return {
-      json: { access_token: jwt('acct_new'), refresh_token: 'refresh_new', expires_in: 3600 },
+      json: {
+        access_token: jwt('acct_new'),
+        refresh_token: 'refresh_new',
+        expires_in: 3600,
+        id_token: idToken('person@example.com'),
+      },
     }
   }
   if (request.path === '/codex/models') return { json: codexModels }
@@ -156,7 +169,12 @@ describe('OpenAiCodex', () => {
     expect(value.credential).toMatchObject({
       _tag: 'OAuth',
       extra: { accountId: 'acct_new' },
-      identity: { _tag: 'Identity', issuer: 'https://auth.openai.com', subject: 'acct_new' },
+      identity: {
+        _tag: 'Identity',
+        issuer: 'https://auth.openai.com',
+        subject: 'acct_new',
+        email: 'person@example.com',
+      },
     })
     if (value.first?._tag !== 'OAuth' || value.credential?._tag !== 'OAuth')
       throw new Error('Missing signed-in credentials')
@@ -167,6 +185,7 @@ describe('OpenAiCodex', () => {
     expect(Redacted.value(value.credential.access)).toBe(Redacted.value(value.first.access))
     expect(Object.keys(value.credential.identity ?? {}).toSorted()).toEqual([
       '_tag',
+      'email',
       'issuer',
       'subject',
     ])
