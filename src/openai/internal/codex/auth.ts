@@ -17,11 +17,13 @@ const DEVICE_TIMEOUT = Duration.minutes(15)
 const MIN_INTERVAL_MS = 1000
 const SLOW_DOWN_MS = 5000
 const ACCOUNT_CLAIM = 'https://api.openai.com/auth'
+const PROFILE_CLAIM = 'https://api.openai.com/profile'
 
 const Token = Schema.Struct({
   access_token: Schema.String,
   refresh_token: Schema.String,
   expires_in: Schema.Finite,
+  id_token: Schema.optionalKey(Schema.String),
 })
 
 const UserCode = Schema.Struct({
@@ -43,23 +45,33 @@ const PollError = Schema.Struct({
 
 const Claims = Schema.fromJsonString(
   Schema.Struct({
+    email: Schema.optionalKey(Schema.String),
     [ACCOUNT_CLAIM]: Schema.optionalKey(
       Schema.Struct({ chatgpt_account_id: Schema.optionalKey(Schema.String) }),
+    ),
+    [PROFILE_CLAIM]: Schema.optionalKey(
+      Schema.Struct({ email: Schema.optionalKey(Schema.String) }),
     ),
   }),
 )
 const decodeClaims = Schema.decodeUnknownOption(Claims)
 
-/** The ChatGPT account id in an access token's claims. */
-export const accountId = (access: string): string | undefined => {
-  const payload = access.split('.')[1]
-  if (payload === undefined) return undefined
-  const json = Base64Url.decodeString(payload)
-  if (Result.isFailure(json)) return undefined
-  const claims = decodeClaims(json.success)
-  const id = Option.isSome(claims) ? claims.value[ACCOUNT_CLAIM]?.chatgpt_account_id : undefined
-  return id === undefined || id === '' ? undefined : id
+/** The claims of a JWT, unverified: they come from the token exchange's own response. */
+const claims = (jwt: string | undefined) => {
+  const json = Base64Url.decodeString(jwt?.split('.')[1] ?? '')
+  return Result.isFailure(json) ? Option.none() : decodeClaims(json.success)
 }
+
+const nonEmpty = (value: string | undefined) => (value === '' ? undefined : value)
+
+/** The ChatGPT account id in an access token's claims. */
+export const accountId = (access: string): string | undefined =>
+  nonEmpty(Option.getOrUndefined(claims(access))?.[ACCOUNT_CLAIM]?.chatgpt_account_id)
+
+/** The signed-in user's email, from the ID token or else the access token's profile claim. */
+const email = (token: typeof Token.Type): string | undefined =>
+  nonEmpty(Option.getOrUndefined(claims(token.id_token))?.email) ??
+  nonEmpty(Option.getOrUndefined(claims(token.access_token))?.[PROFILE_CLAIM]?.email)
 
 const fail = (message: string) => (cause: unknown) => new LoginError({ message, cause })
 
@@ -68,13 +80,18 @@ const credential = Effect.fnUntraced(function* (token: typeof Token.Type) {
   const id = accountId(token.access_token)
   if (id === undefined) return yield* new LoginError({ message: 'The token has no account id' })
   const now = yield* Clock.currentTimeMillis
+  const address = email(token)
   const stored: OAuth = {
     _tag: 'OAuth',
     access: Redacted.make(token.access_token),
     refresh: Redacted.make(token.refresh_token),
     expires: now + token.expires_in * 1000,
     // These claims come from the successful token exchange, not a caller-supplied JWT.
-    identity: Identity.make({ issuer: AUTH_URL, subject: id }),
+    identity: Identity.make({
+      issuer: AUTH_URL,
+      subject: id,
+      ...(address === undefined ? {} : { email: address }),
+    }),
     extra: { accountId: id },
   }
   return stored
