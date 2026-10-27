@@ -1,6 +1,6 @@
 /**
- * The `Storage` service: the Session's atomic persistence boundary, and its in-memory, JSONL, and
- * SQL layers.
+ * The `Storage` service: the Session's atomic persistence boundary, and its in-memory, JSONL,
+ * SQL, and IndexedDB layers.
  */
 import { Context, Layer } from 'effect'
 import type { Effect, FileSystem, Path, Scope } from 'effect'
@@ -34,6 +34,8 @@ import type {
 import type { SubmissionRecord } from './schema/Submission.ts'
 import type { TaskRecord } from './schema/Task.ts'
 import type { StorageWrite } from './schema/Write.ts'
+import type { Durability, IdbFactory } from './internal/indexeddb/idb.ts'
+import * as indexedDb from './internal/indexeddb/storage.ts'
 import * as jsonl from './internal/jsonl/storage.ts'
 import * as internal from './internal/memory/storage.ts'
 import * as sql from './internal/sql/storage.ts'
@@ -237,3 +239,41 @@ export const layerSql = (
   options?: SqlOptions,
 ): Layer.Layer<Storage, StorageError, SqlClient.SqlClient> =>
   Layer.effect(Storage, makeSql(options))
+
+/**
+ * The part of an `IDBFactory` the IndexedDB store uses. A browser's `indexedDB` satisfies it, as
+ * does `fake-indexeddb`'s.
+ */
+export type IndexedDbFactory = IdbFactory
+
+/** Options for an IndexedDB store. */
+export interface IndexedDbOptions {
+  /** The factory that opens the database. Defaults to `globalThis.indexedDB`. */
+  readonly factory?: IndexedDbFactory
+  /**
+   * The durability hint of every commit's transaction: `'strict'` asks the browser to flush it to
+   * stable storage before it completes, `'relaxed'` lets it complete once the write is visible.
+   * Defaults to `'default'`, the browser's own choice.
+   */
+  readonly durability?: Durability
+}
+
+/**
+ * Open or create the IndexedDB database `name` and load it into memory, which then serves every
+ * read. Each commit is one readwrite transaction, applied to memory once it completes, so a failed
+ * commit changes nothing. Fails with a `StorageError` when IndexedDB is unavailable or the
+ * database is corrupt. Closing the scope closes the store and its connection.
+ *
+ * The owning Session must be the only writer of the database. Once another connection upgrades
+ * it, or the browser closes the connection, every later operation fails until it is reopened.
+ */
+export const makeIndexedDb: (
+  name: string,
+  options?: IndexedDbOptions,
+) => Effect.Effect<Service, StorageError, Scope.Scope> = indexedDb.makeIndexedDb
+
+/** A `Storage` kept in the IndexedDB database `name`. */
+export const layerIndexedDb = (
+  name: string,
+  options?: IndexedDbOptions,
+): Layer.Layer<Storage, StorageError> => Layer.effect(Storage, makeIndexedDb(name, options))

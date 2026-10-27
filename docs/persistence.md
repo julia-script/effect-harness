@@ -10,13 +10,14 @@ Everything the loop knows lives in one `Storage`: conversations, entries, submis
 
 ## Storage backends
 
-| Layer                           | Needs                                          | Good for                                   |
-| ------------------------------- | ---------------------------------------------- | ------------------------------------------ |
-| `Storage.layerMemory`           | nothing                                        | tests, demos, browser sandboxes            |
-| `Storage.layerJsonl(directory)` | `FileSystem`, `Path`                           | local agents and CLIs                      |
-| `Storage.layerSql({ prefix? })` | an Effect SQL `SqlClient` (SQLite or Postgres) | servers, Durable Objects, shared databases |
+| Layer                           | Needs                                           | Good for                                   |
+| ------------------------------- | ----------------------------------------------- | ------------------------------------------ |
+| `Storage.layerMemory`           | nothing                                         | tests, demos, browser sandboxes            |
+| `Storage.layerJsonl(directory)` | `FileSystem`, `Path`                            | local agents and CLIs                      |
+| `Storage.layerSql({ prefix? })` | an Effect SQL `SqlClient` (SQLite or Postgres)  | servers, Durable Objects, shared databases |
+| `Storage.layerIndexedDb(name)`  | IndexedDB (`globalThis.indexedDB` or a factory) | loops running in a browser                 |
 
-All three run the same engine, so behavior is identical; only where the bytes land differs.
+All four run the same engine, so behavior is identical; only where the bytes land differs.
 
 ```ts
 import { BunServices } from '@effect/platform-bun'
@@ -31,6 +32,13 @@ const SqliteLive = Storage.layerSql({ prefix: 'harness_' }).pipe(
   Layer.provide(SqliteClient.layer({ filename: './agent.db' })),
 )
 ```
+
+```ts
+// An IndexedDB database in the browser, flushed to disk before each commit completes
+const BrowserLive = Storage.layerIndexedDb('agent', { durability: 'strict' })
+```
+
+The IndexedDB store loads the database into memory when it opens and writes each commit in one transaction, so a failed commit changes nothing. Pass `factory` to use something other than `globalThis.indexedDB`, such as `fake-indexeddb` in tests. If another tab upgrades or deletes the database, the store stops and must be reopened.
 
 The SQL store creates and migrates its tables with Effect's `Migrator` and works with `@effect/sql-sqlite-node`, `@effect/sql-sqlite-bun`, `@effect/sql-pg`, `@effect/sql-pglite` and Cloudflare's `@effect/sql-sqlite-do`. Pass `{ fsync: true }` to `layerJsonl` to flush every commit to stable storage before it is published.
 

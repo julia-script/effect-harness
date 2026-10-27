@@ -13,7 +13,7 @@ import {
   prepareDocumentActions,
   resolveDocumentCopies,
 } from './documents.ts'
-import type { ResolvedWrite } from './documents.ts'
+import type { DocumentAction, ResolvedWrite } from './documents.ts'
 import {
   ensureOpen,
   freeze,
@@ -81,7 +81,7 @@ const claim = (state: State, id: number, table: TableName): void => {
   state.nextId = Math.max(state.nextId, id + 1)
 }
 
-const applyConversation = (state: State, value: ConversationRecord): void => {
+export const applyConversation = (state: State, value: ConversationRecord): void => {
   claim(state, value.id, 'conversation')
   state.conversations.set(value.id, value)
   insertSorted(state.conversationIds, value.id)
@@ -91,7 +91,7 @@ const applyConversation = (state: State, value: ConversationRecord): void => {
   }
 }
 
-const applyEntry = (state: State, value: EntryRecord, seq: Seq): void => {
+export const applyEntry = (state: State, value: EntryRecord, seq: Seq): void => {
   claim(state, value.id, 'entry')
   state.entries.set(value.id, value)
   state.entryCommitSeqs.set(value.id, seq)
@@ -99,7 +99,7 @@ const applyEntry = (state: State, value: EntryRecord, seq: Seq): void => {
   if (value.head !== undefined) insertMapId(state.headEntryIds, value.conversationId, value.id)
 }
 
-const applyTask = (state: State, value: TaskRecord): void => {
+export const applyTask = (state: State, value: TaskRecord): void => {
   claim(state, value.id, 'task')
   const previous = state.tasks.get(value.id)
   if (previous === undefined) {
@@ -120,7 +120,7 @@ const unindexRequest = (state: State, previous: SubmissionRecord): void => {
   if (requests.size === 0) state.submissionIdsByRequest.delete(previous.conversationId)
 }
 
-const applySubmission = (state: State, value: SubmissionRecord): void => {
+export const applySubmission = (state: State, value: SubmissionRecord): void => {
   claim(state, value.id, 'submission')
   const previous = state.submissions.get(value.id)
   if (previous === undefined) {
@@ -168,6 +168,8 @@ export interface PreparedCommit {
   readonly seq: Seq
   /** Deeply frozen detached writes with copies resolved, for persistence. */
   readonly writes: ReadonlyArray<ResolvedWrite>
+  /** The batch's document commands grouped by document, as `apply` will apply them. */
+  readonly documentActions: ReadonlyMap<number, DocumentAction>
   /** Apply the batch once; later calls return the same sequence and change nothing. */
   readonly apply: () => Seq
 }
@@ -194,6 +196,7 @@ export const prepareCommit = Effect.fnUntraced(function* (
   const prepared: PreparedCommit = {
     seq,
     writes: detached,
+    documentActions,
     apply: () => {
       if (applied) return seq
       applied = true

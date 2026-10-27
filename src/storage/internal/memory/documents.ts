@@ -240,7 +240,12 @@ const createDocument = (
   const record: DocumentRecord = retire
     ? { ...create, createdAt: seq, retiredAt: seq }
     : { ...create, createdAt: seq }
-  const stored: StoredDocumentState = { record, revisions: [{ ...content, seq }] }
+  return restoreDocument(state, { record, revisions: [{ ...content, seq }] })
+}
+
+/** Index one stored incarnation, as created or as a durable backend reloads it. */
+export const restoreDocument = (state: State, stored: StoredDocumentState): StoredDocumentState => {
+  const { record } = stored
   state.recordTypes.set(record.id, 'document')
   state.nextId = Math.max(state.nextId, record.id + 1)
   state.documents.set(record.id, stored)
@@ -250,7 +255,7 @@ const createDocument = (
     (): DocumentAddressIndex => ({ ids: [] }),
   )
   insertSorted(address.ids, record.id)
-  if (!retire) address.currentId = record.id
+  if (record.retiredAt === undefined) address.currentId = record.id
   insertMapId(state.documentIdsByScope, scopeKey(record.scope), record.id)
   return stored
 }
